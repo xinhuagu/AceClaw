@@ -58,14 +58,16 @@ public final class AceClawConfig {
     private String logLevel;
     private String defaultProfile;
     private Map<String, ConfigFileFormat> profiles;
+    private Map<String, String> providerModels;
 
     private AceClawConfig() {
         this.provider = "anthropic";
-        this.model = DEFAULT_MODEL;
+        this.model = null; // resolved dynamically via providerModels or LlmClientFactory defaults
         this.maxTokens = DEFAULT_MAX_TOKENS;
         this.thinkingBudget = DEFAULT_THINKING_BUDGET;
         this.contextWindowTokens = DEFAULT_CONTEXT_WINDOW;
         this.logLevel = DEFAULT_LOG_LEVEL;
+        this.providerModels = new java.util.HashMap<>();
     }
 
     /**
@@ -163,10 +165,29 @@ public final class AceClawConfig {
     }
 
     /**
-     * Returns the model identifier.
+     * Returns the explicitly configured model identifier, or null if not set.
+     *
+     * <p>Prefer {@link #resolvedModel()} which falls back to provider-specific defaults.
      */
     public String model() {
         return model;
+    }
+
+    /**
+     * Resolves the model to use: explicit {@code model} config &gt; {@code providerModels[provider]}
+     * &gt; {@link dev.aceclaw.llm.LlmClientFactory#getDefaultModel(String) factory default}.
+     */
+    public String resolvedModel() {
+        if (model != null) {
+            return model;
+        }
+        if (providerModels != null) {
+            String pm = providerModels.get(provider);
+            if (pm != null && !pm.isBlank()) {
+                return pm;
+            }
+        }
+        return dev.aceclaw.llm.LlmClientFactory.getDefaultModel(provider);
     }
 
     /**
@@ -294,7 +315,7 @@ public final class AceClawConfig {
             var fileConfig = mapper.readValue(configFile.toFile(), ConfigFileFormat.class);
             mergeFromFormat(fileConfig);
 
-            // Collect defaultProfile and profiles from this file
+            // Collect defaultProfile, profiles, and providerModels from this file
             if (fileConfig.defaultProfile != null && !fileConfig.defaultProfile.isBlank()) {
                 this.defaultProfile = fileConfig.defaultProfile;
             }
@@ -303,6 +324,9 @@ public final class AceClawConfig {
                     this.profiles = new java.util.HashMap<>();
                 }
                 this.profiles.putAll(fileConfig.profiles);
+            }
+            if (fileConfig.providerModels != null && !fileConfig.providerModels.isEmpty()) {
+                this.providerModels.putAll(fileConfig.providerModels);
             }
 
             log.debug("Loaded config from {}", configFile);
@@ -357,5 +381,6 @@ public final class AceClawConfig {
         public String logLevel;
         public String defaultProfile;
         public Map<String, ConfigFileFormat> profiles;
+        public Map<String, String> providerModels;
     }
 }

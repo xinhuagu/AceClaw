@@ -14,6 +14,7 @@ import dev.aceclaw.core.llm.Usage;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 
 /**
  * Maps between AceClaw LLM abstractions and the OpenAI Chat Completions API JSON format.
@@ -23,7 +24,8 @@ import java.util.List;
  *   <li>System prompt is a regular message with {@code role: "system"}</li>
  *   <li>Tool results are separate messages with {@code role: "tool"}</li>
  *   <li>Tool calls use {@code function.arguments} (stringified JSON), not {@code input}</li>
- *   <li>Thinking blocks are silently stripped (not supported)</li>
+ *   <li>Thinking blocks from {@code reasoning}/{@code reasoning_content} fields
+ *       and {@code <think>} tags are extracted into {@link ContentBlock.Thinking}</li>
  * </ul>
  */
 final class OpenAIMapper {
@@ -218,8 +220,30 @@ final class OpenAIMapper {
 
         List<ContentBlock> content = new ArrayList<>();
 
+        // Reasoning content (qwen3 uses "reasoning", DeepSeek uses "reasoning_content")
+        String reasoning = messageNode.path("reasoning").asText(null);
+        if (reasoning == null) {
+            reasoning = messageNode.path("reasoning_content").asText(null);
+        }
+        if (reasoning != null && !reasoning.isEmpty()) {
+            content.add(new ContentBlock.Thinking(reasoning));
+        }
+
         // Text content
         String text = messageNode.path("content").asText(null);
+
+        // Detect <think> tags in text content (DeepSeek-R1, QwQ, etc.)
+        if (text != null && text.contains("<think>")) {
+            var matcher = Pattern.compile("<think>(.*?)</think>", Pattern.DOTALL).matcher(text);
+            if (matcher.find()) {
+                String thinkingText = matcher.group(1).trim();
+                if (!thinkingText.isEmpty()) {
+                    content.add(new ContentBlock.Thinking(thinkingText));
+                }
+                text = matcher.replaceAll("").trim();
+            }
+        }
+
         if (text != null && !text.isEmpty()) {
             content.add(new ContentBlock.Text(text));
         }

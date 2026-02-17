@@ -36,8 +36,8 @@ public final class LlmClientFactory {
             "groq", "llama-3.3-70b-versatile",
             "together", "meta-llama/Llama-3.3-70B-Instruct-Turbo",
             "mistral", "mistral-large-latest",
-            "copilot", "gpt-4o",
-            "ollama", "llama3.1"
+            "copilot", "gpt5.2",
+            "ollama", "qwen3:4b"
     );
 
     /** Providers that support image input. */
@@ -53,30 +53,44 @@ public final class LlmClientFactory {
     private LlmClientFactory() {}
 
     /**
+     * Returns the hardcoded default model for a given provider.
+     * Falls back to {@code "claude-sonnet-4-5-20250929"} for Anthropic and unknown providers.
+     */
+    public static String getDefaultModel(String provider) {
+        if (provider == null || "anthropic".equals(provider)) {
+            return "claude-sonnet-4-5-20250929";
+        }
+        return DEFAULT_MODELS.getOrDefault(provider, "gpt-4o");
+    }
+
+    /**
      * Creates an LLM client for the given provider.
      *
      * @param provider     provider name (e.g. "anthropic", "openai", "groq", "ollama")
      * @param apiKey       the API key or access token
      * @param refreshToken OAuth refresh token (Anthropic only, may be null)
      * @param baseUrl      custom base URL override (null = use provider default)
+     * @param model        model to use (null = use provider default from {@link #getDefaultModel(String)})
      * @return a configured LlmClient instance
      * @throws IllegalArgumentException if the provider is unknown
      */
     public static LlmClient create(String provider, String apiKey,
-                                    String refreshToken, String baseUrl) {
+                                    String refreshToken, String baseUrl,
+                                    String model) {
         if (provider == null || provider.isBlank()) {
             provider = "anthropic";
         }
 
-        log.info("Creating LLM client: provider={}, baseUrl={}", provider,
+        log.info("Creating LLM client: provider={}, model={}, baseUrl={}", provider,
+                model != null ? model : "(default)",
                 baseUrl != null ? baseUrl : "(default)");
 
         return switch (provider) {
             case "anthropic" -> createAnthropicClient(apiKey, refreshToken, baseUrl);
-            case "copilot" -> createCopilotClient(apiKey, baseUrl);
+            case "copilot" -> createCopilotClient(apiKey, baseUrl, model);
             case "openai", "groq", "together", "mistral", "ollama" -> {
                 String resolvedBaseUrl = baseUrl != null ? baseUrl : DEFAULT_BASE_URLS.get(provider);
-                String resolvedModel = DEFAULT_MODELS.getOrDefault(provider, "gpt-4o");
+                String resolvedModel = model != null ? model : DEFAULT_MODELS.getOrDefault(provider, "gpt-4o");
                 ProviderCapabilities caps = PROVIDER_CAPABILITIES.getOrDefault(
                         provider, ProviderCapabilities.OPENAI_COMPAT);
                 yield new OpenAICompatClient(apiKey, resolvedBaseUrl, provider, resolvedModel, caps);
@@ -97,11 +111,11 @@ public final class LlmClientFactory {
             "x-github-api-version", "2025-04-01"
     );
 
-    private static LlmClient createCopilotClient(String githubToken, String baseUrl) {
+    private static LlmClient createCopilotClient(String githubToken, String baseUrl, String model) {
         var tokenProvider = new CopilotTokenProvider(githubToken);
         // Use default endpoint; token exchange is deferred to first API call.
         String resolvedBaseUrl = baseUrl != null ? baseUrl : DEFAULT_BASE_URLS.get("copilot");
-        String resolvedModel = DEFAULT_MODELS.getOrDefault("copilot", "gpt-4o");
+        String resolvedModel = model != null ? model : DEFAULT_MODELS.getOrDefault("copilot", "gpt5.2");
         // Copilot uses /chat/completions (no /v1 prefix)
         return new OpenAICompatClient(
                 tokenProvider, resolvedBaseUrl, "/chat/completions",

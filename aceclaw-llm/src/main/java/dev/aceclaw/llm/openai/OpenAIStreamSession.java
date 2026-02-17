@@ -40,6 +40,10 @@ final class OpenAIStreamSession implements StreamSession {
     private int textBlockIndex;
     private int nextBlockIndex;
 
+    // Reasoning block tracking (qwen3, DeepSeek, etc.)
+    private boolean inReasoningBlock;
+    private int reasoningBlockIndex;
+
     // Tool call accumulation: index -> state
     private final Map<Integer, ToolCallState> toolCallStates = new HashMap<>();
 
@@ -114,6 +118,15 @@ final class OpenAIStreamSession implements StreamSession {
             JsonNode delta = firstChoice.path("delta");
             String finishReason = firstChoice.path("finish_reason").asText(null);
 
+            // Process reasoning delta (qwen3 uses "reasoning", DeepSeek uses "reasoning_content")
+            String reasoningText = delta.path("reasoning").asText(null);
+            if (reasoningText == null) {
+                reasoningText = delta.path("reasoning_content").asText(null);
+            }
+            if (reasoningText != null) {
+                handleReasoningDelta(reasoningText, handler);
+            }
+
             // Process content delta (text)
             String contentText = delta.path("content").asText(null);
             if (contentText != null) {
@@ -150,7 +163,22 @@ final class OpenAIStreamSession implements StreamSession {
         }
     }
 
+    private void handleReasoningDelta(String text, StreamEventHandler handler) {
+        if (!inReasoningBlock) {
+            reasoningBlockIndex = nextBlockIndex++;
+            inReasoningBlock = true;
+            handler.onContentBlockStart(new StreamEvent.ContentBlockStart(
+                    reasoningBlockIndex, new ContentBlock.Thinking("")));
+        }
+        handler.onThinkingDelta(new StreamEvent.ThinkingDelta(text));
+    }
+
     private void handleTextDelta(String text, StreamEventHandler handler) {
+        // Close reasoning block when transitioning to text
+        if (inReasoningBlock) {
+            handler.onContentBlockStop(new StreamEvent.ContentBlockStop(reasoningBlockIndex));
+            inReasoningBlock = false;
+        }
         if (!inTextBlock) {
             // Start a new text block
             textBlockIndex = nextBlockIndex++;
@@ -163,6 +191,12 @@ final class OpenAIStreamSession implements StreamSession {
 
     private void handleToolCallDelta(JsonNode tc, StreamEventHandler handler) {
         int toolIndex = tc.path("index").asInt(0);
+
+        // Close reasoning block if transitioning to tool calls
+        if (inReasoningBlock) {
+            handler.onContentBlockStop(new StreamEvent.ContentBlockStop(reasoningBlockIndex));
+            inReasoningBlock = false;
+        }
 
         // Close text block if transitioning to tool calls
         if (inTextBlock) {
@@ -200,6 +234,10 @@ final class OpenAIStreamSession implements StreamSession {
      * Flushes any open content blocks by emitting ContentBlockStop events.
      */
     private void flushOpenBlocks(StreamEventHandler handler) {
+        if (inReasoningBlock) {
+            handler.onContentBlockStop(new StreamEvent.ContentBlockStop(reasoningBlockIndex));
+            inReasoningBlock = false;
+        }
         if (inTextBlock) {
             handler.onContentBlockStop(new StreamEvent.ContentBlockStop(textBlockIndex));
             inTextBlock = false;

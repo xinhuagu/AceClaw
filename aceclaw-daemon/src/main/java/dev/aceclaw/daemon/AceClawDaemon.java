@@ -109,8 +109,9 @@ public final class AceClawDaemon {
             log.warn("API key not configured; set ANTHROPIC_API_KEY (or OPENAI_API_KEY for non-Anthropic providers) or add apiKey to ~/.aceclaw/config.json");
             apiKey = "not-configured";
         }
+        String model = config.resolvedModel();
         LlmClient llmClient = LlmClientFactory.create(
-                config.provider(), apiKey, config.refreshToken(), config.baseUrl());
+                config.provider(), apiKey, config.refreshToken(), config.baseUrl(), model);
 
         // 2. Tool registry with all 6 tools
         var toolRegistry = new ToolRegistry();
@@ -127,16 +128,15 @@ public final class AceClawDaemon {
 
         // 4. System prompt (with auto-memory injection + model identity)
         String systemPrompt = SystemPromptLoader.load(
-                workingDir, memoryStore, config.model(), config.provider());
+                workingDir, memoryStore, model, config.provider());
 
         // 5. Context compaction
         var compactionConfig = new CompactionConfig(
                 config.contextWindowTokens(), config.maxTokens(),
                 0.85, 0.60, 5);
-        var compactor = new MessageCompactor(llmClient, config.model(), compactionConfig);
+        var compactor = new MessageCompactor(llmClient, model, compactionConfig);
 
         // 6. Streaming agent loop (with compaction support)
-        String model = config.model();
         var agentLoop = new StreamingAgentLoop(
                 llmClient, toolRegistry, model, systemPrompt,
                 config.maxTokens(), config.thinkingBudget(), compactor);
