@@ -5,6 +5,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -25,6 +27,7 @@ public final class SystemPromptLoader {
     private static final Logger log = LoggerFactory.getLogger(SystemPromptLoader.class);
 
     private static final String CHELAVA_MD = "CHELAVA.md";
+    private static final String BASE_PROMPT_RESOURCE = "/system-prompt.md";
 
     private SystemPromptLoader() {}
 
@@ -60,6 +63,12 @@ public final class SystemPromptLoader {
     public static String load(Path projectPath, AutoMemoryStore memoryStore) {
         var sb = new StringBuilder();
         sb.append(basePrompt());
+
+        // Environment context
+        sb.append("\n\n# Environment\n\n");
+        sb.append("- Working directory: ").append(projectPath.toAbsolutePath().normalize()).append("\n");
+        sb.append("- All relative file paths are resolved against this directory.\n");
+        sb.append("- Use read_file, glob, and grep with relative paths from this directory.\n");
 
         // 1. Global user instructions (~/.chelava/CHELAVA.md)
         appendInstructions(sb, GLOBAL_CONFIG_DIR.resolve(CHELAVA_MD),
@@ -106,41 +115,20 @@ public final class SystemPromptLoader {
     }
 
     /**
-     * Returns the built-in base system prompt.
+     * Returns the built-in base system prompt from the classpath resource.
+     * Falls back to a minimal prompt if the resource cannot be loaded.
      */
     private static String basePrompt() {
-        return """
-                You are Chelava, an AI coding assistant that helps users with software engineering tasks.
-
-                # Capabilities
-
-                You have access to the following tools:
-                - read_file: Read file contents with line numbers
-                - write_file: Create or overwrite files
-                - edit_file: Make targeted edits to existing files (find and replace)
-                - bash: Execute shell commands
-                - glob: Search for files by glob pattern
-                - grep: Search file contents by regex pattern
-
-                # Guidelines
-
-                - Always read a file before editing it to understand the existing code
-                - Prefer editing existing files over creating new ones
-                - Keep changes minimal and focused on what was requested
-                - Do not introduce security vulnerabilities (command injection, XSS, SQL injection, etc.)
-                - When executing bash commands, be careful with destructive operations
-                - Explain what you are doing and why before making changes
-                - If you are unsure about something, ask for clarification
-                - Write clean, idiomatic code that follows the project's existing conventions
-                - Do not add unnecessary comments, docstrings, or type annotations to code you did not change
-
-                # Behavior
-
-                - You communicate in natural language only. No slash commands.
-                - You autonomously decide which tools to use based on the user's request.
-                - You handle file operations, code modifications, and shell commands as needed.
-                - When multiple independent operations are needed, you may request parallel tool execution.
-                - You are thorough but concise in your responses.
-                """;
+        try (InputStream is = SystemPromptLoader.class.getResourceAsStream(BASE_PROMPT_RESOURCE)) {
+            if (is != null) {
+                String prompt = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+                log.debug("Loaded base prompt from resource ({} chars)", prompt.length());
+                return prompt;
+            }
+        } catch (IOException e) {
+            log.warn("Failed to load base prompt resource: {}", e.getMessage());
+        }
+        log.warn("Base prompt resource not found, using fallback");
+        return "You are Chelava, an AI coding assistant. Use the available tools to help the user.\n";
     }
 }

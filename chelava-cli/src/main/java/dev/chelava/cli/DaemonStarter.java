@@ -107,8 +107,8 @@ public final class DaemonStarter {
         pb.redirectOutput(ProcessBuilder.Redirect.appendTo(DAEMON_LOG.toFile()));
         pb.redirectErrorStream(true);
 
-        // Detach from the parent process group
-        pb.directory(HOME_DIR.toFile());
+        // Inherit the CLI's working directory so tools resolve paths
+        // relative to the user's project, not ~/.chelava/
 
         Process process = pb.start();
         log.info("Daemon process started (PID {}); logs at {}", process.pid(), DAEMON_LOG);
