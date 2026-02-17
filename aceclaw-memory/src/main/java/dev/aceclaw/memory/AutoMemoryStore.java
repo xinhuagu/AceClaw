@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.PosixFilePermission;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.*;
@@ -44,6 +45,7 @@ public final class AutoMemoryStore {
     private final ObjectMapper mapper;
     private final MemorySigner signer;
     private final CopyOnWriteArrayList<MemoryEntry> entries;
+    private DailyJournal dailyJournal;
 
     /**
      * Creates a memory store under the given aceclaw home directory.
@@ -60,6 +62,35 @@ public final class AutoMemoryStore {
 
         this.signer = new MemorySigner(loadOrCreateKey());
         this.entries = new CopyOnWriteArrayList<>();
+    }
+
+    /**
+     * Creates a workspace-scoped memory store using the new workspace directory layout.
+     *
+     * <p>Storage: {@code ~/.aceclaw/workspaces/{hash}/memory/}
+     * <p>Also initializes a {@link DailyJournal} for the workspace.
+     *
+     * @param aceclawHome   the aceclaw home directory (e.g. ~/.aceclaw)
+     * @param workspacePath the workspace/project directory
+     * @return the initialized memory store
+     * @throws IOException if directories cannot be created
+     */
+    public static AutoMemoryStore forWorkspace(Path aceclawHome, Path workspacePath) throws IOException {
+        var store = new AutoMemoryStore(aceclawHome);
+        store.load(workspacePath);
+
+        // Initialize workspace-scoped journal
+        Path workspaceMemDir = WorkspacePaths.resolve(aceclawHome, workspacePath);
+        store.dailyJournal = new DailyJournal(workspaceMemDir);
+
+        return store;
+    }
+
+    /**
+     * Returns the daily journal (may be null if not initialized via {@link #forWorkspace}).
+     */
+    public DailyJournal getDailyJournal() {
+        return dailyJournal;
     }
 
     /**
@@ -183,6 +214,18 @@ public final class AutoMemoryStore {
     }
 
     /**
+     * Searches memories using hybrid ranking (TF-IDF + recency + frequency).
+     *
+     * @param query    search query in natural language
+     * @param category optional category filter (null = all)
+     * @param limit    maximum results (0 = unlimited)
+     * @return ranked entries, highest relevance first
+     */
+    public List<MemoryEntry> search(String query, MemoryEntry.Category category, int limit) {
+        return MemorySearchEngine.search(List.copyOf(entries), query, category, limit);
+    }
+
+    /**
      * Formats relevant memories as a prompt section for injection into the system prompt.
      *
      * @param projectPath the project directory for project-specific memories
@@ -190,11 +233,35 @@ public final class AutoMemoryStore {
      * @return the formatted memory section, or empty string if no memories
      */
     public String formatForPrompt(Path projectPath, int maxEntries) {
+        return formatForPrompt(projectPath, maxEntries, null);
+    }
+
+    /**
+     * Formats memories as a prompt section, optionally ranked by a query hint.
+     *
+     * @param projectPath the project directory for project-specific memories
+     * @param maxEntries  maximum entries to include
+     * @param queryHint   optional query to rank results by relevance (null = recency order)
+     * @return the formatted memory section, or empty string if no memories
+     */
+    public String formatForPrompt(Path projectPath, int maxEntries, String queryHint) {
         if (entries.isEmpty()) return "";
 
-        var relevant = query(null, null, maxEntries);
+        List<MemoryEntry> relevant;
+        if (queryHint != null && !queryHint.isBlank()) {
+            relevant = search(queryHint, null, maxEntries);
+        } else {
+            relevant = query(null, null, maxEntries);
+        }
         if (relevant.isEmpty()) return "";
 
+        return formatEntries(relevant);
+    }
+
+    /**
+     * Formats a list of entries as a markdown section for system prompt injection.
+     */
+    private String formatEntries(List<MemoryEntry> relevant) {
         var sb = new StringBuilder();
         sb.append("\n\n# Auto-Memory\n\n");
         sb.append("The following are insights learned from previous sessions. ");
@@ -306,6 +373,17 @@ public final class AutoMemoryStore {
         byte[] key = new byte[KEY_SIZE_BYTES];
         new SecureRandom().nextBytes(key);
         Files.write(keyFile, key, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+
+        // Set POSIX 600 permissions (owner read/write only) to protect the signing key
+        try {
+            Files.setPosixFilePermissions(keyFile, Set.of(
+                    PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE));
+        } catch (UnsupportedOperationException e) {
+            // Non-POSIX filesystem (e.g. Windows) — skip permission setting
+            log.debug("POSIX permissions not supported on this filesystem");
+        }
+
         log.info("Generated new memory signing key at {}", keyFile);
         return key;
     }
@@ -334,6 +412,17 @@ public final class AutoMemoryStore {
             case PREFERENCE -> "User Preferences";
             case CODEBASE_INSIGHT -> "Codebase Insights";
             case STRATEGY -> "Strategies";
+            case WORKFLOW -> "Workflows";
+            case ENVIRONMENT -> "Environment";
+            case RELATIONSHIP -> "Relationships";
+            case TERMINOLOGY -> "Terminology";
+            case CONSTRAINT -> "Constraints";
+            case DECISION -> "Decisions";
+            case TOOL_USAGE -> "Tool Usage";
+            case COMMUNICATION -> "Communication";
+            case CONTEXT -> "Context";
+            case CORRECTION -> "Corrections";
+            case BOOKMARK -> "Bookmarks";
         };
     }
 }

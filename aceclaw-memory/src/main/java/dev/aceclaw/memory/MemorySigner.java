@@ -4,6 +4,7 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.security.InvalidKeyException;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 
@@ -48,6 +49,9 @@ public final class MemorySigner {
      */
     public boolean verify(String payload, String expectedHmac) {
         String actual = sign(payload);
-        return actual.equals(expectedHmac);
+        // Constant-time comparison to prevent timing attacks
+        return MessageDigest.isEqual(
+                actual.getBytes(StandardCharsets.UTF_8),
+                expectedHmac.getBytes(StandardCharsets.UTF_8));
     }
 }

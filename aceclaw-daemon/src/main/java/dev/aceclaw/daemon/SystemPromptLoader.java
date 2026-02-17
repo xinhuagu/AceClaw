@@ -1,6 +1,8 @@
 package dev.aceclaw.daemon;
 
 import dev.aceclaw.memory.AutoMemoryStore;
+import dev.aceclaw.memory.DailyJournal;
+import dev.aceclaw.memory.MemoryTierLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -16,17 +18,14 @@ import java.nio.file.Path;
  * <p>The system prompt is composed of:
  * <ol>
  *   <li>A built-in base prompt describing the agent's capabilities and behavior</li>
- *   <li>Optional project-specific instructions from {@code ACECLAW.md} in the project root</li>
+ *   <li>Environment context (working dir, platform, git status)</li>
+ *   <li>6-tier memory hierarchy via {@link MemoryTierLoader}</li>
  * </ol>
- *
- * <p>If a {@code ACECLAW.md} file exists in the project directory, its contents are
- * appended to the base prompt under a "Project Instructions" section.
  */
 public final class SystemPromptLoader {
 
     private static final Logger log = LoggerFactory.getLogger(SystemPromptLoader.class);
 
-    private static final String ACECLAW_MD = "ACECLAW.md";
     private static final String BASE_PROMPT_RESOURCE = "/system-prompt.md";
 
     private SystemPromptLoader() {}
@@ -37,48 +36,65 @@ public final class SystemPromptLoader {
 
     /**
      * Loads the full system prompt for the given project directory.
-     *
-     * <p>Memory hierarchy (all loaded, later sources override earlier):
-     * <ol>
-     *   <li>Built-in base prompt (agent capabilities, guidelines)</li>
-     *   <li>Global user instructions from {@code ~/.aceclaw/ACECLAW.md}</li>
-     *   <li>Project-specific instructions from {@code {project}/ACECLAW.md}</li>
-     *   <li>Project .aceclaw instructions from {@code {project}/.aceclaw/ACECLAW.md}</li>
-     * </ol>
-     *
-     * @param projectPath the project working directory
-     * @return the assembled system prompt
      */
     public static String load(Path projectPath) {
-        return load(projectPath, null);
+        return load(projectPath, null, null, null, null);
     }
 
     /**
      * Loads the full system prompt with auto-memory injection.
-     *
-     * @param projectPath the project working directory
-     * @param memoryStore optional auto-memory store (may be null)
-     * @return the assembled system prompt
      */
     public static String load(Path projectPath, AutoMemoryStore memoryStore) {
-        return load(projectPath, memoryStore, null, null);
+        return load(projectPath, memoryStore, null, null, null);
     }
 
     /**
      * Loads the full system prompt with auto-memory injection and model identity.
+     */
+    public static String load(Path projectPath, AutoMemoryStore memoryStore,
+                              String model, String provider) {
+        return load(projectPath, memoryStore, null, model, provider);
+    }
+
+    /**
+     * Loads the full system prompt with 6-tier memory, daily journal, and model identity.
      *
      * @param projectPath the project working directory
      * @param memoryStore optional auto-memory store (may be null)
+     * @param journal     optional daily journal (may be null)
      * @param model       the LLM model name (may be null)
      * @param provider    the LLM provider name (may be null)
      * @return the assembled system prompt
      */
     public static String load(Path projectPath, AutoMemoryStore memoryStore,
-                              String model, String provider) {
+                              DailyJournal journal, String model, String provider) {
         var sb = new StringBuilder();
         sb.append(basePrompt());
 
-        // Environment context (like Claude Code's context injection)
+        // Environment context
+        appendEnvironmentContext(sb, projectPath, model, provider);
+
+        // Git context
+        appendGitContext(sb, projectPath);
+
+        // 6-tier memory hierarchy via MemoryTierLoader
+        var tierResult = MemoryTierLoader.loadAll(
+                GLOBAL_CONFIG_DIR, projectPath, memoryStore, journal);
+        String tierContent = MemoryTierLoader.assembleForSystemPrompt(
+                tierResult, memoryStore, projectPath, 50);
+        if (!tierContent.isEmpty()) {
+            sb.append(tierContent);
+            log.info("Injected {} memory tiers into system prompt", tierResult.tiersLoaded());
+        }
+
+        return sb.toString();
+    }
+
+    /**
+     * Appends environment context (working dir, platform, Java version, date, model).
+     */
+    private static void appendEnvironmentContext(StringBuilder sb, Path projectPath,
+                                                  String model, String provider) {
         sb.append("\n\n# Environment\n\n");
         sb.append("- Working directory: ").append(projectPath.toAbsolutePath().normalize()).append("\n");
         sb.append("- All relative file paths resolve against this directory.\n");
@@ -91,52 +107,6 @@ public final class SystemPromptLoader {
         if (provider != null && !provider.isBlank()) {
             sb.append("- Provider: ").append(provider).append("\n");
         }
-
-        // Inject git context if available
-        appendGitContext(sb, projectPath);
-
-        // 1. Global user instructions (~/.aceclaw/ACECLAW.md)
-        appendInstructions(sb, GLOBAL_CONFIG_DIR.resolve(ACECLAW_MD),
-                "User Instructions", "your global ~/.aceclaw/ACECLAW.md file");
-
-        // 2. Project root instructions ({project}/ACECLAW.md)
-        appendInstructions(sb, projectPath.resolve(ACECLAW_MD),
-                "Project Instructions", "the project's ACECLAW.md file");
-
-        // 3. Project .aceclaw dir instructions ({project}/.aceclaw/ACECLAW.md)
-        appendInstructions(sb, projectPath.resolve(".aceclaw").resolve(ACECLAW_MD),
-                "Project Configuration Instructions", "the project's .aceclaw/ACECLAW.md file");
-
-        // 4. Auto-memory (learned insights from previous sessions)
-        if (memoryStore != null && memoryStore.size() > 0) {
-            String memorySection = memoryStore.formatForPrompt(projectPath, 50);
-            if (!memorySection.isEmpty()) {
-                sb.append(memorySection);
-                log.info("Injected {} auto-memory entries into system prompt", memoryStore.size());
-            }
-        }
-
-        return sb.toString();
-    }
-
-    /**
-     * Appends instructions from a ACECLAW.md file if it exists.
-     */
-    private static void appendInstructions(StringBuilder sb, Path file,
-                                           String sectionTitle, String sourceDesc) {
-        if (!Files.isRegularFile(file)) return;
-        try {
-            var content = Files.readString(file);
-            if (!content.isBlank()) {
-                sb.append("\n\n# ").append(sectionTitle).append("\n\n");
-                sb.append("The following instructions are from ").append(sourceDesc).append(". ");
-                sb.append("Follow them carefully.\n\n");
-                sb.append(content.strip());
-                log.info("Loaded {} from {}", sectionTitle.toLowerCase(), file);
-            }
-        } catch (IOException e) {
-            log.warn("Failed to read {}: {}", file, e.getMessage());
-        }
     }
 
     /**
@@ -144,19 +114,16 @@ public final class SystemPromptLoader {
      */
     private static void appendGitContext(StringBuilder sb, Path projectPath) {
         try {
-            // Check if it's a git repo
             var gitDir = projectPath.resolve(".git");
             if (!Files.exists(gitDir)) return;
 
             sb.append("\n# Git Context\n\n");
 
-            // Current branch
             String branch = runGitCommand(projectPath, "git", "rev-parse", "--abbrev-ref", "HEAD");
             if (branch != null) {
                 sb.append("- Current branch: ").append(branch).append("\n");
             }
 
-            // Git status (short)
             String status = runGitCommand(projectPath, "git", "status", "--short");
             if (status != null && !status.isBlank()) {
                 sb.append("- Status:\n```\n").append(status).append("\n```\n");
@@ -164,7 +131,6 @@ public final class SystemPromptLoader {
                 sb.append("- Status: clean\n");
             }
 
-            // Recent commits (last 5)
             String recentLog = runGitCommand(projectPath,
                     "git", "log", "--oneline", "-5", "--no-decorate");
             if (recentLog != null && !recentLog.isBlank()) {

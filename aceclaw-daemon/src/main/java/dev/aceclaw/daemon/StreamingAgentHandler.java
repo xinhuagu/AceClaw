@@ -11,6 +11,7 @@ import dev.aceclaw.core.llm.Message;
 import dev.aceclaw.core.llm.StreamEvent;
 import dev.aceclaw.core.llm.StreamEventHandler;
 import dev.aceclaw.memory.AutoMemoryStore;
+import dev.aceclaw.memory.DailyJournal;
 import dev.aceclaw.memory.MemoryEntry;
 import dev.aceclaw.security.PermissionDecision;
 import dev.aceclaw.security.PermissionLevel;
@@ -138,6 +139,11 @@ public final class StreamingAgentHandler {
                 session.addMessage(new AgentSession.ConversationMessage.Assistant(responseText));
             }
 
+            // Log activity to daily journal for cross-session memory
+            if (dailyJournal != null) {
+                logTurnToJournal(prompt, turn);
+            }
+
             // Build the final response
             var result = objectMapper.createObjectNode();
             result.put("sessionId", sessionId);
@@ -219,6 +225,7 @@ public final class StreamingAgentHandler {
     private int thinkingBudget = 10240;
     private MessageCompactor compactor;
     private AutoMemoryStore memoryStore;
+    private DailyJournal dailyJournal;
     private Path workingDir;
 
     /**
@@ -252,6 +259,13 @@ public final class StreamingAgentHandler {
     public void setMemoryStore(AutoMemoryStore memoryStore, Path workingDir) {
         this.memoryStore = memoryStore;
         this.workingDir = workingDir;
+    }
+
+    /**
+     * Sets the daily journal for appending compaction events.
+     */
+    public void setDailyJournal(DailyJournal dailyJournal) {
+        this.dailyJournal = dailyJournal;
     }
 
     private dev.aceclaw.core.llm.LlmClient getLlmClient() {
@@ -323,6 +337,62 @@ public final class StreamingAgentHandler {
             log.info("Persisted {} context items to auto-memory from compaction",
                     result.extractedContext().size());
         }
+
+        // Append compaction event to daily journal
+        if (dailyJournal != null) {
+            dailyJournal.append("Context compacted: " + result.phaseReached().name() +
+                    " (original ~" + result.originalTokenEstimate() +
+                    " tokens, extracted " + result.extractedContext().size() + " items)");
+        }
+    }
+
+    // -- Per-turn journal logging -------------------------------------------
+
+    /**
+     * Logs a brief summary of a completed turn to the daily journal.
+     * This enables cross-session memory: new sessions see what happened in previous ones.
+     */
+    private void logTurnToJournal(String userPrompt,
+                                  dev.aceclaw.core.agent.Turn turn) {
+        try {
+            var toolsUsed = extractToolNames(turn.newMessages());
+            var promptSummary = truncate(userPrompt, 100);
+            var responseSummary = truncate(turn.text(), 150);
+
+            var sb = new StringBuilder();
+            sb.append("User: ").append(promptSummary);
+            if (!responseSummary.isEmpty()) {
+                sb.append(" -> Agent: ").append(responseSummary);
+            }
+            if (!toolsUsed.isEmpty()) {
+                sb.append(" | Tools: ").append(String.join(", ", toolsUsed));
+            }
+            sb.append(" | Tokens: ").append(turn.totalUsage().totalTokens());
+
+            dailyJournal.append(sb.toString());
+        } catch (Exception e) {
+            log.warn("Failed to log turn to journal: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Extracts unique tool names from the turn's messages.
+     */
+    private static List<String> extractToolNames(List<Message> messages) {
+        return messages.stream()
+                .filter(m -> m instanceof Message.AssistantMessage)
+                .flatMap(m -> ((Message.AssistantMessage) m).content().stream())
+                .filter(b -> b instanceof ContentBlock.ToolUse)
+                .map(b -> ((ContentBlock.ToolUse) b).name())
+                .distinct()
+                .toList();
+    }
+
+    private static String truncate(String text, int maxLen) {
+        if (text == null || text.isEmpty()) return "";
+        text = text.strip().replace("\n", " ");
+        if (text.length() <= maxLen) return text;
+        return text.substring(0, maxLen) + "...";
     }
 
     // -- Message conversion ------------------------------------------------

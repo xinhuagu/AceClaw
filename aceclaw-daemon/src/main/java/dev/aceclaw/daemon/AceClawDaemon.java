@@ -10,6 +10,7 @@ import dev.aceclaw.core.agent.ToolRegistry;
 import dev.aceclaw.core.llm.LlmClient;
 import dev.aceclaw.llm.LlmClientFactory;
 import dev.aceclaw.memory.AutoMemoryStore;
+import dev.aceclaw.memory.DailyJournal;
 import dev.aceclaw.security.DefaultPermissionPolicy;
 import dev.aceclaw.security.PermissionManager;
 import dev.aceclaw.mcp.McpClientManager;
@@ -75,11 +76,10 @@ public final class AceClawDaemon {
         this.sessionManager = new SessionManager();
         this.historyStore = new SessionHistoryStore(homeDir);
 
-        // Auto-memory store
+        // Auto-memory store (workspace-scoped with daily journal)
         AutoMemoryStore ms = null;
         try {
-            ms = new AutoMemoryStore(homeDir);
-            ms.load(workingDir);
+            ms = AutoMemoryStore.forWorkspace(homeDir, workingDir);
         } catch (java.io.IOException e) {
             log.warn("Failed to initialize auto-memory store: {}", e.getMessage());
         }
@@ -176,9 +176,10 @@ public final class AceClawDaemon {
         // 3. Permission manager — auto-approve all tools (no interactive prompts)
         var permissionManager = new PermissionManager(new DefaultPermissionPolicy(true));
 
-        // 4. System prompt (with auto-memory injection + model identity)
+        // 4. System prompt (with 6-tier memory hierarchy + daily journal + model identity)
+        DailyJournal journal = memoryStore != null ? memoryStore.getDailyJournal() : null;
         String systemPrompt = SystemPromptLoader.load(
-                workingDir, memoryStore, model, config.provider());
+                workingDir, memoryStore, journal, model, config.provider());
 
         // 5. Context compaction
         var compactionConfig = new CompactionConfig(
@@ -198,6 +199,9 @@ public final class AceClawDaemon {
         agentHandler.setTokenConfig(config.maxTokens(), config.thinkingBudget());
         agentHandler.setCompactor(compactor);
         agentHandler.setMemoryStore(memoryStore, workingDir);
+        if (journal != null) {
+            agentHandler.setDailyJournal(journal);
+        }
         agentHandler.register(router);
 
         // Expose model name and provider info to health status endpoint
