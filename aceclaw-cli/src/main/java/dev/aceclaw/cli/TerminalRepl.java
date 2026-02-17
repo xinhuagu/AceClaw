@@ -276,6 +276,10 @@ public final class TerminalRepl {
             // Send the request (writes the JSON line to the socket)
             long id = sendPromptRequest(params);
 
+            // Start thinking spinner immediately — visible while waiting for LLM
+            spinner = new TerminalSpinner(out, TerminalSpinner.Style.MOON);
+            spinner.start("Thinking...");
+
             // Enter streaming read loop: process notifications until the final response
             var textBuffer = new StringBuilder();
             boolean receivedTextOutput = false;
