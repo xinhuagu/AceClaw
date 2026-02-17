@@ -1,17 +1,17 @@
-rootProject.name = "chelava"
+rootProject.name = "aceclaw"
 
 include(
-    "chelava-bom",
-    "chelava-sdk",
-    "chelava-infra",
-    "chelava-core",
-    "chelava-daemon",
-    "chelava-llm",
-    "chelava-tools",
-    "chelava-memory",
-    "chelava-security",
-    "chelava-mcp",
-    "chelava-cli",
-    "chelava-server",
-    "chelava-test"
+    "aceclaw-bom",
+    "aceclaw-sdk",
+    "aceclaw-infra",
+    "aceclaw-core",
+    "aceclaw-daemon",
+    "aceclaw-llm",
+    "aceclaw-tools",
+    "aceclaw-memory",
+    "aceclaw-security",
+    "aceclaw-mcp",
+    "aceclaw-cli",
+    "aceclaw-server",
+    "aceclaw-test"
 )

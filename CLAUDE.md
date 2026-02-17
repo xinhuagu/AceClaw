@@ -9,24 +9,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ./gradlew clean build
 
 # Build + install CLI distribution (includes startup scripts)
-./gradlew :chelava-cli:installDist
+./gradlew :aceclaw-cli:installDist
 
 # Run tests (all modules)
 ./gradlew test
 
 # Run a single test class
-./gradlew :chelava-daemon:test --tests "dev.chelava.daemon.DaemonIntegrationTest"
+./gradlew :aceclaw-daemon:test --tests "dev.aceclaw.daemon.DaemonIntegrationTest"
 
 # Run a single test method
-./gradlew :chelava-daemon:test --tests "dev.chelava.daemon.DaemonIntegrationTest.testHealthStatus"
+./gradlew :aceclaw-daemon:test --tests "dev.aceclaw.daemon.DaemonIntegrationTest.testHealthStatus"
 
 # Run the CLI (auto-starts daemon)
-./chelava-cli/build/install/chelava-cli/bin/chelava-cli
+./aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli
 
 # Daemon management
-./chelava-cli/build/install/chelava-cli/bin/chelava-cli daemon start   # foreground
-./chelava-cli/build/install/chelava-cli/bin/chelava-cli daemon stop
-./chelava-cli/build/install/chelava-cli/bin/chelava-cli daemon status
+./aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli daemon start   # foreground
+./aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli daemon stop
+./aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli daemon status
 ```
 
 ## Java Version & Preview Features
@@ -35,11 +35,11 @@ Java 21 with `--enable-preview` required everywhere (compile, test, runtime). Th
 
 ## Architecture Overview
 
-Chelava is a **daemon-first AI coding agent**. The CLI is a thin client that connects to a persistent JVM daemon via Unix Domain Socket.
+AceClaw is a **daemon-first AI coding agent**. The CLI is a thin client that connects to a persistent JVM daemon via Unix Domain Socket.
 
 ```
 CLI (Picocli + JLine3)
-  ↕ JSON-RPC 2.0 over UDS (~/.chelava/chelava.sock)
+  ↕ JSON-RPC 2.0 over UDS (~/.aceclaw/aceclaw.sock)
 Daemon (persistent JVM)
   ├── RequestRouter → dispatches methods to handlers
   ├── StreamingAgentHandler → runs ReAct loop with permission checks
@@ -52,19 +52,19 @@ Daemon (persistent JVM)
 ### Module Dependency Graph
 
 ```
-chelava-bom          (version constraints, java-platform)
-chelava-core         (LlmClient, Tool, AgentLoop, StreamingAgentLoop, ContentBlock, StreamEvent)
+aceclaw-bom          (version constraints, java-platform)
+aceclaw-core         (LlmClient, Tool, AgentLoop, StreamingAgentLoop, ContentBlock, StreamEvent)
   ↑
-  ├── chelava-llm    (AnthropicClient, AnthropicMapper, AnthropicStreamSession)
-  ├── chelava-tools  (ReadFileTool, WriteFileTool, EditFileTool, BashExecTool, GlobSearchTool, GrepSearchTool)
-  └── chelava-security (PermissionManager, PermissionDecision sealed interface, DefaultPermissionPolicy)
+  ├── aceclaw-llm    (AnthropicClient, AnthropicMapper, AnthropicStreamSession)
+  ├── aceclaw-tools  (ReadFileTool, WriteFileTool, EditFileTool, BashExecTool, GlobSearchTool, GrepSearchTool)
+  └── aceclaw-security (PermissionManager, PermissionDecision sealed interface, DefaultPermissionPolicy)
         ↑
-chelava-daemon       (ChelavaDaemon, UdsListener, RequestRouter, ConnectionBridge, SessionManager, StreamingAgentHandler)
+aceclaw-daemon       (AceClawDaemon, UdsListener, RequestRouter, ConnectionBridge, SessionManager, StreamingAgentHandler)
   ↑
-chelava-cli          (ChelavaMain, DaemonClient, DaemonStarter, TerminalRepl)
+aceclaw-cli          (AceClawMain, DaemonClient, DaemonStarter, TerminalRepl)
 ```
 
-Modules `chelava-sdk`, `chelava-infra`, `chelava-memory`, `chelava-mcp`, `chelava-server`, `chelava-test` exist as placeholders for future work.
+Modules `aceclaw-sdk`, `aceclaw-infra`, `aceclaw-memory`, `aceclaw-mcp`, `aceclaw-server`, `aceclaw-test` exist as placeholders for future work.
 
 ### Streaming Protocol
 
@@ -93,18 +93,18 @@ Use exhaustive pattern matching (`switch`) on these — the compiler enforces co
 - **API key** (`sk-ant-api03-*`): sent via `x-api-key` header
 - **OAuth token** (`sk-ant-oat01-*`): sent via `Authorization: Bearer` header with required beta flags (`claude-code-20250219,oauth-2025-04-20`) and identity headers (`user-agent: claude-cli/2.1.2 (external, cli)`, `x-app: cli`). Auto-refreshes expired tokens using `https://console.anthropic.com/api/oauth/token`.
 
-Config loaded from: `~/.chelava/config.json` → `{project}/.chelava/config.json` → env vars (`ANTHROPIC_API_KEY`, `CHELAVA_MODEL`, `CHELAVA_LOG_LEVEL`). OAuth refresh tokens auto-discovered from Claude CLI credentials (`~/.claude/.credentials`).
+Config loaded from: `~/.aceclaw/config.json` → `{project}/.aceclaw/config.json` → env vars (`ANTHROPIC_API_KEY`, `ACECLAW_MODEL`, `ACECLAW_LOG_LEVEL`). OAuth refresh tokens auto-discovered from Claude CLI credentials (`~/.claude/.credentials`).
 
 ## Build Conventions
 
 - All subprojects use `java-library` plugin (not `java`) — needed for `api()` dependency declarations
-- BOM platform must be applied to `annotationProcessor` config too: `annotationProcessor(platform(project(":chelava-bom")))`
-- Picocli requires `annotationProcessor("info.picocli:picocli-codegen")` in chelava-cli
-- GraalVM Native Image configured in chelava-cli for single-binary distribution
+- BOM platform must be applied to `annotationProcessor` config too: `annotationProcessor(platform(project(":aceclaw-bom")))`
+- Picocli requires `annotationProcessor("info.picocli:picocli-codegen")` in aceclaw-cli
+- GraalVM Native Image configured in aceclaw-cli for single-binary distribution
 
 ## Testing
 
-Integration tests in `chelava-daemon` use `MockLlmClient` (queue-based programmable mock) for full-stack E2E testing without real API calls. Tests cover the entire path: UDS socket → ConnectionBridge → RequestRouter → StreamingAgentHandler → AgentLoop → Tools + Permissions.
+Integration tests in `aceclaw-daemon` use `MockLlmClient` (queue-based programmable mock) for full-stack E2E testing without real API calls. Tests cover the entire path: UDS socket → ConnectionBridge → RequestRouter → StreamingAgentHandler → AgentLoop → Tools + Permissions.
 
 ## Code Style
 

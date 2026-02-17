@@ -4,7 +4,7 @@ plugins {
 }
 
 allprojects {
-    group = "dev.chelava"
+    group = "dev.aceclaw"
     version = "0.1.0-SNAPSHOT"
 
     repositories {
@@ -14,15 +14,15 @@ allprojects {
 
 subprojects {
     // Skip java plugin for BOM (java-platform)
-    if (name == "chelava-bom") return@subprojects
+    if (name == "aceclaw-bom") return@subprojects
 
     apply(plugin = "java-library")
 
     dependencies {
         // All modules use the BOM for version management
-        implementation(platform(project(":chelava-bom")))
-        testImplementation(platform(project(":chelava-bom")))
-        annotationProcessor(platform(project(":chelava-bom")))
+        implementation(platform(project(":aceclaw-bom")))
+        testImplementation(platform(project(":aceclaw-bom")))
+        annotationProcessor(platform(project(":aceclaw-bom")))
 
         // Common test dependencies
         testImplementation("org.junit.jupiter:junit-jupiter")

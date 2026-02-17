@@ -1,11 +1,11 @@
-# Chelava - Product Requirements Document
+# AceClaw - Product Requirements Document
 
 ## A High-Performance, Secure, Self-Learning AI Coding Agent for Java
 
 **Version**: 1.0
 **Date**: 2026-02-16
 **Status**: Draft
-**Team**: Chelava PRD Team (Architect, OpenClaw Expert, PO, Security Expert, Engineer, Frontend Developer)
+**Team**: AceClaw PRD Team (Architect, OpenClaw Expert, PO, Security Expert, Engineer, Frontend Developer)
 
 ---
 
@@ -29,9 +29,9 @@
 
 ## 1. Product Vision
 
-**Chelava** reimagines the AI coding agent experience by leveraging the Java ecosystem's strengths: type safety, concurrency, enterprise maturity, and GraalVM native compilation.
+**AceClaw** reimagines the AI coding agent experience by leveraging the Java ecosystem's strengths: type safety, concurrency, enterprise maturity, and GraalVM native compilation.
 
-While existing agents like Claude Code (TypeScript/Node.js) and OpenClaw (TypeScript) have proven the interactive AI coding paradigm, Chelava delivers the same powerful workflow with the performance characteristics, security guarantees, and operational maturity that enterprise environments demand.
+While existing agents like Claude Code (TypeScript/Node.js) and OpenClaw (TypeScript) have proven the interactive AI coding paradigm, AceClaw delivers the same powerful workflow with the performance characteristics, security guarantees, and operational maturity that enterprise environments demand.
 
 ### Why Java?
 
@@ -43,7 +43,7 @@ While existing agents like Claude Code (TypeScript/Node.js) and OpenClaw (TypeSc
 
 ### Vision Statement
 
-> Chelava is a persistent, always-on AI agent that turns your device into an intelligent coding companion. Built on Java with daemon-first architecture, it delivers reliability, security, and speed — running as a system service that learns, acts proactively, and serves all your development tools.
+> AceClaw is a persistent, always-on AI agent that turns your device into an intelligent coding companion. Built on Java with daemon-first architecture, it delivers reliability, security, and speed — running as a system service that learns, acts proactively, and serves all your development tools.
 
 ---
 
@@ -51,7 +51,7 @@ While existing agents like Claude Code (TypeScript/Node.js) and OpenClaw (TypeSc
 
 Existing AI coding agents have proven the paradigm is powerful, but current implementations have gaps:
 
-| Problem | Current State | Chelava Solution |
+| Problem | Current State | AceClaw Solution |
 |---------|--------------|-----------------|
 | Slow startup | Node.js agents take 500-800ms to start | GraalVM native image: <50ms startup |
 | High memory usage | 80-120MB idle, 200-400MB active | 20-30MB idle, 60-120MB active |
@@ -68,17 +68,17 @@ Existing AI coding agents have proven the paradigm is powerful, but current impl
 ### Solo Developer ("Alex")
 - Full-stack developer, freelancer or startup engineer
 - Wants fast AI assistance without heavy IDE plugins
-- **Chelava Value**: Instant startup, multi-LLM switching, single binary, lightweight resource usage
+- **AceClaw Value**: Instant startup, multi-LLM switching, single binary, lightweight resource usage
 
 ### Team Lead ("Jordan")
 - Engineering team lead at a mid-size company (20-50 engineers)
 - Needs consistent tooling and coding standard enforcement
-- **Chelava Value**: Project-level `.chelava/` config, hook system for CI/CD, permission model, team-wide policies
+- **AceClaw Value**: Project-level `.aceclaw/` config, hook system for CI/CD, permission model, team-wide policies
 
 ### Enterprise Architect ("Morgan")
 - Principal engineer at a Fortune 500 company
 - Security compliance, audit requirements, on-premise LLM deployment
-- **Chelava Value**: Enterprise-grade security, JVM sandbox, JPMS encapsulation, Micrometer metrics, Ollama support
+- **AceClaw Value**: Enterprise-grade security, JVM sandbox, JPMS encapsulation, Micrometer metrics, Ollama support
 
 ---
 
@@ -86,19 +86,19 @@ Existing AI coding agents have proven the paradigm is powerful, but current impl
 
 ### 4.0 Daemon-First Architecture — Device as Agent
 
-Chelava runs as a **persistent system daemon**, turning your device into an always-on AI agent. The CLI, IDE plugins, and other clients are all thin clients that connect to this daemon.
+AceClaw runs as a **persistent system daemon**, turning your device into an always-on AI agent. The CLI, IDE plugins, and other clients are all thin clients that connect to this daemon.
 
 **Startup Modes**:
 
 | Command | Mode | Description |
 |---------|------|-------------|
-| `chelava` | Interactive CLI | Auto-starts daemon if needed, connects via Unix Domain Socket, opens REPL |
-| `chelava <prompt>` | One-shot | Sends prompt, waits for response, exits. Daemon stays alive |
-| `chelava daemon start` | Explicit daemon | Foreground start (for systemd/launchd) |
-| `chelava daemon --background` | Background daemon | Fork and daemonize, write PID to `~/.chelava/chelava.pid` |
-| `chelava daemon stop` | Shutdown | Graceful 15-step shutdown with state persistence |
-| `chelava daemon status` | Health check | Shows daemon health, active sessions, memory usage |
-| `chelava daemon install` | System service | Register as launchd (macOS) / systemd (Linux) login service |
+| `aceclaw` | Interactive CLI | Auto-starts daemon if needed, connects via Unix Domain Socket, opens REPL |
+| `aceclaw <prompt>` | One-shot | Sends prompt, waits for response, exits. Daemon stays alive |
+| `aceclaw daemon start` | Explicit daemon | Foreground start (for systemd/launchd) |
+| `aceclaw daemon --background` | Background daemon | Fork and daemonize, write PID to `~/.aceclaw/aceclaw.pid` |
+| `aceclaw daemon stop` | Shutdown | Graceful 15-step shutdown with state persistence |
+| `aceclaw daemon status` | Health check | Shows daemon health, active sessions, memory usage |
+| `aceclaw daemon install` | System service | Register as launchd (macOS) / systemd (Linux) login service |
 
 **Client-Daemon Protocol**: JSON-RPC 2.0 over Unix Domain Socket (primary) or WebSocket (IDE/remote).
 
@@ -113,7 +113,7 @@ Chelava runs as a **persistent system daemon**, turning your device into an alwa
 
 **Proactive Agent Capabilities**:
 - **HEARTBEAT.md**: Periodic agent health-check tasks (with active hours / quiet hours)
-- **Cron jobs**: Persistent scheduled tasks (`~/.chelava/cron/jobs.json`) — daily test runs, dependency audits, etc.
+- **Cron jobs**: Persistent scheduled tasks (`~/.aceclaw/cron/jobs.json`) — daily test runs, dependency audits, etc.
 - **Background memory consolidation**: Deduplication, pruning, skill proposal during idle time
 - **Codebase indexing**: Incremental indexing of active projects during idle periods
 
@@ -190,7 +190,7 @@ User Query -> Plan -> Reason -> Act (Tool Execution) -> Observe -> Repeat
 
 ### 4.5.1 Task Planner (Autonomous Planning & Execution)
 
-For complex, multi-step tasks, Chelava provides an **autonomous Task Planner** that decomposes user goals into structured, dependency-aware task graphs (DAGs) before execution begins — going beyond step-by-step ReAct reasoning.
+For complex, multi-step tasks, AceClaw provides an **autonomous Task Planner** that decomposes user goals into structured, dependency-aware task graphs (DAGs) before execution begins — going beyond step-by-step ReAct reasoning.
 
 **Core Capabilities**:
 - **LLM-driven task decomposition**: Analyzes the user's goal and generates a DAG of sub-tasks with dependency ordering, execution strategies, and risk assessment
@@ -222,11 +222,11 @@ For complex, multi-step tasks, Chelava provides an **autonomous Task Planner** t
 
 See [research/task-planner-architecture.md](research/task-planner-architecture.md) for detailed design.
 
-### 4.6 Project Configuration (.chelava/ Directory)
+### 4.6 Project Configuration (.aceclaw/ Directory)
 
 ```
-.chelava/
-  CHELAVA.md          # Project instructions (team-shareable)
+.aceclaw/
+  ACECLAW.md          # Project instructions (team-shareable)
   config.json         # Model, tool, and behavior settings
   mcp-servers.json    # MCP server configurations
   hooks/              # Pre/post execution hooks
@@ -234,7 +234,7 @@ See [research/task-planner-architecture.md](research/task-planner-architecture.m
   permissions.json    # Tool permission overrides
 ```
 
-Configuration hierarchy: System defaults < Global (~/.chelava/) < Project (.chelava/) < Environment vars < CLI flags
+Configuration hierarchy: System defaults < Global (~/.aceclaw/) < Project (.aceclaw/) < Environment vars < CLI flags
 
 ### 4.7 Permission System
 
@@ -279,7 +279,7 @@ Custom subagent definitions via Markdown + YAML frontmatter. Independent context
 
 ### 4.9.1 Agent Teams (Multi-Agent Orchestration)
 
-Agent Teams enable multiple Chelava agent instances to work collaboratively on complex tasks. Faithfully ported from Claude Code's agent team design with Java enhancements.
+Agent Teams enable multiple AceClaw agent instances to work collaboratively on complex tasks. Faithfully ported from Claude Code's agent team design with Java enhancements.
 
 **Architecture** (matching Claude Code):
 - **Team Lead**: Main session that creates team, spawns teammates, coordinates work
@@ -297,14 +297,14 @@ Agent Teams enable multiple Chelava agent instances to work collaboratively on c
 
 ### 4.10 Adaptive Skills and Slash Commands
 
-- **Skills**: Model-invoked capabilities auto-matched to user requests (`.chelava/skills/`), with **adaptive learning**:
+- **Skills**: Model-invoked capabilities auto-matched to user requests (`.aceclaw/skills/`), with **adaptive learning**:
   - **Skill Learning Loop**: Track execution outcomes (success/failure/user correction) -> auto-memory records insights -> skill refinement engine analyzes -> update SKILL.md -> next invocation is smarter
   - **Auto-Generated Skills**: When auto-memory detects repeated patterns (e.g., user always performs X in a certain way), automatically propose a new skill draft; user approves before activation
   - **Skill Metrics**: Per-skill tracking of invocation count, success rate, user correction rate, average turn count; score-based ranking with time decay for auto-invocation priority
   - **Skill Refinement**: After threshold failures or corrections, trigger LLM-powered refinement that analyzes failure patterns and improves skill instructions; version history supports rollback
   - **Skill Lifecycle**: `Draft -> Active -> Deprecated -> Disabled` (sealed interface states)
   - **Persistence**: SKILL.md (Markdown + YAML frontmatter) + JSON metrics sidecar files
-- **Commands**: User-invoked slash commands (`.chelava/commands/`)
+- **Commands**: User-invoked slash commands (`.aceclaw/commands/`)
 - **Plugins** (post-MVP): Distributable bundles of commands + skills + agents + hooks + MCP configs
 
 ---
@@ -313,7 +313,7 @@ Agent Teams enable multiple Chelava agent instances to work collaboratively on c
 
 ### 5.1 Performance: GraalVM Native Image
 
-| Metric | Node.js (Claude Code) | Chelava (GraalVM Native) |
+| Metric | Node.js (Claude Code) | AceClaw (GraalVM Native) |
 |--------|----------------------|--------------------------|
 | Cold Start | ~500-800ms | **<50ms** |
 | Memory (idle) | ~80-120MB | **~20-30MB** |
@@ -384,45 +384,45 @@ Advanced memory architecture with Java-specific advantages:
 ### 6.1 Module Structure
 
 ```
-chelava/
-  chelava-bom/              # Bill of Materials (dependency management)
-  chelava-daemon/           # Daemon process, boot sequence, lifecycle, instance lock
-  chelava-core/             # Agent loop, task planner, tool system, LLM client abstractions
-  chelava-infra/            # Gateway, event bus, message queue, health, scheduler, shutdown
-  chelava-llm/              # LLM provider implementations
-  chelava-tools/            # Built-in tools (file, bash, search, web, git)
-  chelava-memory/           # Context management, auto-memory, self-learning
-  chelava-security/         # Permission system, sandbox, audit logging
-  chelava-mcp/              # MCP protocol client/server
-  chelava-cli/              # Thin client: Terminal UI, CLI parsing, REPL (connects to daemon)
-  chelava-sdk/              # Extension API for plugins and custom tools
-  chelava-server/           # WebSocket listener for IDE/remote clients
-  chelava-test/             # Test utilities and fixtures
+aceclaw/
+  aceclaw-bom/              # Bill of Materials (dependency management)
+  aceclaw-daemon/           # Daemon process, boot sequence, lifecycle, instance lock
+  aceclaw-core/             # Agent loop, task planner, tool system, LLM client abstractions
+  aceclaw-infra/            # Gateway, event bus, message queue, health, scheduler, shutdown
+  aceclaw-llm/              # LLM provider implementations
+  aceclaw-tools/            # Built-in tools (file, bash, search, web, git)
+  aceclaw-memory/           # Context management, auto-memory, self-learning
+  aceclaw-security/         # Permission system, sandbox, audit logging
+  aceclaw-mcp/              # MCP protocol client/server
+  aceclaw-cli/              # Thin client: Terminal UI, CLI parsing, REPL (connects to daemon)
+  aceclaw-sdk/              # Extension API for plugins and custom tools
+  aceclaw-server/           # WebSocket listener for IDE/remote clients
+  aceclaw-test/             # Test utilities and fixtures
 ```
 
 ### 6.2 Module Dependency Graph
 
 ```
-chelava-cli ──> chelava-daemon (thin client connects via UDS)
+aceclaw-cli ──> aceclaw-daemon (thin client connects via UDS)
                      |
                      v
-              chelava-core ──> chelava-sdk (API contracts)
+              aceclaw-core ──> aceclaw-sdk (API contracts)
                      |                  ^
                      |                  |
                      v                  |
-              chelava-llm        chelava-tools
+              aceclaw-llm        aceclaw-tools
                      |                  |
                      v                  v
-              chelava-memory     chelava-security
+              aceclaw-memory     aceclaw-security
                      |
                      v
-              chelava-infra (gateway, events, health, scheduler)
+              aceclaw-infra (gateway, events, health, scheduler)
                      ^
                      |
-              chelava-daemon (orchestrates all components)
+              aceclaw-daemon (orchestrates all components)
                      |
-              chelava-server (WebSocket listener, optional)
-              chelava-mcp    (MCP protocol)
+              aceclaw-server (WebSocket listener, optional)
+              aceclaw-mcp    (MCP protocol)
 ```
 
 ### 6.3 Core Abstractions
@@ -434,7 +434,7 @@ chelava-cli ──> chelava-daemon (thin client connects via UDS)
 **Task Planner**: Goal decomposition -> DAG generation -> parallel execution -> replanning on failure
 
 **Key interfaces** (all using sealed types):
-- `ChelavaDaemon`, `DaemonLock`, `DaemonConfig`, `SessionManager`, `AgentSession`
+- `AceClawDaemon`, `DaemonLock`, `DaemonConfig`, `SessionManager`, `AgentSession`
 - `HeartbeatRunner`, `CronScheduler`, `CronJob`, `CronSchedule` (sealed: Interval, CronExpression, EventTriggered)
 - `BootSystem`, `StateSerializer`, `LifecycleManager`
 - `Agent`, `AgentLoop`, `Turn`, `StopReason`
@@ -450,16 +450,16 @@ chelava-cli ──> chelava-daemon (thin client connects via UDS)
 - `MemoryStore`, `ConversationContext`, `ContextWindow`, `AutoMemory`
 - `PermissionPolicy`, `PermissionDecision`, `Sandbox`, `AuditEvent`
 
-**Infrastructure interfaces** (chelava-infra):
+**Infrastructure interfaces** (aceclaw-infra):
 - `Gateway`, `ConnectionManager`, `GatewayRequest` (sealed: Agent, Tool, MCP, Health, Admin)
-- `EventBus`, `ChelavaEvent` (sealed hierarchy: Agent, Tool, Health, Session, Team, Scheduler, System events)
+- `EventBus`, `AceClawEvent` (sealed hierarchy: Agent, Tool, Health, Session, Team, Scheduler, System events)
 - `MessageQueue`, `AgentMessage` (sealed: TaskAssignment, TaskResult, ChatMessage, BroadcastMessage, ShutdownRequest, PlanApproval, HeartbeatPing), `MessageHandler`, `MessageSubscription`
 - `HealthMonitor`, `HealthCheckable`, `HealthStatus` (sealed: Healthy, Degraded, Unhealthy, Unknown)
 - `Scheduler`, `ScheduledTask`, `SchedulePolicy`
 - `CircuitBreaker`, `RetryPolicy`, `FailoverLLMClient`
 - `GracefulShutdownManager`, `ShutdownParticipant`
 
-**Agent team interfaces** (chelava-core):
+**Agent team interfaces** (aceclaw-core):
 - `TeamCommand` (sealed: CreateTeam, SpawnTeammate, ShutdownTeammate, DeleteTeam), `TeamManager`, `TeamHandle`, `TeammateHandle`
 - `TeamMessage` (sealed: DirectMessage, Broadcast, ShutdownRequest, ShutdownResponse, PlanApprovalRequest, PlanApprovalResponse, IdleNotification), `PeerDmSummary`
 - `TeamMessageRouter`, `InProcessMessageTransport`, `FileBasedMessageTransport`, `TeamMessageInjector`
@@ -467,7 +467,7 @@ chelava-cli ──> chelava-daemon (thin client connects via UDS)
 - `TeamConfig`, `TeamMember`, `TeammateConfig`, `TeammateBackend` (IN_PROCESS, EXTERNAL_PROCESS, TMUX)
 - `TeamContext` (ScopedValues: TEAM_NAME, AGENT_ID, AGENT_NAME, AGENT_TYPE, PLAN_MODE_REQUIRED)
 
-**Adaptive skills interfaces** (chelava-memory / chelava-core):
+**Adaptive skills interfaces** (aceclaw-memory / aceclaw-core):
 - `SkillState` (sealed: Draft, Active, Deprecated, Disabled), `SkillDefinition`, `SkillMetadata`, `SkillMetrics`
 - `SkillRegistry`, `SkillMatch`, `SkillOutcomeTracker`, `SkillOutcome` (sealed: Success, Failure, UserCorrected)
 - `SkillRefinementEngine`, `RefinementDecision` (sealed: NoActionNeeded, RefinementRecommended, DisableRecommended)
@@ -482,7 +482,7 @@ chelava-cli ──> chelava-daemon (thin client connects via UDS)
 - **ScheduledExecutorService** with virtual thread factory for periodic tasks (health checks, memory consolidation)
 - **Circuit breakers** with virtual thread-safe state machines for external service resilience
 
-> **Virtual Threads over Reactive Streams**: Project Loom eliminates the need for reactive programming patterns (Flow, RxJava, Reactor). Chelava uses simple blocking code on virtual threads instead. This results in simpler, more debuggable code with natural backpressure via BlockingQueue capacity. Flow API is available for external library interop but is not used internally.
+> **Virtual Threads over Reactive Streams**: Project Loom eliminates the need for reactive programming patterns (Flow, RxJava, Reactor). AceClaw uses simple blocking code on virtual threads instead. This results in simpler, more debuggable code with natural backpressure via BlockingQueue capacity. Flow API is available for external library interop but is not used internally.
 
 ### 6.4.1 Infrastructure Architecture
 
@@ -501,11 +501,11 @@ Dual-mode build: native image (primary for CLI) + JVM fallback (for plugins).
 
 | Component | Native Image | Rationale |
 |-----------|-------------|-----------|
-| chelava-core | Yes | Reflection-free by design (sealed types, records) |
-| chelava-tools | Yes | File I/O, process execution - straightforward |
-| chelava-llm | Yes | HTTP client + JSON serialization |
-| chelava-cli | Yes | Primary distribution mode |
-| chelava-sdk (plugins) | No | Plugin classloading requires JVM subprocess |
+| aceclaw-core | Yes | Reflection-free by design (sealed types, records) |
+| aceclaw-tools | Yes | File I/O, process execution - straightforward |
+| aceclaw-llm | Yes | HTTP client + JSON serialization |
+| aceclaw-cli | Yes | Primary distribution mode |
+| aceclaw-sdk (plugins) | No | Plugin classloading requires JVM subprocess |
 
 ### 6.6 Plugin System
 
@@ -582,7 +582,7 @@ OpenClaw suffered critical failures within 48 hours of going viral (January 2026
 - Malicious skills containing credential stealers
 - Unrestricted shell command execution
 
-Chelava addresses all of these with: default-deny permissions, OS-level sandbox, skill/plugin validation, credential isolation, and audit logging.
+AceClaw addresses all of these with: default-deny permissions, OS-level sandbox, skill/plugin validation, credential isolation, and audit logging.
 
 ---
 
@@ -683,7 +683,7 @@ Incremental rendering with `MarkdownStreamBuffer`:
 
 ### 9.6 IDE Integration (Post-MVP)
 
-Shared `ChelavaUiAdapter` interface for all UI targets:
+Shared `AceClawUiAdapter` interface for all UI targets:
 - **VS Code**: TypeScript extension via JSON-RPC over stdio
 - **IntelliJ**: Kotlin plugin via Platform SDK
 - **Web Dashboard** (v2): Javalin-based monitoring with WebSocket real-time updates
@@ -709,15 +709,15 @@ Shared `ChelavaUiAdapter` interface for all UI targets:
   (conversation)       (session summaries)   (project + auto)
 ```
 
-### 10.2 Project Memory (CHELAVA.md)
+### 10.2 Project Memory (ACECLAW.md)
 
 Analogous to CLAUDE.md - hierarchical project configuration:
 
 | Location | Scope | Loading |
 |----------|-------|---------|
-| `~/.chelava/CHELAVA.md` | User-global | Always at launch |
-| `.chelava/CHELAVA.md` | Project | Always at launch |
-| `src/.chelava/CHELAVA.md` | Subdirectory | On-demand |
+| `~/.aceclaw/ACECLAW.md` | User-global | Always at launch |
+| `.aceclaw/ACECLAW.md` | Project | Always at launch |
+| `src/.aceclaw/ACECLAW.md` | Subdirectory | On-demand |
 
 ### 10.3 Auto-Memory (Self-Learning)
 
@@ -779,7 +779,7 @@ Anchor preservation: key architectural decisions, user preferences, and error co
 | Daemon process (lock, PID, signal handling) | P0 | Foundation — everything else runs inside daemon |
 | Unix Domain Socket listener | P0 | CLI-to-daemon communication |
 | Auto-start daemon from CLI | P0 | Seamless user experience |
-| `chelava daemon start/stop/status` | P0 | Daemon lifecycle management |
+| `aceclaw daemon start/stop/status` | P0 | Daemon lifecycle management |
 | Interactive CLI (thin client) | P0 | Core user experience |
 | Claude API integration | P0 | Primary LLM provider |
 | OpenAI API integration | P0 | Market expectation |
@@ -788,7 +788,7 @@ Anchor preservation: key architectural decisions, user preferences, and error co
 | Bash execution tool | P0 | Run tests, builds, git |
 | Glob/Grep search tools | P0 | Code navigation |
 | Permission system (4-tier) | P0 | Safety-critical |
-| Project config (.chelava/) | P0 | Per-project customization |
+| Project config (.aceclaw/) | P0 | Per-project customization |
 | Conversation management | P0 | Context window handling |
 | Event bus (basic) | P0 | Internal component communication |
 | Graceful shutdown | P0 | Data integrity on exit |
@@ -820,7 +820,7 @@ Anchor preservation: key architectural decisions, user preferences, and error co
 | Token usage tracking | P2 | Cost management |
 | WebSocket listener (IDE/remote) | P2 | IDE plugin and remote client support |
 | JSON-RPC protocol (full method set) | P2 | Standardized client-daemon protocol |
-| `chelava daemon install` (launchd/systemd) | P2 | System service registration |
+| `aceclaw daemon install` (launchd/systemd) | P2 | System service registration |
 | Codebase indexing (idle-time) | P2 | Incremental project indexing |
 | Heartbeat system (teams) | P2 | Agent team liveness |
 
@@ -843,7 +843,7 @@ Anchor preservation: key architectural decisions, user preferences, and error co
 | **Phase 1: Core Agent + Daemon** | Weeks 1-4 | **Daemon process (lock, PID, signal, UDS listener, auto-start)**, agent loop, LLM client (Claude), core tools, CLI thin client, basic permissions, event bus, graceful shutdown, retry policies |
 | **Phase 2: Intelligence** | Weeks 5-8 | **Multi-session daemon, session persistence/resume, heartbeat runner (HEARTBEAT.md), cron scheduler, BOOT.md, background memory consolidation**, memory/compaction, OS-level sandbox, OpenAI/Ollama, hooks, health monitor, circuit breakers, LLM failover, Task Planner (ComplexityEstimator + basic single-branch plans) |
 | **Phase 3: Extensibility** | Weeks 9-12 | **WebSocket listener (IDE), JSON-RPC full method set, codebase indexing**, MCP client, plugin SPI, auto-memory, rich terminal UI, subagents, basic skills system, full event type hierarchy, message queue (point-to-point + pub/sub), adaptive skills (metrics tracking + learning loop), Task Planner (full DAG, parallel execution, replanning, PlanEvent) |
-| **Phase 4: Multi-Agent** | Weeks 13-18 | **`chelava daemon install` (launchd/systemd), Agent Teams persistence (survive client disconnect), file watchers, remote access (TLS + auth)**, agent teams (sealed TeamMessage, TeamManager, TaskStore, dual-mode transport, in-process/external teammates, plan approval), message queue (request-reply + DLQ + TTL), skill refinement engine, auto-generated skills, GraalVM native builds, Task Planner (Agent Teams bridge, adaptive plan templates) |
+| **Phase 4: Multi-Agent** | Weeks 13-18 | **`aceclaw daemon install` (launchd/systemd), Agent Teams persistence (survive client disconnect), file watchers, remote access (TLS + auth)**, agent teams (sealed TeamMessage, TeamManager, TaskStore, dual-mode transport, in-process/external teammates, plan approval), message queue (request-reply + DLQ + TTL), skill refinement engine, auto-generated skills, GraalVM native builds, Task Planner (Agent Teams bridge, adaptive plan templates) |
 
 ---
 
@@ -891,7 +891,7 @@ Anchor preservation: key architectural decisions, user preferences, and error co
 
 ### Competitive Benchmarks
 
-| Benchmark | Claude Code | Chelava Target |
+| Benchmark | Claude Code | AceClaw Target |
 |-----------|------------|----------------|
 | Startup time | ~500-800ms | < 50ms (10x faster) |
 | Memory footprint | ~80-120MB idle | < 30MB idle (4x less) |
@@ -913,7 +913,7 @@ Anchor preservation: key architectural decisions, user preferences, and error co
 | **Plugin classloader isolation** | Medium-High | Medium | Hybrid approach (JVM subprocess), extensive testing |
 | **Adoption challenge** | High | High | Clear performance benchmarks, enterprise features, easy migration |
 | **LLM API changes** | Medium | Medium | Abstract provider interface, version pinning, integration tests |
-| **Infrastructure complexity** | Medium | Medium | chelava-infra uses zero external dependencies (java.base only); progressive rollout across phases |
+| **Infrastructure complexity** | Medium | Medium | aceclaw-infra uses zero external dependencies (java.base only); progressive rollout across phases |
 | **Skill refinement quality** | Medium | Medium | Start with simple heuristics (success rate thresholds); LLM refinement with user approval gate; version rollback on regression |
 | **Auto-generated skill noise** | Medium | Low | Require 3+ matching patterns before proposing; user must approve all drafts; clear rejection path |
 | **Message queue ordering edge cases** | Low | Medium | FIFO guaranteed per queue; correlation IDs for request-reply; thorough testing with concurrent producers |
@@ -936,4 +936,4 @@ All detailed research is available in the `research/` directory:
 
 ---
 
-*This PRD was compiled from research by the Chelava PRD Team: Architect, OpenClaw Expert, Product Owner, Security Expert, Java Engineer, and Frontend Developer.*
+*This PRD was compiled from research by the AceClaw PRD Team: Architect, OpenClaw Expert, Product Owner, Security Expert, Java Engineer, and Frontend Developer.*

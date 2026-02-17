@@ -1,4 +1,4 @@
-# Claude API Integration Reference for Chelava
+# Claude API Integration Reference for AceClaw
 
 ## API Endpoint
 ```

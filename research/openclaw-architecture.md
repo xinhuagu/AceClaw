@@ -1,6 +1,6 @@
 # OpenClaw / Claude Code Architecture Research
 
-> Research document for the Chelava PRD - Java-based AI Coding Agent
+> Research document for the AceClaw PRD - Java-based AI Coding Agent
 > Compiled: 2026-02-16
 
 ---
@@ -19,13 +19,13 @@
 10. [MCP (Model Context Protocol)](#10-mcp-model-context-protocol)
 11. [Extension Points (Skills, Plugins, Custom Agents)](#11-extension-points-skills-plugins-custom-agents)
 12. [OpenClaw Specifics](#12-openclaw-specifics)
-13. [Key Takeaways for Chelava](#13-key-takeaways-for-chelava)
+13. [Key Takeaways for AceClaw](#13-key-takeaways-for-aceclaw)
 
 ---
 
 ## 1. Executive Summary
 
-This document surveys the architecture of **Claude Code** (Anthropic's CLI-based AI coding agent) and **OpenClaw** (an open-source personal AI assistant), both representative of the "agentic AI" paradigm emerging in 2025-2026. The goal is to inform the design of **Chelava**, a Java-based AI coding agent.
+This document surveys the architecture of **Claude Code** (Anthropic's CLI-based AI coding agent) and **OpenClaw** (an open-source personal AI assistant), both representative of the "agentic AI" paradigm emerging in 2025-2026. The goal is to inform the design of **AceClaw**, a Java-based AI coding agent.
 
 **Claude Code** is a terminal-native AI coding assistant that follows a ReAct (Reason + Act) loop, executing tools iteratively to accomplish software engineering tasks. It features a rich tool system, sophisticated context management, a layered permission model, hook-based extensibility, subagent delegation, multi-agent team orchestration, and MCP integration.
 
@@ -705,11 +705,11 @@ Critical vulnerabilities documented within 48 hours of going viral (January 2026
 - Malicious skills containing credential stealers
 - Unrestricted shell command execution
 
-**Lesson for Chelava**: Security must be a first-class concern from day one, not an afterthought.
+**Lesson for AceClaw**: Security must be a first-class concern from day one, not an afterthought.
 
 ---
 
-## 13. Key Takeaways for Chelava
+## 13. Key Takeaways for AceClaw
 
 ### 13.1 Architecture Recommendations
 
@@ -758,7 +758,7 @@ Critical vulnerabilities documented within 48 hours of going viral (January 2026
 
 ## 14. OpenClaw Infrastructure Components (Deep Dive)
 
-This section documents the infrastructure patterns found in OpenClaw that Chelava needs Java-native equivalents for.
+This section documents the infrastructure patterns found in OpenClaw that AceClaw needs Java-native equivalents for.
 
 ### 14.1 Gateway / Control Plane
 
@@ -770,7 +770,7 @@ OpenClaw's gateway (`ws://127.0.0.1:18789`) is a **WebSocket-based control plane
 - **Event forwarding**: Agent events (tool execution, responses, status changes) are forwarded to all connected clients
 - **Single process**: The gateway runs in the same Node.js process as the agent runtime
 
-**Chelava Equivalent**: The `chelava-infra` Gateway uses virtual thread-backed ConnectionManager with sealed interface-typed connections (stdio, WebSocket, in-process). Request routing uses pattern matching on sealed GatewayRequest types for compile-time exhaustiveness.
+**AceClaw Equivalent**: The `aceclaw-infra` Gateway uses virtual thread-backed ConnectionManager with sealed interface-typed connections (stdio, WebSocket, in-process). Request routing uses pattern matching on sealed GatewayRequest types for compile-time exhaustiveness.
 
 ### 14.2 Heartbeat / Health Monitoring
 
@@ -782,7 +782,7 @@ OpenClaw implements heartbeat and health monitoring through several mechanisms:
 - **Platform node health**: Mobile and desktop nodes report their connectivity status
 - **Reconnection logic**: When a connection drops, clients attempt automatic reconnection with exponential backoff
 
-**Chelava Equivalent**: The `HealthMonitor` uses `StructuredTaskScope` to check all components in parallel. `HeartbeatSender` uses `ScheduledExecutorService` with virtual thread factory. Health status uses sealed interfaces (`Healthy`, `Degraded`, `Unhealthy`, `Unknown`) for exhaustive handling.
+**AceClaw Equivalent**: The `HealthMonitor` uses `StructuredTaskScope` to check all components in parallel. `HeartbeatSender` uses `ScheduledExecutorService` with virtual thread factory. Health status uses sealed interfaces (`Healthy`, `Degraded`, `Unhealthy`, `Unknown`) for exhaustive handling.
 
 ### 14.3 Cron / Scheduler
 
@@ -796,7 +796,7 @@ OpenClaw uses periodic scheduling for several maintenance tasks:
 
 The implementation uses Node.js `setInterval` and `setTimeout`, which are single-threaded. Long-running scheduled tasks can delay other scheduled work.
 
-**Chelava Equivalent**: The `VirtualThreadScheduler` uses `ScheduledExecutorService` with virtual thread factory, enabling truly concurrent scheduled task execution. Each scheduled task runs on its own virtual thread, so a slow task cannot delay others.
+**AceClaw Equivalent**: The `VirtualThreadScheduler` uses `ScheduledExecutorService` with virtual thread factory, enabling truly concurrent scheduled task execution. Each scheduled task runs on its own virtual thread, so a slow task cannot delay others.
 
 ### 14.4 Event System
 
@@ -808,7 +808,7 @@ OpenClaw uses a Node.js EventEmitter-based event system for internal communicati
 - **No type safety**: Event names are strings; payloads are untyped objects
 - **No backpressure**: Fast publishers can overwhelm slow subscribers
 
-**Chelava Equivalent**: The `InProcessEventBus` uses sealed interface event types for compile-time type safety. Each subscriber has its own `BlockingQueue` and virtual thread, providing natural backpressure via queue capacity. Events are dispatched asynchronously - the publisher uses `offer()` (non-blocking, drops if queue full) and each subscriber runs on its own virtual thread doing `queue.take()` in a loop. Simple try/catch error handling replaces reactive onError callbacks.
+**AceClaw Equivalent**: The `InProcessEventBus` uses sealed interface event types for compile-time type safety. Each subscriber has its own `BlockingQueue` and virtual thread, providing natural backpressure via queue capacity. Events are dispatched asynchronously - the publisher uses `offer()` (non-blocking, drops if queue full) and each subscriber runs on its own virtual thread doing `queue.take()` in a loop. Simple try/catch error handling replaces reactive onError callbacks.
 
 ### 14.5 Graceful Shutdown
 
@@ -820,7 +820,7 @@ OpenClaw handles process termination through:
 - **Platform disconnection**: Notifies connected platforms (WhatsApp, Telegram, etc.) of shutdown
 - **Timeout enforcement**: Forces exit after a maximum wait period
 
-**Chelava Equivalent**: The `GracefulShutdownManager` uses ordered `ShutdownParticipant` list with priority-based execution. Each participant runs on a virtual thread with a time budget from the overall shutdown timeout. JVM shutdown hooks and `Signal` handling provide the entry points.
+**AceClaw Equivalent**: The `GracefulShutdownManager` uses ordered `ShutdownParticipant` list with priority-based execution. Each participant runs on a virtual thread with a time budget from the overall shutdown timeout. JVM shutdown hooks and `Signal` handling provide the entry points.
 
 ### 14.6 Error Recovery
 
@@ -832,11 +832,11 @@ OpenClaw handles errors through:
 - **Error logging**: Errors logged to structured output for debugging
 - **No circuit breakers**: OpenClaw does not implement circuit breaker patterns; failed services are retried indefinitely
 
-**Chelava Equivalent**: The `CircuitBreaker` adds a state machine (CLOSED -> OPEN -> HALF_OPEN) to prevent cascading failures. `FailoverLLMClient` chains multiple providers with circuit breaker protection. `RetryPolicy` provides configurable exponential backoff.
+**AceClaw Equivalent**: The `CircuitBreaker` adds a state machine (CLOSED -> OPEN -> HALF_OPEN) to prevent cascading failures. `FailoverLLMClient` chains multiple providers with circuit breaker protection. `RetryPolicy` provides configurable exponential backoff.
 
-### 14.7 Key Differences: OpenClaw vs Chelava Infrastructure
+### 14.7 Key Differences: OpenClaw vs AceClaw Infrastructure
 
-| Aspect | OpenClaw (TypeScript) | Chelava (Java) |
+| Aspect | OpenClaw (TypeScript) | AceClaw (Java) |
 |--------|----------------------|----------------|
 | Gateway | WebSocket hub, single-threaded | Virtual thread ConnectionManager, multi-protocol |
 | Events | EventEmitter (string keys, untyped) | Sealed interface events, BlockingQueue + virtual thread per subscriber |
@@ -849,7 +849,7 @@ OpenClaw handles errors through:
 
 ---
 
-## 15. Key Takeaways for Chelava (Updated)
+## 15. Key Takeaways for AceClaw (Updated)
 
 ### 15.1 Infrastructure Recommendations (New)
 
@@ -863,11 +863,11 @@ OpenClaw handles errors through:
 
 ---
 
-## 16. Skills and Communication: OpenClaw/Claude Code vs Chelava
+## 16. Skills and Communication: OpenClaw/Claude Code vs AceClaw
 
-### 16.1 Skill Registry: Static (ClawHub) vs Adaptive (Chelava)
+### 16.1 Skill Registry: Static (ClawHub) vs Adaptive (AceClaw)
 
-| Aspect | OpenClaw (ClawHub) | Claude Code | Chelava |
+| Aspect | OpenClaw (ClawHub) | Claude Code | AceClaw |
 |--------|-------------------|-------------|---------|
 | **Skill format** | YAML + JS/TS handlers | SKILL.md (Markdown + YAML frontmatter) | SKILL.md + JSON metrics sidecar |
 | **Discovery** | ClawHub registry (static, pull-based) | File system scan at startup | File system scan + auto-generated proposals |
@@ -881,13 +881,13 @@ OpenClaw handles errors through:
 | **Memory link** | None | None | Skills linked to auto-memory entries (PATTERN, MISTAKE, STRATEGY) |
 | **Security** | Minimal (led to credential stealers) | Plugin validation | HMAC-signed memory, content sanitization, Draft requires user approval |
 
-**Key insight**: OpenClaw's ClawHub is a **distribution channel** (like npm for skills), while Chelava's adaptive system is a **learning engine** that evolves skills based on usage. Claude Code's skills are purely static Markdown files. Chelava bridges all three: static definitions (SKILL.md), distribution (plugins), and adaptive learning (metrics + refinement).
+**Key insight**: OpenClaw's ClawHub is a **distribution channel** (like npm for skills), while AceClaw's adaptive system is a **learning engine** that evolves skills based on usage. Claude Code's skills are purely static Markdown files. AceClaw bridges all three: static definitions (SKILL.md), distribution (plugins), and adaptive learning (metrics + refinement).
 
 ### 16.2 Inter-Agent Communication: Claude Code Faithful Port
 
-Chelava's team communication faithfully ports Claude Code's file-based inbox model to Java, with a dual-mode transport layer that selects in-process (BlockingQueue) or file-based (JSON + FileLock) delivery based on the teammate's execution backend. The message types are ported as a sealed interface hierarchy for compile-time exhaustiveness.
+AceClaw's team communication faithfully ports Claude Code's file-based inbox model to Java, with a dual-mode transport layer that selects in-process (BlockingQueue) or file-based (JSON + FileLock) delivery based on the teammate's execution backend. The message types are ported as a sealed interface hierarchy for compile-time exhaustiveness.
 
-| Aspect | OpenClaw | Claude Code (Agent Teams) | Chelava |
+| Aspect | OpenClaw | Claude Code (Agent Teams) | AceClaw |
 |--------|---------|--------------------------|---------|
 | **Pattern** | Gateway WebSocket hub | File-based inbox per agent | Dual-mode: BlockingQueue (in-process) or file-based inbox (cross-process) |
 | **Coupling** | Platform-coupled (adapters) | Agent-coupled (know recipient name) | Agent-coupled (know recipient name), same as Claude Code |
@@ -906,7 +906,7 @@ Chelava's team communication faithfully ports Claude Code's file-based inbox mod
 | **Type safety** | Runtime only | Runtime only (JSON parsing) | Compile-time sealed interface exhaustiveness + JSON serialization |
 | **Health monitoring** | WebSocket ping/pong | 5-minute heartbeat timeout | HeartbeatPing on dedicated topic; same 5-minute timeout |
 
-**Key insight**: Chelava follows Claude Code's communication design closely - same inbox-per-agent model, same between-turns delivery, same idle notification with peer DM summaries. The Java advantage is dual-mode transport: in-process teammates use zero-copy `BlockingQueue` delivery (no file I/O, no serialization), while cross-process teammates use the same file-based protocol as Claude Code but with Java's `FileLock` and `Files.move(ATOMIC_MOVE)` for safer concurrent access.
+**Key insight**: AceClaw follows Claude Code's communication design closely - same inbox-per-agent model, same between-turns delivery, same idle notification with peer DM summaries. The Java advantage is dual-mode transport: in-process teammates use zero-copy `BlockingQueue` delivery (no file I/O, no serialization), while cross-process teammates use the same file-based protocol as Claude Code but with Java's `FileLock` and `Files.move(ATOMIC_MOVE)` for safer concurrent access.
 
 ### 16.3 Agent Team Architecture Comparison
 
@@ -924,7 +924,7 @@ Claude Code:
        +--- Idle notifications (auto, with peer DM summaries)
   (identity-based messaging, file system coordination, between-turn delivery)
 
-Chelava (faithful Claude Code port with Java advantages):
+AceClaw (faithful Claude Code port with Java advantages):
   Team Lead
        |
        |--- [In-Process Mode] ---+--- Teammate A (virtual thread)
@@ -945,9 +945,9 @@ Chelava (faithful Claude Code port with Java advantages):
 
 ### 16.4 Task Coordination Comparison
 
-| Aspect | OpenClaw | Claude Code | Chelava |
+| Aspect | OpenClaw | Claude Code | AceClaw |
 |--------|---------|-------------|---------|
-| **Task storage** | Not applicable | Per-task JSON files in `~/.claude/tasks/{team}/` | Per-task JSON files in `~/.chelava/tasks/{team}/` (same) |
+| **Task storage** | Not applicable | Per-task JSON files in `~/.claude/tasks/{team}/` | Per-task JSON files in `~/.aceclaw/tasks/{team}/` (same) |
 | **Task model** | Not applicable | id, subject, description, status, owner, activeForm, blockedBy, blocks, metadata, createdAt, updatedAt | Identical: `AgentTask` record with same fields |
 | **Status lifecycle** | Not applicable | pending -> in_progress -> completed (+ deleted) | `TaskStatus` enum: PENDING -> IN_PROGRESS -> COMPLETED (+ DELETED) |
 | **ID generation** | Not applicable | Auto-incrementing integer (counter file) | Auto-incrementing integer (counter.txt or AtomicInteger) |

@@ -1,15 +1,15 @@
-# Chelava System Architecture
+# AceClaw System Architecture
 
 ## 1. Executive Summary
 
-Chelava is a Java-based AI coding agent that reimagines the agentic coding paradigm with JVM-native advantages: virtual threads for true parallel tool execution, structured concurrency for safe agent task trees, GraalVM native image for instant startup, and Java's mature type system for a robust, extensible plugin ecosystem. This document defines the system architecture, core abstractions, concurrency model, and feasibility analysis.
+AceClaw is a Java-based AI coding agent that reimagines the agentic coding paradigm with JVM-native advantages: virtual threads for true parallel tool execution, structured concurrency for safe agent task trees, GraalVM native image for instant startup, and Java's mature type system for a robust, extensible plugin ecosystem. This document defines the system architecture, core abstractions, concurrency model, and feasibility analysis.
 
 ### Design Philosophy
 
 - **Agent-first**: The agent loop is the core primitive; everything else serves it
 - **Type-safe extensibility**: Java's type system enforces correct tool contracts at compile time
 - **Parallel by default**: Virtual threads make concurrent tool execution the natural path
-- **Virtual threads over reactive streams**: Project Loom eliminates the need for reactive programming patterns (Flow, RxJava, Reactor). Chelava uses simple blocking code on virtual threads instead. This results in simpler, more debuggable code with natural backpressure via BlockingQueue capacity. Flow API is available for external library interop but is not used internally
+- **Virtual threads over reactive streams**: Project Loom eliminates the need for reactive programming patterns (Flow, RxJava, Reactor). AceClaw uses simple blocking code on virtual threads instead. This results in simpler, more debuggable code with natural backpressure via BlockingQueue capacity. Flow API is available for external library interop but is not used internally
 - **Memory as a first-class citizen**: Typed, searchable memory stores with parallel retrieval
 - **Minimal runtime footprint**: GraalVM native image for CLI startup under 100ms
 - **Security by design**: Permission system and sandbox integrated from day one
@@ -19,43 +19,43 @@ Chelava is a Java-based AI coding agent that reimagines the agentic coding parad
 ## 2. Module Structure
 
 ```
-chelava/
-  chelava-bom/              # Bill of Materials (dependency management)
-  chelava-core/             # Agent loop, tool system, LLM client abstractions
-  chelava-infra/            # Gateway, event bus, health, scheduler, shutdown
-  chelava-llm/              # LLM provider implementations (Anthropic, OpenAI, etc.)
-  chelava-tools/            # Built-in tools (file, bash, search, web, git)
-  chelava-memory/           # Context management, auto-memory, self-learning
-  chelava-security/         # Permission system, sandbox, audit logging
-  chelava-mcp/              # MCP protocol client/server implementation
-  chelava-cli/              # Terminal UI, CLI parsing, REPL
-  chelava-sdk/              # Extension API for plugins and custom tools
-  chelava-server/           # HTTP/WebSocket server for IDE integrations
-  chelava-test/             # Test utilities and fixtures
+aceclaw/
+  aceclaw-bom/              # Bill of Materials (dependency management)
+  aceclaw-core/             # Agent loop, tool system, LLM client abstractions
+  aceclaw-infra/            # Gateway, event bus, health, scheduler, shutdown
+  aceclaw-llm/              # LLM provider implementations (Anthropic, OpenAI, etc.)
+  aceclaw-tools/            # Built-in tools (file, bash, search, web, git)
+  aceclaw-memory/           # Context management, auto-memory, self-learning
+  aceclaw-security/         # Permission system, sandbox, audit logging
+  aceclaw-mcp/              # MCP protocol client/server implementation
+  aceclaw-cli/              # Terminal UI, CLI parsing, REPL
+  aceclaw-sdk/              # Extension API for plugins and custom tools
+  aceclaw-server/           # HTTP/WebSocket server for IDE integrations
+  aceclaw-test/             # Test utilities and fixtures
 ```
 
 ### Module Dependency Graph
 
 ```
-chelava-cli ──> chelava-core ──> chelava-sdk (API contracts)
+aceclaw-cli ──> aceclaw-core ──> aceclaw-sdk (API contracts)
      |               |                  ^
      |               |                  |
      v               v                  |
-chelava-server  chelava-llm        chelava-tools
+aceclaw-server  aceclaw-llm        aceclaw-tools
      |               |                  |
      v               v                  v
-chelava-mcp    chelava-memory     chelava-security
+aceclaw-mcp    aceclaw-memory     aceclaw-security
                      |
                      v
-              chelava-infra (gateway, events, health, scheduler)
+              aceclaw-infra (gateway, events, health, scheduler)
                      ^
                      |
-              chelava-core (depends on infra for lifecycle)
+              aceclaw-core (depends on infra for lifecycle)
 ```
 
 ### Module Responsibilities
 
-#### chelava-core
+#### aceclaw-core
 The heart of the system. Contains:
 - **AgentLoop**: The main agentic execution cycle (prompt -> LLM -> tool_use -> execute -> repeat)
 - **Tool registry and dispatch**: Tool discovery, validation, and execution
@@ -65,7 +65,7 @@ The heart of the system. Contains:
 - **Sub-agent orchestration**: Spawn isolated agent contexts for delegated tasks
 - **Agent team orchestration**: TeamManager, TeamMessageRouter, TeamMessageInjector, in-process/external teammate spawning (see Section 10)
 
-#### chelava-infra
+#### aceclaw-infra
 Infrastructure backbone for operational reliability:
 - **Gateway**: Central control plane for client connections, request routing
 - **EventBus**: Type-safe in-process event system using BlockingQueue per subscriber and virtual threads
@@ -76,7 +76,7 @@ Infrastructure backbone for operational reliability:
 - **GracefulShutdownManager**: Ordered component shutdown with state persistence
 - **HeartbeatSender/Receiver**: Agent team liveness monitoring
 
-#### chelava-llm
+#### aceclaw-llm
 LLM provider abstraction and implementations:
 - **LLMClient interface**: Unified API for all providers
 - **Streaming support**: Token-by-token streaming via blocking `StreamSession` on virtual threads, with natural backpressure via `BlockingQueue` capacity
@@ -84,7 +84,7 @@ LLM provider abstraction and implementations:
 - **Usage tracking**: Token counting, cost estimation, rate limiting
 - **Provider implementations**: Anthropic (Claude), OpenAI, Google (Gemini), local (Ollama)
 
-#### chelava-tools
+#### aceclaw-tools
 Built-in tool implementations:
 - **FileTools**: Read, write, edit, glob, grep (with diff-based edit validation)
 - **BashTool**: Command execution with timeout, streaming output, sandbox integration
@@ -93,36 +93,36 @@ Built-in tool implementations:
 - **WebTools**: HTTP fetch, web scraping with content extraction
 - **NotebookTools**: Jupyter notebook cell operations
 
-#### chelava-memory
+#### aceclaw-memory
 Memory subsystem with tiered architecture:
 - **ConversationMemory**: Current session messages with compression
-- **ProjectMemory**: Persistent per-project knowledge (CHELAVA.md equivalent)
+- **ProjectMemory**: Persistent per-project knowledge (ACECLAW.md equivalent)
 - **AutoMemory**: Self-learning pattern storage, mistake tracking
 - **MemoryIndex**: Embedding-based semantic search across memory stores
 - **Compaction engine**: Intelligent context summarization
 
-#### chelava-security
+#### aceclaw-security
 Security infrastructure:
 - **PermissionPolicy**: Declarative permission rules for tool execution
 - **Sandbox**: Process isolation for bash commands, file system boundaries
 - **AuditLog**: Structured logging of all tool executions and LLM calls
 - **SecretDetector**: Prevents accidental exposure of credentials/keys
 
-#### chelava-mcp
+#### aceclaw-mcp
 Model Context Protocol implementation:
 - **MCPClient**: Connect to external MCP servers (stdio, SSE, WebSocket)
-- **MCPServer**: Expose Chelava tools as MCP endpoints
-- **MCPToolBridge**: Adapt MCP tools to Chelava's tool interface
+- **MCPServer**: Expose AceClaw tools as MCP endpoints
+- **MCPToolBridge**: Adapt MCP tools to AceClaw's tool interface
 - **Protocol negotiation**: Version compatibility and capability discovery
 
-#### chelava-cli
+#### aceclaw-cli
 User-facing terminal interface:
 - **REPL**: Interactive read-eval-print loop with rich formatting
 - **CommandParser**: Slash commands (/help, /commit, /compact, etc.)
 - **TerminalUI**: Markdown rendering, syntax highlighting, progress indicators
 - **SessionManager**: Conversation persistence and resumption
 
-#### chelava-sdk
+#### aceclaw-sdk
 Public extension API:
 - **Tool SPI**: Interface for custom tool plugins
 - **Provider SPI**: Interface for custom LLM providers
@@ -130,7 +130,7 @@ Public extension API:
 - **Event system**: Hook into agent lifecycle events
 - **Configuration API**: Type-safe plugin configuration
 
-#### chelava-server
+#### aceclaw-server
 IDE integration server:
 - **HTTP API**: REST endpoints for IDE extensions
 - **WebSocket**: Real-time streaming for editor plugins
@@ -418,7 +418,7 @@ public interface ContextWindow {
     LLMRequest assemble(ConversationContext conversation, MemoryInjections memory);
 }
 
-// Long-term project memory (like CLAUDE.md / CHELAVA.md)
+// Long-term project memory (like CLAUDE.md / ACECLAW.md)
 public interface ProjectMemory {
     String load(Path projectRoot);
     void update(Path projectRoot, String content);
@@ -476,7 +476,7 @@ public record SandboxConfig(
 
 ### 4.1 Virtual Threads for Tool Execution
 
-Chelava's primary concurrency advantage over Node.js-based agents (OpenClaw, Claude Code) is **true parallel tool execution** via virtual threads. Where Node.js uses a single-threaded event loop with async/await, Chelava can execute multiple tools genuinely in parallel.
+AceClaw's primary concurrency advantage over Node.js-based agents (OpenClaw, Claude Code) is **true parallel tool execution** via virtual threads. Where Node.js uses a single-threaded event loop with async/await, AceClaw can execute multiple tools genuinely in parallel.
 
 ```java
 // Parallel tool execution using structured concurrency
@@ -572,7 +572,7 @@ public final class AgentContext {
 
 ### 4.4 Comparison with Node.js Async Model
 
-| Aspect | Node.js (OpenClaw/Claude Code) | Java (Chelava) |
+| Aspect | Node.js (OpenClaw/Claude Code) | Java (AceClaw) |
 |--------|-------------------------------|-----------------|
 | Concurrency model | Single-threaded event loop + async/await | Virtual threads (millions of lightweight threads) |
 | Parallel tool execution | Cooperative multitasking; CPU-bound tools block | True parallelism; each tool on its own thread |
@@ -584,7 +584,7 @@ public final class AgentContext {
 | Error handling | Unhandled rejection risks | Structured concurrency catches all |
 | Cancellation | AbortController (manual wiring) | Structured concurrency (automatic propagation) |
 
-**Key advantage**: When an agent needs to execute 5 tools in parallel (e.g., read 3 files, run a grep, check git status), Chelava dispatches 5 virtual threads that run truly in parallel. Node.js would interleave I/O callbacks on a single thread, and any CPU-intensive tool (like parsing a large file) blocks everything.
+**Key advantage**: When an agent needs to execute 5 tools in parallel (e.g., read 3 files, run a grep, check git status), AceClaw dispatches 5 virtual threads that run truly in parallel. Node.js would interleave I/O callbacks on a single thread, and any CPU-intensive tool (like parsing a large file) blocks everything.
 
 ### 4.5 Streaming Architecture
 
@@ -667,19 +667,19 @@ public class BlockingQueueStreamSession implements StreamSession {
 
 ### 5.1 Compilation Tiers
 
-Chelava uses a **dual-mode** build strategy:
+AceClaw uses a **dual-mode** build strategy:
 
 | Component | Native Image | JVM Fallback | Rationale |
 |-----------|-------------|--------------|-----------|
-| chelava-cli | Yes (primary) | Yes | Instant startup (<100ms) for CLI UX |
-| chelava-core | Yes | Yes | Agent loop is reflection-free by design |
-| chelava-tools | Yes | Yes | File/bash/search tools are straightforward |
-| chelava-llm | Yes | Yes | HTTP clients work well in native |
-| chelava-memory | Yes | Yes | Avoids complex reflection |
-| chelava-security | Yes | Yes | Sandbox uses ProcessBuilder (native-compatible) |
-| chelava-mcp | Partial | Yes | JSON-RPC needs some reflection config |
-| chelava-sdk (plugins) | No | Yes | Plugin classloading requires JVM |
-| chelava-server | Partial | Yes | HTTP server works; WebSocket may need config |
+| aceclaw-cli | Yes (primary) | Yes | Instant startup (<100ms) for CLI UX |
+| aceclaw-core | Yes | Yes | Agent loop is reflection-free by design |
+| aceclaw-tools | Yes | Yes | File/bash/search tools are straightforward |
+| aceclaw-llm | Yes | Yes | HTTP clients work well in native |
+| aceclaw-memory | Yes | Yes | Avoids complex reflection |
+| aceclaw-security | Yes | Yes | Sandbox uses ProcessBuilder (native-compatible) |
+| aceclaw-mcp | Partial | Yes | JSON-RPC needs some reflection config |
+| aceclaw-sdk (plugins) | No | Yes | Plugin classloading requires JVM |
+| aceclaw-server | Partial | Yes | HTTP server works; WebSocket may need config |
 
 ### 5.2 Design for Native Compatibility
 
@@ -693,10 +693,10 @@ Architecture decisions that enable native compilation:
 
 ### 5.3 Plugin Loading Strategy
 
-For the plugin system, Chelava uses a **hybrid approach**:
+For the plugin system, AceClaw uses a **hybrid approach**:
 
 ```
-chelava (native image)
+aceclaw (native image)
   |
   +-- Core agent loop, built-in tools, CLI (native compiled)
   |
@@ -706,7 +706,7 @@ chelava (native image)
        +-- Communicates with core via local socket / shared memory
 ```
 
-When plugins are present, Chelava spawns a lightweight JVM subprocess for plugin execution. This preserves native image startup speed for the common case (no plugins) while supporting full plugin flexibility.
+When plugins are present, AceClaw spawns a lightweight JVM subprocess for plugin execution. This preserves native image startup speed for the common case (no plugins) while supporting full plugin flexibility.
 
 ### 5.4 Build Configuration
 
@@ -719,8 +719,8 @@ native-image \
   -H:+ReportExceptionStackTraces \
   -H:ReflectionConfigurationFiles=reflect-config.json \
   -H:ResourceConfigurationFiles=resource-config.json \
-  -jar chelava-cli.jar \
-  -o chelava
+  -jar aceclaw-cli.jar \
+  -o aceclaw
 ```
 
 Expected binary sizes:
@@ -748,7 +748,7 @@ public interface ToolProvider {
     ToolProviderMetadata metadata();
 }
 
-// Plugin descriptor (META-INF/services/com.chelava.sdk.ToolProvider)
+// Plugin descriptor (META-INF/services/com.aceclaw.sdk.ToolProvider)
 // com.example.myplugin.MyToolProvider
 
 // Tool provider metadata
@@ -772,14 +772,14 @@ public class PluginClassLoader extends URLClassLoader {
     public PluginClassLoader(URL[] urls, ClassLoader parent,
                               Set<String> sharedPackages) {
         super(urls, parent);
-        // Only delegate to parent for Chelava SDK packages
+        // Only delegate to parent for AceClaw SDK packages
         this.sharedPackages = sharedPackages;
     }
 
     @Override
     protected Class<?> loadClass(String name, boolean resolve)
             throws ClassNotFoundException {
-        // Check if this is a shared API package (chelava-sdk)
+        // Check if this is a shared API package (aceclaw-sdk)
         if (isSharedPackage(name)) {
             return getParent().loadClass(name);
         }
@@ -796,7 +796,7 @@ public class PluginClassLoader extends URLClassLoader {
 ### 6.3 Plugin Lifecycle
 
 ```
-1. Discovery:  Scan ~/.chelava/plugins/ and project .chelava/plugins/
+1. Discovery:  Scan ~/.aceclaw/plugins/ and project .aceclaw/plugins/
 2. Loading:    Create isolated classloader per plugin JAR
 3. Validation: Verify ToolProvider SPI, check required permissions
 4. Registration: Add tools to the tool registry
@@ -807,7 +807,7 @@ public class PluginClassLoader extends URLClassLoader {
 ### 6.4 Plugin Distribution
 
 ```
-~/.chelava/
+~/.aceclaw/
   plugins/
     my-database-tools/
       plugin.json          # Plugin metadata
@@ -883,8 +883,8 @@ Persistent per-project knowledge, analogous to CLAUDE.md:
 
 ```
 project-root/
-  CHELAVA.md              # Project-level instructions (user-managed)
-  .chelava/
+  ACECLAW.md              # Project-level instructions (user-managed)
+  .aceclaw/
     memory/
       MEMORY.md           # Auto-generated project memory
       patterns.md         # Recognized patterns
@@ -927,7 +927,7 @@ public class AutoMemorySystem {
 
 ### 7.5 Parallel Memory Retrieval
 
-A key advantage over single-threaded agents: Chelava retrieves from multiple memory stores simultaneously:
+A key advantage over single-threaded agents: AceClaw retrieves from multiple memory stores simultaneously:
 
 ```java
 public class ParallelMemoryRetriever {
@@ -1179,7 +1179,7 @@ public record HookPassthrough(
 
 ### 10.1 Overview
 
-Agent Teams enable multiple Chelava agent instances to work collaboratively on complex tasks. Unlike subagents (which report back to a parent and return condensed results), teammates are fully independent agent sessions that communicate directly with each other through a typed messaging system and coordinate work through a shared task list.
+Agent Teams enable multiple AceClaw agent instances to work collaboratively on complex tasks. Unlike subagents (which report back to a parent and return condensed results), teammates are fully independent agent sessions that communicate directly with each other through a typed messaging system and coordinate work through a shared task list.
 
 This design faithfully ports Claude Code's agent team architecture to Java, preserving the same communication model, task coordination, lifecycle management, and coordination patterns while enhancing with Java 21+ advantages: virtual threads for in-process teammates, sealed interfaces for exhaustive message handling, `BlockingQueue`-based delivery, and `StructuredTaskScope` for lifecycle management.
 
@@ -1208,7 +1208,7 @@ This design faithfully ports Claude Code's agent team architecture to Java, pres
   |  JSON files)  |   |  inbox files) |
   +---------------+   +---------------+
           |                   |
-     ~/.chelava/tasks/    ~/.chelava/teams/
+     ~/.aceclaw/tasks/    ~/.aceclaw/teams/
        {team-name}/         {team-name}/
 ```
 
@@ -1229,9 +1229,9 @@ public sealed interface TeamCommand permits
 
     /**
      * Create a new agent team. Initializes:
-     * - Team config file at ~/.chelava/teams/{name}/config.json
-     * - Task directory at ~/.chelava/tasks/{name}/
-     * - Inbox directory at ~/.chelava/teams/{name}/inboxes/
+     * - Team config file at ~/.aceclaw/teams/{name}/config.json
+     * - Task directory at ~/.aceclaw/tasks/{name}/
+     * - Inbox directory at ~/.aceclaw/teams/{name}/inboxes/
      * - Message router for the team
      */
     record CreateTeam(
@@ -1357,7 +1357,7 @@ public sealed interface ShutdownResult permits
 ```java
 /**
  * Team configuration persisted as JSON at
- * ~/.chelava/teams/{team-name}/config.json
+ * ~/.aceclaw/teams/{team-name}/config.json
  *
  * Teammates discover each other by reading this file.
  */
@@ -1702,7 +1702,7 @@ public class InProcessMessageTransport {
 /**
  * File-based message transport for cross-process teammates.
  * Each agent's inbox is a JSON file at:
- *   ~/.chelava/teams/{team-name}/inboxes/{agent-name}.json
+ *   ~/.aceclaw/teams/{team-name}/inboxes/{agent-name}.json
  *
  * <p>Uses atomic writes (write to temp file + Files.move) and
  * file locks (.lock files) to prevent corruption from concurrent access.
@@ -1891,7 +1891,7 @@ The task model faithfully ports Claude Code's TaskCreate/TaskUpdate/TaskGet/Task
 /**
  * A task in the shared task list.
  * Each task is stored as a separate JSON file:
- *   ~/.chelava/tasks/{team-name}/{taskId}.json
+ *   ~/.aceclaw/tasks/{team-name}/{taskId}.json
  *
  * <p>Matches Claude Code's task model exactly: auto-incrementing IDs,
  * dependency tracking with automatic unblocking, and owner-based claiming.
@@ -1941,7 +1941,7 @@ public enum TaskStatus {
  *
  * <p>File structure:
  * <pre>
- * ~/.chelava/tasks/{team-name}/
+ * ~/.aceclaw/tasks/{team-name}/
  *   counter.txt          # Next task ID (auto-incrementing)
  *   1.json               # Task 1
  *   2.json               # Task 2
@@ -2226,7 +2226,7 @@ public class InProcessTeammateSpawner {
                 .run(() -> runTeammateLoop(agentConfig, injector, config));
         });
 
-        eventBus.publish(new ChelavaEvent.TeammateJoined(
+        eventBus.publish(new AceClawEvent.TeammateJoined(
             UUID.randomUUID().toString(), Instant.now(), "team-manager",
             messageRouter.teamName(), config.name()
         ));
@@ -2277,7 +2277,7 @@ public class InProcessTeammateSpawner {
         }
 
         messageRouter.removeInbox(teammateConfig.name());
-        eventBus.publish(new ChelavaEvent.TeammateLeft(
+        eventBus.publish(new AceClawEvent.TeammateLeft(
             UUID.randomUUID().toString(), Instant.now(), "team-manager",
             messageRouter.teamName(), teammateConfig.name()
         ));
@@ -2304,17 +2304,17 @@ public class ExternalProcessTeammateSpawner {
         var agentId = UUID.randomUUID().toString();
 
         var processBuilder = new ProcessBuilder(
-            buildChelavaCommand(config)
+            buildAceClawCommand(config)
         );
 
         // Set environment variables (matching Claude Code's env vars)
         var env = processBuilder.environment();
-        env.put("CHELAVA_TEAM_NAME", teamConfig.teamName());
-        env.put("CHELAVA_AGENT_ID", agentId);
-        env.put("CHELAVA_AGENT_NAME", config.name());
-        env.put("CHELAVA_AGENT_TYPE", config.agentType());
-        env.put("CHELAVA_PLAN_MODE_REQUIRED", String.valueOf(config.planModeRequired()));
-        env.put("CHELAVA_PARENT_SESSION_ID", AgentContext.SESSION_ID.get());
+        env.put("ACECLAW_TEAM_NAME", teamConfig.teamName());
+        env.put("ACECLAW_AGENT_ID", agentId);
+        env.put("ACECLAW_AGENT_NAME", config.name());
+        env.put("ACECLAW_AGENT_TYPE", config.agentType());
+        env.put("ACECLAW_PLAN_MODE_REQUIRED", String.valueOf(config.planModeRequired()));
+        env.put("ACECLAW_PARENT_SESSION_ID", AgentContext.SESSION_ID.get());
 
         if (config.workingDirectory() != null) {
             processBuilder.directory(config.workingDirectory().toFile());
@@ -2360,7 +2360,7 @@ public class ExternalProcessTeammateSpawner {
  * zero-cost ScopedValue instead.
  *
  * <p>For external-process teammates, these values are set from
- * the CHELAVA_* environment variables at process startup.
+ * the ACECLAW_* environment variables at process startup.
  */
 public final class TeamContext {
     public static final ScopedValue<String> TEAM_NAME = ScopedValue.newInstance();
@@ -2426,7 +2426,7 @@ Agent team hooks provide deterministic control over teammate behavior:
 ### 10.9 File Structure
 
 ```
-~/.chelava/
+~/.aceclaw/
   teams/
     {team-name}/
       config.json            # Team config with members array
@@ -2512,7 +2512,7 @@ The `TeamMessageRouter` implementation selects the appropriate transport based o
 Skills are capabilities that the agent automatically invokes based on task context:
 
 ```
-.chelava/skills/
+.aceclaw/skills/
   code-review/
     SKILL.md
   api-conventions/
@@ -2537,7 +2537,7 @@ The agent compares user requests against registered skill descriptions and invok
 Commands are explicit slash commands triggered by the user:
 
 ```
-.chelava/commands/
+.aceclaw/commands/
   commit.md       # /commit
   review.md       # /review
   deploy.md       # /deploy
@@ -2551,7 +2551,7 @@ Plugins package multiple extension types into distributable units:
 
 ```
 my-plugin/
-  .chelava-plugin/
+  .aceclaw-plugin/
     plugin.json          # Manifest (name, version, author)
   commands/              # Slash commands
   agents/                # Custom subagent definitions
@@ -2569,7 +2569,7 @@ Skills from plugins are namespaced: `/plugin-name:skill-name` to prevent conflic
 
 ### 12.1 Overview
 
-Chelava's skills system goes beyond static Markdown definitions to become a **self-learning, adaptive** system. Skills evolve based on usage outcomes, user corrections, and accumulated auto-memory insights. When the agent detects repeated patterns, it can automatically propose new skills. This creates a continuous improvement loop where the agent becomes more effective over time.
+AceClaw's skills system goes beyond static Markdown definitions to become a **self-learning, adaptive** system. Skills evolve based on usage outcomes, user corrections, and accumulated auto-memory insights. When the agent detects repeated patterns, it can automatically propose new skills. This creates a continuous improvement loop where the agent becomes more effective over time.
 
 ### 12.2 Skill Lifecycle
 
@@ -2965,8 +2965,8 @@ public interface SkillProposalEngine {
 /**
  * Central registry for all skills in the system.
  * Skills are loaded from:
- * 1. .chelava/skills/ (project-level)
- * 2. ~/.chelava/skills/ (user-level)
+ * 1. .aceclaw/skills/ (project-level)
+ * 2. ~/.aceclaw/skills/ (user-level)
  * 3. Plugin skill directories
  * 4. Auto-generated drafts (pending approval)
  */
@@ -3041,7 +3041,7 @@ public record SkillMatch(
 Skills use a file-based persistence model consistent with the existing SKILL.md convention:
 
 ```
-.chelava/skills/
+.aceclaw/skills/
   code-review/
     SKILL.md                    # Skill instructions (Markdown + YAML frontmatter)
     skill-metadata.json         # Immutable metadata + version history
@@ -3094,7 +3094,7 @@ The adaptive skills system is tightly integrated with the existing auto-memory s
 
 ### 13.1 Overview
 
-The Message Queue provides decoupled, asynchronous inter-agent communication for Chelava. It replaces the direct Mailbox pattern (which required agents to know each other's identity) with topic-based pub/sub and named queues. This is critical for agent teams and future scaling.
+The Message Queue provides decoupled, asynchronous inter-agent communication for AceClaw. It replaces the direct Mailbox pattern (which required agents to know each other's identity) with topic-based pub/sub and named queues. This is critical for agent teams and future scaling.
 
 The message queue is **in-process** (no external broker like Kafka or RabbitMQ), using only `java.base` types: `BlockingQueue`, `ConcurrentHashMap`, virtual threads, and `ScheduledExecutorService`. It is GraalVM native image compatible.
 
@@ -3826,7 +3826,7 @@ for (var entry : deadLetters) {
 Message persistence is optional and uses append-only JSONL files:
 
 ```
-~/.chelava/teams/{team-name}/
+~/.aceclaw/teams/{team-name}/
   messages/
     agent-a-inbox.jsonl         # Point-to-point queue messages
     agent-b-inbox.jsonl
@@ -3860,7 +3860,7 @@ The current `Mailbox` interface is replaced by `MessageQueue`:
 ### 12.1 Session Storage
 
 ```
-~/.chelava/
+~/.aceclaw/
   projects/
     {project-hash}/
       sessions/
@@ -3913,10 +3913,10 @@ Each line is a JSON object representing a message or event:
 
 ```
 (lowest priority)
-1. Chelava defaults (built-in)
-2. Global config:    ~/.chelava/config.json
-3. Project config:   .chelava/config.json
-4. Environment vars: CHELAVA_MODEL, CHELAVA_API_KEY, etc.
+1. AceClaw defaults (built-in)
+2. Global config:    ~/.aceclaw/config.json
+3. Project config:   .aceclaw/config.json
+4. Environment vars: ACECLAW_MODEL, ACECLAW_API_KEY, etc.
 5. CLI flags:        --model, --max-turns, etc.
 (highest priority)
 ```
@@ -3924,7 +3924,7 @@ Each line is a JSON object representing a message or event:
 ### 13.2 Configuration Schema
 
 ```java
-public record ChelavaConfig(
+public record AceClawConfig(
     AgentConfig agent,
     Map<String, LLMProviderConfig> providers,
     SecurityConfig security,
@@ -3964,9 +3964,9 @@ public record ChelavaConfig(
 
 | Component | Risk Level | Key Risks | Mitigation |
 |-----------|-----------|-----------|------------|
-| Agent Loop (chelava-core) | **Low** | Straightforward state machine; well-understood pattern | Reference OpenClaw/Claude Code designs; extensive testing |
-| LLM Client (chelava-llm) | **Low** | HTTP client + JSON; well-supported in Java | Use java.net.http (built-in); Jackson for JSON |
-| Built-in Tools (chelava-tools) | **Low** | File I/O, process execution; Java strengths | Use NIO2, ProcessBuilder; comprehensive test suite |
+| Agent Loop (aceclaw-core) | **Low** | Straightforward state machine; well-understood pattern | Reference OpenClaw/Claude Code designs; extensive testing |
+| LLM Client (aceclaw-llm) | **Low** | HTTP client + JSON; well-supported in Java | Use java.net.http (built-in); Jackson for JSON |
+| Built-in Tools (aceclaw-tools) | **Low** | File I/O, process execution; Java strengths | Use NIO2, ProcessBuilder; comprehensive test suite |
 | Virtual Thread Concurrency | **Low-Medium** | Pinning on synchronized blocks (fixed in Java 25); library compatibility | Use ReentrantLock where needed; test with -Djdk.tracePinnedThreads |
 | Structured Concurrency | **Medium** | Still preview in Java 21-24; API may change | Abstract behind our own interface; update when stabilized |
 | Context Compression | **Medium** | Token counting accuracy; summarization quality | Use tiktoken-java for counting; test compression ratios |
@@ -4025,41 +4025,41 @@ public record ChelavaConfig(
 ## 15. Implementation Roadmap Recommendation
 
 ### Phase 1: Core Agent (Weeks 1-4)
-- chelava-core: Agent loop, message protocol, turn management
-- chelava-llm: Anthropic Claude provider (primary)
-- chelava-tools: Read, Write, Edit, Bash, Glob, Grep (minimum viable toolset)
-- chelava-cli: Basic REPL with streaming output
-- chelava-security: Basic permission system (allow/prompt/deny)
-- chelava-infra: Event bus (basic), graceful shutdown, retry policies
+- aceclaw-core: Agent loop, message protocol, turn management
+- aceclaw-llm: Anthropic Claude provider (primary)
+- aceclaw-tools: Read, Write, Edit, Bash, Glob, Grep (minimum viable toolset)
+- aceclaw-cli: Basic REPL with streaming output
+- aceclaw-security: Basic permission system (allow/prompt/deny)
+- aceclaw-infra: Event bus (basic), graceful shutdown, retry policies
 
 ### Phase 2: Intelligence (Weeks 5-8)
-- chelava-memory: Conversation compaction, project memory (CHELAVA.md)
-- chelava-security: OS-level sandbox (macOS sandbox-exec, Linux seccomp)
-- chelava-tools: Git tools, web search, notebook support
-- chelava-llm: OpenAI, Gemini providers; circuit breaker; LLM failover
-- chelava-core: Hook system (command type hooks)
-- chelava-infra: Health monitor, scheduler (periodic maintenance tasks)
+- aceclaw-memory: Conversation compaction, project memory (ACECLAW.md)
+- aceclaw-security: OS-level sandbox (macOS sandbox-exec, Linux seccomp)
+- aceclaw-tools: Git tools, web search, notebook support
+- aceclaw-llm: OpenAI, Gemini providers; circuit breaker; LLM failover
+- aceclaw-core: Hook system (command type hooks)
+- aceclaw-infra: Health monitor, scheduler (periodic maintenance tasks)
 - Session persistence (JSONL transcripts, resume)
 
 ### Phase 3: Extensibility (Weeks 9-12)
-- chelava-mcp: MCP client for external tool servers
-- chelava-sdk: Plugin SPI, classloader isolation
-- chelava-memory: Auto-memory, self-learning
-- chelava-cli: Rich terminal UI, slash commands, basic skills system
-- chelava-core: Subagent delegation (Explore, Plan, General-purpose)
-- chelava-core: Hook system (prompt and agent type hooks)
-- chelava-infra: Full event type hierarchy, scheduler with cron support
-- chelava-infra: Message queue (point-to-point queues, pub/sub topics)
+- aceclaw-mcp: MCP client for external tool servers
+- aceclaw-sdk: Plugin SPI, classloader isolation
+- aceclaw-memory: Auto-memory, self-learning
+- aceclaw-cli: Rich terminal UI, slash commands, basic skills system
+- aceclaw-core: Subagent delegation (Explore, Plan, General-purpose)
+- aceclaw-core: Hook system (prompt and agent type hooks)
+- aceclaw-infra: Full event type hierarchy, scheduler with cron support
+- aceclaw-infra: Message queue (point-to-point queues, pub/sub topics)
 - Adaptive skills: Skill metrics tracking, skill outcome tracker, learning loop integration with auto-memory
 
 ### Phase 4: Multi-Agent and Distribution (Weeks 13-18)
-- chelava-core: Agent teams (shared task list, message queue-based communication)
-- chelava-infra: Full gateway with connection management, heartbeat system
-- chelava-infra: Message queue (request-reply, dead letter queue, TTL expiration, JSONL persistence)
+- aceclaw-core: Agent teams (shared task list, message queue-based communication)
+- aceclaw-infra: Full gateway with connection management, heartbeat system
+- aceclaw-infra: Message queue (request-reply, dead letter queue, TTL expiration, JSONL persistence)
 - Adaptive skills: Skill refinement engine (LLM-powered), auto-generated skills (pattern detection), version history with rollback
 - GraalVM native image builds (macOS, Linux, Windows)
-- chelava-server: HTTP/WebSocket for IDE integration
-- chelava-mcp: MCP server mode (expose Chelava as MCP server)
+- aceclaw-server: HTTP/WebSocket for IDE integration
+- aceclaw-mcp: MCP server mode (expose AceClaw as MCP server)
 - Plugin distribution and marketplace foundation
 - Performance optimization, security hardening
 
@@ -4071,20 +4071,20 @@ public record ChelavaConfig(
 
 ```kotlin
 // settings.gradle.kts
-rootProject.name = "chelava"
+rootProject.name = "aceclaw"
 
 include(
-    "chelava-bom",
-    "chelava-core",
-    "chelava-llm",
-    "chelava-tools",
-    "chelava-memory",
-    "chelava-security",
-    "chelava-mcp",
-    "chelava-cli",
-    "chelava-sdk",
-    "chelava-server",
-    "chelava-test"
+    "aceclaw-bom",
+    "aceclaw-core",
+    "aceclaw-llm",
+    "aceclaw-tools",
+    "aceclaw-memory",
+    "aceclaw-security",
+    "aceclaw-mcp",
+    "aceclaw-cli",
+    "aceclaw-sdk",
+    "aceclaw-server",
+    "aceclaw-test"
 )
 ```
 
@@ -4118,15 +4118,15 @@ When Java 25 LTS ships (September 2025), migrate to stabilized structured concur
 
 ### 17.1 Overview
 
-The Gateway is Chelava's unified entry point and control plane for all client connections, inter-component communication, and lifecycle management. Inspired by OpenClaw's WebSocket gateway (`ws://127.0.0.1:18789`), Chelava implements a Java-native gateway using virtual threads and structured concurrency.
+The Gateway is AceClaw's unified entry point and control plane for all client connections, inter-component communication, and lifecycle management. Inspired by OpenClaw's WebSocket gateway (`ws://127.0.0.1:18789`), AceClaw implements a Java-native gateway using virtual threads and structured concurrency.
 
-While OpenClaw's gateway is a WebSocket-based hub connecting CLI, WebChat, macOS app, and mobile nodes, Chelava's gateway is designed for a coding agent context: coordinating the CLI, IDE integrations, MCP servers, subagent instances, and agent team members.
+While OpenClaw's gateway is a WebSocket-based hub connecting CLI, WebChat, macOS app, and mobile nodes, AceClaw's gateway is designed for a coding agent context: coordinating the CLI, IDE integrations, MCP servers, subagent instances, and agent team members.
 
 ### 17.2 Architecture
 
 ```
 +---------------------------------------------------------------+
-|                    Chelava Gateway (JVM Process)               |
+|                    AceClaw Gateway (JVM Process)               |
 |                                                                |
 |  +-----------------+  +------------------+  +---------------+  |
 |  | Connection Mgr  |  | Request Router   |  | Lifecycle Mgr |  |
@@ -4303,7 +4303,7 @@ public class GatewayRequestHandler {
 
 ### 18.1 Overview
 
-The health monitoring system tracks the liveness and readiness of all Chelava components. OpenClaw uses heartbeat mechanisms to detect unresponsive agents and services. Chelava implements a Java-native health monitoring system using virtual threads for lightweight, non-blocking health checks.
+The health monitoring system tracks the liveness and readiness of all AceClaw components. OpenClaw uses heartbeat mechanisms to detect unresponsive agents and services. AceClaw implements a Java-native health monitoring system using virtual threads for lightweight, non-blocking health checks.
 
 ### 18.2 Health Model
 
@@ -4494,7 +4494,7 @@ public class HeartbeatSender implements AutoCloseable {
 
 ### 19.1 Overview
 
-The scheduler enables periodic task execution for maintenance, monitoring, and automation. OpenClaw uses cron-style scheduling for periodic tasks like memory consolidation and health checks. Chelava implements this using `ScheduledExecutorService` with virtual threads.
+The scheduler enables periodic task execution for maintenance, monitoring, and automation. OpenClaw uses cron-style scheduling for periodic tasks like memory consolidation and health checks. AceClaw implements this using `ScheduledExecutorService` with virtual threads.
 
 ### 19.2 Architecture
 
@@ -4621,27 +4621,27 @@ public class VirtualThreadScheduler implements Scheduler {
 
 ### 20.1 Overview
 
-The Event Bus enables loosely-coupled internal communication between Chelava components. OpenClaw uses event-driven patterns for connecting its gateway, agent runtime, and platform integrations. Chelava implements a type-safe, in-process event bus using `BlockingQueue` per subscriber with virtual threads for asynchronous delivery, and sealed interfaces for event types.
+The Event Bus enables loosely-coupled internal communication between AceClaw components. OpenClaw uses event-driven patterns for connecting its gateway, agent runtime, and platform integrations. AceClaw implements a type-safe, in-process event bus using `BlockingQueue` per subscriber with virtual threads for asynchronous delivery, and sealed interfaces for event types.
 
 ### 20.2 Event Type Hierarchy
 
 ```java
 // All events in the system are typed via sealed interfaces
-public sealed interface ChelavaEvent permits
-    ChelavaEvent.AgentEvent,
-    ChelavaEvent.ToolEvent,
-    ChelavaEvent.HealthEvent,
-    ChelavaEvent.SessionEvent,
-    ChelavaEvent.TeamEvent,
-    ChelavaEvent.SchedulerEvent,
-    ChelavaEvent.SystemEvent {
+public sealed interface AceClawEvent permits
+    AceClawEvent.AgentEvent,
+    AceClawEvent.ToolEvent,
+    AceClawEvent.HealthEvent,
+    AceClawEvent.SessionEvent,
+    AceClawEvent.TeamEvent,
+    AceClawEvent.SchedulerEvent,
+    AceClawEvent.SystemEvent {
 
     String eventId();
     Instant timestamp();
     String source();
 
     // Agent lifecycle events
-    sealed interface AgentEvent extends ChelavaEvent permits
+    sealed interface AgentEvent extends AceClawEvent permits
         TurnStarted, TurnCompleted, AgentError,
         SubagentSpawned, SubagentCompleted {}
 
@@ -4663,7 +4663,7 @@ public sealed interface ChelavaEvent permits
                              String subagentId, TokenUsage usage) implements AgentEvent {}
 
     // Tool execution events
-    sealed interface ToolEvent extends ChelavaEvent permits
+    sealed interface ToolEvent extends AceClawEvent permits
         ToolExecutionStarted, ToolExecutionCompleted,
         ToolExecutionFailed, ToolPermissionRequested {}
 
@@ -4682,7 +4682,7 @@ public sealed interface ChelavaEvent permits
                                    String toolName, PermissionDecision decision) implements ToolEvent {}
 
     // Health events
-    sealed interface HealthEvent extends ChelavaEvent permits
+    sealed interface HealthEvent extends AceClawEvent permits
         HealthCheckCompleted, ComponentDown, ComponentRecovered,
         HeartbeatReceived, HeartbeatMissed {}
 
@@ -4702,7 +4702,7 @@ public sealed interface ChelavaEvent permits
                            String agentId, Duration missedDuration) implements HealthEvent {}
 
     // Session events
-    sealed interface SessionEvent extends ChelavaEvent permits
+    sealed interface SessionEvent extends AceClawEvent permits
         SessionStarted, SessionEnded, ContextCompacted {}
 
     record SessionStarted(String eventId, Instant timestamp, String source,
@@ -4715,7 +4715,7 @@ public sealed interface ChelavaEvent permits
                             String sessionId, int removedTokens) implements SessionEvent {}
 
     // Team events
-    sealed interface TeamEvent extends ChelavaEvent permits
+    sealed interface TeamEvent extends AceClawEvent permits
         TeammateJoined, TeammateLeft, TaskAssigned,
         TaskCompleted, MessageSent {}
 
@@ -4735,7 +4735,7 @@ public sealed interface ChelavaEvent permits
                        String fromId, String toId) implements TeamEvent {}
 
     // Scheduler events
-    sealed interface SchedulerEvent extends ChelavaEvent permits
+    sealed interface SchedulerEvent extends AceClawEvent permits
         ScheduledTaskCompletedEvent, ScheduledTaskFailedEvent {}
 
     record ScheduledTaskCompletedEvent(String eventId, Instant timestamp,
@@ -4747,7 +4747,7 @@ public sealed interface ChelavaEvent permits
                                      Throwable error) implements SchedulerEvent {}
 
     // System events
-    sealed interface SystemEvent extends ChelavaEvent permits
+    sealed interface SystemEvent extends AceClawEvent permits
         GatewayStarted, GatewayShuttingDown, ConfigReloaded {}
 
     record GatewayStarted(String eventId, Instant timestamp,
@@ -4773,7 +4773,7 @@ public interface EventBus extends AutoCloseable {
      * If a subscriber's queue is full, the event is dropped for that
      * subscriber (natural backpressure via queue capacity).
      */
-    void publish(ChelavaEvent event);
+    void publish(AceClawEvent event);
 
     /**
      * Subscribe to events of a specific type.
@@ -4781,7 +4781,7 @@ public interface EventBus extends AutoCloseable {
      * thread that loops on queue.take() to process events.
      * Returns a subscription handle for unsubscribing.
      */
-    <E extends ChelavaEvent> Subscription subscribe(
+    <E extends AceClawEvent> Subscription subscribe(
         Class<E> eventType,
         EventHandler<E> handler
     );
@@ -4790,7 +4790,7 @@ public interface EventBus extends AutoCloseable {
      * Subscribe with a custom queue capacity for backpressure control.
      * Larger queues absorb bursts; smaller queues drop events sooner.
      */
-    <E extends ChelavaEvent> Subscription subscribe(
+    <E extends AceClawEvent> Subscription subscribe(
         Class<E> eventType,
         EventHandler<E> handler,
         int queueCapacity
@@ -4799,11 +4799,11 @@ public interface EventBus extends AutoCloseable {
     /**
      * Subscribe to all events (for logging, metrics, etc.).
      */
-    Subscription subscribeAll(EventHandler<ChelavaEvent> handler);
+    Subscription subscribeAll(EventHandler<AceClawEvent> handler);
 }
 
 @FunctionalInterface
-public interface EventHandler<E extends ChelavaEvent> {
+public interface EventHandler<E extends AceClawEvent> {
     void handle(E event);
 }
 
@@ -4821,7 +4821,7 @@ public class InProcessEventBus implements EventBus {
 
     // Each subscriber has its own queue and virtual thread
     private final List<SubscriberEntry<?>> subscribers = new CopyOnWriteArrayList<>();
-    private final List<SubscriberEntry<ChelavaEvent>> globalSubscribers =
+    private final List<SubscriberEntry<AceClawEvent>> globalSubscribers =
         new CopyOnWriteArrayList<>();
 
     // A subscriber entry: queue + virtual thread + handler
@@ -4834,14 +4834,14 @@ public class InProcessEventBus implements EventBus {
     ) {}
 
     @Override
-    public void publish(ChelavaEvent event) {
+    public void publish(AceClawEvent event) {
         // Offer to type-specific subscriber queues (non-blocking)
         for (var subscriber : subscribers) {
             if (subscriber.eventType().isInstance(event)) {
                 // offer() returns false if queue is full = event dropped
                 // This provides natural backpressure via queue capacity
                 @SuppressWarnings("unchecked")
-                var queue = (BlockingQueue<ChelavaEvent>) subscriber.queue();
+                var queue = (BlockingQueue<AceClawEvent>) subscriber.queue();
                 if (!queue.offer(event)) {
                     logger.trace("Event dropped for subscriber (queue full): {}",
                         event.getClass().getSimpleName());
@@ -4860,13 +4860,13 @@ public class InProcessEventBus implements EventBus {
 
     @Override
     @SuppressWarnings("unchecked")
-    public <E extends ChelavaEvent> Subscription subscribe(
+    public <E extends AceClawEvent> Subscription subscribe(
             Class<E> eventType, EventHandler<E> handler) {
         return subscribe(eventType, handler, DEFAULT_QUEUE_CAPACITY);
     }
 
     @Override
-    public <E extends ChelavaEvent> Subscription subscribe(
+    public <E extends AceClawEvent> Subscription subscribe(
             Class<E> eventType, EventHandler<E> handler, int queueCapacity) {
         var queue = new ArrayBlockingQueue<E>(queueCapacity);
         var active = new AtomicBoolean(true);
@@ -4900,8 +4900,8 @@ public class InProcessEventBus implements EventBus {
     }
 
     @Override
-    public Subscription subscribeAll(EventHandler<ChelavaEvent> handler) {
-        var queue = new ArrayBlockingQueue<ChelavaEvent>(DEFAULT_QUEUE_CAPACITY);
+    public Subscription subscribeAll(EventHandler<AceClawEvent> handler) {
+        var queue = new ArrayBlockingQueue<AceClawEvent>(DEFAULT_QUEUE_CAPACITY);
         var active = new AtomicBoolean(true);
 
         var consumerThread = Thread.startVirtualThread(() -> {
@@ -4919,7 +4919,7 @@ public class InProcessEventBus implements EventBus {
             }
         });
 
-        var entry = new SubscriberEntry<>(ChelavaEvent.class, queue, handler,
+        var entry = new SubscriberEntry<>(AceClawEvent.class, queue, handler,
             consumerThread, active);
         globalSubscribers.add(entry);
 
@@ -4963,7 +4963,7 @@ public class InProcessEventBus implements EventBus {
 
 ### 21.1 Overview
 
-Graceful shutdown ensures that Chelava cleanly terminates all operations, persists state, and releases resources when stopping. This is critical for preventing data loss (unsaved memory, incomplete transcripts) and resource leaks (orphaned MCP server processes, dangling virtual threads).
+Graceful shutdown ensures that AceClaw cleanly terminates all operations, persists state, and releases resources when stopping. This is critical for preventing data loss (unsaved memory, incomplete transcripts) and resource leaks (orphaned MCP server processes, dangling virtual threads).
 
 ### 21.2 Shutdown Phases
 
@@ -5098,7 +5098,7 @@ public interface ShutdownParticipant {
 
 ### 22.1 Overview
 
-Error recovery mechanisms ensure Chelava degrades gracefully when components fail. Inspired by patterns from resilient distributed systems, Chelava uses circuit breakers for external service calls (LLM APIs, MCP servers) and recovery strategies for internal failures.
+Error recovery mechanisms ensure AceClaw degrades gracefully when components fail. Inspired by patterns from resilient distributed systems, AceClaw uses circuit breakers for external service calls (LLM APIs, MCP servers) and recovery strategies for internal failures.
 
 ### 22.2 Circuit Breaker
 
@@ -5284,56 +5284,56 @@ public class RetryPolicies {
 
 ## 23. Module Updates
 
-### 23.1 New Module: chelava-infra
+### 23.1 New Module: aceclaw-infra
 
-The infrastructure components (gateway, health monitoring, scheduler, event bus, circuit breakers, graceful shutdown) are grouped into a new `chelava-infra` module:
+The infrastructure components (gateway, health monitoring, scheduler, event bus, circuit breakers, graceful shutdown) are grouped into a new `aceclaw-infra` module:
 
 ```
-chelava/
-  chelava-bom/              # Bill of Materials (dependency management)
-  chelava-core/             # Agent loop, tool system, LLM client abstractions
-  chelava-infra/            # Gateway, event bus, health, scheduler, shutdown  [NEW]
-  chelava-llm/              # LLM provider implementations (Anthropic, OpenAI, etc.)
-  chelava-tools/            # Built-in tools (file, bash, search, web, git)
-  chelava-memory/           # Context management, auto-memory, self-learning
-  chelava-security/         # Permission system, sandbox, audit logging
-  chelava-mcp/              # MCP protocol client/server implementation
-  chelava-cli/              # Terminal UI, CLI parsing, REPL
-  chelava-sdk/              # Extension API for plugins and custom tools
-  chelava-server/           # HTTP/WebSocket server for IDE integrations
-  chelava-test/             # Test utilities and fixtures
+aceclaw/
+  aceclaw-bom/              # Bill of Materials (dependency management)
+  aceclaw-core/             # Agent loop, tool system, LLM client abstractions
+  aceclaw-infra/            # Gateway, event bus, health, scheduler, shutdown  [NEW]
+  aceclaw-llm/              # LLM provider implementations (Anthropic, OpenAI, etc.)
+  aceclaw-tools/            # Built-in tools (file, bash, search, web, git)
+  aceclaw-memory/           # Context management, auto-memory, self-learning
+  aceclaw-security/         # Permission system, sandbox, audit logging
+  aceclaw-mcp/              # MCP protocol client/server implementation
+  aceclaw-cli/              # Terminal UI, CLI parsing, REPL
+  aceclaw-sdk/              # Extension API for plugins and custom tools
+  aceclaw-server/           # HTTP/WebSocket server for IDE integrations
+  aceclaw-test/             # Test utilities and fixtures
 ```
 
 ### 23.2 Updated Module Dependency Graph
 
 ```
-chelava-cli ──> chelava-core ──> chelava-sdk (API contracts)
+aceclaw-cli ──> aceclaw-core ──> aceclaw-sdk (API contracts)
      |               |                  ^
      |               |                  |
      v               v                  |
-chelava-server  chelava-llm        chelava-tools
+aceclaw-server  aceclaw-llm        aceclaw-tools
      |               |                  |
      v               v                  v
-chelava-mcp    chelava-memory     chelava-security
+aceclaw-mcp    aceclaw-memory     aceclaw-security
                      |
                      v
-              chelava-infra (gateway, events, health, scheduler)
+              aceclaw-infra (gateway, events, health, scheduler)
                      ^
                      |
-              chelava-core (depends on infra for lifecycle)
+              aceclaw-core (depends on infra for lifecycle)
 ```
 
-### 23.3 chelava-infra Module Contents
+### 23.3 aceclaw-infra Module Contents
 
 | Package | Components | Responsibility |
 |---------|-----------|---------------|
-| `com.chelava.infra.gateway` | Gateway, ConnectionManager, RequestRouter | Central control plane |
-| `com.chelava.infra.health` | HealthMonitor, HealthCheckable, Heartbeat | Component health tracking |
-| `com.chelava.infra.scheduler` | Scheduler, ScheduledTask, SchedulePolicy | Periodic task execution |
-| `com.chelava.infra.events` | EventBus, ChelavaEvent, EventHandler | Internal event communication |
-| `com.chelava.infra.resilience` | CircuitBreaker, RetryPolicy, FailoverLLMClient | Error recovery |
-| `com.chelava.infra.lifecycle` | GracefulShutdownManager, ShutdownParticipant | Clean process termination |
-| `com.chelava.infra.messaging` | MessageQueue, AgentMessage, MessageHandler, QueueConfig, TopicConfig | Inter-agent message queue |
+| `com.aceclaw.infra.gateway` | Gateway, ConnectionManager, RequestRouter | Central control plane |
+| `com.aceclaw.infra.health` | HealthMonitor, HealthCheckable, Heartbeat | Component health tracking |
+| `com.aceclaw.infra.scheduler` | Scheduler, ScheduledTask, SchedulePolicy | Periodic task execution |
+| `com.aceclaw.infra.events` | EventBus, AceClawEvent, EventHandler | Internal event communication |
+| `com.aceclaw.infra.resilience` | CircuitBreaker, RetryPolicy, FailoverLLMClient | Error recovery |
+| `com.aceclaw.infra.lifecycle` | GracefulShutdownManager, ShutdownParticipant | Clean process termination |
+| `com.aceclaw.infra.messaging` | MessageQueue, AgentMessage, MessageHandler, QueueConfig, TopicConfig | Inter-agent message queue |
 
 ### 23.4 Design Principles
 
@@ -5349,7 +5349,7 @@ chelava-mcp    chelava-memory     chelava-security
 
 ## 24. Conclusion
 
-Chelava's architecture leverages Java's modern capabilities to deliver a coding agent that is:
+AceClaw's architecture leverages Java's modern capabilities to deliver a coding agent that is:
 
 1. **Faster at parallel tasks**: Virtual threads enable true concurrent tool execution, parallel memory retrieval, and in-process agent teams
 2. **Safer by design**: Type system, structured concurrency, permission system, OS-level sandbox, and hook-based quality gates prevent entire classes of bugs
@@ -5361,6 +5361,6 @@ Chelava's architecture leverages Java's modern capabilities to deliver a coding 
 8. **Resilient**: Gateway control plane, circuit breakers, health monitoring, and graceful shutdown ensure production-grade reliability
 9. **Observable**: Type-safe event bus with virtual thread-based subscribers enables comprehensive monitoring and debugging
 
-The architecture is designed to be built incrementally across 4 phases (18 weeks), with a working agent in Phase 1 and progressive enhancement through Phase 4. The 12 modules (including the new `chelava-infra`) have clear boundaries and well-defined interfaces, enabling parallel development and independent testing. The infrastructure layer (gateway, event bus, message queue, health monitoring, scheduler, circuit breakers, graceful shutdown) provides the operational backbone that distinguishes a production system from a prototype.
+The architecture is designed to be built incrementally across 4 phases (18 weeks), with a working agent in Phase 1 and progressive enhancement through Phase 4. The 12 modules (including the new `aceclaw-infra`) have clear boundaries and well-defined interfaces, enabling parallel development and independent testing. The infrastructure layer (gateway, event bus, message queue, health monitoring, scheduler, circuit breakers, graceful shutdown) provides the operational backbone that distinguishes a production system from a prototype.
 
-The design deliberately mirrors proven patterns from Claude Code and OpenClaw while exploiting Java's unique strengths in concurrency, type safety, and enterprise tooling. Where OpenClaw uses a WebSocket gateway with TypeScript event emitters, Chelava uses virtual thread-powered connection management with BlockingQueue-based event delivery. Where Claude Code and OpenClaw use direct Mailbox-style messaging for agent teams, Chelava uses an in-process message queue with topic-based pub/sub, dead letter queues, and request-reply patterns for truly decoupled inter-agent communication. Where OpenClaw uses a static skill registry (ClawHub), Chelava implements an adaptive skills system that learns from usage, auto-generates skills from detected patterns, and refines skills based on failure analysis. Every infrastructure component is designed for zero external dependencies, GraalVM native image compatibility, and sealed type safety.
+The design deliberately mirrors proven patterns from Claude Code and OpenClaw while exploiting Java's unique strengths in concurrency, type safety, and enterprise tooling. Where OpenClaw uses a WebSocket gateway with TypeScript event emitters, AceClaw uses virtual thread-powered connection management with BlockingQueue-based event delivery. Where Claude Code and OpenClaw use direct Mailbox-style messaging for agent teams, AceClaw uses an in-process message queue with topic-based pub/sub, dead letter queues, and request-reply patterns for truly decoupled inter-agent communication. Where OpenClaw uses a static skill registry (ClawHub), AceClaw implements an adaptive skills system that learns from usage, auto-generates skills from detected patterns, and refines skills based on failure analysis. Every infrastructure component is designed for zero external dependencies, GraalVM native image compatibility, and sealed type safety.

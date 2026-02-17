@@ -1,8 +1,8 @@
-# Chelava Daemon Architecture — Device as Agent
+# AceClaw Daemon Architecture — Device as Agent
 
 ## 1. Executive Summary
 
-Chelava is not just a CLI tool you invoke and dismiss. **Chelava is a persistent, always-on AI agent that lives on your device.** The daemon is the heart of the system — a single long-lived JVM process that manages all sessions, memory, scheduling, and infrastructure. CLI sessions, IDE plugins, and future clients are all **thin clients** that connect to this daemon.
+AceClaw is not just a CLI tool you invoke and dismiss. **AceClaw is a persistent, always-on AI agent that lives on your device.** The daemon is the heart of the system — a single long-lived JVM process that manages all sessions, memory, scheduling, and infrastructure. CLI sessions, IDE plugins, and future clients are all **thin clients** that connect to this daemon.
 
 This document defines the unified startup architecture, daemon lifecycle, and the "Device as Agent" paradigm.
 
@@ -10,10 +10,10 @@ This document defines the unified startup architecture, daemon lifecycle, and th
 
 ```
 BEFORE (CLI-first, Gateway optional):
-  User types `chelava` → starts REPL → does work → exits → everything dies
+  User types `aceclaw` → starts REPL → does work → exits → everything dies
 
 AFTER (Daemon-first, CLI is a client):
-  Daemon runs always → User types `chelava` → connects to daemon → does work → disconnects → daemon lives on
+  Daemon runs always → User types `aceclaw` → connects to daemon → does work → disconnects → daemon lives on
 ```
 
 ### Why Daemon-First?
@@ -33,7 +33,7 @@ AFTER (Daemon-first, CLI is a client):
 
 ### 2.1 Vision
 
-Your device IS the agent. Chelava runs as a system daemon, just like Docker Desktop, Tailscale, or Ollama. It:
+Your device IS the agent. AceClaw runs as a system daemon, just like Docker Desktop, Tailscale, or Ollama. It:
 
 - **Learns continuously** — consolidates auto-memory, refines skills, indexes codebases during idle periods
 - **Acts proactively** — runs scheduled tasks (HEARTBEAT.md, cron jobs), monitors repositories, watches for CI failures
@@ -43,9 +43,9 @@ Your device IS the agent. Chelava runs as a system daemon, just like Docker Desk
 
 ### 2.2 Comparison with OpenClaw
 
-| Aspect | OpenClaw | Chelava Daemon |
+| Aspect | OpenClaw | AceClaw Daemon |
 |--------|---------|----------------|
-| Process | `openclaw gateway` — single Node.js | `chelava daemon` — single JVM (GraalVM native) |
+| Process | `openclaw gateway` — single Node.js | `aceclaw daemon` — single JVM (GraalVM native) |
 | Protocol | WebSocket (ws://127.0.0.1:18789) | Unix Domain Socket (default) + WebSocket (optional) |
 | Clients | 15+ messaging platforms | CLI, IDE plugins, MCP, Web UI, messaging (extensible) |
 | Concurrency | Single-threaded event loop | Virtual threads — true parallel agent execution |
@@ -62,47 +62,47 @@ Your device IS the agent. Chelava runs as a system daemon, just like Docker Desk
 ### 3.1 Three Modes
 
 ```
-chelava                      → CLI Interactive (default)
+aceclaw                      → CLI Interactive (default)
   - Auto-starts daemon if not running
   - Connects to daemon via Unix Domain Socket
   - Opens an interactive REPL session
   - Disconnecting leaves daemon alive
 
-chelava daemon               → Daemon Explicit Start
+aceclaw daemon               → Daemon Explicit Start
   - Starts the daemon in foreground (for systemd/launchd)
   - Full infrastructure: Gateway + EventBus + Scheduler + Health + Memory
 
-chelava daemon --background  → Daemon Background
+aceclaw daemon --background  → Daemon Background
   - Forks and daemonizes
-  - Writes PID to ~/.chelava/chelava.pid
-  - Logs to ~/.chelava/logs/daemon.log
+  - Writes PID to ~/.aceclaw/aceclaw.pid
+  - Logs to ~/.aceclaw/logs/daemon.log
 
-chelava <prompt>             → One-shot Mode
+aceclaw <prompt>             → One-shot Mode
   - Auto-starts daemon if not running
   - Sends prompt, waits for response, exits
   - Daemon stays alive
 
-chelava daemon stop          → Graceful Shutdown
+aceclaw daemon stop          → Graceful Shutdown
   - Sends shutdown signal to daemon
   - Waits for in-flight sessions to complete
   - Persists all state
 
-chelava daemon status        → Status Check
+aceclaw daemon status        → Status Check
   - Shows daemon health, active sessions, memory usage
 ```
 
 ### 3.2 Auto-Start Behavior
 
-When a user types `chelava` (CLI mode), the startup sequence is:
+When a user types `aceclaw` (CLI mode), the startup sequence is:
 
 ```
-1. Probe Unix socket at ~/.chelava/chelava.sock
+1. Probe Unix socket at ~/.aceclaw/aceclaw.sock
    |
    +-- Socket responds? → Connect as client → Open REPL session
    |
    +-- No socket / no response?
        |
-       +-- Check PID file at ~/.chelava/chelava.pid
+       +-- Check PID file at ~/.aceclaw/aceclaw.pid
        |   |
        |   +-- PID alive? → Socket might be starting → retry (3x, 500ms)
        |   +-- PID dead? → Remove stale PID file
@@ -120,9 +120,9 @@ Only one daemon per user. Lock mechanism (inspired by OpenClaw's `gateway-lock.t
 
 ```java
 public class DaemonLock {
-    private static final Path LOCK_FILE = CHELAVA_HOME.resolve("chelava.lock");
-    private static final Path PID_FILE = CHELAVA_HOME.resolve("chelava.pid");
-    private static final Path SOCKET_PATH = CHELAVA_HOME.resolve("chelava.sock");
+    private static final Path LOCK_FILE = ACECLAW_HOME.resolve("aceclaw.lock");
+    private static final Path PID_FILE = ACECLAW_HOME.resolve("aceclaw.pid");
+    private static final Path SOCKET_PATH = ACECLAW_HOME.resolve("aceclaw.sock");
 
     public sealed interface LockResult permits
         LockResult.Acquired,
@@ -150,7 +150,7 @@ public class DaemonLock {
 ### 4.1 Component Hierarchy
 
 ```
-Chelava Daemon Process (JVM / GraalVM Native)
+AceClaw Daemon Process (JVM / GraalVM Native)
 |
 +-- DaemonLock (single instance enforcement)
 |
@@ -178,7 +178,7 @@ Chelava Daemon Process (JVM / GraalVM Native)
 |   +-- CircuitBreaker (LLM API resilience)
 |
 +-- MemorySubsystem
-|   +-- ProjectMemory (CHELAVA.md)
+|   +-- ProjectMemory (ACECLAW.md)
 |   +-- AutoMemory (self-learning)
 |   +-- ConversationStore (session persistence)
 |   +-- MemoryConsolidator (idle-time background learning)
@@ -200,7 +200,7 @@ Chelava Daemon Process (JVM / GraalVM Native)
 ### 4.2 Boot Sequence
 
 ```java
-public class ChelavaDaemon {
+public class AceClawDaemon {
 
     public void start(DaemonConfig config) {
         // Phase 1: Lock & Initialize (0-10ms)
@@ -254,7 +254,7 @@ public class ChelavaDaemon {
 
         // Phase 9: Ready
         eventBus.publish(new SystemEvent.DaemonReady(Instant.now()));
-        log.info("Chelava daemon ready (PID {}, socket {})",
+        log.info("AceClaw daemon ready (PID {}, socket {})",
             ProcessHandle.current().pid(), SOCKET_PATH);
     }
 }
@@ -279,7 +279,7 @@ Why UDS over TCP:
 var serverChannel = ServerSocketChannel.open(StandardProtocolFamily.UNIX);
 serverChannel.bind(new UnixDomainSocketAddress(SOCKET_PATH));
 
-// Client side (chelava CLI)
+// Client side (aceclaw CLI)
 var clientChannel = SocketChannel.open(StandardProtocolFamily.UNIX);
 clientChannel.connect(new UnixDomainSocketAddress(SOCKET_PATH));
 ```
@@ -287,8 +287,8 @@ clientChannel.connect(new UnixDomainSocketAddress(SOCKET_PATH));
 ### 5.2 Transport: WebSocket (Secondary, Optional)
 
 For IDE plugins and remote clients:
-- Enabled via `chelava daemon --websocket --port 18790`
-- Authenticated via token (generated at daemon start, stored in `~/.chelava/auth-token`)
+- Enabled via `aceclaw daemon --websocket --port 18790`
+- Authenticated via token (generated at daemon start, stored in `~/.aceclaw/auth-token`)
 - TLS optional (for remote access)
 
 ### 5.3 Protocol: JSON-RPC 2.0
@@ -431,7 +431,7 @@ public class HeartbeatRunner {
             if (!isWithinActiveHours(config.activeHours())) return;
 
             // Load HEARTBEAT.md
-            Path heartbeatFile = config.projectRoot().resolve(".chelava/HEARTBEAT.md");
+            Path heartbeatFile = config.projectRoot().resolve(".aceclaw/HEARTBEAT.md");
             String instructions = Files.readString(heartbeatFile);
             if (instructions.isBlank()) return;
 
@@ -448,7 +448,7 @@ public class HeartbeatRunner {
 
 ### 7.2 Cron Scheduler
 
-Persistent cron jobs stored in `~/.chelava/cron/jobs.json`:
+Persistent cron jobs stored in `~/.aceclaw/cron/jobs.json`:
 
 ```java
 public sealed interface CronSchedule permits
@@ -556,8 +556,8 @@ public sealed interface WatchTrigger permits
 The CLI is now a **thin client** that connects to the daemon:
 
 ```java
-@Command(name = "chelava", description = "AI Coding Agent")
-public class ChelavaCommand implements Runnable {
+@Command(name = "aceclaw", description = "AI Coding Agent")
+public class AceClawCommand implements Runnable {
 
     @Command(name = "daemon")
     public static class DaemonCommand {
@@ -565,7 +565,7 @@ public class ChelavaCommand implements Runnable {
         public void start(@Option(names = "--background") boolean bg,
                           @Option(names = "--websocket") boolean ws,
                           @Option(names = "--port") int port) {
-            new ChelavaDaemon().start(buildConfig(bg, ws, port));
+            new AceClawDaemon().start(buildConfig(bg, ws, port));
         }
 
         @Command(name = "stop")
@@ -591,7 +591,7 @@ public class ChelavaCommand implements Runnable {
     @Parameters(description = "One-shot prompt")
     String prompt;
 
-    // chelava "add auth" → one-shot mode
+    // aceclaw "add auth" → one-shot mode
     public void runOneShot() {
         var client = ensureDaemonRunning();
         var session = client.createSession(detectProject());
@@ -612,7 +612,7 @@ public class TerminalREPL {
 
     public void run() {
         while (true) {
-            String input = reader.readLine("chelava> ");
+            String input = reader.readLine("aceclaw> ");
 
             if (input.startsWith("/")) {
                 handleSlashCommand(input);
@@ -638,13 +638,13 @@ public class TerminalREPL {
 
 | Data | Storage | Survives Restart? |
 |------|---------|------------------|
-| Session conversations | `~/.chelava/sessions/{id}.jsonl` | Yes |
-| Auto-memory | `~/.chelava/memory/` (HMAC-signed) | Yes |
-| Project memory | `.chelava/CHELAVA.md` | Yes |
-| Cron jobs | `~/.chelava/cron/jobs.json` | Yes |
-| Skill definitions | `.chelava/skills/` | Yes |
-| Skill metrics | `.chelava/skills/*.metrics.json` | Yes |
-| Active agent teams | `~/.chelava/teams/` | Yes (resumed on restart) |
+| Session conversations | `~/.aceclaw/sessions/{id}.jsonl` | Yes |
+| Auto-memory | `~/.aceclaw/memory/` (HMAC-signed) | Yes |
+| Project memory | `.aceclaw/ACECLAW.md` | Yes |
+| Cron jobs | `~/.aceclaw/cron/jobs.json` | Yes |
+| Skill definitions | `.aceclaw/skills/` | Yes |
+| Skill metrics | `.aceclaw/skills/*.metrics.json` | Yes |
+| Active agent teams | `~/.aceclaw/teams/` | Yes (resumed on restart) |
 | In-flight tool executions | N/A | No (re-executed) |
 | Event bus subscribers | N/A | No (re-registered on boot) |
 | Circuit breaker state | N/A | No (reset to CLOSED) |
@@ -679,16 +679,16 @@ SIGTERM / admin.shutdown received
 ### 10.1 macOS (launchd)
 
 ```xml
-<!-- ~/Library/LaunchAgents/com.chelava.daemon.plist -->
+<!-- ~/Library/LaunchAgents/com.aceclaw.daemon.plist -->
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "...">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.chelava.daemon</string>
+    <string>com.aceclaw.daemon</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/chelava</string>
+        <string>/usr/local/bin/aceclaw</string>
         <string>daemon</string>
         <string>start</string>
     </array>
@@ -697,9 +697,9 @@ SIGTERM / admin.shutdown received
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/Users/{user}/.chelava/logs/daemon.log</string>
+    <string>/Users/{user}/.aceclaw/logs/daemon.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/{user}/.chelava/logs/daemon-error.log</string>
+    <string>/Users/{user}/.aceclaw/logs/daemon-error.log</string>
 </dict>
 </plist>
 ```
@@ -707,15 +707,15 @@ SIGTERM / admin.shutdown received
 ### 10.2 Linux (systemd)
 
 ```ini
-# ~/.config/systemd/user/chelava.service
+# ~/.config/systemd/user/aceclaw.service
 [Unit]
-Description=Chelava AI Coding Agent Daemon
+Description=AceClaw AI Coding Agent Daemon
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/chelava daemon start
-ExecStop=/usr/local/bin/chelava daemon stop
+ExecStart=/usr/local/bin/aceclaw daemon start
+ExecStop=/usr/local/bin/aceclaw daemon stop
 Restart=on-failure
 RestartSec=5
 
@@ -727,13 +727,13 @@ WantedBy=default.target
 
 ```bash
 # macOS: register as login item
-chelava daemon install    # Creates launchd plist + loads it
+aceclaw daemon install    # Creates launchd plist + loads it
 
 # Linux: register as user service
-chelava daemon install    # Creates systemd unit + enables it
+aceclaw daemon install    # Creates systemd unit + enables it
 
 # Both: uninstall
-chelava daemon uninstall  # Stops + removes service registration
+aceclaw daemon uninstall  # Stops + removes service registration
 ```
 
 ---
@@ -741,13 +741,13 @@ chelava daemon uninstall  # Stops + removes service registration
 ## 11. Filesystem Layout
 
 ```
-~/.chelava/
-  chelava.lock            # Instance lock (PID + timestamp)
-  chelava.pid             # Daemon PID
-  chelava.sock            # Unix Domain Socket
+~/.aceclaw/
+  aceclaw.lock            # Instance lock (PID + timestamp)
+  aceclaw.pid             # Daemon PID
+  aceclaw.sock            # Unix Domain Socket
   auth-token              # WebSocket authentication token
   config.json             # Global configuration
-  CHELAVA.md              # Global user instructions
+  ACECLAW.md              # Global user instructions
   logs/
     daemon.log            # Daemon stdout log
     daemon-error.log      # Daemon stderr log
@@ -774,8 +774,8 @@ chelava daemon uninstall  # Stops + removes service registration
       metrics.json        # Skill performance metrics
   mcp-servers.json        # MCP server configurations
 
-{project}/.chelava/
-  CHELAVA.md              # Project-specific instructions
+{project}/.aceclaw/
+  ACECLAW.md              # Project-specific instructions
   config.json             # Project-specific settings
   HEARTBEAT.md            # Periodic heartbeat instructions
   BOOT.md                 # Boot-time initialization script
@@ -793,10 +793,10 @@ chelava daemon uninstall  # Stops + removes service registration
 
 | Phase | Daemon Scope |
 |-------|-------------|
-| **Phase 1 (Weeks 1-4)** | **Daemon bootstrap** (lock, PID, signal handling), Unix Domain Socket listener, single-session support, auto-start from CLI, `chelava daemon start/stop/status` |
+| **Phase 1 (Weeks 1-4)** | **Daemon bootstrap** (lock, PID, signal handling), Unix Domain Socket listener, single-session support, auto-start from CLI, `aceclaw daemon start/stop/status` |
 | **Phase 2 (Weeks 5-8)** | Multi-session support, session persistence/resume, cron scheduler, heartbeat runner (HEARTBEAT.md), background memory consolidation, BOOT.md execution |
 | **Phase 3 (Weeks 9-12)** | WebSocket listener (IDE integration), JSON-RPC protocol (full method set), MCP server management, skill refinement in idle time, codebase indexing |
-| **Phase 4 (Weeks 13-18)** | `chelava daemon install` (launchd/systemd), Agent Teams persistence (survive client disconnect), file watchers, remote access (TLS + auth), Web UI backend |
+| **Phase 4 (Weeks 13-18)** | `aceclaw daemon install` (launchd/systemd), Agent Teams persistence (survive client disconnect), file watchers, remote access (TLS + auth), Web UI backend |
 
 ---
 

@@ -1,10 +1,10 @@
-# Chelava Security Architecture & Threat Model
+# AceClaw Security Architecture & Threat Model
 
 ## Executive Summary
 
-Chelava is a Java-based AI coding agent that executes arbitrary tools (bash commands, file operations, web requests, MCP server calls) on behalf of users. This document defines the comprehensive security architecture, threat model, permission system, and mitigation strategies for Chelava. Security is a first-class design concern: every component is built with defense-in-depth, least privilege, and fail-closed principles.
+AceClaw is a Java-based AI coding agent that executes arbitrary tools (bash commands, file operations, web requests, MCP server calls) on behalf of users. This document defines the comprehensive security architecture, threat model, permission system, and mitigation strategies for AceClaw. Security is a first-class design concern: every component is built with defense-in-depth, least privilege, and fail-closed principles.
 
-**Lessons from the field**: OpenClaw (157K+ GitHub stars, TypeScript-based AI agent) suffered critical security failures within 48 hours of going viral in January 2026 -- hundreds of publicly accessible installations leaking API keys, prompt injection attacks, malicious skills containing credential stealers, and unrestricted shell command execution. Claude Code addressed similar concerns through OS-level sandboxing (Seatbelt on macOS, bubblewrap on Linux), reducing permission prompts by 84% while maintaining security. Chelava must learn from both.
+**Lessons from the field**: OpenClaw (157K+ GitHub stars, TypeScript-based AI agent) suffered critical security failures within 48 hours of going viral in January 2026 -- hundreds of publicly accessible installations leaking API keys, prompt injection attacks, malicious skills containing credential stealers, and unrestricted shell command execution. Claude Code addressed similar concerns through OS-level sandboxing (Seatbelt on macOS, bubblewrap on Linux), reducing permission prompts by 84% while maintaining security. AceClaw must learn from both.
 
 Java provides significant security advantages over TypeScript/Node.js implementations (OpenClaw, Claude Code): strong static typing, sealed class hierarchies for exhaustive permission modeling, the Java Platform Module System (JPMS) for encapsulation, and mature ecosystem libraries for cryptography, keyring integration, and sandboxing.
 
@@ -180,11 +180,11 @@ public final class SecretString {
 
 ### 2.1 Architecture Overview
 
-Chelava implements a **tiered permission model** with four levels, evaluated at both tool-level and resource-level granularity. The permission system is the primary security boundary between the agent and the host system.
+AceClaw implements a **tiered permission model** with four levels, evaluated at both tool-level and resource-level granularity. The permission system is the primary security boundary between the agent and the host system.
 
 ```
 Permission Resolution Chain:
-  Global Defaults -> Profile Overrides -> Project Settings (.chelava/permissions.json)
+  Global Defaults -> Profile Overrides -> Project Settings (.aceclaw/permissions.json)
   -> Session Overrides -> Runtime User Decisions
 ```
 
@@ -270,7 +270,7 @@ public sealed interface ResourcePermission permits
 
 ### 2.5 Session Permission Modes
 
-Inspired by Claude Code's permission modes, Chelava supports session-level autonomy settings:
+Inspired by Claude Code's permission modes, AceClaw supports session-level autonomy settings:
 
 | Mode | Description | Risk Level |
 |------|------------|------------|
@@ -285,9 +285,9 @@ These modes compose with the 4-tier permission system: even in Auto-Accept mode,
 ### 2.6 Permission Persistence and Revocation
 
 - **Session permissions**: Cached in memory, cleared on session end
-- **Project permissions**: Stored in `.chelava/permissions.json` within the project
-- **Global permissions**: Stored in `~/.chelava/settings.json`
-- **Managed permissions**: Enterprise-managed via `~/.chelava/managed-settings.json` (read-only)
+- **Project permissions**: Stored in `.aceclaw/permissions.json` within the project
+- **Global permissions**: Stored in `~/.aceclaw/settings.json`
+- **Managed permissions**: Enterprise-managed via `~/.aceclaw/managed-settings.json` (read-only)
 - **Revocation**: Users can revoke any permission at any time via `/permissions` command
 - **Expiration**: PromptOnce decisions expire after configurable timeout (default: session lifetime)
 
@@ -329,13 +329,13 @@ public class PermissionResolver {
 
 ### 3.1 Overview
 
-Chelava implements OS-level sandboxing for all bash command execution, providing filesystem and network isolation. The sandbox ensures that even if the agent is manipulated via prompt injection, the blast radius is contained.
+AceClaw implements OS-level sandboxing for all bash command execution, providing filesystem and network isolation. The sandbox ensures that even if the agent is manipulated via prompt injection, the blast radius is contained.
 
 ### 3.2 Sandbox Architecture
 
 ```
 +-----------------------------------------------------+
-|  Chelava JVM Process (Host)                         |
+|  AceClaw JVM Process (Host)                         |
 |                                                      |
 |  +------------------+   +------------------------+  |
 |  | Permission Engine |   | Sandbox Controller     |  |
@@ -401,11 +401,11 @@ public record SandboxFilesystemPolicy(
                 Path.of(System.getProperty("user.home"), ".ssh"),
                 Path.of(System.getProperty("user.home"), ".aws"),
                 Path.of(System.getProperty("user.home"), ".gnupg"),
-                Path.of(System.getProperty("user.home"), ".chelava", "credentials"),
+                Path.of(System.getProperty("user.home"), ".aceclaw", "credentials"),
                 Path.of("/etc/shadow"),
                 Path.of("/etc/passwd")
             ),
-            Path.of("/tmp/chelava-sandbox-" + ProcessHandle.current().pid()),
+            Path.of("/tmp/aceclaw-sandbox-" + ProcessHandle.current().pid()),
             true
         );
     }
@@ -482,7 +482,7 @@ public record ResourceLimits(
 
 ### 4.1 API Key Storage
 
-Chelava uses platform-native credential storage via the `java-keyring` library:
+AceClaw uses platform-native credential storage via the `java-keyring` library:
 
 | Platform | Backend | Security Level |
 |----------|---------|---------------|
@@ -493,7 +493,7 @@ Chelava uses platform-native credential storage via the `java-keyring` library:
 ```java
 public class CredentialManager {
     private final Keyring keyring;
-    private static final String SERVICE_NAME = "chelava";
+    private static final String SERVICE_NAME = "aceclaw";
 
     public void storeApiKey(String provider, SecretString apiKey) {
         keyring.setPassword(SERVICE_NAME, provider, new String(apiKey.expose()));
@@ -520,7 +520,7 @@ public class CredentialManager {
 - Agent subprocess inherits a **filtered** environment: only explicitly allowed variables pass through
 - Default allowed: `PATH`, `HOME`, `LANG`, `TERM`, `SHELL`, `EDITOR`, tool-specific vars
 - Default denied: `AWS_*`, `GITHUB_TOKEN`, `NPM_TOKEN`, `SSH_*`, any variable matching secret patterns
-- Configurable via `~/.chelava/settings.json` and project `.chelava/settings.json`
+- Configurable via `~/.aceclaw/settings.json` and project `.aceclaw/settings.json`
 
 ```java
 public class EnvironmentFilter {
@@ -649,7 +649,7 @@ public sealed interface AuditEvent permits
 
 ### 5.2 Audit Log Storage
 
-- **Default**: `~/.chelava/audit/` directory with daily rotation
+- **Default**: `~/.aceclaw/audit/` directory with daily rotation
 - **Format**: JSON Lines (one event per line) for easy parsing
 - **Retention**: Configurable, default 30 days
 - **Integrity**: Each log entry includes HMAC-SHA256 signature for tamper detection
@@ -728,33 +728,33 @@ public String describe(PermissionDecision decision) {
 JPMS provides strong encapsulation boundaries:
 
 ```
-module chelava.security {
-    exports com.chelava.security.api;           // Public API only
-    exports com.chelava.security.permission;    // Permission types
+module aceclaw.security {
+    exports com.aceclaw.security.api;           // Public API only
+    exports com.aceclaw.security.permission;    // Permission types
 
     // Internal implementation is truly hidden
     // No reflection access to internals without explicit opens
 
-    requires chelava.core;
+    requires aceclaw.core;
     requires java.logging;
-    requires transitive chelava.audit;
+    requires transitive aceclaw.audit;
 }
 
-module chelava.sandbox {
-    exports com.chelava.sandbox.api;
+module aceclaw.sandbox {
+    exports com.aceclaw.sandbox.api;
 
-    requires chelava.security;
-    requires chelava.core;
+    requires aceclaw.security;
+    requires aceclaw.core;
 
     // Sandbox internals cannot be accessed by other modules
 }
 
-module chelava.mcp {
-    exports com.chelava.mcp.api;
-    exports com.chelava.mcp.client;
+module aceclaw.mcp {
+    exports com.aceclaw.mcp.api;
+    exports com.aceclaw.mcp.client;
 
-    requires chelava.security;
-    requires chelava.sandbox;
+    requires aceclaw.security;
+    requires aceclaw.sandbox;
 
     // MCP protocol internals hidden from other modules
 }
@@ -929,7 +929,7 @@ Installation -> Verification -> Configuration -> Runtime -> Audit
 
 ### 8.1 Memory File Security
 
-Chelava's self-learning system (MEMORY.md and related files) requires protection against tampering:
+AceClaw's self-learning system (MEMORY.md and related files) requires protection against tampering:
 
 ```java
 public class SecureMemoryStore {
@@ -995,7 +995,7 @@ Memory files can be vectors for persistent prompt injection:
 - Memory directory: `700` (owner read/write/execute only)
 - Memory files: `600` (owner read/write only)
 - Signature files: `400` (owner read only)
-- Memory directory location: `~/.chelava/projects/<project-hash>/memory/`
+- Memory directory location: `~/.aceclaw/projects/<project-hash>/memory/`
 
 ---
 
@@ -1003,7 +1003,7 @@ Memory files can be vectors for persistent prompt injection:
 
 ### 9.1 Security-Relevant Hooks
 
-Following the Claude Code hook system architecture, Chelava's hook system provides deterministic security enforcement at lifecycle points:
+Following the Claude Code hook system architecture, AceClaw's hook system provides deterministic security enforcement at lifecycle points:
 
 | Hook Event | Security Purpose | Example |
 |------------|-----------------|---------|
@@ -1017,12 +1017,12 @@ Following the Claude Code hook system architecture, Chelava's hook system provid
 
 ### 9.2 Hook Security Constraints
 
-- Hooks execute with the same privileges as the Chelava process (not sandboxed by default)
+- Hooks execute with the same privileges as the AceClaw process (not sandboxed by default)
 - Hook configuration files must have restrictive permissions (`600`)
 - Hooks from plugins execute in sandbox by default
 - Hook commands are displayed to users during configuration for review
 - Hook input modification (PreToolUse) requires explicit opt-in per project
-- Malicious hooks in shared `.chelava/settings.json` are a supply chain vector; warn users when project hooks differ from global settings
+- Malicious hooks in shared `.aceclaw/settings.json` are a supply chain vector; warn users when project hooks differ from global settings
 
 ### 9.3 Hook-Based Security Enforcement
 
@@ -1099,7 +1099,7 @@ public class SecurityHookEngine {
     },
     "audit": {
       "enabled": true,
-      "directory": "~/.chelava/audit",
+      "directory": "~/.aceclaw/audit",
       "retentionDays": 30,
       "integrityChecks": true,
       "sessionRecording": true
@@ -1183,7 +1183,7 @@ The following properties must always hold:
 
 ## 12. Comparison with Existing Solutions
 
-| Security Feature | Chelava (Java) | Claude Code (TS) | OpenClaw (TS) |
+| Security Feature | AceClaw (Java) | Claude Code (TS) | OpenClaw (TS) |
 |-----------------|---------------|------------------|---------------|
 | Type-safe permissions | Sealed interfaces (compile-time) | Runtime checks | Runtime checks |
 | Sandbox | bubblewrap/Seatbelt | bubblewrap/Seatbelt | Docker containers |
@@ -1225,7 +1225,7 @@ The following properties must always hold:
 2. JFR security events
 3. Automated injection detection
 4. MCP server capability auditing
-5. Security health check command (`chelava doctor`)
+5. Security health check command (`aceclaw doctor`)
 
 ---
 

@@ -1,8 +1,8 @@
-# Chelava Frontend/CLI Design Document
+# AceClaw Frontend/CLI Design Document
 
 ## 1. Overview
 
-This document defines the frontend architecture, terminal user interface, and developer experience for Chelava -- a Java-based AI coding agent. The design prioritizes a fast, responsive terminal-first experience with extensibility for IDE integration and optional web monitoring.
+This document defines the frontend architecture, terminal user interface, and developer experience for AceClaw -- a Java-based AI coding agent. The design prioritizes a fast, responsive terminal-first experience with extensibility for IDE integration and optional web monitoring.
 
 ### Design Principles
 
@@ -28,16 +28,16 @@ This document defines the frontend architecture, terminal user interface, and de
 - Active maintenance, 12k+ GitHub stars
 
 **Key Features Used**:
-- `@Command` annotations for subcommands (`chelava chat`, `chelava config`, `chelava init`)
+- `@Command` annotations for subcommands (`aceclaw chat`, `aceclaw config`, `aceclaw init`)
 - `@Option` / `@Parameters` for typed argument parsing
 - Built-in `--help`, `--version`, color theme support
 - Shell completion script generation (bash, zsh, fish)
 
 ```java
-@Command(name = "chelava", mixinStandardHelpOptions = true,
-         version = "Chelava 1.0",
+@Command(name = "aceclaw", mixinStandardHelpOptions = true,
+         version = "AceClaw 1.0",
          description = "AI coding agent for the JVM")
-public class ChelavaCli implements Runnable {
+public class AceClawCli implements Runnable {
 
     @Command(name = "chat", description = "Start interactive conversation")
     void chat(@Option(names = {"-m", "--model"}) String model,
@@ -81,9 +81,9 @@ Terminal terminal = TerminalBuilder.builder()
 
 LineReader reader = LineReaderBuilder.builder()
     .terminal(terminal)
-    .completer(new ChelavaCOmpleter())  // slash commands, files
-    .highlighter(new ChelavaHighlighter())
-    .parser(new ChelavaParser())  // multi-line support
+    .completer(new AceClawCOmpleter())  // slash commands, files
+    .highlighter(new AceClawHighlighter())
+    .parser(new AceClawParser())  // multi-line support
     .variable(LineReader.SECONDARY_PROMPT_PATTERN, "... ")
     .build();
 ```
@@ -158,7 +158,7 @@ All UI components are built on JLine3's `Terminal` and `AttributedString` primit
 #### Permission Approval Dialog
 
 ```
-  Chelava wants to edit src/main/java/App.java
+  AceClaw wants to edit src/main/java/App.java
 
   [y] Allow once  [n] Deny  [a] Always allow  [Esc] Cancel
 ```
@@ -262,17 +262,17 @@ Implementation: Arrow key navigation, space to toggle, enter to confirm. Rendere
 
 #### Session Management
 
-- Sessions auto-saved to `~/.chelava/sessions/<id>.json`
+- Sessions auto-saved to `~/.aceclaw/sessions/<id>.json`
 - Contains: conversation history, tool call log, file change log, model config
-- Resumable with `/resume` or `chelava chat --resume <id>`
-- Session list with `chelava sessions list` (shows timestamp, summary, token count)
+- Resumable with `/resume` or `aceclaw chat --resume <id>`
+- Session list with `aceclaw sessions list` (shows timestamp, summary, token count)
 
 #### Context Usage Indicator
 
 Displayed in the prompt line or status bar:
 
 ```
-chelava> [tokens: 12.4k/128k | cost: $0.23 | model: claude-sonnet-4-5-20250929]
+aceclaw> [tokens: 12.4k/128k | cost: $0.23 | model: claude-sonnet-4-5-20250929]
 ```
 
 Updates after each turn. Color-coded: green (< 50%), yellow (50-80%), red (> 80%).
@@ -347,7 +347,7 @@ Each tool call shows: tool name, arguments summary, spinner during execution, re
 ### 5.1 Configuration Files
 
 ```
-~/.chelava/
+~/.aceclaw/
   config.toml          # Global configuration
   themes/
     dark.toml           # Color themes
@@ -415,8 +415,8 @@ For instant startup (critical for CLI tools):
     <groupId>org.graalvm.buildtools</groupId>
     <artifactId>native-maven-plugin</artifactId>
     <configuration>
-        <imageName>chelava</imageName>
-        <mainClass>com.chelava.cli.ChelavaCli</mainClass>
+        <imageName>aceclaw</imageName>
+        <mainClass>com.aceclaw.cli.AceClawCli</mainClass>
         <buildArgs>
             <buildArg>--no-fallback</buildArg>
             <buildArg>-H:+ReportExceptionStackTraces</buildArg>
@@ -462,14 +462,14 @@ This auto-generates:
          |    JSON-RPC / LSP       |    Plugin API            |  Direct
          |                         |                          |
 +--------v-------------------------v--------------------------v---------+
-|                        Chelava Core Engine                            |
+|                        AceClaw Core Engine                            |
 |  (Conversation Manager, Tool Executor, LLM Client, Context Builder)  |
 +----------------------------------------------------------------------+
 ```
 
 ### 7.2 VS Code Extension
 
-**Approach**: TypeScript extension that communicates with Chelava core via JSON-RPC over stdio.
+**Approach**: TypeScript extension that communicates with AceClaw core via JSON-RPC over stdio.
 
 Key features:
 - Inline chat panel (similar to GitHub Copilot Chat)
@@ -482,7 +482,7 @@ Communication protocol:
 ```json
 {
     "jsonrpc": "2.0",
-    "method": "chelava/chat",
+    "method": "aceclaw/chat",
     "params": {
         "message": "Add error handling to the login method",
         "context": {
@@ -499,19 +499,19 @@ Communication protocol:
 
 Key features:
 - Tool window with chat interface
-- Action integration (right-click > "Ask Chelava")
+- Action integration (right-click > "Ask AceClaw")
 - Inline code suggestions
 - Project-aware context (module structure, dependencies)
 - Integration with IntelliJ's diff viewer
 
-Since IntelliJ 2023.2+ supports LSP client API, Chelava can expose an LSP-compatible interface for basic features, with richer integration via the native Plugin SDK.
+Since IntelliJ 2023.2+ supports LSP client API, AceClaw can expose an LSP-compatible interface for basic features, with richer integration via the native Plugin SDK.
 
 ### 7.4 Shared Protocol
 
-Define a `ChelavaProtocol` interface that all UI adapters implement:
+Define a `AceClawProtocol` interface that all UI adapters implement:
 
 ```java
-public interface ChelavaUiAdapter {
+public interface AceClawUiAdapter {
     // Input
     CompletableFuture<String> getUserInput(String prompt);
     CompletableFuture<PermissionResult> requestPermission(PermissionRequest request);
@@ -523,7 +523,7 @@ public interface ChelavaUiAdapter {
     void onStreamEnd();
     void onToolCallStart(ToolCallInfo info);
     void onToolCallEnd(ToolCallResult result);
-    void onError(ChelavaError error);
+    void onError(AceClawError error);
 
     // Status
     void updateStatus(StatusInfo status);
@@ -552,7 +552,7 @@ Terminal CLI, VS Code, and IntelliJ each implement this interface with their res
 
 ```
 +--------------------------------------------------+
-|  Chelava Dashboard           [Session: abc-123]   |
+|  AceClaw Dashboard           [Session: abc-123]   |
 +--------------------------------------------------+
 |                                                    |
 |  Conversation                    | Context         |
@@ -647,9 +647,9 @@ When enabled:
 ### 11.1 First Launch
 
 ```
-$ chelava init
+$ aceclaw init
 
-  Welcome to Chelava - AI Coding Agent for Java
+  Welcome to AceClaw - AI Coding Agent for Java
 
   API Key Setup:
   Enter your API key: ****************************************
@@ -657,17 +657,17 @@ $ chelava init
 
   Project detected: Maven (Java 21)
 
-  Configuration saved to .chelava/config.toml
+  Configuration saved to .aceclaw/config.toml
 
-  Run 'chelava chat' to start a conversation.
+  Run 'aceclaw chat' to start a conversation.
 ```
 
 ### 11.2 Interactive Session
 
 ```
-$ chelava chat
+$ aceclaw chat
 
-chelava> Fix the NullPointerException in UserService.getUserById
+aceclaw> Fix the NullPointerException in UserService.getUserById
 
   Searching codebase: "UserService" "getUserById"
   > Found in src/main/java/com/app/service/UserService.java
@@ -695,7 +695,7 @@ chelava> Fix the NullPointerException in UserService.getUserById
   Running: mvn test -pl service
   > Tests: 28 passed, 0 failed (4.2s)
 
-chelava> [tokens: 3.2k/128k | cost: $0.04 | model: sonnet-4.5]
+aceclaw> [tokens: 3.2k/128k | cost: $0.04 | model: sonnet-4.5]
 ```
 
 ---
@@ -722,7 +722,7 @@ chelava> [tokens: 3.2k/128k | cost: $0.04 | model: sonnet-4.5]
 - JSON-RPC protocol definition
 - VS Code extension (TypeScript)
 - IntelliJ plugin (Kotlin)
-- Shared `ChelavaUiAdapter` interface
+- Shared `AceClawUiAdapter` interface
 
 ### Phase 4: Web Dashboard + Polish
 - Javalin-based monitoring dashboard

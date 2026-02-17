@@ -5,7 +5,7 @@
 
 ## Executive Summary
 
-OpenClaw has a mature infrastructure layer that Chelava's current design is largely missing. The project centers on a **Gateway** - a single long-lived Node.js process that acts as the entire control plane for sessions, channels, tools, and events. Below are the 12 key infrastructure patterns found, with code references.
+OpenClaw has a mature infrastructure layer that AceClaw's current design is largely missing. The project centers on a **Gateway** - a single long-lived Node.js process that acts as the entire control plane for sessions, channels, tools, and events. Below are the 12 key infrastructure patterns found, with code references.
 
 ---
 
@@ -31,7 +31,7 @@ The Gateway is the heart of OpenClaw. Running `openclaw gateway` starts a single
 
 ### Default endpoint: `ws://127.0.0.1:18789`
 
-### What Chelava Needs
+### What AceClaw Needs
 A central Gateway process that:
 - Manages WebSocket connections for CLI, UI, and IDE clients
 - Routes RPC calls to internal handlers
@@ -72,7 +72,7 @@ The heartbeat is a **periodic agent health-check and notification system** that 
 ### Error Resilience
 If `runOnce()` throws, the runner advances the schedule anyway - subsequent heartbeats keep firing.
 
-### What Chelava Needs
+### What AceClaw Needs
 - A `HeartbeatService` that periodically checks agent liveness
 - Health status events with pub/sub distribution
 - Configurable intervals and quiet hours
@@ -92,7 +92,7 @@ If `runOnce()` throws, the runner advances the schedule anyway - subsequent hear
 - Health version counter for change tracking
 - `broadcastHealthUpdate` callback for push-based health notifications
 
-### What Chelava Needs
+### What AceClaw Needs
 - `/health` HTTP endpoint with cached snapshots
 - Background refresh mechanism
 - Probe mode for on-demand deep checks
@@ -142,7 +142,7 @@ Results can be delivered via: `"none"`, `"announce"` (to channel), or `"webhook"
 ### Duplicate Prevention
 Timer-based scheduling with `prevents-duplicate-timers` logic and `rearm-timer-when-running` pattern.
 
-### What Chelava Needs
+### What AceClaw Needs
 - `CronService` with three schedule types (at/every/cron)
 - File-based persistent job store with atomic writes
 - Session reaper for GC of ephemeral sessions
@@ -178,7 +178,7 @@ OpenClaw uses a **multi-channel in-memory pub/sub** system (NOT a separate messa
 - Deduplication: skips consecutive identical messages
 - Context key tracking for change detection
 
-### What Chelava Needs
+### What AceClaw Needs
 - `EventBus` abstraction with domain-specific channels (agent, diagnostic, system)
 - Listener registration with unsubscribe returns
 - Error isolation between listeners
@@ -225,7 +225,7 @@ OpenClaw uses a **multi-channel in-memory pub/sub** system (NOT a separate messa
 - State machine hook: first iteration = fresh start, subsequent = recovery restart
 - Enables different codepaths for initial vs. recovery startup
 
-### What Chelava Needs
+### What AceClaw Needs
 - `ProcessSupervisor` with run registry, timeout management, scope-based cancellation
 - `ChildProcessBridge` for signal forwarding
 - `ProcessTreeKiller` with cross-platform support
@@ -256,7 +256,7 @@ Multi-layer discovery:
    - `OPENCLAW_TAILNET_DNS` - explicit DNS override
    - `OPENCLAW_CLI_PATH` - CLI executable path
 
-### What Chelava Needs
+### What AceClaw Needs
 - Local service discovery (mDNS/Bonjour or equivalent)
 - Environment-based fallback configuration
 - Multi-strategy resolution with timeout budgets
@@ -287,7 +287,7 @@ Multi-source config merging:
 2. Config file values
 3. Environment variables (lowest priority)
 
-### What Chelava Needs
+### What AceClaw Needs
 - `ConfigReloader` with file watching and debounce
 - Diff-based change detection
 - Categorized reload plans (restart vs hot-reload vs no-op)
@@ -322,7 +322,7 @@ Multi-source config merging:
 - Multi-server support (primary + additional HTTP servers)
 - Graceful degradation on partial failures
 
-### What Chelava Needs
+### What AceClaw Needs
 - Ordered shutdown sequence with dependency awareness
 - Error-tolerant cleanup (each step isolated)
 - Client notification with shutdown reason
@@ -365,7 +365,7 @@ Multi-source config merging:
 - Gated by `isDiagnosticsEnabled()` for performance
 - Global sequence counter for ordering
 
-### What Chelava Needs
+### What AceClaw Needs
 - Structured JSON logging with subsystem hierarchy
 - Multiple transports (file, console, external)
 - Automatic sensitive data redaction
@@ -406,7 +406,7 @@ Additional features:
 - Cause chain inspection (recursive + AggregateError support)
 - Network issues don't crash gateway
 
-### What Chelava Needs
+### What AceClaw Needs
 - `RetryService` with exponential backoff + jitter
 - Configurable retry policies per operation type
 - Categorized error handler (fatal vs transient vs config)
@@ -433,7 +433,7 @@ Prevents multiple gateway instances from running simultaneously.
 - 5-second polling timeout for contested locks
 - Bypass via `OPENCLAW_ALLOW_MULTI_GATEWAY=1` or test environments
 
-### What Chelava Needs
+### What AceClaw Needs
 - File-based instance locking
 - Stale lock detection with PID validation
 - Configurable timeout for lock acquisition
@@ -454,7 +454,7 @@ Prevents multiple gateway instances from running simultaneously.
    - Abort expired chat run controllers
    - Delete aborted run records older than 1 hour
 
-### What Chelava Needs
+### What AceClaw Needs
 - `MaintenanceScheduler` with configurable periodic tasks
 - Keepalive tick broadcasts
 - Cache/state cleanup cycles
@@ -474,16 +474,16 @@ Prevents multiple gateway instances from running simultaneously.
 5. Restore session state after boot (isolated - won't corrupt active sessions)
 6. Return status: `ran`, `missing`, `empty`, or failure
 
-### What Chelava Needs
+### What AceClaw Needs
 - Boot-time initialization hook system
 - Session isolation for boot operations
 - Configurable boot scripts
 
 ---
 
-## Summary: Missing from Chelava
+## Summary: Missing from AceClaw
 
-| Component | Priority | OpenClaw Implementation | Chelava Gap |
+| Component | Priority | OpenClaw Implementation | AceClaw Gap |
 |-----------|----------|------------------------|-------------|
 | **Gateway (WebSocket)** | Critical | Full WS control plane, 60+ RPC methods | No WebSocket server |
 | **Event Bus** | Critical | Multi-channel pub/sub with isolation | No event distribution |
@@ -503,11 +503,11 @@ Prevents multiple gateway instances from running simultaneously.
 
 ## Key Architectural Takeaways
 
-1. **Single Process Architecture**: OpenClaw runs everything in ONE Node.js process (gateway). This simplifies IPC but limits horizontal scaling. For Chelava (JVM-based), consider whether a monolithic or modular approach is better.
+1. **Single Process Architecture**: OpenClaw runs everything in ONE Node.js process (gateway). This simplifies IPC but limits horizontal scaling. For AceClaw (JVM-based), consider whether a monolithic or modular approach is better.
 
-2. **In-Memory Event Bus**: No external message broker - all pub/sub is in-process `Set<listener>`. This is fast but doesn't survive restarts. Chelava could use this for a Java equivalent (or use a lightweight event bus like Guava EventBus or Spring Events).
+2. **In-Memory Event Bus**: No external message broker - all pub/sub is in-process `Set<listener>`. This is fast but doesn't survive restarts. AceClaw could use this for a Java equivalent (or use a lightweight event bus like Guava EventBus or Spring Events).
 
-3. **File-Based Persistence**: Cron jobs, sessions, config all stored as JSON files. No database. Atomic writes via temp+rename pattern. Chelava should decide on persistence strategy (file vs embedded DB like SQLite/H2).
+3. **File-Based Persistence**: Cron jobs, sessions, config all stored as JSON files. No database. Atomic writes via temp+rename pattern. AceClaw should decide on persistence strategy (file vs embedded DB like SQLite/H2).
 
 4. **Lane-Based Concurrency**: Command execution uses named lanes (Main, Cron, Subagent, Nested) with configurable parallelism per lane. This prevents interference between workflows.
 

@@ -1,12 +1,12 @@
-# Chelava - Product Features & Differentiation Strategy
+# AceClaw - Product Features & Differentiation Strategy
 
 ## 1. Product Vision
 
-**Chelava** - A high-performance, secure, self-learning AI coding agent built on Java, designed for enterprise developers who need reliability, security, and speed.
+**AceClaw** - A high-performance, secure, self-learning AI coding agent built on Java, designed for enterprise developers who need reliability, security, and speed.
 
 ### Vision Statement
 
-Chelava reimagines the AI coding agent experience by leveraging the Java ecosystem's strengths: type safety, concurrency, enterprise maturity, and GraalVM native compilation. While existing agents like Claude Code (TypeScript/Node.js) have proven the interactive AI coding paradigm, Chelava delivers the same powerful workflow with the performance characteristics, security guarantees, and operational maturity that enterprise environments demand.
+AceClaw reimagines the AI coding agent experience by leveraging the Java ecosystem's strengths: type safety, concurrency, enterprise maturity, and GraalVM native compilation. While existing agents like Claude Code (TypeScript/Node.js) have proven the interactive AI coding paradigm, AceClaw delivers the same powerful workflow with the performance characteristics, security guarantees, and operational maturity that enterprise environments demand.
 
 ### Why Java?
 
@@ -26,19 +26,19 @@ The choice of Java is not arbitrary -- it is a strategic differentiator:
 - **Role**: Full-stack developer, freelancer or startup engineer
 - **Pain Points**: Wants fast AI assistance without heavy IDE plugins; needs multi-model support to manage API costs
 - **Needs**: Quick startup, easy installation (single binary), intuitive CLI, project-level config
-- **Chelava Value**: Instant startup via native image, multi-LLM switching, lightweight resource usage
+- **AceClaw Value**: Instant startup via native image, multi-LLM switching, lightweight resource usage
 
 ### Persona 2: Team Lead ("Jordan")
 - **Role**: Engineering team lead at a mid-size company (20-50 engineers)
 - **Pain Points**: Needs consistent tooling across the team; wants to enforce coding standards through automation
 - **Needs**: Shared project configuration, hook system for CI/CD integration, permission controls
-- **Chelava Value**: Project-level .chelava/ config, hook system, permission model, team-wide tool policies
+- **AceClaw Value**: Project-level .aceclaw/ config, hook system, permission model, team-wide tool policies
 
 ### Persona 3: Enterprise Architect ("Morgan")
 - **Role**: Principal engineer or architect at a Fortune 500 company
 - **Pain Points**: Security compliance, audit requirements, on-premise LLM deployment, monitoring integration
 - **Needs**: SSO/RBAC, audit logging, JPMS module boundaries, Ollama/local model support, Micrometer metrics
-- **Chelava Value**: Enterprise-grade security model, JVM sandbox, JPMS encapsulation, monitoring dashboards, self-hosted LLM support
+- **AceClaw Value**: Enterprise-grade security model, JVM sandbox, JPMS encapsulation, monitoring dashboards, self-hosted LLM support
 
 ---
 
@@ -122,7 +122,7 @@ The choice of Java is not arbitrary -- it is a strategic differentiator:
 - Tool, resource, and prompt template support
 - Automatic schema validation for MCP tool inputs
 - Connection lifecycle management (connect, reconnect, graceful shutdown)
-- Configuration via .chelava/mcp-servers.json
+- Configuration via .aceclaw/mcp-servers.json
 
 ### 3.5 Conversation Management
 
@@ -140,21 +140,21 @@ The choice of Java is not arbitrary -- it is a strategic differentiator:
 - Conversation history persistence as JSONL transcript files
 - Automatic context compression when approaching token limits (configurable threshold, default ~92%)
 - Manual compaction via `/compact` command for strategic breakpoints
-- System prompt management with project-level customization (CHELAVA.md hierarchy)
+- System prompt management with project-level customization (ACECLAW.md hierarchy)
 - Conversation forking and branching
 - Session resume capability with persistent session IDs
 - Multi-turn tool use with result incorporation
 - Image/screenshot support in conversations (multimodal)
 - Automatic session cleanup based on configurable retention period
 
-### 3.6 Project-Level Configuration (.chelava/ Directory)
+### 3.6 Project-Level Configuration (.aceclaw/ Directory)
 
 **Description**: Per-project configuration supporting team-wide standards and individual customization.
 
 **Directory Structure**:
 ```
-.chelava/
-  CHELAVA.md          # Project instructions (like CLAUDE.md)
+.aceclaw/
+  ACECLAW.md          # Project instructions (like CLAUDE.md)
   config.json         # Model, tool, and behavior settings
   mcp-servers.json    # MCP server configurations
   hooks/              # Pre/post execution hooks
@@ -164,8 +164,8 @@ The choice of Java is not arbitrary -- it is a strategic differentiator:
 
 **Configuration Hierarchy** (lowest to highest priority):
 1. System defaults
-2. Global user config (~/.chelava/config.json)
-3. Project config (.chelava/config.json)
+2. Global user config (~/.aceclaw/config.json)
+3. Project config (.aceclaw/config.json)
 4. Environment variables
 5. Command-line arguments
 
@@ -270,13 +270,13 @@ The choice of Java is not arbitrary -- it is a strategic differentiator:
 **Description**: Extensibility through model-invoked skills and user-invoked slash commands.
 
 **Skills**:
-- Defined as Markdown files with YAML frontmatter in `.chelava/skills/`
+- Defined as Markdown files with YAML frontmatter in `.aceclaw/skills/`
 - Agent automatically matches user requests against skill descriptions
 - Skills can be preloaded into subagent contexts
 - Model-invoked (automatic) or user-invoked (via slash commands)
 
 **Slash Commands**:
-- User-invocable commands defined as Markdown files in `.chelava/commands/`
+- User-invocable commands defined as Markdown files in `.aceclaw/commands/`
 - Support `$ARGUMENTS` placeholder for dynamic input
 - Built-in commands: `/help`, `/clear`, `/compact`, `/config`, `/model`, `/tools`, `/undo`, `/exit`
 
@@ -293,7 +293,7 @@ The choice of Java is not arbitrary -- it is a strategic differentiator:
 
 **Differentiator**: Instant startup and minimal memory footprint via ahead-of-time compilation.
 
-| Metric | Node.js (Claude Code) | Chelava (GraalVM Native) |
+| Metric | Node.js (Claude Code) | AceClaw (GraalVM Native) |
 |--------|----------------------|--------------------------|
 | Cold Start | ~500-800ms | <50ms |
 | Memory (idle) | ~80-120MB | ~20-30MB |
@@ -314,7 +314,7 @@ The choice of Java is not arbitrary -- it is a strategic differentiator:
 - **Streaming + tools**: Handle streaming LLM output while executing tools concurrently
 - **Structured Concurrency**: Parent-child task relationships with automatic cancellation propagation
 
-**Example**: When an agent needs to read 10 files, grep 3 directories, and check git status, Chelava executes all 14 operations concurrently in <100ms total, vs sequential execution taking 500ms+.
+**Example**: When an agent needs to read 10 files, grep 3 directories, and check git status, AceClaw executes all 14 operations concurrently in <100ms total, vs sequential execution taking 500ms+.
 
 ### 4.3 Type Safety: Modern Java Features
 
@@ -363,8 +363,8 @@ switch (result) {
 
 **Memory Types**:
 - **Session Memory**: Current conversation context and tool results
-- **Project Memory**: Per-project learnings stored in .chelava/memory/
-- **Global Memory**: Cross-project patterns and preferences in ~/.chelava/memory/
+- **Project Memory**: Per-project learnings stored in .aceclaw/memory/
+- **Global Memory**: Cross-project patterns and preferences in ~/.aceclaw/memory/
 - **Typed Memory Stores**: Separate stores for code patterns, error solutions, user preferences, and project conventions
 
 **Key Capabilities**:
@@ -377,7 +377,7 @@ switch (result) {
 
 ### 4.6 Security Architecture
 
-**Differentiator**: JVM-level security guarantees that go beyond process-level isolation. Informed by OpenClaw's security failures (publicly exposed API keys, prompt injection, malicious skill exploits within 48 hours of launch), Chelava makes security a first-class concern.
+**Differentiator**: JVM-level security guarantees that go beyond process-level isolation. Informed by OpenClaw's security failures (publicly exposed API keys, prompt injection, malicious skill exploits within 48 hours of launch), AceClaw makes security a first-class concern.
 
 **Security Layers**:
 1. **Permission Model**: Multi-modal permissions with granular per-tool, per-path, per-command control
@@ -408,7 +408,7 @@ switch (result) {
 | Bash execution tool | P0 | Essential for running tests, builds, git |
 | Glob/Grep search tools | P0 | Code navigation and understanding |
 | Permission system | P0 | Safety-critical for file/bash operations |
-| Project config (.chelava/) | P0 | Per-project customization |
+| Project config (.aceclaw/) | P0 | Per-project customization |
 | Conversation management | P0 | Context window handling is critical for usability |
 | MCP client support | P1 | Extensibility story, community tooling |
 | Hook system | P1 | Automation workflows, CI/CD integration |
@@ -483,7 +483,7 @@ The MVP focuses on **parity with Claude Code's core experience** while deliverin
 - VS Code extension via JSON-RPC over stdio
 - IntelliJ IDEA plugin via Platform SDK
 - Language Server Protocol (LSP) bridge
-- Shared ChelavaUiAdapter interface for all UI targets
+- Shared AceClawUiAdapter interface for all UI targets
 - Inline code suggestions and actions
 
 ### v3.0 - AI Platform
@@ -528,7 +528,7 @@ The MVP focuses on **parity with Claude Code's core experience** while deliverin
 
 ### Competitive Benchmarks
 
-| Benchmark | Claude Code (Baseline) | Chelava Target |
+| Benchmark | Claude Code (Baseline) | AceClaw Target |
 |-----------|----------------------|----------------|
 | Startup time | ~500-800ms | <50ms (10x faster) |
 | Memory footprint | ~80-120MB idle | <30MB idle (4x less) |
@@ -542,22 +542,22 @@ The MVP focuses on **parity with Claude Code's core experience** while deliverin
 ## 8. Competitive Analysis
 
 ### vs. Claude Code (Anthropic)
-- **Chelava advantage**: Performance (startup, memory), type safety, enterprise features, native binary distribution
+- **AceClaw advantage**: Performance (startup, memory), type safety, enterprise features, native binary distribution
 - **Claude Code advantage**: First-mover, tight Anthropic integration, large community, rapid iteration
 - **Strategy**: Position as the enterprise-grade alternative with better operational characteristics
 
 ### vs. Aider (Python)
-- **Chelava advantage**: Performance, type safety, GraalVM native image, structured concurrency
+- **AceClaw advantage**: Performance, type safety, GraalVM native image, structured concurrency
 - **Aider advantage**: Mature git integration, multi-file editing, Python ecosystem
 - **Strategy**: Match git integration quality, differentiate on performance and enterprise readiness
 
 ### vs. Continue (TypeScript)
-- **Chelava advantage**: CLI-native (vs IDE-dependent), performance, enterprise features
+- **AceClaw advantage**: CLI-native (vs IDE-dependent), performance, enterprise features
 - **Continue advantage**: IDE integration, visual interface, established user base
 - **Strategy**: CLI-first approach with future IDE plugin path
 
 ### vs. Cursor/Windsurf (Commercial)
-- **Chelava advantage**: Open source, CLI-based, no vendor lock-in, self-hosted LLM support
+- **AceClaw advantage**: Open source, CLI-based, no vendor lock-in, self-hosted LLM support
 - **Cursor advantage**: Polished IDE, proprietary model optimizations, funding
 - **Strategy**: Open-source community, enterprise self-hosting, CLI workflow preference
 
@@ -606,5 +606,5 @@ The MVP focuses on **parity with Claude Code's core experience** while deliverin
 
 *Document Version: 1.1*
 *Last Updated: 2026-02-16*
-*Author: Product Owner (Chelava PRD Team)*
+*Author: Product Owner (AceClaw PRD Team)*
 *Based on: OpenClaw architecture research, Claude Code documentation, competitive analysis*

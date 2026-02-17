@@ -2,7 +2,7 @@
 
 ## 1. Executive Summary
 
-The Task Planner is a new component within `chelava-core` that enables Chelava to **autonomously decompose complex user requests into structured, dependency-aware task graphs** and orchestrate their execution across the Agent Loop, Subagents, and Agent Teams.
+The Task Planner is a new component within `aceclaw-core` that enables AceClaw to **autonomously decompose complex user requests into structured, dependency-aware task graphs** and orchestrate their execution across the Agent Loop, Subagents, and Agent Teams.
 
 Unlike the current ReAct loop (which reasons one step at a time), the Task Planner provides **upfront strategic planning** — analyzing a complex goal, breaking it into sub-tasks with dependency ordering, resource estimates, and execution strategies — before any tool is invoked.
 
@@ -212,7 +212,7 @@ public sealed interface PlanStatus permits
 ```java
 /**
  * The Task Planner — decomposes a user goal into an executable task graph.
- * Lives in chelava-core alongside AgentLoop.
+ * Lives in aceclaw-core alongside AgentLoop.
  */
 public interface TaskPlanner {
 
@@ -711,9 +711,9 @@ public class PlanLearner {
 
 ```java
 /**
- * Plan-related events — integrated into chelava-infra's EventBus.
+ * Plan-related events — integrated into aceclaw-infra's EventBus.
  */
-public sealed interface PlanEvent extends ChelavaEvent permits
+public sealed interface PlanEvent extends AceClawEvent permits
     PlanEvent.PlanCreated,
     PlanEvent.PlanApproved,
     PlanEvent.TaskStarted,
@@ -744,7 +744,7 @@ public sealed interface PlanEvent extends ChelavaEvent permits
     "hooks": {
         "PlanCreated": [{
             "type": "command",
-            "command": "echo 'Plan created with $CHELAVA_PLAN_TASK_COUNT tasks'"
+            "command": "echo 'Plan created with $ACECLAW_PLAN_TASK_COUNT tasks'"
         }],
         "PrePlanExecute": [{
             "type": "prompt",
@@ -752,7 +752,7 @@ public sealed interface PlanEvent extends ChelavaEvent permits
         }],
         "PlanCompleted": [{
             "type": "command",
-            "command": "notify-send 'Chelava: Plan completed successfully'"
+            "command": "notify-send 'AceClaw: Plan completed successfully'"
         }],
         "PlanFailed": [{
             "type": "agent",
@@ -782,7 +782,7 @@ The Task Planner respects the existing permission system's autonomy levels:
 When a plan requires approval, the CLI presents it as a structured task list:
 
 ```
-Chelava generated a plan for: "Add user authentication with JWT"
+AceClaw generated a plan for: "Add user authentication with JWT"
 
   Plan (6 tasks, ~15 min estimated):
 
@@ -847,11 +847,11 @@ public sealed interface ReplanTrigger permits
 
 ## 8. Module Placement
 
-The Task Planner lives in `chelava-core` alongside the existing Agent Loop:
+The Task Planner lives in `aceclaw-core` alongside the existing Agent Loop:
 
 ```
-chelava-core/
-  src/main/java/com/chelava/core/
+aceclaw-core/
+  src/main/java/com/aceclaw/core/
     agent/
       AgentLoop.java           (existing)
       EnhancedAgentLoop.java   (modified - adds planning trigger)

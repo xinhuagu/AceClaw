@@ -1,8 +1,8 @@
-# Chelava - Java Framework Stack & Implementation Plan
+# AceClaw - Java Framework Stack & Implementation Plan
 
 ## Executive Summary
 
-This document defines the Java technology stack for Chelava, a Java-native AI coding agent inspired by OpenClaw. The stack is optimized for CLI tool performance (sub-50ms startup), minimal memory footprint (<100MB idle), and excellent developer experience. The recommended stack is **Picocli + JLine3 + Virtual Threads + GraalVM Native Image** with minimal framework overhead, using Gradle as the build system.
+This document defines the Java technology stack for AceClaw, a Java-native AI coding agent inspired by OpenClaw. The stack is optimized for CLI tool performance (sub-50ms startup), minimal memory footprint (<100MB idle), and excellent developer experience. The recommended stack is **Picocli + JLine3 + Virtual Threads + GraalVM Native Image** with minimal framework overhead, using Gradle as the build system.
 
 ---
 
@@ -120,7 +120,7 @@ Distribution (GitHub Releases, Homebrew, SDKMAN!)
 
 **Justification:**
 
-For a CLI tool like Chelava, framework overhead is the primary enemy. Every millisecond of startup matters, and every megabyte of memory counts. The key reasons:
+For a CLI tool like AceClaw, framework overhead is the primary enemy. Every millisecond of startup matters, and every megabyte of memory counts. The key reasons:
 
 1. **Startup performance**: Plain Java + Picocli achieves 10-30ms startup natively, beating Quarkus (49ms) and Micronaut (50ms). For an interactive CLI tool invoked hundreds of times per session, this difference is significant.
 
@@ -140,9 +140,9 @@ For dependency injection, we use **manual constructor injection** with a simple 
 
 ### Java 21+ Virtual Threads
 
-Virtual threads (JEP 444, final in Java 21) are the primary concurrency mechanism for Chelava.
+Virtual threads (JEP 444, final in Java 21) are the primary concurrency mechanism for AceClaw.
 
-**Use Cases in Chelava:**
+**Use Cases in AceClaw:**
 - Parallel tool execution (file search, code analysis, test running)
 - Concurrent API calls to LLM providers
 - Background file watching and indexing
@@ -280,10 +280,10 @@ If richer stream processing is needed later (e.g., multi-model orchestration, co
 - Type conversion, validation, completion scripts
 
 ```java
-@Command(name = "chelava", mixinStandardHelpOptions = true,
+@Command(name = "aceclaw", mixinStandardHelpOptions = true,
          version = "0.1.0",
          description = "AI-powered coding agent for Java developers")
-public class ChelavaCommand implements Callable<Integer> {
+public class AceClawCommand implements Callable<Integer> {
 
     @Option(names = {"-m", "--model"}, description = "LLM model to use")
     private String model = "claude-sonnet-4-5-20250929";
@@ -410,7 +410,7 @@ java {
 }
 
 application {
-    mainClass.set("com.chelava.Main")
+    mainClass.set("com.aceclaw.Main")
 }
 
 dependencies {
@@ -440,8 +440,8 @@ dependencies {
 graalvmNative {
     binaries {
         named("main") {
-            imageName.set("chelava")
-            mainClass.set("com.chelava.Main")
+            imageName.set("aceclaw")
+            mainClass.set("com.aceclaw.Main")
             buildArgs.addAll(
                 "-O2",
                 "--no-fallback",
@@ -499,7 +499,7 @@ tasks.test {
 
 # Distribution
 ./gradlew nativeCompile
-# Binary at: build/native/nativeCompile/chelava
+# Binary at: build/native/nativeCompile/aceclaw
 ```
 
 ---
@@ -525,7 +525,7 @@ public static void main(String[] args) {
         .map(i -> Duration.between(i, Instant.now()).toNanos())
         .orElse(0L);
     // ... application init ...
-    if (System.getenv("CHELAVA_DEBUG") != null) {
+    if (System.getenv("ACECLAW_DEBUG") != null) {
         System.err.printf("Startup: %.1fms%n", startNanos / 1_000_000.0);
     }
 }
@@ -536,16 +536,16 @@ public static void main(String[] args) {
 ## 8. Project Module Structure
 
 ```
-chelava/
+aceclaw/
   build.gradle.kts
   settings.gradle.kts
   src/
     main/
       java/
-        com/chelava/
+        com/aceclaw/
           Main.java                    # Entry point
           cli/                         # Picocli commands
-            ChelavaCommand.java
+            AceClawCommand.java
             InitCommand.java
             ConfigCommand.java
           agent/                       # AI agent core
@@ -573,7 +573,7 @@ chelava/
             SpinnerWidget.java
             DiffRenderer.java
           config/                      # Configuration
-            ChelavaConfig.java
+            AceClawConfig.java
             ConfigLoader.java
           security/                    # Security sandbox
             PermissionManager.java
@@ -585,7 +585,7 @@ chelava/
             resource-config.json
     test/
       java/
-        com/chelava/
+        com/aceclaw/
           ...                          # Mirror of main structure
       resources/
         fixtures/                      # Test fixtures

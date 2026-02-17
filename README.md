@@ -1,10 +1,10 @@
-# Chelava
+# AceClaw
 
 A high-performance AI coding agent built on Java 21 with daemon-first architecture.
 
-Chelava turns your device into an intelligent coding companion — a persistent system service that understands your codebase, executes tools, and streams responses in real time.
+AceClaw turns your device into an intelligent coding companion — a persistent system service that understands your codebase, executes tools, and streams responses in real time.
 
-## Why Chelava?
+## Why AceClaw?
 
 - **Instant startup**: GraalVM native image delivers sub-50ms startup
 - **True parallelism**: Virtual threads (Project Loom) enable concurrent tool execution
@@ -23,7 +23,7 @@ Chelava turns your device into an intelligent coding companion — a persistent 
 
 ```bash
 ./gradlew clean build
-./gradlew :chelava-cli:installDist
+./gradlew :aceclaw-cli:installDist
 ```
 
 ### Configure
@@ -34,7 +34,7 @@ Set your API key via environment variable:
 export ANTHROPIC_API_KEY="sk-ant-api03-..."
 ```
 
-Or create `~/.chelava/config.json`:
+Or create `~/.aceclaw/config.json`:
 
 ```json
 {
@@ -49,12 +49,12 @@ Claude Pro/Max subscribers can use their OAuth token instead (obtained via `clau
 
 ```bash
 # Start and enter interactive REPL (auto-starts daemon)
-./chelava-cli/build/install/chelava-cli/bin/chelava-cli
+./aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli
 
 # Daemon management
-chelava daemon start    # start in foreground
-chelava daemon stop     # graceful shutdown
-chelava daemon status   # health check
+aceclaw daemon start    # start in foreground
+aceclaw daemon stop     # graceful shutdown
+aceclaw daemon status   # health check
 ```
 
 ## Architecture
@@ -79,13 +79,13 @@ chelava daemon status   # health check
 
 | Module | Purpose |
 |--------|---------|
-| `chelava-bom` | Dependency version management (Bill of Materials) |
-| `chelava-core` | LLM abstractions, Agent loop, Tool interface |
-| `chelava-llm` | Anthropic Claude API client (API key + OAuth) |
-| `chelava-tools` | Built-in tools: read_file, write_file, edit_file, bash, glob, grep |
-| `chelava-security` | Permission system with sealed decision types |
-| `chelava-daemon` | Daemon process, UDS listener, session management, streaming handler |
-| `chelava-cli` | CLI entry point, REPL, daemon lifecycle commands |
+| `aceclaw-bom` | Dependency version management (Bill of Materials) |
+| `aceclaw-core` | LLM abstractions, Agent loop, Tool interface |
+| `aceclaw-llm` | Anthropic Claude API client (API key + OAuth) |
+| `aceclaw-tools` | Built-in tools: read_file, write_file, edit_file, bash, glob, grep |
+| `aceclaw-security` | Permission system with sealed decision types |
+| `aceclaw-daemon` | Daemon process, UDS listener, session management, streaming handler |
+| `aceclaw-cli` | CLI entry point, REPL, daemon lifecycle commands |
 
 ### Built-in Tools
 
@@ -109,9 +109,9 @@ chelava daemon status   # health check
 
 | Source | Precedence | Example |
 |--------|-----------|---------|
-| `~/.chelava/config.json` | Lowest | Global user config |
-| `{project}/.chelava/config.json` | Medium | Project overrides |
-| Environment variables | Highest | `ANTHROPIC_API_KEY`, `CHELAVA_MODEL`, `CHELAVA_LOG_LEVEL` |
+| `~/.aceclaw/config.json` | Lowest | Global user config |
+| `{project}/.aceclaw/config.json` | Medium | Project overrides |
+| Environment variables | Highest | `ANTHROPIC_API_KEY`, `ACECLAW_MODEL`, `ACECLAW_LOG_LEVEL` |
 
 ## Tech Stack
 
