@@ -61,8 +61,12 @@ public final class AceClawMain implements Runnable {
             JsonNode session = client.sendRequest("session.create", params);
             String sessionId = session.get("sessionId").asText();
 
+            // Detect git branch for status bar
+            String gitBranch = detectGitBranch(project);
+
             // Enter REPL with session info
-            var sessionInfo = new TerminalRepl.SessionInfo(VERSION, model, project, contextWindowTokens);
+            var sessionInfo = new TerminalRepl.SessionInfo(
+                    VERSION, model, project, contextWindowTokens, gitBranch);
             var repl = new TerminalRepl(client, sessionId, sessionInfo);
             repl.run();
 
@@ -87,6 +91,24 @@ public final class AceClawMain implements Runnable {
             System.err.println("Failed to connect to daemon: " + e.getMessage());
             System.err.println("Check if the daemon is running with: aceclaw daemon status");
             System.exit(1);
+        }
+    }
+
+    /**
+     * Detects the current git branch for the given project directory.
+     * Returns null if not a git repo or git is not available.
+     */
+    private static String detectGitBranch(String projectPath) {
+        try {
+            var pb = new ProcessBuilder("git", "rev-parse", "--abbrev-ref", "HEAD");
+            pb.directory(Path.of(projectPath).toFile());
+            pb.redirectErrorStream(true);
+            var process = pb.start();
+            String output = new String(process.getInputStream().readAllBytes()).trim();
+            int exitCode = process.waitFor();
+            return exitCode == 0 && !output.isBlank() ? output : null;
+        } catch (Exception e) {
+            return null;
         }
     }
 

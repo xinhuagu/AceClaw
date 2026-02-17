@@ -139,11 +139,14 @@ final class OpenAIStreamSession implements StreamSession {
             }
         }
 
-        // Some providers put usage in a separate final chunk with no choices
+        // Some providers (Ollama, etc.) put usage in a separate final chunk with empty choices
         if ((!choices.isArray() || choices.isEmpty()) && root.has("usage")) {
-            // This is a usage-only chunk sometimes sent after the last choice chunk
-            // We already handled the MessageDelta above, so just log it
-            log.trace("Received usage-only chunk: {}", root.path("usage"));
+            Usage chunkUsage = mapper.parseUsage(root.path("usage"));
+            if (chunkUsage.inputTokens() > 0 || chunkUsage.outputTokens() > 0) {
+                // Emit MessageDelta with usage so token counts reach the client
+                flushOpenBlocks(handler);
+                handler.onMessageDelta(new StreamEvent.MessageDelta(StopReason.END_TURN, chunkUsage));
+            }
         }
     }
 

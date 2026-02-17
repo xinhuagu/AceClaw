@@ -18,6 +18,8 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 
 import static dev.aceclaw.cli.TerminalTheme.*;
@@ -68,17 +70,20 @@ public final class TerminalRepl {
     /** Latest input tokens from the most recent API call (= context consumed). */
     private long latestInputTokens = 0;
 
-    /** JLine3 status line (bottom of terminal). */
+    /** Timestamp when the current prompt was sent (nanos). */
+    private long promptStartNanos = 0;
+
+    /** JLine3 Status — renders the info bar right below the prompt. */
     private volatile Status statusLine;
 
     /**
      * Session metadata displayed in the startup banner and status line.
      */
     public record SessionInfo(String version, String model, String project,
-                              int contextWindowTokens) {
-        /** Backward-compatible constructor without context window. */
-        public SessionInfo(String version, String model, String project) {
-            this(version, model, project, 0);
+                              int contextWindowTokens, String gitBranch) {
+        public SessionInfo(String version, String model, String project,
+                           int contextWindowTokens) {
+            this(version, model, project, contextWindowTokens, null);
         }
     }
 
@@ -118,13 +123,18 @@ public final class TerminalRepl {
             activeReader = reader;
 
             PrintWriter out = terminal.writer();
-            String prompt = PROMPT + "aceclaw>" + RESET + " ";
+
+            // Status bar below the prompt (JLine3 renders it right under the input line)
+            statusLine = Status.getStatus(terminal, true);
+            if (statusLine != null) {
+                statusLine.update(List.of(buildStatusLine()));
+            }
 
             // Render startup banner
             renderBanner(out, terminal.getWidth());
 
-            // Initialize status line
-            initStatusLine(terminal);
+            // Simple single-line prompt
+            String prompt = PROMPT + "aceclaw>" + RESET + " ";
 
             // Install signal handler for Ctrl+C during streaming
             terminal.handle(Terminal.Signal.INT, _ -> {
@@ -136,6 +146,7 @@ public final class TerminalRepl {
             while (true) {
                 String line;
                 try {
+                    updateStatusLine();
                     line = reader.readLine(prompt);
                 } catch (UserInterruptException e) {
                     // Ctrl+C at prompt: exit gracefully
@@ -165,9 +176,6 @@ public final class TerminalRepl {
 
                 processInput(out, line.trim());
             }
-
-            // Dispose status line on exit
-            disposeStatusLine();
 
         } catch (IOException e) {
             log.error("Terminal error: {}", e.getMessage(), e);
@@ -199,44 +207,51 @@ public final class TerminalRepl {
         out.flush();
     }
 
-    // -- Status line ---------------------------------------------------------
+    // -- Prompt with embedded status line ------------------------------------
 
-    private void initStatusLine(Terminal terminal) {
-        try {
-            statusLine = Status.getStatus(terminal);
-            if (statusLine != null) {
-                updateStatusLine();
-            }
-        } catch (Exception e) {
-            log.debug("Status line not available: {}", e.getMessage());
-            statusLine = null;
+    private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm:ss");
+
+    /**
+     * Builds the status line content (rendered below the prompt by JLine3 Status).
+     */
+    private AttributedString buildStatusLine() {
+        var sb = new StringBuilder();
+
+        // Separator + Model (cyan bold)
+        sb.append(MUTED).append("\u2500").append(RESET).append(" ");
+        sb.append(INFO).append(BOLD).append(sessionInfo.model()).append(RESET);
+
+        // Git branch (green)
+        String branch = sessionInfo.gitBranch();
+        if (branch != null && !branch.isBlank()) {
+            sb.append(MUTED).append(" \u2502 ").append(RESET);
+            sb.append(SUCCESS).append("\u2387 ").append(branch).append(RESET);
         }
+
+        // Context usage (yellow)
+        int ctxWindow = sessionInfo.contextWindowTokens();
+        if (ctxWindow > 0 && latestInputTokens > 0) {
+            sb.append(MUTED).append(" \u2502 ").append(RESET);
+            long pct = latestInputTokens * 100 / ctxWindow;
+            sb.append(WARNING).append(formatTokenCount(latestInputTokens))
+              .append("/").append(formatTokenCount(ctxWindow))
+              .append(" (").append(pct).append("%)").append(RESET);
+        }
+
+        // Time (dim)
+        sb.append(MUTED).append(" \u2502 ").append(RESET);
+        sb.append(MUTED).append(LocalTime.now().format(TIME_FMT)).append(RESET);
+
+        return AttributedString.fromAnsi(sb.toString());
     }
 
+    /**
+     * Updates the JLine3 Status bar below the prompt with current info.
+     */
     private void updateStatusLine() {
         var sl = statusLine;
-        if (sl == null) return;
-        try {
-            var sb = new StringBuilder();
-            sb.append(sessionInfo.model());
-
-            // Context window usage (from latest API call)
-            int ctxWindow = sessionInfo.contextWindowTokens();
-            if (ctxWindow > 0 && latestInputTokens > 0) {
-                sb.append(" | context: ")
-                  .append(formatTokenCount(latestInputTokens))
-                  .append("/")
-                  .append(formatTokenCount(ctxWindow));
-            }
-
-            // Cumulative token usage
-            sb.append(" | tokens: ")
-              .append(totalInputTokens).append(" in / ")
-              .append(totalOutputTokens).append(" out");
-
-            sl.update(List.of(new AttributedString(sb.toString())));
-        } catch (Exception e) {
-            log.debug("Failed to update status line: {}", e.getMessage());
+        if (sl != null) {
+            sl.update(List.of(buildStatusLine()));
         }
     }
 
@@ -251,17 +266,6 @@ public final class TerminalRepl {
         return String.format("%.1fK", k);
     }
 
-    private void disposeStatusLine() {
-        var sl = statusLine;
-        if (sl != null) {
-            try {
-                sl.update(null);
-            } catch (Exception e) {
-                // Ignore
-            }
-        }
-    }
-
     // -- Input processing ----------------------------------------------------
 
     private void processInput(PrintWriter out, String input) {
@@ -274,6 +278,7 @@ public final class TerminalRepl {
             params.put("prompt", input);
 
             // Send the request (writes the JSON line to the socket)
+            promptStartNanos = System.nanoTime();
             long id = sendPromptRequest(params);
 
             // Start thinking spinner immediately — visible while waiting for LLM
@@ -328,15 +333,31 @@ public final class TerminalRepl {
                                 }
                             }
                         }
-                        // Update token counters
+                        // Update token counters and show response summary
                         if (result != null && result.has("usage")) {
                             var usage = result.get("usage");
                             int turnIn = usage.path("inputTokens").asInt(0);
                             int turnOut = usage.path("outputTokens").asInt(0);
                             totalInputTokens += turnIn;
                             totalOutputTokens += turnOut;
-                            // Track latest input tokens for context window usage display
                             latestInputTokens = turnIn;
+
+                            // Response time
+                            long elapsedMs = (System.nanoTime() - promptStartNanos) / 1_000_000;
+                            String elapsed = elapsedMs >= 1000
+                                    ? String.format("%.1fs", elapsedMs / 1000.0)
+                                    : elapsedMs + "ms";
+
+                            // Compact info line below the response
+                            out.println();
+                            out.printf("%s%s  %d in / %d out  %s%s%n",
+                                    MUTED, elapsed, turnIn, turnOut,
+                                    sessionInfo.contextWindowTokens() > 0
+                                            ? "context " + formatTokenCount(turnIn) + "/" + formatTokenCount(sessionInfo.contextWindowTokens())
+                                            : "",
+                                    RESET);
+
+                            // Token info updated — refresh the status bar below prompt
                             updateStatusLine();
                         }
                     }
@@ -564,12 +585,12 @@ public final class TerminalRepl {
     }
 
     /**
-     * Stops the active spinner if one is running.
+     * Stops the active spinner if one is running. Clears the spinner line silently.
      */
     private void stopSpinner() {
         var s = spinner;
         if (s != null && s.isSpinning()) {
-            s.stop(TOOL_DONE + CHECKMARK + RESET + " done");
+            s.clear();
             spinner = null;
         }
     }
