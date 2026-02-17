@@ -28,10 +28,16 @@ public enum StopReason {
             return ERROR;
         }
         return switch (value) {
+            // Anthropic stop reasons
             case "end_turn" -> END_TURN;
             case "tool_use" -> TOOL_USE;
             case "max_tokens" -> MAX_TOKENS;
             case "stop_sequence" -> STOP_SEQUENCE;
+            // OpenAI stop reasons
+            case "stop" -> END_TURN;
+            case "tool_calls" -> TOOL_USE;
+            case "length" -> MAX_TOKENS;
+            case "content_filter" -> END_TURN;
             default -> ERROR;
         };
     }

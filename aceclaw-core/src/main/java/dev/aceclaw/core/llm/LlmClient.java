@@ -34,4 +34,12 @@ public interface LlmClient {
      * Returns the default model identifier for this provider.
      */
     String defaultModel();
+
+    /**
+     * Returns the capabilities of this provider.
+     * Defaults to generic OpenAI-compatible capabilities.
+     */
+    default ProviderCapabilities capabilities() {
+        return ProviderCapabilities.OPENAI_COMPAT;
+    }
 }

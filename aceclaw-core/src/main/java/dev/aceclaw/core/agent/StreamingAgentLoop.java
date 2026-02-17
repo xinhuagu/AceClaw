@@ -17,6 +17,10 @@ import java.util.concurrent.StructuredTaskScope;
  *
  * <p>After each stream completes, the full response is accumulated and the stop reason
  * is checked. Tool use is handled identically to the non-streaming variant.
+ *
+ * <p>Supports automatic context compaction via an optional {@link MessageCompactor}.
+ * When the context approaches the token limit, the compactor prunes old tool results
+ * and thinking blocks, and if needed, generates an LLM summary of the conversation.
  */
 public final class StreamingAgentLoop {
 
@@ -25,28 +29,76 @@ public final class StreamingAgentLoop {
     /** Maximum number of tool-use iterations before forcing a stop. */
     private static final int MAX_ITERATIONS = 25;
 
+    /** Maximum characters allowed in a single tool result before truncation. */
+    private static final int MAX_TOOL_RESULT_CHARS = 30_000;
+
     private final LlmClient llmClient;
     private final ToolRegistry toolRegistry;
     private final String model;
     private final String systemPrompt;
+    private final int maxTokens;
+    private final int thinkingBudget;
+    private final MessageCompactor compactor;
 
     /**
-     * Creates a streaming agent loop.
+     * Creates a streaming agent loop with default token settings and no compaction.
      *
      * @param llmClient    the LLM client for streaming requests
      * @param toolRegistry registry of available tools
      * @param model        model identifier
      * @param systemPrompt system prompt for the LLM (may be null)
      */
-    public StreamingAgentLoop(LlmClient llmClient, ToolRegistry toolRegistry, String model, String systemPrompt) {
+    public StreamingAgentLoop(LlmClient llmClient, ToolRegistry toolRegistry,
+                              String model, String systemPrompt) {
+        this(llmClient, toolRegistry, model, systemPrompt, 16384, 10240, null);
+    }
+
+    /**
+     * Creates a streaming agent loop with configurable token settings and no compaction.
+     *
+     * @param llmClient      the LLM client for streaming requests
+     * @param toolRegistry   registry of available tools
+     * @param model          model identifier
+     * @param systemPrompt   system prompt for the LLM (may be null)
+     * @param maxTokens      maximum tokens to generate per request
+     * @param thinkingBudget tokens reserved for extended thinking (0 = disabled)
+     */
+    public StreamingAgentLoop(LlmClient llmClient, ToolRegistry toolRegistry,
+                              String model, String systemPrompt,
+                              int maxTokens, int thinkingBudget) {
+        this(llmClient, toolRegistry, model, systemPrompt, maxTokens, thinkingBudget, null);
+    }
+
+    /**
+     * Creates a streaming agent loop with full configuration including compaction.
+     *
+     * @param llmClient      the LLM client for streaming requests
+     * @param toolRegistry   registry of available tools
+     * @param model          model identifier
+     * @param systemPrompt   system prompt for the LLM (may be null)
+     * @param maxTokens      maximum tokens to generate per request
+     * @param thinkingBudget tokens reserved for extended thinking (0 = disabled)
+     * @param compactor      optional message compactor (null = no compaction)
+     */
+    public StreamingAgentLoop(LlmClient llmClient, ToolRegistry toolRegistry,
+                              String model, String systemPrompt,
+                              int maxTokens, int thinkingBudget,
+                              MessageCompactor compactor) {
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry;
         this.model = model;
         this.systemPrompt = systemPrompt;
+        this.maxTokens = maxTokens;
+        this.thinkingBudget = thinkingBudget;
+        this.compactor = compactor;
     }
 
     /**
      * Runs a single agent turn with streaming, invoking the handler for real-time token delivery.
+     *
+     * <p>If a {@link MessageCompactor} is configured, context size is checked before each
+     * LLM call. Uses actual {@code inputTokens} from API responses when available, falling
+     * back to character-based estimation for the first call.
      *
      * @param userPrompt          the user's prompt text
      * @param conversationHistory previous messages in the conversation
@@ -69,7 +121,20 @@ public final class StreamingAgentLoop {
         int totalCacheCreationTokens = 0;
         int totalCacheReadTokens = 0;
 
+        // Track actual input tokens from API for accurate compaction decisions
+        int lastInputTokens = -1;
+
+        // Track compaction result across iterations
+        CompactionResult compactionResult = null;
+
         for (int iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+
+            // Check if context compaction is needed before this LLM call
+            if (compactor != null) {
+                compactionResult = checkAndCompact(
+                        allMessages, lastInputTokens, compactionResult, handler);
+            }
+
             log.debug("Streaming ReAct iteration {} (messages: {})", iteration + 1, allMessages.size());
 
             var request = buildRequest(allMessages);
@@ -84,12 +149,13 @@ public final class StreamingAgentLoop {
                 throw accumulator.error;
             }
 
-            // Accumulate usage
+            // Accumulate usage and track actual input tokens
             if (accumulator.usage != null) {
                 totalInputTokens += accumulator.usage.inputTokens();
                 totalOutputTokens += accumulator.usage.outputTokens();
                 totalCacheCreationTokens += accumulator.usage.cacheCreationInputTokens();
                 totalCacheReadTokens += accumulator.usage.cacheReadInputTokens();
+                lastInputTokens = accumulator.usage.inputTokens();
             }
 
             // Build assistant message from accumulated content
@@ -108,7 +174,7 @@ public final class StreamingAgentLoop {
                     var totalUsage = new Usage(
                             totalInputTokens, totalOutputTokens,
                             totalCacheCreationTokens, totalCacheReadTokens);
-                    return new Turn(newMessages, stopReason, totalUsage);
+                    return new Turn(newMessages, stopReason, totalUsage, compactionResult);
                 }
                 case TOOL_USE -> {
                     var toolUseBlocks = contentBlocks.stream()
@@ -130,13 +196,68 @@ public final class StreamingAgentLoop {
         var totalUsage = new Usage(
                 totalInputTokens, totalOutputTokens,
                 totalCacheCreationTokens, totalCacheReadTokens);
-        return new Turn(newMessages, StopReason.END_TURN, totalUsage);
+        return new Turn(newMessages, StopReason.END_TURN, totalUsage, compactionResult);
+    }
+
+    /**
+     * Checks if compaction is needed and runs it if so.
+     * Uses actual API token count when available, falls back to estimation.
+     *
+     * @return the compaction result (possibly from a previous iteration), or null
+     */
+    private CompactionResult checkAndCompact(
+            ArrayList<Message> allMessages, int lastInputTokens,
+            CompactionResult previousResult, StreamEventHandler handler) throws LlmException {
+
+        boolean needsCompaction;
+        if (lastInputTokens > 0) {
+            // Use actual token count from the last API response
+            needsCompaction = compactor.needsCompaction(lastInputTokens);
+        } else {
+            // First iteration — use estimation
+            needsCompaction = compactor.needsCompactionEstimate(
+                    allMessages, systemPrompt, toolRegistry.toDefinitions());
+        }
+
+        if (!needsCompaction) {
+            return previousResult;
+        }
+
+        log.info("Context compaction triggered (lastInputTokens={}, threshold={})",
+                lastInputTokens, compactor.config().triggerTokens());
+
+        var result = compactor.compact(allMessages, systemPrompt);
+
+        // Replace allMessages with compacted version
+        allMessages.clear();
+        allMessages.addAll(result.compactedMessages());
+
+        // Notify handler about compaction
+        handler.onCompaction(
+                result.originalTokenEstimate(),
+                result.compactedTokenEstimate(),
+                result.phaseReached().name());
+
+        log.info("Compaction complete: phase={}, reduction={} -> {} estimated tokens ({}% reduction)",
+                result.phaseReached(), result.originalTokenEstimate(),
+                result.compactedTokenEstimate(),
+                String.format("%.1f", result.reductionPercent()));
+
+        return result;
     }
 
     private LlmRequest buildRequest(List<Message> messages) {
+        // Only enable extended thinking if the provider supports it
+        int effectiveThinkingBudget = thinkingBudget;
+        if (effectiveThinkingBudget > 0 && !llmClient.capabilities().supportsExtendedThinking()) {
+            effectiveThinkingBudget = 0;
+        }
+
         var builder = LlmRequest.builder()
                 .model(model)
-                .messages(messages);
+                .messages(messages)
+                .maxTokens(maxTokens)
+                .thinkingBudget(effectiveThinkingBudget);
 
         if (systemPrompt != null && !systemPrompt.isBlank()) {
             builder.systemPrompt(systemPrompt);
@@ -189,12 +310,33 @@ public final class StreamingAgentLoop {
         try {
             log.debug("Executing tool: {} (id: {})", tool.name(), toolUse.id());
             var result = tool.execute(toolUse.inputJson());
+            String output = truncateToolResult(result.output(), MAX_TOOL_RESULT_CHARS);
+            if (output.length() != result.output().length()) {
+                log.debug("Tool {} result truncated: {} -> {} chars [truncated]",
+                        tool.name(), result.output().length(), output.length());
+            }
             log.debug("Tool {} completed: isError={}", tool.name(), result.isError());
-            return new ContentBlock.ToolResult(toolUse.id(), result.output(), result.isError());
+            return new ContentBlock.ToolResult(toolUse.id(), output, result.isError());
         } catch (Exception e) {
             log.error("Tool {} threw exception: {}", tool.name(), e.getMessage(), e);
             return new ContentBlock.ToolResult(toolUse.id(), "Tool error: " + e.getMessage(), true);
         }
+    }
+
+    /**
+     * Truncates a tool result to fit within the given character limit.
+     * Keeps 40% from the head and 60% from the tail (error messages tend to be at the end).
+     */
+    static String truncateToolResult(String output, int maxChars) {
+        if (output == null || output.length() <= maxChars) {
+            return output;
+        }
+        int headChars = (int) (maxChars * 0.4);
+        int tailChars = maxChars - headChars;
+        return output.substring(0, headChars)
+                + "\n\n... (truncated: " + output.length() + " chars total, showing first "
+                + headChars + " and last " + tailChars + ") ...\n\n"
+                + output.substring(output.length() - tailChars);
     }
 
     /**

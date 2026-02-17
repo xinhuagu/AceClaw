@@ -25,4 +25,13 @@ public interface StreamEventHandler {
     default void onComplete(StreamEvent.StreamComplete event) {}
 
     default void onError(StreamEvent.StreamError event) {}
+
+    /**
+     * Called when context compaction occurs during a turn.
+     *
+     * @param originalTokens  estimated tokens before compaction
+     * @param compactedTokens estimated tokens after compaction
+     * @param phase           the compaction phase reached ("PRUNED" or "SUMMARIZED")
+     */
+    default void onCompaction(int originalTokens, int compactedTokens, String phase) {}
 }

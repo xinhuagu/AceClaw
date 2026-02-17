@@ -7,6 +7,7 @@ import dev.aceclaw.core.llm.LlmClient;
 import dev.aceclaw.core.llm.LlmException;
 import dev.aceclaw.core.llm.LlmRequest;
 import dev.aceclaw.core.llm.LlmResponse;
+import dev.aceclaw.core.llm.ProviderCapabilities;
 import dev.aceclaw.core.llm.StreamSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,6 +17,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Stream;
 
 /**
@@ -107,50 +109,59 @@ public final class AnthropicClient implements LlmClient {
         }
     }
 
+    /** Maximum number of retry attempts for transient failures. */
+    private static final int MAX_RETRIES = 3;
+
+    /** Maximum backoff delay in milliseconds (cap for Retry-After). */
+    private static final long MAX_BACKOFF_MS = 60_000L;
+
     @Override
     public LlmResponse sendMessage(LlmRequest request) throws LlmException {
         String requestBody = mapper.toRequestJson(request, false);
         log.debug("Sending non-streaming request to Anthropic: model={}", request.model());
 
-        try {
-            HttpRequest httpRequest = buildRequest(requestBody);
-            HttpResponse<String> httpResponse = httpClient.send(
-                    httpRequest, HttpResponse.BodyHandlers.ofString());
+        return executeWithRetry(() -> {
+            try {
+                HttpRequest httpRequest = buildRequest(requestBody);
+                HttpResponse<String> httpResponse = httpClient.send(
+                        httpRequest, HttpResponse.BodyHandlers.ofString());
 
-            int statusCode = httpResponse.statusCode();
-            String responseBody = httpResponse.body();
+                int statusCode = httpResponse.statusCode();
+                String responseBody = httpResponse.body();
 
-            // Retry once with refreshed token on 401
-            if (statusCode == 401 && isOAuth && refreshToken != null) {
-                log.info("OAuth token expired, attempting refresh...");
-                if (refreshAccessToken()) {
-                    httpRequest = buildRequest(requestBody);
-                    httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
-                    statusCode = httpResponse.statusCode();
-                    responseBody = httpResponse.body();
+                // Retry once with refreshed token on 401
+                if (statusCode == 401 && isOAuth && refreshToken != null) {
+                    log.info("OAuth token expired, attempting refresh...");
+                    if (refreshAccessToken()) {
+                        httpRequest = buildRequest(requestBody);
+                        httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
+                        statusCode = httpResponse.statusCode();
+                        responseBody = httpResponse.body();
+                    }
                 }
-            }
 
-            if (statusCode != 200) {
-                log.error("Anthropic API error: status={}, body={}", statusCode, responseBody);
-                throw new LlmException(
-                        "Anthropic API returned HTTP " + statusCode + ": " + responseBody,
-                        statusCode);
-            }
+                if (statusCode != 200) {
+                    log.error("Anthropic API error: status={}, body={}", statusCode, responseBody);
+                    long retryAfter = parseRetryAfter(httpResponse);
+                    throw new LlmException(
+                            "Anthropic API returned HTTP " + statusCode + ": " + responseBody,
+                            statusCode, retryAfter);
+                }
 
-            LlmResponse response = mapper.toResponse(responseBody);
-            log.debug("Received response: id={}, stopReason={}, usage={}in/{}out",
-                    response.id(), response.stopReason(),
-                    response.usage().inputTokens(), response.usage().outputTokens());
-            return response;
-        } catch (LlmException e) {
-            throw e;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new LlmException("Request interrupted", e);
-        } catch (Exception e) {
-            throw new LlmException("Failed to send message to Anthropic", e);
-        }
+                LlmResponse response = mapper.toResponse(responseBody);
+                log.debug("Received response: id={}, stopReason={}, usage={}in/{}out",
+                        response.id(), response.stopReason(),
+                        response.usage().inputTokens(), response.usage().outputTokens());
+                return response;
+            } catch (LlmException e) {
+                throw e;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new LlmException("Request interrupted", e);
+            } catch (Exception e) {
+                throw new LlmException("Failed to send message to Anthropic", e);
+            }
+        });
     }
 
     @Override
@@ -158,41 +169,103 @@ public final class AnthropicClient implements LlmClient {
         String requestBody = mapper.toRequestJson(request, true);
         log.debug("Sending streaming request to Anthropic: model={}", request.model());
 
-        try {
-            HttpRequest httpRequest = buildRequest(requestBody);
-            HttpResponse<Stream<String>> httpResponse = httpClient.send(
-                    httpRequest, HttpResponse.BodyHandlers.ofLines());
+        return executeWithRetry(() -> {
+            try {
+                HttpRequest httpRequest = buildRequest(requestBody);
+                HttpResponse<Stream<String>> httpResponse = httpClient.send(
+                        httpRequest, HttpResponse.BodyHandlers.ofLines());
 
-            int statusCode = httpResponse.statusCode();
+                int statusCode = httpResponse.statusCode();
 
-            // Retry once with refreshed token on 401
-            if (statusCode == 401 && isOAuth && refreshToken != null) {
-                log.info("OAuth token expired, attempting refresh...");
-                if (refreshAccessToken()) {
-                    httpRequest = buildRequest(requestBody);
-                    httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofLines());
-                    statusCode = httpResponse.statusCode();
+                // Retry once with refreshed token on 401
+                if (statusCode == 401 && isOAuth && refreshToken != null) {
+                    log.info("OAuth token expired, attempting refresh...");
+                    if (refreshAccessToken()) {
+                        httpRequest = buildRequest(requestBody);
+                        httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofLines());
+                        statusCode = httpResponse.statusCode();
+                    }
+                }
+
+                if (statusCode != 200) {
+                    String errorBody = httpResponse.body()
+                            .reduce("", (a, b) -> a + b);
+                    log.error("Anthropic API stream error: status={}, body={}", statusCode, errorBody);
+                    long retryAfter = parseRetryAfter(httpResponse);
+                    throw new LlmException(
+                            "Anthropic API returned HTTP " + statusCode + ": " + errorBody,
+                            statusCode, retryAfter);
+                }
+
+                return new AnthropicStreamSession(httpResponse, mapper);
+            } catch (LlmException e) {
+                throw e;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new LlmException("Stream request interrupted", e);
+            } catch (Exception e) {
+                throw new LlmException("Failed to start streaming from Anthropic", e);
+            }
+        });
+    }
+
+    /**
+     * Executes an action with retry on transient failures.
+     * Retries up to {@link #MAX_RETRIES} times with exponential backoff and jitter.
+     */
+    private <T> T executeWithRetry(RetryableAction<T> action) throws LlmException {
+        for (int attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+            try {
+                return action.execute();
+            } catch (LlmException e) {
+                if (!e.isRetryable() || attempt == MAX_RETRIES) {
+                    throw e;
+                }
+                long backoffMs = calculateBackoff(attempt, e);
+                log.warn("Retrying request (attempt {}/{}, backoff {}ms): HTTP {}",
+                        attempt + 1, MAX_RETRIES, backoffMs, e.statusCode());
+                try {
+                    Thread.sleep(backoffMs);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw new LlmException("Retry interrupted", ie);
                 }
             }
-
-            if (statusCode != 200) {
-                String errorBody = httpResponse.body()
-                        .reduce("", (a, b) -> a + b);
-                log.error("Anthropic API stream error: status={}, body={}", statusCode, errorBody);
-                throw new LlmException(
-                        "Anthropic API returned HTTP " + statusCode + ": " + errorBody,
-                        statusCode);
-            }
-
-            return new AnthropicStreamSession(httpResponse, mapper);
-        } catch (LlmException e) {
-            throw e;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new LlmException("Stream request interrupted", e);
-        } catch (Exception e) {
-            throw new LlmException("Failed to start streaming from Anthropic", e);
         }
+        throw new AssertionError("unreachable");
+    }
+
+    /**
+     * Calculates backoff delay for a retry attempt.
+     * Uses exponential backoff (1s, 2s, 4s) with +/-20% jitter.
+     * Respects the Retry-After header if present (capped at 60s).
+     */
+    private static long calculateBackoff(int attempt, LlmException e) {
+        if (e.retryAfterSeconds() > 0) {
+            return Math.min(e.retryAfterSeconds() * 1000L, MAX_BACKOFF_MS);
+        }
+        long baseMs = 1000L * (1L << attempt); // 1s, 2s, 4s
+        double jitterFactor = 1.0 + 0.2 * (ThreadLocalRandom.current().nextDouble() * 2 - 1);
+        return Math.min((long) (baseMs * jitterFactor), MAX_BACKOFF_MS);
+    }
+
+    /**
+     * Parses the Retry-After header from an HTTP response.
+     * Returns the delay in seconds, or -1 if not present or unparseable.
+     */
+    private static long parseRetryAfter(HttpResponse<?> response) {
+        var header = response.headers().firstValue("retry-after").orElse(null);
+        if (header == null) return -1;
+        try {
+            return Long.parseLong(header.trim());
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+    }
+
+    @FunctionalInterface
+    private interface RetryableAction<T> {
+        T execute() throws LlmException;
     }
 
     @Override
@@ -203,6 +276,11 @@ public final class AnthropicClient implements LlmClient {
     @Override
     public String defaultModel() {
         return DEFAULT_MODEL;
+    }
+
+    @Override
+    public ProviderCapabilities capabilities() {
+        return ProviderCapabilities.ANTHROPIC;
     }
 
     private HttpRequest buildRequest(String body) {

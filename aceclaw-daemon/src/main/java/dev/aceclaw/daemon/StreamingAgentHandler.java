@@ -2,6 +2,7 @@ package dev.aceclaw.daemon;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.aceclaw.core.agent.MessageCompactor;
 import dev.aceclaw.core.agent.StreamingAgentLoop;
 import dev.aceclaw.core.agent.Tool;
 import dev.aceclaw.core.agent.ToolRegistry;
@@ -9,6 +10,8 @@ import dev.aceclaw.core.llm.ContentBlock;
 import dev.aceclaw.core.llm.Message;
 import dev.aceclaw.core.llm.StreamEvent;
 import dev.aceclaw.core.llm.StreamEventHandler;
+import dev.aceclaw.memory.AutoMemoryStore;
+import dev.aceclaw.memory.MemoryEntry;
 import dev.aceclaw.security.PermissionDecision;
 import dev.aceclaw.security.PermissionLevel;
 import dev.aceclaw.security.PermissionManager;
@@ -17,6 +20,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -105,14 +109,21 @@ public final class StreamingAgentHandler {
         // Wrap tools with permission checking for this request
         var permissionAwareRegistry = createPermissionAwareRegistry(context);
 
-        // Create a temporary agent loop with the permission-aware registry
+        // Create a temporary agent loop with the permission-aware registry and compaction
         var permissionAwareLoop = new StreamingAgentLoop(
                 getLlmClient(), permissionAwareRegistry,
-                getModel(), getSystemPrompt());
+                getModel(), getSystemPrompt(),
+                maxTokens, thinkingBudget, compactor);
 
         // Run the streaming turn with error handling
         try {
             var turn = permissionAwareLoop.runTurn(prompt, conversationHistory, eventHandler);
+
+            // Handle compaction: if compaction occurred, replace session history
+            // and persist extracted context items to auto-memory
+            if (turn.wasCompacted()) {
+                handleCompactionResult(session, turn.compactionResult());
+            }
 
             // Store messages in the session
             session.addMessage(new AgentSession.ConversationMessage.User(prompt));
@@ -133,8 +144,14 @@ public final class StreamingAgentHandler {
             usageNode.put("totalTokens", turn.totalUsage().totalTokens());
             result.set("usage", usageNode);
 
-            log.info("Streaming turn complete: sessionId={}, stopReason={}, tokens={}",
-                    sessionId, turn.finalStopReason(), turn.totalUsage().totalTokens());
+            if (turn.wasCompacted()) {
+                result.put("compacted", true);
+                result.put("compactionPhase", turn.compactionResult().phaseReached().name());
+            }
+
+            log.info("Streaming turn complete: sessionId={}, stopReason={}, tokens={}, compacted={}",
+                    sessionId, turn.finalStopReason(), turn.totalUsage().totalTokens(),
+                    turn.wasCompacted());
 
             return result;
 
@@ -157,7 +174,7 @@ public final class StreamingAgentHandler {
     private static String formatLlmError(dev.aceclaw.core.llm.LlmException e) {
         int status = e.statusCode();
         if (status == 401) {
-            return "Invalid API key. Please check your ANTHROPIC_API_KEY or ~/.aceclaw/config.json.";
+            return "Invalid API key. Please check your API key configuration in env vars or ~/.aceclaw/config.json.";
         } else if (status == 429) {
             return "Rate limit exceeded. Please wait a moment and try again.";
         } else if (status == 529) {
@@ -167,7 +184,7 @@ public final class StreamingAgentHandler {
         } else if (status == 400) {
             return "Bad request to LLM API: " + e.getMessage();
         } else if (e.getMessage() != null && e.getMessage().contains("not-configured")) {
-            return "API key not configured. Set ANTHROPIC_API_KEY or add apiKey to ~/.aceclaw/config.json.";
+            return "API key not configured. Set ANTHROPIC_API_KEY (or OPENAI_API_KEY) or add apiKey to ~/.aceclaw/config.json.";
         } else {
             return "LLM error: " + e.getMessage();
         }
@@ -192,6 +209,11 @@ public final class StreamingAgentHandler {
     private dev.aceclaw.core.llm.LlmClient llmClient;
     private String model;
     private String systemPrompt;
+    private int maxTokens = 16384;
+    private int thinkingBudget = 10240;
+    private MessageCompactor compactor;
+    private AutoMemoryStore memoryStore;
+    private Path workingDir;
 
     /**
      * Sets the LLM configuration for permission-aware agent loop creation.
@@ -201,6 +223,29 @@ public final class StreamingAgentHandler {
         this.llmClient = llmClient;
         this.model = model;
         this.systemPrompt = systemPrompt;
+    }
+
+    /**
+     * Sets the token configuration for permission-aware agent loop creation.
+     */
+    public void setTokenConfig(int maxTokens, int thinkingBudget) {
+        this.maxTokens = maxTokens;
+        this.thinkingBudget = thinkingBudget;
+    }
+
+    /**
+     * Sets the message compactor for context compaction support.
+     */
+    public void setCompactor(MessageCompactor compactor) {
+        this.compactor = compactor;
+    }
+
+    /**
+     * Sets the auto-memory store for persisting context extracted during compaction.
+     */
+    public void setMemoryStore(AutoMemoryStore memoryStore, Path workingDir) {
+        this.memoryStore = memoryStore;
+        this.workingDir = workingDir;
     }
 
     private dev.aceclaw.core.llm.LlmClient getLlmClient() {
@@ -213,6 +258,65 @@ public final class StreamingAgentHandler {
 
     private String getSystemPrompt() {
         return systemPrompt;
+    }
+
+    /**
+     * Handles the result of a context compaction during a turn.
+     * Replaces session conversation history with compacted messages and
+     * persists extracted context items to auto-memory.
+     */
+    private void handleCompactionResult(AgentSession session,
+                                        dev.aceclaw.core.agent.CompactionResult result) {
+        // Replace session history with compacted summary messages
+        var compactedConversation = new ArrayList<AgentSession.ConversationMessage>();
+        for (var msg : result.compactedMessages()) {
+            switch (msg) {
+                case Message.UserMessage u -> {
+                    String text = u.content().stream()
+                            .filter(b -> b instanceof ContentBlock.Text)
+                            .map(b -> ((ContentBlock.Text) b).text())
+                            .reduce("", (a, b) -> a + b);
+                    if (!text.isEmpty()) {
+                        compactedConversation.add(
+                                new AgentSession.ConversationMessage.User(text));
+                    }
+                }
+                case Message.AssistantMessage a -> {
+                    String text = a.content().stream()
+                            .filter(b -> b instanceof ContentBlock.Text)
+                            .map(b -> ((ContentBlock.Text) b).text())
+                            .reduce("", (a2, b) -> a2 + b);
+                    if (!text.isEmpty()) {
+                        compactedConversation.add(
+                                new AgentSession.ConversationMessage.Assistant(text));
+                    }
+                }
+            }
+        }
+        session.replaceMessages(compactedConversation);
+
+        log.info("Session {} history replaced with {} compacted messages (was {})",
+                session.id(), compactedConversation.size(),
+                result.originalTokenEstimate() + " estimated tokens");
+
+        // Persist extracted context items to auto-memory (Phase 0 memory flush)
+        if (memoryStore != null && !result.extractedContext().isEmpty()) {
+            for (var item : result.extractedContext()) {
+                try {
+                    memoryStore.add(
+                            MemoryEntry.Category.CODEBASE_INSIGHT,
+                            item,
+                            List.of("compaction", "auto-extracted"),
+                            "compaction:" + session.id(),
+                            false,
+                            workingDir);
+                } catch (Exception e) {
+                    log.warn("Failed to persist compaction context to memory: {}", e.getMessage());
+                }
+            }
+            log.info("Persisted {} context items to auto-memory from compaction",
+                    result.extractedContext().size());
+        }
     }
 
     // -- Message conversion ------------------------------------------------
@@ -302,6 +406,19 @@ public final class StreamingAgentHandler {
                 context.sendNotification("stream.error", params);
             } catch (IOException e) {
                 log.warn("Failed to send error notification: {}", e.getMessage());
+            }
+        }
+
+        @Override
+        public void onCompaction(int originalTokens, int compactedTokens, String phase) {
+            try {
+                var params = objectMapper.createObjectNode();
+                params.put("originalTokens", originalTokens);
+                params.put("compactedTokens", compactedTokens);
+                params.put("phase", phase);
+                context.sendNotification("stream.compaction", params);
+            } catch (IOException e) {
+                log.warn("Failed to send compaction notification: {}", e.getMessage());
             }
         }
     }

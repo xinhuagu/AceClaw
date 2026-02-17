@@ -51,25 +51,48 @@ final class AnthropicMapper {
             root.put("temperature", request.temperature());
         }
 
+        // System prompt as array with cache_control on last block
         if (request.systemPrompt() != null && !request.systemPrompt().isBlank()) {
-            root.put("system", request.systemPrompt());
+            ArrayNode systemArray = root.putArray("system");
+            ObjectNode systemBlock = objectMapper.createObjectNode();
+            systemBlock.put("type", "text");
+            systemBlock.put("text", request.systemPrompt());
+            systemBlock.set("cache_control", cacheControlEphemeral());
+            systemArray.add(systemBlock);
         }
 
         if (stream) {
             root.put("stream", true);
         }
 
-        // Messages
+        // Messages (with cache_control on last user message's last content block)
         ArrayNode messagesArray = root.putArray("messages");
-        for (Message message : request.messages()) {
-            messagesArray.add(mapMessage(message));
+        List<Message> messages = request.messages();
+        int lastUserIndex = -1;
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            if (messages.get(i) instanceof Message.UserMessage) {
+                lastUserIndex = i;
+                break;
+            }
+        }
+        for (int i = 0; i < messages.size(); i++) {
+            ObjectNode msgNode = mapMessage(messages.get(i));
+            if (i == lastUserIndex) {
+                addCacheControlToLastContentBlock(msgNode);
+            }
+            messagesArray.add(msgNode);
         }
 
-        // Tools
+        // Tools (with cache_control on last tool definition)
         if (!request.tools().isEmpty()) {
             ArrayNode toolsArray = root.putArray("tools");
-            for (ToolDefinition tool : request.tools()) {
-                toolsArray.add(mapToolDefinition(tool));
+            List<ToolDefinition> tools = request.tools();
+            for (int i = 0; i < tools.size(); i++) {
+                ObjectNode toolNode = mapToolDefinition(tools.get(i));
+                if (i == tools.size() - 1) {
+                    toolNode.set("cache_control", cacheControlEphemeral());
+                }
+                toolsArray.add(toolNode);
             }
             ObjectNode toolChoice = objectMapper.createObjectNode();
             toolChoice.put("type", "auto");
@@ -215,5 +238,27 @@ final class AnthropicMapper {
 
     ObjectMapper objectMapper() {
         return objectMapper;
+    }
+
+    /**
+     * Creates a {@code {"type": "ephemeral"}} cache_control node.
+     */
+    private ObjectNode cacheControlEphemeral() {
+        ObjectNode cc = objectMapper.createObjectNode();
+        cc.put("type", "ephemeral");
+        return cc;
+    }
+
+    /**
+     * Adds cache_control to the last content block of a message node.
+     */
+    private void addCacheControlToLastContentBlock(ObjectNode messageNode) {
+        JsonNode content = messageNode.get("content");
+        if (content != null && content.isArray() && !content.isEmpty()) {
+            JsonNode lastBlock = content.get(content.size() - 1);
+            if (lastBlock instanceof ObjectNode lastObj) {
+                lastObj.set("cache_control", cacheControlEphemeral());
+            }
+        }
     }
 }

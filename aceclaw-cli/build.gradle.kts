@@ -7,6 +7,7 @@ plugins {
 
 dependencies {
     implementation(project(":aceclaw-daemon"))
+    implementation(project(":aceclaw-llm"))
 
     implementation("info.picocli:picocli")
     annotationProcessor("info.picocli:picocli-codegen")

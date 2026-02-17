@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 
 /**
  * Configuration for the AceClaw daemon and CLI.
@@ -20,7 +21,11 @@ import java.nio.file.Path;
  *
  * <p>Environment variables take highest precedence:
  * <ul>
+ *   <li>{@code ACECLAW_PROFILE} → selects a named profile from config (applied after file load, before env overrides)</li>
+ *   <li>{@code ACECLAW_PROVIDER} → provider</li>
+ *   <li>{@code ACECLAW_BASE_URL} → baseUrl</li>
  *   <li>{@code ANTHROPIC_API_KEY} → apiKey</li>
+ *   <li>{@code OPENAI_API_KEY} → apiKey (fallback for non-Anthropic providers)</li>
  *   <li>{@code ACECLAW_MODEL} → model</li>
  *   <li>{@code ACECLAW_LOG_LEVEL} → logLevel</li>
  * </ul>
@@ -35,20 +40,31 @@ public final class AceClawConfig {
     // Default values
     private static final String DEFAULT_MODEL = "claude-sonnet-4-5-20250929";
     private static final int DEFAULT_MAX_TOKENS = 16384;
+    private static final int DEFAULT_THINKING_BUDGET = 10240;
+    private static final int DEFAULT_CONTEXT_WINDOW = 200_000;
     private static final String DEFAULT_LOG_LEVEL = "INFO";
 
     /** Claude CLI credentials directory. */
     private static final Path CLAUDE_CLI_DIR = Path.of(System.getProperty("user.home"), ".claude");
 
+    private String provider;
+    private String baseUrl;
     private String apiKey;
     private String refreshToken;
     private String model;
     private int maxTokens;
+    private int thinkingBudget;
+    private int contextWindowTokens;
     private String logLevel;
+    private String defaultProfile;
+    private Map<String, ConfigFileFormat> profiles;
 
     private AceClawConfig() {
+        this.provider = "anthropic";
         this.model = DEFAULT_MODEL;
         this.maxTokens = DEFAULT_MAX_TOKENS;
+        this.thinkingBudget = DEFAULT_THINKING_BUDGET;
+        this.contextWindowTokens = DEFAULT_CONTEXT_WINDOW;
         this.logLevel = DEFAULT_LOG_LEVEL;
     }
 
@@ -71,10 +87,34 @@ public final class AceClawConfig {
             config.mergeFromFile(projectConfig);
         }
 
-        // 3. Environment variables (highest precedence)
+        // 3. Apply profile: ACECLAW_PROFILE env var > defaultProfile in config
+        var envProfile = System.getenv("ACECLAW_PROFILE");
+        if (envProfile != null && !envProfile.isBlank()) {
+            config.applyProfile(envProfile);
+        } else if (config.defaultProfile != null && !config.defaultProfile.isBlank()) {
+            config.applyProfile(config.defaultProfile);
+        }
+
+        // 4. Environment variables (highest precedence)
+        var envProvider = System.getenv("ACECLAW_PROVIDER");
+        if (envProvider != null && !envProvider.isBlank()) {
+            config.provider = envProvider.toLowerCase();
+        }
+        var envBaseUrl = System.getenv("ACECLAW_BASE_URL");
+        if (envBaseUrl != null && !envBaseUrl.isBlank()) {
+            config.baseUrl = envBaseUrl;
+        }
         var envApiKey = System.getenv("ANTHROPIC_API_KEY");
         if (envApiKey != null && !envApiKey.isBlank()) {
             config.apiKey = envApiKey;
+        }
+        // Fallback: check OPENAI_API_KEY for non-Anthropic providers
+        if ((config.apiKey == null || config.apiKey.isBlank())
+                && !"anthropic".equals(config.provider)) {
+            var openaiKey = System.getenv("OPENAI_API_KEY");
+            if (openaiKey != null && !openaiKey.isBlank()) {
+                config.apiKey = openaiKey;
+            }
         }
         var envModel = System.getenv("ACECLAW_MODEL");
         if (envModel != null && !envModel.isBlank()) {
@@ -85,19 +125,34 @@ public final class AceClawConfig {
             config.logLevel = envLogLevel;
         }
 
-        // 4. If apiKey is an OAuth token and no refresh token configured,
+        // 5. If apiKey is an OAuth token and no refresh token configured,
         //    try to load the refresh token from Claude CLI credentials
         if (config.apiKey != null && config.apiKey.startsWith("sk-ant-oat")
                 && config.refreshToken == null) {
             config.loadClaudeCliCredentials();
         }
 
-        log.info("Config loaded: model={}, maxTokens={}, logLevel={}, apiKey={}, refreshToken={}",
-                config.model, config.maxTokens, config.logLevel,
+        log.info("Config loaded: provider={}, model={}, maxTokens={}, thinkingBudget={}, contextWindow={}, logLevel={}, baseUrl={}, apiKey={}, refreshToken={}",
+                config.provider, config.model, config.maxTokens, config.thinkingBudget, config.contextWindowTokens, config.logLevel,
+                config.baseUrl != null ? config.baseUrl : "(default)",
                 config.apiKey != null ? config.apiKey.substring(0, Math.min(15, config.apiKey.length())) + "***" : "(not set)",
                 config.refreshToken != null ? "***" : "(not set)");
 
         return config;
+    }
+
+    /**
+     * Returns the LLM provider name (e.g. "anthropic", "openai", "groq", "ollama").
+     */
+    public String provider() {
+        return provider;
+    }
+
+    /**
+     * Returns the custom API base URL, or null to use the provider's default.
+     */
+    public String baseUrl() {
+        return baseUrl;
     }
 
     /**
@@ -119,6 +174,20 @@ public final class AceClawConfig {
      */
     public int maxTokens() {
         return maxTokens;
+    }
+
+    /**
+     * Returns the thinking budget in tokens (0 = disabled).
+     */
+    public int thinkingBudget() {
+        return thinkingBudget;
+    }
+
+    /**
+     * Returns the context window size in tokens (e.g. 200,000 for Claude).
+     */
+    public int contextWindowTokens() {
+        return contextWindowTokens;
     }
 
     /**
@@ -150,6 +219,24 @@ public final class AceClawConfig {
     }
 
     // -- internal --------------------------------------------------------
+
+    /**
+     * Applies a named profile, overriding current config values with profile values.
+     * Profile settings are merged (non-null values override, null values keep current).
+     */
+    private void applyProfile(String profileName) {
+        if (profiles == null || profiles.isEmpty()) {
+            log.warn("Profile '{}' requested but no profiles defined in config", profileName);
+            return;
+        }
+        var profile = profiles.get(profileName);
+        if (profile == null) {
+            log.warn("Profile '{}' not found. Available profiles: {}", profileName, profiles.keySet());
+            return;
+        }
+        log.info("Applying config profile: {}", profileName);
+        mergeFromFormat(profile);
+    }
 
     /**
      * Attempts to load OAuth credentials from Claude CLI's credential storage.
@@ -205,21 +292,17 @@ public final class AceClawConfig {
         try {
             var mapper = new ObjectMapper();
             var fileConfig = mapper.readValue(configFile.toFile(), ConfigFileFormat.class);
+            mergeFromFormat(fileConfig);
 
-            if (fileConfig.apiKey != null && !fileConfig.apiKey.isBlank()) {
-                this.apiKey = fileConfig.apiKey;
+            // Collect defaultProfile and profiles from this file
+            if (fileConfig.defaultProfile != null && !fileConfig.defaultProfile.isBlank()) {
+                this.defaultProfile = fileConfig.defaultProfile;
             }
-            if (fileConfig.refreshToken != null && !fileConfig.refreshToken.isBlank()) {
-                this.refreshToken = fileConfig.refreshToken;
-            }
-            if (fileConfig.model != null && !fileConfig.model.isBlank()) {
-                this.model = fileConfig.model;
-            }
-            if (fileConfig.maxTokens > 0) {
-                this.maxTokens = fileConfig.maxTokens;
-            }
-            if (fileConfig.logLevel != null && !fileConfig.logLevel.isBlank()) {
-                this.logLevel = fileConfig.logLevel;
+            if (fileConfig.profiles != null && !fileConfig.profiles.isEmpty()) {
+                if (this.profiles == null) {
+                    this.profiles = new java.util.HashMap<>();
+                }
+                this.profiles.putAll(fileConfig.profiles);
             }
 
             log.debug("Loaded config from {}", configFile);
@@ -228,15 +311,51 @@ public final class AceClawConfig {
         }
     }
 
+    private void mergeFromFormat(ConfigFileFormat fileConfig) {
+        if (fileConfig.provider != null && !fileConfig.provider.isBlank()) {
+            this.provider = fileConfig.provider.toLowerCase();
+        }
+        if (fileConfig.baseUrl != null && !fileConfig.baseUrl.isBlank()) {
+            this.baseUrl = fileConfig.baseUrl;
+        }
+        if (fileConfig.apiKey != null && !fileConfig.apiKey.isBlank()) {
+            this.apiKey = fileConfig.apiKey;
+        }
+        if (fileConfig.refreshToken != null && !fileConfig.refreshToken.isBlank()) {
+            this.refreshToken = fileConfig.refreshToken;
+        }
+        if (fileConfig.model != null && !fileConfig.model.isBlank()) {
+            this.model = fileConfig.model;
+        }
+        if (fileConfig.maxTokens > 0) {
+            this.maxTokens = fileConfig.maxTokens;
+        }
+        if (fileConfig.thinkingBudget > 0) {
+            this.thinkingBudget = fileConfig.thinkingBudget;
+        }
+        if (fileConfig.contextWindowTokens > 0) {
+            this.contextWindowTokens = fileConfig.contextWindowTokens;
+        }
+        if (fileConfig.logLevel != null && !fileConfig.logLevel.isBlank()) {
+            this.logLevel = fileConfig.logLevel;
+        }
+    }
+
     /**
      * JSON structure of the config file.
      */
     @JsonIgnoreProperties(ignoreUnknown = true)
     static final class ConfigFileFormat {
+        public String provider;
+        public String baseUrl;
         public String apiKey;
         public String refreshToken;
         public String model;
         public int maxTokens;
+        public int thinkingBudget;
+        public int contextWindowTokens;
         public String logLevel;
+        public String defaultProfile;
+        public Map<String, ConfigFileFormat> profiles;
     }
 }

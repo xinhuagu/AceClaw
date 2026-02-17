@@ -67,6 +67,18 @@ public final class AgentSession {
     }
 
     /**
+     * Replaces the conversation history with a new list of messages.
+     * Used during context compaction to replace the full history with
+     * a compacted summary.
+     *
+     * @param newMessages the replacement messages
+     */
+    public void replaceMessages(List<ConversationMessage> newMessages) {
+        messages.clear();
+        messages.addAll(newMessages);
+    }
+
+    /**
      * Marks the session as inactive (client disconnected or session destroyed).
      */
     public void deactivate() {

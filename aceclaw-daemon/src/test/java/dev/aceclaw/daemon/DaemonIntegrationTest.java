@@ -23,6 +23,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -35,6 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * session management → streaming agent loop → tool execution → permissions.
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+@Timeout(value = 60, unit = TimeUnit.SECONDS)
 class DaemonIntegrationTest {
 
     @TempDir
@@ -90,8 +92,16 @@ class DaemonIntegrationTest {
         udsListener = new UdsListener(socketPath, connectionBridge);
         udsListener.start();
 
-        // Wait for listener to be ready
-        Thread.sleep(200);
+        // Poll for socket readiness instead of blind sleep
+        long deadline = System.currentTimeMillis() + 5000;
+        while (!Files.exists(socketPath) && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10);
+        }
+        if (!Files.exists(socketPath)) {
+            throw new IllegalStateException("UDS listener did not create socket within 5s");
+        }
+        // Brief pause for the listener to start accepting connections
+        Thread.sleep(50);
     }
 
     @AfterAll
@@ -101,10 +111,19 @@ class DaemonIntegrationTest {
         }
     }
 
+    /**
+     * Shared line buffer for reading from the socket channel.
+     * Must be instance-scoped so that data read from the channel in one
+     * {@link #readMessage} call but not yet consumed is available to the next call.
+     * Without this, messages coalesced into a single {@code channel.read()} would be lost.
+     */
+    private final StringBuilder channelLineBuffer = new StringBuilder();
+
     @BeforeEach
     void resetMock() {
         mockLlm.reset();
         permissionManager.clearSessionApprovals();
+        channelLineBuffer.setLength(0);
     }
 
     // -- Session lifecycle tests --
@@ -534,9 +553,9 @@ class DaemonIntegrationTest {
                                                     boolean approvePermissions,
                                                     boolean rememberPermissions) throws Exception {
         var notifications = new ArrayList<JsonNode>();
-        var timeout = System.currentTimeMillis() + 10_000; // 10s timeout
+        var timeoutDeadline = System.currentTimeMillis() + 5_000; // 5s timeout
 
-        while (System.currentTimeMillis() < timeout) {
+        while (System.currentTimeMillis() < timeoutDeadline) {
             var msg = readMessage(channel);
             if (msg == null) {
                 throw new IOException("Connection closed while waiting for response");
@@ -587,16 +606,18 @@ class DaemonIntegrationTest {
 
     /**
      * Reads a single newline-delimited JSON message from the channel.
+     * Uses the shared {@link #channelLineBuffer} so that data from a previous
+     * {@code channel.read()} that contained multiple messages is not lost.
+     * Channel stays in blocking mode; the class-level @Timeout guards against hangs.
      */
     private JsonNode readMessage(SocketChannel channel) throws Exception {
         var buffer = ByteBuffer.allocate(65536);
-        var lineBuilder = new StringBuilder();
 
         while (true) {
-            int newlineIdx = lineBuilder.indexOf("\n");
+            int newlineIdx = channelLineBuffer.indexOf("\n");
             if (newlineIdx != -1) {
-                var line = lineBuilder.substring(0, newlineIdx).trim();
-                lineBuilder.delete(0, newlineIdx + 1);
+                var line = channelLineBuffer.substring(0, newlineIdx).trim();
+                channelLineBuffer.delete(0, newlineIdx + 1);
                 if (!line.isEmpty()) {
                     return objectMapper.readTree(line);
                 }
@@ -608,7 +629,7 @@ class DaemonIntegrationTest {
             if (bytesRead == 0) continue;
 
             buffer.flip();
-            lineBuilder.append(StandardCharsets.UTF_8.decode(buffer));
+            channelLineBuffer.append(StandardCharsets.UTF_8.decode(buffer));
         }
     }
 

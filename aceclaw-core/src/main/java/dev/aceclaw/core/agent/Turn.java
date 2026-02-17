@@ -9,18 +9,34 @@ import java.util.List;
 /**
  * The result of a single agent turn (one or more ReAct iterations).
  *
- * @param newMessages    all messages produced during this turn (assistant messages and tool results)
- * @param finalStopReason the stop reason from the last LLM call
- * @param totalUsage     aggregated token usage across all LLM calls in this turn
+ * @param newMessages      all messages produced during this turn (assistant messages and tool results)
+ * @param finalStopReason  the stop reason from the last LLM call
+ * @param totalUsage       aggregated token usage across all LLM calls in this turn
+ * @param compactionResult context compaction result, or null if no compaction occurred
  */
 public record Turn(
         List<Message> newMessages,
         StopReason finalStopReason,
-        Usage totalUsage
+        Usage totalUsage,
+        CompactionResult compactionResult
 ) {
 
     public Turn {
         newMessages = List.copyOf(newMessages);
+    }
+
+    /**
+     * Creates a turn result without compaction info (backward-compatible).
+     */
+    public Turn(List<Message> newMessages, StopReason finalStopReason, Usage totalUsage) {
+        this(newMessages, finalStopReason, totalUsage, null);
+    }
+
+    /**
+     * Returns whether context compaction occurred during this turn.
+     */
+    public boolean wasCompacted() {
+        return compactionResult != null;
     }
 
     /**

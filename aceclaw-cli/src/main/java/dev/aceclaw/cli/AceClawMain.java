@@ -1,7 +1,9 @@
 package dev.aceclaw.cli;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import dev.aceclaw.daemon.AceClawConfig;
 import dev.aceclaw.daemon.AceClawDaemon;
+import dev.aceclaw.llm.openai.CopilotDeviceAuth;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 
@@ -35,6 +37,9 @@ public final class AceClawMain implements Runnable {
 
     @Override
     public void run() {
+        // Pre-flight: if copilot provider and no cached OAuth token, run device-code flow
+        ensureCopilotAuth();
+
         try (DaemonClient client = DaemonStarter.ensureRunning()) {
 
             // Fetch health status to get model info
@@ -79,6 +84,30 @@ public final class AceClawMain implements Runnable {
         } catch (IOException e) {
             System.err.println("Failed to connect to daemon: " + e.getMessage());
             System.err.println("Check if the daemon is running with: aceclaw daemon status");
+            System.exit(1);
+        }
+    }
+
+    /**
+     * If the active provider is "copilot" and no cached OAuth token exists,
+     * runs the interactive device-code flow before starting the daemon.
+     */
+    private static void ensureCopilotAuth() {
+        try {
+            AceClawConfig config = AceClawConfig.load(null);
+            if (!"copilot".equals(config.provider())) {
+                return;
+            }
+            // Check if we already have a cached OAuth token
+            if (CopilotDeviceAuth.loadCachedToken() != null) {
+                return;
+            }
+            // No cached token — need interactive auth
+            System.out.println("No Copilot OAuth token found. Starting GitHub authentication...");
+            CopilotDeviceAuth.authenticate();
+        } catch (RuntimeException e) {
+            System.err.println("Copilot authentication failed: " + e.getMessage());
+            System.err.println("You can retry or set GITHUB_TOKEN with a valid OAuth token.");
             System.exit(1);
         }
     }

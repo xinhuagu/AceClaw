@@ -1,0 +1,126 @@
+package dev.aceclaw.llm;
+
+import dev.aceclaw.core.llm.LlmClient;
+import dev.aceclaw.core.llm.ProviderCapabilities;
+import dev.aceclaw.llm.anthropic.AnthropicClient;
+import dev.aceclaw.llm.openai.CopilotTokenProvider;
+import dev.aceclaw.llm.openai.OpenAICompatClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.Map;
+
+/**
+ * Factory for creating {@link LlmClient} instances based on provider name.
+ *
+ * <p>Supports Anthropic Claude (native) and any OpenAI-compatible API
+ * (OpenAI, Groq, Together, Mistral, GitHub Copilot, Ollama, etc.).
+ */
+public final class LlmClientFactory {
+
+    private static final Logger log = LoggerFactory.getLogger(LlmClientFactory.class);
+
+    /** Default base URLs for known providers (without trailing slash). */
+    private static final Map<String, String> DEFAULT_BASE_URLS = Map.of(
+            "openai", "https://api.openai.com",
+            "groq", "https://api.groq.com/openai",
+            "together", "https://api.together.xyz",
+            "mistral", "https://api.mistral.ai",
+            "copilot", "https://api.githubcopilot.com",
+            "ollama", "http://localhost:11434"
+    );
+
+    /** Default model identifiers for known providers. */
+    private static final Map<String, String> DEFAULT_MODELS = Map.of(
+            "openai", "gpt-4o",
+            "groq", "llama-3.3-70b-versatile",
+            "together", "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+            "mistral", "mistral-large-latest",
+            "copilot", "gpt-4o",
+            "ollama", "llama3.1"
+    );
+
+    /** Providers that support image input. */
+    private static final Map<String, ProviderCapabilities> PROVIDER_CAPABILITIES = Map.of(
+            "openai", ProviderCapabilities.OPENAI,
+            "groq", ProviderCapabilities.OPENAI_COMPAT,
+            "together", ProviderCapabilities.OPENAI_COMPAT,
+            "mistral", ProviderCapabilities.OPENAI_COMPAT,
+            "copilot", ProviderCapabilities.OPENAI,
+            "ollama", ProviderCapabilities.OPENAI_COMPAT
+    );
+
+    private LlmClientFactory() {}
+
+    /**
+     * Creates an LLM client for the given provider.
+     *
+     * @param provider     provider name (e.g. "anthropic", "openai", "groq", "ollama")
+     * @param apiKey       the API key or access token
+     * @param refreshToken OAuth refresh token (Anthropic only, may be null)
+     * @param baseUrl      custom base URL override (null = use provider default)
+     * @return a configured LlmClient instance
+     * @throws IllegalArgumentException if the provider is unknown
+     */
+    public static LlmClient create(String provider, String apiKey,
+                                    String refreshToken, String baseUrl) {
+        if (provider == null || provider.isBlank()) {
+            provider = "anthropic";
+        }
+
+        log.info("Creating LLM client: provider={}, baseUrl={}", provider,
+                baseUrl != null ? baseUrl : "(default)");
+
+        return switch (provider) {
+            case "anthropic" -> createAnthropicClient(apiKey, refreshToken, baseUrl);
+            case "copilot" -> createCopilotClient(apiKey, baseUrl);
+            case "openai", "groq", "together", "mistral", "ollama" -> {
+                String resolvedBaseUrl = baseUrl != null ? baseUrl : DEFAULT_BASE_URLS.get(provider);
+                String resolvedModel = DEFAULT_MODELS.getOrDefault(provider, "gpt-4o");
+                ProviderCapabilities caps = PROVIDER_CAPABILITIES.getOrDefault(
+                        provider, ProviderCapabilities.OPENAI_COMPAT);
+                yield new OpenAICompatClient(apiKey, resolvedBaseUrl, provider, resolvedModel, caps);
+            }
+            default -> throw new IllegalArgumentException(
+                    "Unknown provider: " + provider
+                            + ". Supported: anthropic, openai, groq, together, mistral, copilot, ollama");
+        };
+    }
+
+    /** Copilot-specific headers required by the GitHub Copilot API. */
+    private static final Map<String, String> COPILOT_API_HEADERS = Map.of(
+            "copilot-integration-id", "vscode-chat",
+            "editor-version", "vscode/1.95.0",
+            "editor-plugin-version", "copilot-chat/0.26.7",
+            "User-Agent", "GitHubCopilotChat/0.26.7",
+            "openai-intent", "conversation-panel",
+            "x-github-api-version", "2025-04-01"
+    );
+
+    private static LlmClient createCopilotClient(String githubToken, String baseUrl) {
+        var tokenProvider = new CopilotTokenProvider(githubToken);
+        // Use default endpoint; token exchange is deferred to first API call.
+        String resolvedBaseUrl = baseUrl != null ? baseUrl : DEFAULT_BASE_URLS.get("copilot");
+        String resolvedModel = DEFAULT_MODELS.getOrDefault("copilot", "gpt-4o");
+        // Copilot uses /chat/completions (no /v1 prefix)
+        return new OpenAICompatClient(
+                tokenProvider, resolvedBaseUrl, "/chat/completions",
+                "copilot", resolvedModel, ProviderCapabilities.OPENAI,
+                COPILOT_API_HEADERS);
+    }
+
+    private static LlmClient createAnthropicClient(String apiKey, String refreshToken, String baseUrl) {
+        if (apiKey != null && apiKey.startsWith("sk-ant-oat") && refreshToken != null) {
+            if (baseUrl != null) {
+                return new AnthropicClient(apiKey, refreshToken, baseUrl,
+                        java.time.Duration.ofSeconds(120));
+            }
+            return new AnthropicClient(apiKey, refreshToken);
+        }
+        if (baseUrl != null) {
+            return new AnthropicClient(apiKey, null, baseUrl,
+                    java.time.Duration.ofSeconds(120));
+        }
+        return new AnthropicClient(apiKey);
+    }
+}

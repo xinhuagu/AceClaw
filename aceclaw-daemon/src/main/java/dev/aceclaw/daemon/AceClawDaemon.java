@@ -3,10 +3,12 @@ package dev.aceclaw.daemon;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import dev.aceclaw.core.agent.CompactionConfig;
+import dev.aceclaw.core.agent.MessageCompactor;
 import dev.aceclaw.core.agent.StreamingAgentLoop;
 import dev.aceclaw.core.agent.ToolRegistry;
 import dev.aceclaw.core.llm.LlmClient;
-import dev.aceclaw.llm.anthropic.AnthropicClient;
+import dev.aceclaw.llm.LlmClientFactory;
 import dev.aceclaw.memory.AutoMemoryStore;
 import dev.aceclaw.security.DefaultPermissionPolicy;
 import dev.aceclaw.security.PermissionManager;
@@ -101,19 +103,14 @@ public final class AceClawDaemon {
      * permission manager, and streaming agent loop.
      */
     private void wireAgentHandler(Path workingDir) {
-        // 1. LLM client (supports both standard API keys and OAuth tokens)
+        // 1. LLM client (provider-agnostic via factory)
         String apiKey = config.apiKey();
         if (apiKey == null || apiKey.isBlank()) {
-            log.warn("API key not configured; set ANTHROPIC_API_KEY or add apiKey to ~/.aceclaw/config.json");
+            log.warn("API key not configured; set ANTHROPIC_API_KEY (or OPENAI_API_KEY for non-Anthropic providers) or add apiKey to ~/.aceclaw/config.json");
             apiKey = "not-configured";
         }
-        LlmClient llmClient;
-        if (config.isOAuthToken()) {
-            llmClient = new AnthropicClient(apiKey, config.refreshToken());
-            log.info("Using OAuth authentication for LLM client");
-        } else {
-            llmClient = new AnthropicClient(apiKey);
-        }
+        LlmClient llmClient = LlmClientFactory.create(
+                config.provider(), apiKey, config.refreshToken(), config.baseUrl());
 
         // 2. Tool registry with all 6 tools
         var toolRegistry = new ToolRegistry();
@@ -131,14 +128,25 @@ public final class AceClawDaemon {
         // 4. System prompt (with auto-memory injection)
         String systemPrompt = SystemPromptLoader.load(workingDir, memoryStore);
 
-        // 5. Streaming agent loop
-        String model = config.model();
-        var agentLoop = new StreamingAgentLoop(llmClient, toolRegistry, model, systemPrompt);
+        // 5. Context compaction
+        var compactionConfig = new CompactionConfig(
+                config.contextWindowTokens(), config.maxTokens(),
+                0.85, 0.60, 5);
+        var compactor = new MessageCompactor(llmClient, config.model(), compactionConfig);
 
-        // 6. Streaming agent handler
+        // 6. Streaming agent loop (with compaction support)
+        String model = config.model();
+        var agentLoop = new StreamingAgentLoop(
+                llmClient, toolRegistry, model, systemPrompt,
+                config.maxTokens(), config.thinkingBudget(), compactor);
+
+        // 7. Streaming agent handler
         var agentHandler = new StreamingAgentHandler(
                 sessionManager, agentLoop, toolRegistry, permissionManager, objectMapper);
         agentHandler.setLlmConfig(llmClient, model, systemPrompt);
+        agentHandler.setTokenConfig(config.maxTokens(), config.thinkingBudget());
+        agentHandler.setCompactor(compactor);
+        agentHandler.setMemoryStore(memoryStore, workingDir);
         agentHandler.register(router);
 
         // Expose model name to health status endpoint
