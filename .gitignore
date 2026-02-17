@@ -37,6 +37,9 @@ replay_pid*
 # Logs
 *.log
 
+# Research docs (local only)
+research/
+
 # Environment
 .env
 .env.local
