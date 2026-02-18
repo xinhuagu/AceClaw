@@ -222,44 +222,45 @@ public final class AceClawDaemon {
         agentHandler.register(router);
 
         // Session-end memory extraction + consolidation
+        // Runs SYNCHRONOUSLY to ensure extraction completes before session deactivation.
+        // This is critical during shutdown — async virtual threads may not finish before JVM exits.
+        // The extraction is pure-Java regex matching (no LLM calls), so blocking is fast.
         if (memoryStore != null) {
             final var extractionJournal = journal;
             final var archiveDir = markdownStore != null ? markdownStore.memoryDir() : null;
             sessionManager.setSessionEndCallback(session -> {
-                Thread.ofVirtual().name("session-end-extract").start(() -> {
-                    var extracted = SessionEndExtractor.extract(session.messages());
-                    for (var mem : extracted) {
-                        try {
-                            memoryStore.add(mem.category(), mem.content(), mem.tags(),
-                                    "session-end:" + session.id(), false, workingDir);
-                        } catch (Exception e) {
-                            log.warn("Failed to save session-end memory: {}", e.getMessage());
-                        }
-                    }
-                    if (!extracted.isEmpty()) {
-                        log.info("Extracted {} memories from session {} on destroy",
-                                extracted.size(), session.id());
-                    }
-                    if (extractionJournal != null) {
-                        extractionJournal.append("Session " + session.id().substring(0, 8) +
-                                " ended: " + session.messages().size() + " messages, " +
-                                extracted.size() + " memories extracted");
-                    }
-
-                    // Run memory consolidation after extraction
+                var extracted = SessionEndExtractor.extract(session.messages());
+                for (var mem : extracted) {
                     try {
-                        var result = MemoryConsolidator.consolidate(
-                                memoryStore, workingDir, archiveDir);
-                        if (result.hasChanges() && extractionJournal != null) {
-                            extractionJournal.append("Memory consolidated: " +
-                                    result.deduped() + " deduped, " +
-                                    result.merged() + " merged, " +
-                                    result.pruned() + " pruned");
-                        }
+                        memoryStore.add(mem.category(), mem.content(), mem.tags(),
+                                "session-end:" + session.id(), false, workingDir);
                     } catch (Exception e) {
-                        log.warn("Memory consolidation failed: {}", e.getMessage());
+                        log.warn("Failed to save session-end memory: {}", e.getMessage());
                     }
-                });
+                }
+                if (!extracted.isEmpty()) {
+                    log.info("Extracted {} memories from session {} on destroy",
+                            extracted.size(), session.id());
+                }
+                if (extractionJournal != null) {
+                    extractionJournal.append("Session " + session.id().substring(0, 8) +
+                            " ended: " + session.messages().size() + " messages, " +
+                            extracted.size() + " memories extracted");
+                }
+
+                // Run memory consolidation after extraction
+                try {
+                    var result = MemoryConsolidator.consolidate(
+                            memoryStore, workingDir, archiveDir);
+                    if (result.hasChanges() && extractionJournal != null) {
+                        extractionJournal.append("Memory consolidated: " +
+                                result.deduped() + " deduped, " +
+                                result.merged() + " merged, " +
+                                result.pruned() + " pruned");
+                    }
+                } catch (Exception e) {
+                    log.warn("Memory consolidation failed: {}", e.getMessage());
+                }
             });
         }
 

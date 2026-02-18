@@ -19,6 +19,8 @@ dependencies {
 
     implementation("com.fasterxml.jackson.core:jackson-databind")
     implementation("org.commonmark:commonmark")
+    implementation("org.commonmark:commonmark-ext-gfm-tables")
+    implementation("org.commonmark:commonmark-ext-gfm-strikethrough")
     implementation("org.slf4j:slf4j-api")
     runtimeOnly("ch.qos.logback:logback-classic")
 }

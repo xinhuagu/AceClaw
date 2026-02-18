@@ -26,6 +26,8 @@ dependencies {
 
         // Markdown
         api("org.commonmark:commonmark:0.23.0")
+        api("org.commonmark:commonmark-ext-gfm-tables:0.23.0")
+        api("org.commonmark:commonmark-ext-gfm-strikethrough:0.23.0")
 
         // Logging
         api("org.slf4j:slf4j-api:2.0.16")

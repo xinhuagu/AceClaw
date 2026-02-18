@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 import java.nio.file.Path;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
@@ -91,12 +92,18 @@ public final class SessionManager {
     }
 
     /**
-     * Destroys all sessions. Called during daemon shutdown.
+     * Destroys all sessions with full lifecycle (including session-end callbacks).
+     * Called during daemon shutdown.
+     *
+     * <p>Unlike the previous implementation that skipped callbacks, this now
+     * delegates to {@link #destroySession(String)} for each session to ensure
+     * session-end extraction and memory consolidation run before deactivation.
      */
     public void destroyAll() {
-        sessions.values().forEach(AgentSession::deactivate);
-        int count = sessions.size();
-        sessions.clear();
-        log.info("All sessions destroyed: count={}", count);
+        var sessionIds = List.copyOf(sessions.keySet());
+        for (var sessionId : sessionIds) {
+            destroySession(sessionId);
+        }
+        log.info("All sessions destroyed: count={}", sessionIds.size());
     }
 }

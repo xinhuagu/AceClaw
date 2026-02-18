@@ -97,15 +97,27 @@ public final class DaemonStarter {
         // Build classpath from current process
         String classpath = System.getProperty("java.class.path");
 
-        ProcessBuilder pb = new ProcessBuilder(
-                javaBin.toString(),
-                "--enable-preview",
-                "-cp", classpath,
-                "dev.aceclaw.daemon.AceClawDaemon"
-        );
+        // Launch daemon in a new process group so Ctrl+C in the CLI terminal
+        // does NOT send SIGINT to the daemon. Without this, pressing Ctrl+C
+        // kills both the CLI and the daemon, preventing session-end extraction.
+        // We use /bin/sh -c 'exec ...' with stdin redirected from /dev/null.
+        // The 'setsid' command (if available) creates a new session/process group.
+        String javaCmd = javaBin + " --enable-preview -cp '" + classpath
+                + "' dev.aceclaw.daemon.AceClawDaemon";
+
+        ProcessBuilder pb;
+        if (Files.exists(Path.of("/usr/bin/setsid"))) {
+            // Linux: setsid creates a new session (and thus a new process group)
+            pb = new ProcessBuilder("/usr/bin/setsid", "/bin/sh", "-c", javaCmd);
+        } else {
+            // macOS: no setsid command; use nohup to ignore HUP and trap to ignore INT
+            pb = new ProcessBuilder("/bin/sh", "-c",
+                    "trap '' INT; exec " + javaCmd);
+        }
 
         pb.redirectOutput(ProcessBuilder.Redirect.appendTo(DAEMON_LOG.toFile()));
         pb.redirectErrorStream(true);
+        pb.redirectInput(ProcessBuilder.Redirect.from(Path.of("/dev/null").toFile()));
 
         // Inherit the CLI's working directory so tools resolve paths
         // relative to the user's project, not ~/.aceclaw/
