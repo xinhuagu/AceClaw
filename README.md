@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/Gradle-8.14-02303A?logo=gradle&logoColor=white" alt="Gradle 8.14">
 </p>
 
-AceClaw is the Java implementation of [OpenClaw](https://github.com/openclaw) — built from the ground up with security as a foundational principle, not an afterthought. Every layer enforces isolation: the daemon exposes zero network surface, every tool invocation passes through a sealed permission gate, and every memory entry is cryptographically signed.
+AceClaw is the Java implementation of [OpenClaw](https://github.com/openclaw) — built from the ground up with security as a foundational principle, not an afterthought. The daemon exposes zero network surface, permissions are modeled as sealed types with compiler-enforced exhaustiveness, and every memory entry is cryptographically signed.
 
 ## Security First
 
@@ -23,7 +23,7 @@ AceClaw defends across three dimensions:
 
 - **Zero network surface** — Daemon listens ONLY on Unix Domain Socket (`~/.aceclaw/aceclaw.sock`). No HTTP, no REST, no WebSocket.
 - **Single entry point** — CLI → UDS → Daemon. There is no other way in.
-- **Process group isolation** — Daemon runs in a separate process group (`setsid`), so CLI signals (Ctrl+C) don't kill the daemon or corrupt session state.
+- **Signal isolation** — Daemon runs in a separate process group (`setsid` on Linux, `trap` on macOS), so CLI signals (Ctrl+C) don't kill the daemon or corrupt session state.
 - **Session-scoped state** — Each session has isolated conversation history; no cross-session data leakage.
 
 ### Sealed Permission Model
@@ -38,8 +38,7 @@ DANGEROUS   → always prompt, never remembered
 ```
 
 - `PermissionDecision` is a **sealed interface** — `Approved | Denied | NeedsUserApproval`. The compiler enforces exhaustive handling; you cannot forget a case.
-- Session-level approval tracking (remember-once, not forever).
-- Sub-agents inherit parent permissions but receive **filtered tool registries** — no privilege escalation through nesting.
+- Sub-agents receive **filtered tool registries** — restricted tool sets prevent privilege escalation through nesting.
 
 ### Memory Integrity
 
@@ -118,50 +117,7 @@ Daemon (persistent JVM, separate process group)
 
 ## Memory System
 
-AceClaw implements an [8-tier persistent memory hierarchy](docs/memory-system-design.md) with cryptographic integrity, memory consolidation, and path-based conditional rules — combining the best of Claude Code and OpenClaw while adding enterprise-grade signing and self-maintenance.
-
-### Memory Comparison
-
-| Capability | Claude Code | OpenClaw | AceClaw |
-|------------|-------------|----------|---------|
-| **Cross-session memory** | MEMORY.md (flat file) | MEMORY.md + daily logs | HMAC-signed JSONL + daily journal |
-| **Memory tiers** | 1 (auto-memory only) | 5 (T0 Working → T4 Foundational) | 8 (Soul → Policy → Workspace → User → Local → Auto → Markdown → Journal) |
-| **Structured files** | CLAUDE.md (single) | 8+ files (AGENTS/SOUL/TOOLS/IDENTITY/USER/HEARTBEAT.md) | ACECLAW.md + SOUL.md + managed-policy.md |
-| **Categories** | Unstructured text | File-based (identity, tools, user, etc.) | 21 typed categories per entry |
-| **Search** | None (full injection) | Hybrid: 70% vector + 30% BM25 (SQLite) | Hybrid: TF-IDF + recency decay + frequency boost |
-| **Integrity** | None | SHA-256 hash (dedup, no signing) | HMAC-SHA256 per entry, constant-time verification |
-| **Key protection** | N/A | N/A | POSIX 600 on signing key |
-| **Workspace isolation** | Per-project directory | Per-agent SQLite (known cross-contamination) | SHA-256 hashed workspace paths |
-| **Activity log** | None | Session .jsonl + daily logs | Append-only daily journal (500-line cap) |
-| **Context compaction** | Summarize-only | Silent pre-flush + auto-compaction | 3-phase (prune → summarize → memory flush) |
-| **Memory in prompt** | Appended at end | Conditional injection + lazy loading | Tiered assembly with priority ordering |
-
-### 8-Tier Hierarchy
-
-```
-Priority 100  Soul           ← SOUL.md (immutable core identity)
-Priority  90  Managed Policy ← Organization policies (enterprise)
-Priority  80  Workspace      ← Project ACECLAW.md instructions
-Priority  70  User           ← Global ~/.aceclaw/ACECLAW.md
-Priority  65  Local          ← ACECLAW.local.md (per-developer, gitignored)
-Priority  60  Auto-Memory    ← Learned insights (21 categories, HMAC-signed)
-Priority  55  Markdown       ← MEMORY.md + topic files (persistent notes)
-Priority  50  Daily Journal  ← Append-only activity log (today + yesterday)
-```
-
-### 21 Memory Categories
-
-Mistake · Pattern · Preference · Codebase Insight · Strategy · Workflow · Environment · Relationship · Terminology · Constraint · Decision · Tool Usage · Communication · Context · Correction · Bookmark · Session Summary · Error Recovery · Successful Strategy · Anti-Pattern · User Feedback
-
-### Hybrid Search
-
-Memories are ranked by a weighted combination, not just recency:
-
-```
-score = 0.50 × TF-IDF relevance
-      + 0.35 × recency (7-day half-life exponential decay)
-      + 0.15 × tag frequency boost (log(1 + matching tags))
-```
+8-tier persistent memory hierarchy with HMAC-SHA256 signing, hybrid TF-IDF search, and 3-pass consolidation. See [Memory System Design](docs/memory-system-design.md) for the full architecture, tier hierarchy, 21 memory categories, and comparison with Claude Code and OpenClaw.
 
 ## Roadmap
 
