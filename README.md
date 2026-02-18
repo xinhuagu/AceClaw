@@ -16,7 +16,7 @@ AceClaw is the Java implementation of [OpenClaw](https://github.com/openclaw) �
 | **Agent Loop** | External (Pi framework) | Self-implemented ReAct loop |
 | **Architecture** | Single process | Daemon-first (persistent JVM + thin CLI) |
 | **Concurrency** | Node.js async | Virtual threads (Project Loom) |
-| **Memory** | None (no cross-session learning) | 6-tier hierarchy, hybrid search, daily journal, HMAC-signed |
+| **Memory** | 5-tier (T0-T4), MEMORY.md + daily logs, vector+BM25 search | 6-tier hierarchy, HMAC-signed JSONL, TF-IDF hybrid search |
 | **Security** | Breached within 48h of launch | Sealed permission model, HMAC integrity, gated tools |
 | **LLM Providers** | Pi SDK (multi-provider) | 7 providers (Anthropic, OpenAI, Groq, Together, Mistral, Copilot, Ollama) |
 | **Tools** | 50+ via community | 12 built-in + MCP extensibility |
@@ -75,22 +75,23 @@ Daemon (persistent JVM)
 
 ## Memory System
 
-AceClaw implements a 6-tier persistent memory hierarchy — the most structured memory system among open-source coding agents.
+AceClaw implements a 6-tier persistent memory hierarchy with cryptographic integrity — combining the best of Claude Code and OpenClaw while adding enterprise-grade signing.
 
 ### Memory Comparison
 
 | Capability | Claude Code | OpenClaw | AceClaw |
 |------------|-------------|----------|---------|
-| **Cross-session memory** | MEMORY.md (flat file) | None | HMAC-signed JSONL + daily journal |
-| **Memory tiers** | 1 (auto-memory only) | 0 | 6 (Soul → Policy → Workspace → User → Auto → Journal) |
-| **Categories** | Unstructured text | N/A | 16 typed categories |
-| **Search** | None (full injection) | N/A | Hybrid: TF-IDF + recency decay + frequency boost |
-| **Integrity** | None | None | HMAC-SHA256 per entry, constant-time verification |
+| **Cross-session memory** | MEMORY.md (flat file) | MEMORY.md + daily logs | HMAC-signed JSONL + daily journal |
+| **Memory tiers** | 1 (auto-memory only) | 5 (T0 Working → T4 Foundational) | 6 (Soul → Policy → Workspace → User → Auto → Journal) |
+| **Structured files** | CLAUDE.md (single) | 8+ files (AGENTS/SOUL/TOOLS/IDENTITY/USER/HEARTBEAT.md) | ACECLAW.md + SOUL.md + managed-policy.md |
+| **Categories** | Unstructured text | File-based (identity, tools, user, etc.) | 16 typed categories per entry |
+| **Search** | None (full injection) | Hybrid: 70% vector + 30% BM25 (SQLite) | Hybrid: TF-IDF + recency decay + frequency boost |
+| **Integrity** | None | SHA-256 hash (dedup, no signing) | HMAC-SHA256 per entry, constant-time verification |
 | **Key protection** | N/A | N/A | POSIX 600 on signing key |
-| **Workspace isolation** | Per-project directory | N/A | SHA-256 hashed workspace paths |
-| **Activity log** | None | None | Append-only daily journal (500-line cap) |
-| **Context compaction** | Summarize-only | None | 3-phase (prune → summarize → memory flush) |
-| **Memory in prompt** | Appended at end | N/A | Tiered assembly with priority ordering |
+| **Workspace isolation** | Per-project directory | Per-agent SQLite (known cross-contamination) | SHA-256 hashed workspace paths |
+| **Activity log** | None | Session .jsonl + daily logs | Append-only daily journal (500-line cap) |
+| **Context compaction** | Summarize-only | Silent pre-flush + auto-compaction | 3-phase (prune → summarize → memory flush) |
+| **Memory in prompt** | Appended at end | Conditional injection + lazy loading | Tiered assembly with priority ordering |
 
 ### 6-Tier Hierarchy
 
