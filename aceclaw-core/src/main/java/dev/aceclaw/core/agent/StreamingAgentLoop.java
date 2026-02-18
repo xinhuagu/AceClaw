@@ -111,6 +111,33 @@ public final class StreamingAgentLoop {
      */
     public Turn runTurn(String userPrompt, List<Message> conversationHistory, StreamEventHandler handler)
             throws LlmException {
+        return runTurn(userPrompt, conversationHistory, handler, null);
+    }
+
+    /**
+     * Runs a single agent turn with streaming and cancellation support.
+     *
+     * <p>When a non-null {@link CancellationToken} is provided, the loop checks
+     * for cancellation at three well-defined checkpoints:
+     * <ol>
+     *   <li>Before each LLM call — returns immediately with accumulated messages</li>
+     *   <li>After the SSE stream completes — flushes partial content, returns</li>
+     *   <li>After tool execution — tools finish, then returns</li>
+     * </ol>
+     *
+     * <p>The token also propagates cancellation to the active {@link StreamSession}
+     * so that an in-flight SSE stream is interrupted immediately.
+     *
+     * @param userPrompt          the user's prompt text
+     * @param conversationHistory previous messages in the conversation
+     * @param handler             callback for streaming events
+     * @param cancellationToken   optional cancellation token (null = no cancellation support)
+     * @return the turn result containing all new messages and usage statistics
+     * @throws LlmException if the LLM call fails
+     */
+    public Turn runTurn(String userPrompt, List<Message> conversationHistory,
+                        StreamEventHandler handler, CancellationToken cancellationToken)
+            throws LlmException {
         var newMessages = new ArrayList<Message>();
         var allMessages = new ArrayList<>(conversationHistory);
 
@@ -132,6 +159,13 @@ public final class StreamingAgentLoop {
 
         for (int iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
 
+            // Checkpoint 1: before LLM call
+            if (cancellationToken != null && cancellationToken.isCancelled()) {
+                log.info("Cancellation detected before LLM call (iteration {})", iteration + 1);
+                return buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
+                        totalCacheCreationTokens, totalCacheReadTokens, compactionResult);
+            }
+
             // Check if context compaction is needed before this LLM call
             if (compactor != null) {
                 compactionResult = checkAndCompact(
@@ -145,7 +179,38 @@ public final class StreamingAgentLoop {
             // Stream the response, accumulating content blocks
             var accumulator = new StreamAccumulator(handler);
             var session = llmClient.streamMessage(request);
-            session.onEvent(accumulator);
+
+            // Register the session with the cancellation token so cancel() propagates
+            if (cancellationToken != null) {
+                cancellationToken.setActiveSession(session);
+            }
+            try {
+                session.onEvent(accumulator);
+            } finally {
+                if (cancellationToken != null) {
+                    cancellationToken.setActiveSession(null);
+                }
+            }
+
+            // Checkpoint 2: after stream completes
+            if (cancellationToken != null && cancellationToken.isCancelled()) {
+                log.info("Cancellation detected after stream (iteration {})", iteration + 1);
+                // Flush any partial content from the accumulator
+                var partialBlocks = accumulator.buildContentBlocks();
+                if (!partialBlocks.isEmpty()) {
+                    var partialMessage = new Message.AssistantMessage(partialBlocks);
+                    newMessages.add(partialMessage);
+                }
+                // Include usage from this partial stream
+                if (accumulator.usage != null) {
+                    totalInputTokens += accumulator.usage.inputTokens();
+                    totalOutputTokens += accumulator.usage.outputTokens();
+                    totalCacheCreationTokens += accumulator.usage.cacheCreationInputTokens();
+                    totalCacheReadTokens += accumulator.usage.cacheReadInputTokens();
+                }
+                return buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
+                        totalCacheCreationTokens, totalCacheReadTokens, compactionResult);
+            }
 
             // Check for stream errors
             if (accumulator.error != null) {
@@ -201,6 +266,13 @@ public final class StreamingAgentLoop {
                     var toolResultMessage = Message.toolResults(toolResults);
                     allMessages.add(toolResultMessage);
                     newMessages.add(toolResultMessage);
+
+                    // Checkpoint 3: after tool execution
+                    if (cancellationToken != null && cancellationToken.isCancelled()) {
+                        log.info("Cancellation detected after tool execution (iteration {})", iteration + 1);
+                        return buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
+                                totalCacheCreationTokens, totalCacheReadTokens, compactionResult);
+                    }
                 }
             }
         }
@@ -209,6 +281,19 @@ public final class StreamingAgentLoop {
         log.warn("Streaming ReAct loop exceeded max iterations ({})", MAX_ITERATIONS);
         var totalUsage = new Usage(
                 totalInputTokens, totalOutputTokens,
+                totalCacheCreationTokens, totalCacheReadTokens);
+        return new Turn(newMessages, StopReason.END_TURN, totalUsage, compactionResult);
+    }
+
+    /**
+     * Builds a Turn result for a cancelled agent turn.
+     * Uses END_TURN as the stop reason (the client already handles displaying "[Cancelled]").
+     */
+    private static Turn buildCancelledTurn(List<Message> newMessages,
+                                           int totalInputTokens, int totalOutputTokens,
+                                           int totalCacheCreationTokens, int totalCacheReadTokens,
+                                           CompactionResult compactionResult) {
+        var totalUsage = new Usage(totalInputTokens, totalOutputTokens,
                 totalCacheCreationTokens, totalCacheReadTokens);
         return new Turn(newMessages, StopReason.END_TURN, totalUsage, compactionResult);
     }

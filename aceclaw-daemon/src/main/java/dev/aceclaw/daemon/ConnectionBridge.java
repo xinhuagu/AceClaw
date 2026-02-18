@@ -110,7 +110,7 @@ public final class ConnectionBridge implements UdsListener.ConnectionHandler {
      * Reads messages by consuming data from the channel (and any buffered data
      * in the connection's line builder).
      */
-    private static final class ChannelStreamContext implements StreamContext {
+    static final class ChannelStreamContext implements StreamContext {
 
         private final SocketChannel channel;
         private final StringBuilder lineBuilder;
@@ -120,6 +120,20 @@ public final class ConnectionBridge implements UdsListener.ConnectionHandler {
             this.channel = channel;
             this.lineBuilder = lineBuilder;
             this.objectMapper = objectMapper;
+        }
+
+        /**
+         * Returns the underlying socket channel for non-blocking monitoring.
+         */
+        SocketChannel channel() {
+            return channel;
+        }
+
+        /**
+         * Returns the line builder for accessing buffered data.
+         */
+        StringBuilder lineBuilder() {
+            return lineBuilder;
         }
 
         @Override

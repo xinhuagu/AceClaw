@@ -23,6 +23,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -488,6 +489,119 @@ class DaemonIntegrationTest {
         }
     }
 
+    @Test
+    @Order(12)
+    void testCancelDuringStreaming() throws Exception {
+        try (var channel = connectToSocket()) {
+            String sessionId = createSession(channel, 1);
+
+            // Create a pausing stream session that blocks mid-delivery
+            var arrivedLatch = new CountDownLatch(1);
+            var continueLatch = new CountDownLatch(1);
+            var pausingSession = MockLlmClient.pausingTextResponse(
+                    "This is a long response that will be interrupted by cancel",
+                    arrivedLatch, continueLatch);
+            mockLlm.enqueueSession(pausingSession);
+
+            // Send the agent.prompt request
+            var promptParams = objectMapper.createObjectNode();
+            promptParams.put("sessionId", sessionId);
+            promptParams.put("prompt", "Tell me something long");
+            sendRequest(channel, "agent.prompt", promptParams, 2);
+
+            // Wait for the stream to arrive at the pause point (first half delivered)
+            assertThat(arrivedLatch.await(5, TimeUnit.SECONDS))
+                    .as("Stream should arrive at pause point within 5s")
+                    .isTrue();
+
+            // Send agent.cancel notification while the stream is paused
+            var cancelParams = objectMapper.createObjectNode();
+            cancelParams.put("sessionId", sessionId);
+            sendNotification(channel, "agent.cancel", cancelParams);
+
+            // Collect events until the final response
+            var result = collectEventsUntilResponse(channel, false, false);
+
+            // Verify the session was cancelled
+            assertThat(pausingSession.wasCancelled()).isTrue();
+
+            // Verify we got a stream.cancelled notification
+            boolean hasCancelledNotification = result.notifications().stream()
+                    .anyMatch(n -> "stream.cancelled".equals(n.get("method").asText()));
+            assertThat(hasCancelledNotification).isTrue();
+
+            // Verify the final response has the cancelled flag
+            var response = result.finalResponse();
+            assertThat(response.has("result")).isTrue();
+            assertThat(response.get("result").get("cancelled").asBoolean(false)).isTrue();
+
+            // Verify we got some partial text (first half was delivered)
+            boolean hasTextDelta = result.notifications().stream()
+                    .anyMatch(n -> "stream.text".equals(n.get("method").asText()));
+            assertThat(hasTextDelta).isTrue();
+
+            destroySession(channel, sessionId, 3);
+        }
+    }
+
+    @Test
+    @Order(13)
+    void testCancelDuringToolExecution() throws Exception {
+        // Create a test file so the tool has something to read
+        var testFile = workDir.resolve("cancel-test.txt");
+        Files.writeString(testFile, "Cancel test content");
+
+        try (var channel = connectToSocket()) {
+            String sessionId = createSession(channel, 1);
+
+            // 1st call: LLM requests read_file (READ level, auto-approved)
+            mockLlm.enqueueResponse(MockLlmClient.toolUseResponse(
+                    "Let me read that file.",
+                    "toolu_cancel_001", "read_file",
+                    "{\"file_path\":\"cancel-test.txt\"}"
+            ));
+            // 2nd call: would normally be the follow-up, but the agent loop
+            // should exit at checkpoint 3 before making this call.
+            // Enqueue it anyway so we can verify it was NOT consumed.
+            var arrivedLatch2 = new CountDownLatch(1);
+            var continueLatch2 = new CountDownLatch(1);
+            var pausingSession2 = MockLlmClient.pausingTextResponse(
+                    "This response should not be delivered",
+                    arrivedLatch2, continueLatch2);
+            mockLlm.enqueueSession(pausingSession2);
+
+            // Send the agent.prompt request
+            var promptParams = objectMapper.createObjectNode();
+            promptParams.put("sessionId", sessionId);
+            promptParams.put("prompt", "Read cancel-test.txt");
+            sendRequest(channel, "agent.prompt", promptParams, 2);
+
+            // Wait briefly for the tool execution to start/complete,
+            // then send cancel so it's caught at checkpoint 3
+            Thread.sleep(200);
+            var cancelParams = objectMapper.createObjectNode();
+            cancelParams.put("sessionId", sessionId);
+            sendNotification(channel, "agent.cancel", cancelParams);
+
+            // Collect events until the final response
+            var result = collectEventsUntilResponse(channel, false, false);
+
+            // Verify we got the final response
+            var response = result.finalResponse();
+            assertThat(response.has("result")).isTrue();
+
+            // The tool should have been executed (tool_use notification)
+            boolean hasToolUse = result.notifications().stream()
+                    .anyMatch(n -> "stream.tool_use".equals(n.get("method").asText()));
+            assertThat(hasToolUse).isTrue();
+
+            destroySession(channel, sessionId, 3);
+
+            // Release the second pausing session to avoid leaked threads
+            continueLatch2.countDown();
+        }
+    }
+
     // -- Helper methods --
 
     private SocketChannel connectToSocket() throws IOException {
@@ -601,6 +715,21 @@ class DaemonIntegrationTest {
         request.put("id", requestId);
 
         var json = objectMapper.writeValueAsString(request) + "\n";
+        channel.write(ByteBuffer.wrap(json.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    /**
+     * Sends a JSON-RPC notification (no id field) to the daemon.
+     */
+    private void sendNotification(SocketChannel channel, String method,
+                                   JsonNode params) throws Exception {
+        var notification = objectMapper.createObjectNode();
+        notification.put("method", method);
+        if (params != null) {
+            notification.set("params", params);
+        }
+
+        var json = objectMapper.writeValueAsString(notification) + "\n";
         channel.write(ByteBuffer.wrap(json.getBytes(StandardCharsets.UTF_8)));
     }
 

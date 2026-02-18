@@ -59,6 +59,9 @@ public final class TerminalRepl {
 
     private volatile boolean streaming = false;
 
+    /** Prevents duplicate cancel notifications on rapid Ctrl+C. */
+    private volatile boolean cancelSent = false;
+
     /** LineReader reference for use during permission prompts. */
     private volatile LineReader activeReader;
 
@@ -262,6 +265,7 @@ public final class TerminalRepl {
     private void processInput(PrintWriter out, String input) {
         try {
             streaming = true;
+            cancelSent = false;
 
             // Build agent.prompt params
             ObjectNode params = client.objectMapper().createObjectNode();
@@ -454,6 +458,12 @@ public final class TerminalRepl {
                             }
                         }
 
+                        case "stream.cancelled" -> {
+                            // Server acknowledged cancellation; stop any active spinners
+                            stopSpinner();
+                            log.debug("Received stream.cancelled notification");
+                        }
+
                         default -> {
                             log.debug("Ignoring unknown notification: {}", method);
                         }
@@ -584,6 +594,8 @@ public final class TerminalRepl {
     }
 
     private void cancelStreaming(PrintWriter out) {
+        if (cancelSent) return; // Prevent duplicate cancels on rapid Ctrl+C
+        cancelSent = true;
         try {
             stopSpinner();
             ObjectNode params = client.objectMapper().createObjectNode();

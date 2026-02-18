@@ -2,6 +2,7 @@ package dev.aceclaw.daemon;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.aceclaw.core.agent.CancellationToken;
 import dev.aceclaw.core.agent.MessageCompactor;
 import dev.aceclaw.core.agent.StreamingAgentLoop;
 import dev.aceclaw.core.agent.Tool;
@@ -21,11 +22,19 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.nio.channels.SocketChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Handles {@code agent.prompt} JSON-RPC requests with streaming support.
@@ -111,11 +120,17 @@ public final class StreamingAgentHandler {
         // Convert session conversation history to LLM messages
         var conversationHistory = toMessages(session.messages());
 
-        // Create a StreamEventHandler that forwards events via the StreamContext
-        var eventHandler = new StreamingNotificationHandler(context, objectMapper);
+        // Set up cancellation support: the CancelAwareStreamContext runs a monitor
+        // thread that reads from the socket and dispatches agent.cancel and
+        // permission.response messages accordingly.
+        var cancellationToken = new CancellationToken();
+        var cancelContext = new CancelAwareStreamContext(context, cancellationToken, objectMapper);
+
+        // Create a StreamEventHandler that forwards events via the cancel-aware context
+        var eventHandler = new StreamingNotificationHandler(cancelContext, objectMapper);
 
         // Wrap tools with permission checking for this request
-        var permissionAwareRegistry = createPermissionAwareRegistry(context);
+        var permissionAwareRegistry = createPermissionAwareRegistry(cancelContext);
 
         // Create a temporary agent loop with the permission-aware registry and compaction
         var permissionAwareLoop = new StreamingAgentLoop(
@@ -123,9 +138,22 @@ public final class StreamingAgentHandler {
                 getModel(), getSystemPrompt(),
                 maxTokens, thinkingBudget, compactor);
 
-        // Run the streaming turn with error handling
+        // Start the cancel monitor thread to read from the socket
+        cancelContext.startMonitor();
         try {
-            var turn = permissionAwareLoop.runTurn(prompt, conversationHistory, eventHandler);
+            var turn = permissionAwareLoop.runTurn(prompt, conversationHistory,
+                    eventHandler, cancellationToken);
+
+            // Send cancelled notification if the turn was cancelled
+            if (cancellationToken.isCancelled()) {
+                try {
+                    var cancelParams = objectMapper.createObjectNode();
+                    cancelParams.put("sessionId", sessionId);
+                    cancelContext.sendNotification("stream.cancelled", cancelParams);
+                } catch (IOException e) {
+                    log.warn("Failed to send stream.cancelled notification: {}", e.getMessage());
+                }
+            }
 
             // Handle compaction: if compaction occurred, replace session history
             // and persist extracted context items to auto-memory
@@ -150,6 +178,9 @@ public final class StreamingAgentHandler {
             result.put("sessionId", sessionId);
             result.put("response", responseText);
             result.put("stopReason", turn.finalStopReason().name());
+            if (cancellationToken.isCancelled()) {
+                result.put("cancelled", true);
+            }
 
             var usageNode = objectMapper.createObjectNode();
             usageNode.put("inputTokens", turn.totalUsage().inputTokens());
@@ -162,9 +193,9 @@ public final class StreamingAgentHandler {
                 result.put("compactionPhase", turn.compactionResult().phaseReached().name());
             }
 
-            log.info("Streaming turn complete: sessionId={}, stopReason={}, tokens={}, compacted={}",
+            log.info("Streaming turn complete: sessionId={}, stopReason={}, tokens={}, cancelled={}, compacted={}",
                     sessionId, turn.finalStopReason(), turn.totalUsage().totalTokens(),
-                    turn.wasCompacted());
+                    cancellationToken.isCancelled(), turn.wasCompacted());
 
             return result;
 
@@ -177,6 +208,8 @@ public final class StreamingAgentHandler {
 
             String userMessage = formatLlmError(e);
             throw new IllegalStateException(userMessage);
+        } finally {
+            cancelContext.stopMonitor();
         }
     }
 
@@ -497,6 +530,202 @@ public final class StreamingAgentHandler {
             } catch (IOException e) {
                 log.warn("Failed to send compaction notification: {}", e.getMessage());
             }
+        }
+    }
+
+    // -- Cancel-aware stream context -----------------------------------------
+
+    /**
+     * A {@link StreamContext} wrapper that runs a background monitor thread
+     * to read from the socket during streaming. This is necessary because
+     * the connection thread is blocked in {@code handlePrompt()}, so
+     * {@code agent.cancel} notifications buffered in the socket go unread.
+     *
+     * <p>The monitor thread uses non-blocking NIO with a {@link Selector}
+     * to poll the socket with 100ms timeout intervals. This allows the
+     * thread to exit cleanly when stopped, without interrupting (which
+     * would close the NIO channel).
+     *
+     * <p>The monitor thread reads messages from the socket and:
+     * <ul>
+     *   <li>On {@code agent.cancel}: triggers the cancellation token</li>
+     *   <li>On {@code permission.response}: enqueues to a blocking queue
+     *       so the permission flow can consume it</li>
+     *   <li>On connection close: triggers cancellation</li>
+     * </ul>
+     */
+    private static final class CancelAwareStreamContext implements StreamContext {
+
+        private static final int READ_BUFFER_SIZE = 65536;
+        private static final long SELECT_TIMEOUT_MS = 100;
+
+        private final StreamContext delegate;
+        private final CancellationToken cancellationToken;
+        private final ObjectMapper objectMapper;
+        private final SocketChannel channel;
+        private final StringBuilder lineBuilder;
+        private final BlockingQueue<JsonNode> permissionResponses = new LinkedBlockingQueue<>();
+        private volatile boolean stopped = false;
+        private volatile Thread monitorThread;
+        private volatile Selector selector;
+
+        CancelAwareStreamContext(StreamContext delegate, CancellationToken cancellationToken,
+                                 ObjectMapper objectMapper) {
+            this.delegate = delegate;
+            this.cancellationToken = cancellationToken;
+            this.objectMapper = objectMapper;
+
+            // Extract the channel and lineBuilder from the underlying ChannelStreamContext
+            if (delegate instanceof ConnectionBridge.ChannelStreamContext channelCtx) {
+                this.channel = channelCtx.channel();
+                this.lineBuilder = channelCtx.lineBuilder();
+            } else {
+                this.channel = null;
+                this.lineBuilder = null;
+            }
+        }
+
+        /**
+         * Starts the background monitor thread that reads from the socket.
+         * Switches the channel to non-blocking mode for the duration of monitoring.
+         * Must be called before the agent loop starts.
+         */
+        void startMonitor() {
+            if (channel == null) {
+                log.debug("Cancel monitor: no socket channel available, skipping monitor");
+                return;
+            }
+            monitorThread = Thread.ofVirtual()
+                    .name("aceclaw-cancel-monitor")
+                    .start(this::monitorLoop);
+        }
+
+        /**
+         * Stops the monitor thread cleanly without interrupting.
+         * Sets the stopped flag and wakes the selector so the thread exits promptly.
+         */
+        void stopMonitor() {
+            stopped = true;
+            var sel = selector;
+            if (sel != null) {
+                sel.wakeup();
+            }
+            var thread = monitorThread;
+            if (thread != null) {
+                try {
+                    thread.join(2000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                monitorThread = null;
+            }
+        }
+
+        private void monitorLoop() {
+            try {
+                channel.configureBlocking(false);
+                selector = Selector.open();
+                channel.register(selector, SelectionKey.OP_READ);
+
+                var buffer = ByteBuffer.allocate(READ_BUFFER_SIZE);
+
+                while (!stopped && !cancellationToken.isCancelled()) {
+                    int ready = selector.select(SELECT_TIMEOUT_MS);
+                    if (stopped || cancellationToken.isCancelled()) break;
+                    if (ready == 0) continue;
+
+                    selector.selectedKeys().clear();
+
+                    buffer.clear();
+                    int bytesRead = channel.read(buffer);
+                    if (bytesRead == -1) {
+                        log.debug("Cancel monitor: connection closed, triggering cancellation");
+                        cancellationToken.cancel();
+                        return;
+                    }
+                    if (bytesRead == 0) continue;
+
+                    buffer.flip();
+                    synchronized (lineBuilder) {
+                        lineBuilder.append(StandardCharsets.UTF_8.decode(buffer));
+
+                        // Process complete lines
+                        int newlineIdx;
+                        while ((newlineIdx = lineBuilder.indexOf("\n")) != -1) {
+                            var line = lineBuilder.substring(0, newlineIdx).trim();
+                            lineBuilder.delete(0, newlineIdx + 1);
+
+                            if (line.isEmpty()) continue;
+
+                            try {
+                                var message = objectMapper.readTree(line);
+                                String method = message.has("method")
+                                        ? message.get("method").asText("") : "";
+
+                                if ("agent.cancel".equals(method)) {
+                                    log.info("Cancel monitor: received agent.cancel");
+                                    cancellationToken.cancel();
+                                    return;
+                                } else if ("permission.response".equals(method)) {
+                                    log.debug("Cancel monitor: routing permission.response");
+                                    permissionResponses.offer(message);
+                                } else {
+                                    log.debug("Cancel monitor: ignoring '{}'", method);
+                                }
+                            } catch (Exception e) {
+                                log.warn("Cancel monitor: failed to parse message: {}", e.getMessage());
+                            }
+                        }
+                    }
+                }
+            } catch (IOException e) {
+                if (!stopped && !cancellationToken.isCancelled()) {
+                    log.debug("Cancel monitor: I/O error: {}", e.getMessage());
+                    cancellationToken.cancel();
+                }
+            } finally {
+                // Restore blocking mode so subsequent reads work normally
+                try {
+                    if (selector != null) selector.close();
+                    if (channel != null && channel.isOpen()) {
+                        channel.configureBlocking(true);
+                    }
+                } catch (IOException e) {
+                    log.warn("Cancel monitor: failed to restore blocking mode: {}", e.getMessage());
+                }
+                selector = null;
+            }
+        }
+
+        @Override
+        public void sendNotification(String method, Object params) throws IOException {
+            delegate.sendNotification(method, params);
+        }
+
+        /**
+         * Reads the next permission response from the queue.
+         * Polls with a timeout and checks for cancellation between polls.
+         * Returns null if cancelled or the monitor thread is no longer running.
+         */
+        @Override
+        public JsonNode readMessage() throws IOException {
+            while (!cancellationToken.isCancelled()) {
+                try {
+                    JsonNode msg = permissionResponses.poll(500, TimeUnit.MILLISECONDS);
+                    if (msg != null) {
+                        return msg;
+                    }
+                    // Check if the monitor thread is still alive
+                    var thread = monitorThread;
+                    if (thread == null || !thread.isAlive()) {
+                        return null;
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return null;
+                }
+            }
+            return null;
         }
     }
 
