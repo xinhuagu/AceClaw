@@ -80,6 +80,40 @@ class TerminalMarkdownRendererTest {
     }
 
     @Test
+    void rendersTableWithCjkCharactersAligned() {
+        String md = """
+                | 类别 | 内容 |
+                |------|------|
+                | MISTAKE | 中文双宽字符 |
+                | OK | English |
+                """;
+
+        String result = renderer.renderToString(md);
+        String plain = stripAnsi(result);
+
+        // Every row line in the table should have the same display width.
+        // Extract lines that start with │ (content rows)
+        String[] lines = plain.split("\n");
+        int expectedWidth = -1;
+        for (String line : lines) {
+            if (line.isEmpty()) continue;
+            // All table lines (borders + content) should have the same display width
+            char first = line.charAt(0);
+            if (first == '┌' || first == '├' || first == '└' || first == '│') {
+                int w = TerminalTheme.displayWidth(line);
+                if (expectedWidth == -1) {
+                    expectedWidth = w;
+                } else {
+                    assertThat(w)
+                            .as("Table line display width should be uniform: '%s'", line)
+                            .isEqualTo(expectedWidth);
+                }
+            }
+        }
+        assertThat(expectedWidth).as("Should have found table lines").isGreaterThan(0);
+    }
+
+    @Test
     void rendersNullAndEmptyGracefully() {
         assertThat(renderer.renderToString(null)).isEmpty();
         assertThat(renderer.renderToString("")).isEmpty();

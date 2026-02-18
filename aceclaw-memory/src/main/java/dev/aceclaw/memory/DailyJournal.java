@@ -13,6 +13,7 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Append-only daily activity journal stored as markdown files.
@@ -21,6 +22,9 @@ import java.util.List;
  *
  * <p>Each journal file is capped at {@value #MAX_LINES_PER_FILE} lines.
  * Entries beyond the cap are silently dropped to prevent unbounded growth.
+ *
+ * <p>Thread-safe: uses a {@link ReentrantLock} to serialize the check-then-append
+ * sequence, preventing line interleaving from concurrent writes.
  */
 public final class DailyJournal {
 
@@ -30,6 +34,8 @@ public final class DailyJournal {
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ISO_LOCAL_DATE;
 
     private final Path journalDir;
+    /** Serializes append operations to prevent line interleaving and TOCTOU on line count. */
+    private final ReentrantLock writeLock = new ReentrantLock();
 
     /**
      * Creates a journal rooted at the given memory directory.
@@ -50,12 +56,15 @@ public final class DailyJournal {
     public void append(String entry) {
         if (entry == null || entry.isBlank()) return;
 
-        Path file = fileForDate(LocalDate.now());
+        writeLock.lock();
         try {
-            // Check line count before appending
+            Path file = fileForDate(LocalDate.now());
+            // Check line count before appending (atomic with write under lock)
             long lineCount = 0;
             if (Files.isRegularFile(file)) {
-                lineCount = Files.lines(file).count();
+                try (var stream = Files.lines(file)) {
+                    lineCount = stream.count();
+                }
             }
             if (lineCount >= MAX_LINES_PER_FILE) {
                 log.debug("Journal file {} at max capacity ({} lines), skipping append",
@@ -69,6 +78,8 @@ public final class DailyJournal {
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         } catch (IOException e) {
             log.warn("Failed to write journal entry: {}", e.getMessage());
+        } finally {
+            writeLock.unlock();
         }
     }
 

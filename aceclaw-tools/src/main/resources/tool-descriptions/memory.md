@@ -1,10 +1,11 @@
 Manages persistent memory that survives across sessions. Memories are HMAC-signed
 and stored as JSONL files. Use this to learn from experience and avoid repeating mistakes.
 
-Three actions:
+Four actions:
 - save: Store a new memory. Requires content and category.
 - search: Find relevant memories using a natural language query. Uses hybrid TF-IDF + recency ranking.
 - list: Browse memories, optionally filtered by category.
+- delete: Remove an incorrect or outdated memory. Requires id (from list/search output).
 
 When to save (IMPORTANT — actively save learnings):
 - After discovering a bug pattern, gotcha, or non-obvious behavior
@@ -25,6 +26,12 @@ When to list:
 - To review what has been learned about the project
 - To check if a memory already exists before saving a duplicate
 - To get an overview of accumulated knowledge
+
+When to delete:
+- When a memory is incorrect, outdated, or no longer applies
+- When correcting a previous mistake — delete the wrong memory, save the corrected one
+- When a convention or preference has changed
+- Use list/search first to find the ID, then delete by ID
 
 Anti-patterns — do NOT:
 - Save trivial or obvious information (basic language syntax, common patterns)
@@ -66,19 +73,21 @@ Categories:
 - user_feedback: User feedback about agent behavior (positive or negative)
 
 Parameter details:
-- action: save, search, or list (required)
+- action: save, search, list, or delete (required)
 - content: The memory text (required for save). Write concise, actionable insights.
 - category: One of the categories above (required for save, optional filter for search/list)
 - tags: Comma-separated tags for categorization (optional, for save). Helps narrow future searches.
 - query: Natural language search query (required for search). Be specific for better results.
 - limit: Max results (default: 10 for search, 20 for list, max: 50)
 - global: If true, memory is cross-project. Default: false (project-scoped).
+- id: Memory entry ID (required for delete). Get the ID from list/search output first.
 
 Common workflows:
 - Learn from mistake: encounter error → fix it → save with category=mistake and tags
 - Pre-task check: search for relevant memories → review insights → start the task informed
 - Convention capture: user states a preference → save with category=preference → apply in future
 - Dedup check: search or list by category → verify no similar memory exists → save if new
+- Self-correction: realize memory is wrong → list to find ID → delete → save corrected version
 
 Search scoring:
 - Results are ranked by a hybrid score: TF-IDF text relevance + recency boost.
@@ -86,42 +95,25 @@ Search scoring:
 - Use specific, descriptive queries for better ranking (not single keywords).
 - Category filter narrows results before scoring, improving precision.
 
-How memory works behind the scenes:
-- Memories you save via this tool are "Auto-Memory" (tier 6 of 8 in the memory hierarchy).
-- Higher-priority tiers are loaded automatically and are NOT managed by this tool:
-  Tier 1 (Soul): Agent identity from SOUL.md — defines core behavior and values.
-  Tier 2 (Managed Policy): Enterprise rules from managed-policy.md (optional).
-  Tier 3 (Workspace): Project instructions from ACECLAW.md in the project root.
-  Tier 4 (User): Personal preferences from ~/.aceclaw/ACECLAW.md.
-  Tier 5 (Local): Per-developer settings from ACECLAW.local.md (gitignored).
-  Tier 6 (Auto-Memory): What THIS tool manages — agent-learned insights (JSONL).
-  Tier 7 (Markdown Memory): Persistent MEMORY.md + topic files (first 200 lines injected).
-  Tier 8 (Journal): Daily session log — appended automatically after each turn.
-- The system prompt already contains content from tiers 1-5 and recent journal entries.
-  This tool lets you actively manage tier 6 (auto-memory) to persist learnings.
-  You can also write MEMORY.md / topic files via standard file tools (tier 7).
-- During context compaction, the system automatically extracts file paths, commands, and
-  errors from the conversation and saves them as auto-memories — you do not need to
-  manually save these routine context items.
-- The daily journal (tier 8) records each turn automatically. You do not need to save
-  session activity manually — focus on saving non-obvious INSIGHTS instead.
-- Path-based rules from {project}/.aceclaw/rules/*.md are injected when matching files
-  are being worked on — these provide contextual instructions per file type.
+Memory hierarchy (8 tiers — this tool manages tier 6):
+- Tiers 1-5 (Soul/Policy/Workspace/User/Local): Loaded automatically, NOT managed here.
+- Tier 6 (Auto-Memory): What THIS tool manages — agent-learned insights (JSONL).
+- Tier 7 (Markdown Memory): MEMORY.md + topic files — write via standard file tools.
+- Tier 8 (Journal): Daily log, appended automatically. Don't duplicate journal content.
+- Context compaction auto-extracts file paths, commands, errors — save INSIGHTS instead.
+- Path-based rules from {project}/.aceclaw/rules/*.md inject contextual instructions.
 
 Safety & constraints:
 - Memory files are HMAC-SHA256 signed — tampered entries are rejected on load.
 - Project-scoped memories (global=false) are stored per working directory (SHA-256 hash).
 - Global memories (global=true) are shared across all projects — use sparingly.
 - Never save secrets, API keys, passwords, or credentials as memories.
-- Memory storage is append-only JSONL — entries accumulate over time.
+- Memory storage is JSONL — entries can be added and deleted. Use delete to correct mistakes.
 - Do not save information that tiers 0-3 already provide (SOUL.md, ACECLAW.md, etc.).
 
 Tips:
-- Use tags liberally — they make future searches much more precise (e.g., "gradle, java, build").
-- Save immediately after learning something, not at the end of the session.
-- Search with natural phrases, not keywords: "how to fix Gradle annotation processor" not "gradle".
-- When in doubt about whether to save, save it — a slightly redundant memory costs less than
-  re-discovering the same insight from scratch in a future session.
-- Use category filter in search when you know the type of insight you need.
-- You do NOT need to save routine context (file paths, commands run) — context compaction
-  handles that automatically. Save higher-level insights that compaction cannot infer.
+- Use tags liberally — they improve future search precision (e.g., "gradle, java, build").
+- Save immediately after learning something, not at end of session.
+- Search with natural phrases, not single keywords.
+- When in doubt, save it — redundant memory < re-discovering the same insight.
+- Use category filter in search when you know the insight type needed.

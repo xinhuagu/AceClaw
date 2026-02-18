@@ -81,11 +81,11 @@ class MemoryToolTest {
 
     @Test
     void unknownActionReturnsError() throws Exception {
-        var result = tool.execute(json("action", "delete"));
+        var result = tool.execute(json("action", "purge"));
 
         assertThat(result.isError()).isTrue();
         assertThat(result.output()).contains("Unknown action");
-        assertThat(result.output()).contains("delete");
+        assertThat(result.output()).contains("purge");
     }
 
     // -----------------------------------------------------------------------
@@ -384,6 +384,77 @@ class MemoryToolTest {
     }
 
     // -----------------------------------------------------------------------
+    // Delete action
+    // -----------------------------------------------------------------------
+
+    @Test
+    void deleteRequiresId() throws Exception {
+        var result = tool.execute(json("action", "delete"));
+
+        assertThat(result.isError()).isTrue();
+        assertThat(result.output()).contains("id");
+    }
+
+    @Test
+    void deleteExistingEntry() throws Exception {
+        // Save an entry first
+        tool.execute(json(
+                "action", "save",
+                "content", "Wrong insight to delete",
+                "category", "mistake"));
+
+        assertThat(store.size()).isEqualTo(1);
+        var entryId = store.entries().getFirst().id();
+
+        var result = tool.execute("{\"action\":\"delete\",\"id\":\"" + entryId + "\"}");
+
+        assertThat(result.isError()).isFalse();
+        assertThat(result.output()).contains("Memory deleted successfully");
+        assertThat(store.size()).isEqualTo(0);
+    }
+
+    @Test
+    void deleteNonExistentEntry() throws Exception {
+        var result = tool.execute(json("action", "delete", "id", "nonexistent-uuid"));
+
+        assertThat(result.isError()).isTrue();
+        assertThat(result.output()).contains("Memory not found");
+    }
+
+    @Test
+    void deleteAndResave() throws Exception {
+        // Save a wrong entry
+        tool.execute(json(
+                "action", "save",
+                "content", "Wrong info",
+                "category", "pattern"));
+
+        var entryId = store.entries().getFirst().id();
+
+        // Delete it
+        tool.execute("{\"action\":\"delete\",\"id\":\"" + entryId + "\"}");
+
+        // Save corrected version
+        tool.execute(json(
+                "action", "save",
+                "content", "Correct info",
+                "category", "pattern"));
+
+        assertThat(store.size()).isEqualTo(1);
+        assertThat(store.entries().getFirst().content()).isEqualTo("Correct info");
+    }
+
+    @Test
+    void listOutputIncludesIds() throws Exception {
+        tool.execute(json("action", "save", "content", "Test entry", "category", "pattern"));
+
+        var result = tool.execute(json("action", "list"));
+
+        assertThat(result.isError()).isFalse();
+        assertThat(result.output()).contains("id=");
+    }
+
+    // -----------------------------------------------------------------------
     // Edge cases
     // -----------------------------------------------------------------------
 
@@ -420,5 +491,9 @@ class MemoryToolTest {
 
         var resultListUpper = tool.execute(json("action", "LIST"));
         assertThat(resultListUpper.isError()).isFalse();
+
+        var resultDelete = tool.execute(json("action", "DELETE", "id", "nonexistent"));
+        assertThat(resultDelete.isError()).isTrue(); // not found, but action was recognized
+        assertThat(resultDelete.output()).contains("Memory not found");
     }
 }

@@ -112,12 +112,12 @@ public final class MemoryTierLoader {
         }
 
         // 5.5. Markdown Memory (persistent MEMORY.md + topic files)
+        // Always present if store is available, even if MEMORY.md doesn't exist yet.
+        // This ensures the agent knows about the capability and the directory path.
         if (markdownStore != null) {
-            String memoryMd = markdownStore.loadMemoryMd();
-            if (memoryMd != null) {
-                sections.add(new TierSection(new MemoryTier.MarkdownMemory(), memoryMd));
-                tiersLoaded++;
-            }
+            String memoryMd = markdownStore.loadMemoryMd(); // may be null
+            sections.add(new TierSection(new MemoryTier.MarkdownMemory(), memoryMd));
+            tiersLoaded++;
         }
 
         // 6. Daily Journal (recent entries)
@@ -137,6 +137,8 @@ public final class MemoryTierLoader {
     /**
      * Assembles the loaded tiers into a single string for system prompt injection.
      *
+     * <p>Delegates to {@link #formatTierSections} + {@link #joinTierSections}.
+     *
      * @param result              the load result from {@link #loadAll}
      * @param memoryStore         the auto-memory store for formatting (may be null)
      * @param workspacePath       the workspace path (for memory store formatting)
@@ -145,67 +147,149 @@ public final class MemoryTierLoader {
      */
     public static String assembleForSystemPrompt(LoadResult result, AutoMemoryStore memoryStore,
                                                   Path workspacePath, int maxAutoMemoryEntries) {
-        if (result.tiersLoaded() == 0) return "";
+        var sections = formatTierSections(result, memoryStore, workspacePath, maxAutoMemoryEntries);
+        return joinTierSections(sections);
+    }
 
-        var sb = new StringBuilder();
+    /**
+     * Returns the tier sections as an ordered list (for external budget application).
+     *
+     * <p>Each section is formatted with its header but returned individually,
+     * allowing callers to apply per-tier and total size budgets before concatenation.
+     *
+     * @param result              the load result from {@link #loadAll}
+     * @param memoryStore         the auto-memory store for formatting (may be null)
+     * @param workspacePath       the workspace path (for memory store formatting)
+     * @param maxAutoMemoryEntries maximum auto-memory entries to include
+     * @return ordered list of formatted tier sections
+     */
+    public static List<TierSection> formatTierSections(LoadResult result, AutoMemoryStore memoryStore,
+                                                         Path workspacePath, int maxAutoMemoryEntries) {
+        return formatTierSections(result, memoryStore, workspacePath, maxAutoMemoryEntries, null);
+    }
+
+    /**
+     * Returns the tier sections as an ordered list (for external budget application),
+     * with the markdown memory directory path injected for agent file access.
+     *
+     * @param result              the load result from {@link #loadAll}
+     * @param memoryStore         the auto-memory store for formatting (may be null)
+     * @param workspacePath       the workspace path (for memory store formatting)
+     * @param maxAutoMemoryEntries maximum auto-memory entries to include
+     * @param markdownMemoryDir   the markdown memory directory path (may be null)
+     * @return ordered list of formatted tier sections
+     */
+    public static List<TierSection> formatTierSections(LoadResult result, AutoMemoryStore memoryStore,
+                                                         Path workspacePath, int maxAutoMemoryEntries,
+                                                         Path markdownMemoryDir) {
+        if (result.tiersLoaded() == 0) return List.of();
+
+        var formatted = new ArrayList<TierSection>();
 
         for (var section : result.tieredSections()) {
-            switch (section.tier()) {
-                case MemoryTier.Soul _ -> {
-                    sb.append("\n\n# Soul (Core Identity)\n\n");
-                    sb.append(section.content().strip());
-                }
-                case MemoryTier.ManagedPolicy _ -> {
-                    sb.append("\n\n# Managed Policy\n\n");
-                    sb.append("The following policies are organization-managed. Follow them strictly.\n\n");
-                    sb.append(section.content().strip());
-                }
-                case MemoryTier.WorkspaceMemory _ -> {
-                    sb.append("\n\n# Project Instructions\n\n");
-                    sb.append("The following instructions are from the project's ACECLAW.md. ");
-                    sb.append("Follow them carefully.\n\n");
-                    sb.append(section.content().strip());
-                }
-                case MemoryTier.UserMemory _ -> {
-                    sb.append("\n\n# User Instructions\n\n");
-                    sb.append("The following instructions are from your global ~/.aceclaw/ACECLAW.md file. ");
-                    sb.append("Follow them carefully.\n\n");
-                    sb.append(section.content().strip());
-                }
-                case MemoryTier.LocalMemory _ -> {
-                    sb.append("\n\n# Local Developer Instructions\n\n");
-                    sb.append("The following instructions are from this project's ACECLAW.local.md ");
-                    sb.append("(per-developer, gitignored). Follow them carefully.\n\n");
-                    sb.append(section.content().strip());
-                }
-                case MemoryTier.AutoMemory _ -> {
-                    // Delegate to AutoMemoryStore's formatting
-                    if (memoryStore != null && memoryStore.size() > 0) {
-                        String memorySection = memoryStore.formatForPrompt(workspacePath, maxAutoMemoryEntries);
-                        if (!memorySection.isEmpty()) {
-                            sb.append(memorySection);
-                        }
-                    } else {
-                        sb.append("\n\n# Auto-Memory\n\n");
-                        sb.append("No memories stored yet for this workspace. ");
-                        sb.append("Memories will accumulate automatically as you work across sessions.\n");
-                    }
-                }
-                case MemoryTier.MarkdownMemory _ -> {
-                    sb.append("\n\n# Persistent Memory\n\n");
-                    sb.append("The following is from your persistent MEMORY.md file. ");
-                    sb.append("You can update this file using standard file tools.\n\n");
-                    sb.append(section.content().strip());
-                }
-                case MemoryTier.Journal _ -> {
-                    sb.append("\n\n# Daily Journal\n\n");
-                    sb.append("Recent activity log from previous sessions:\n\n");
-                    sb.append(section.content().strip());
-                    sb.append("\n");
-                }
+            String content = formatSingleTier(section, memoryStore, workspacePath,
+                    maxAutoMemoryEntries, markdownMemoryDir);
+            if (content != null && !content.isEmpty()) {
+                formatted.add(new TierSection(section.tier(), content));
             }
         }
 
+        return formatted;
+    }
+
+    /**
+     * Joins formatted tier sections into a single string.
+     *
+     * @param sections the formatted tier sections
+     * @return the concatenated prompt section
+     */
+    public static String joinTierSections(List<TierSection> sections) {
+        var sb = new StringBuilder();
+        for (var section : sections) {
+            if (section.content() != null) {
+                sb.append(section.content());
+            }
+        }
+        return sb.toString();
+    }
+
+    private static String formatSingleTier(TierSection section, AutoMemoryStore memoryStore,
+                                            Path workspacePath, int maxAutoMemoryEntries,
+                                            Path markdownMemoryDir) {
+        var sb = new StringBuilder();
+        switch (section.tier()) {
+            case MemoryTier.Soul _ -> {
+                sb.append("\n\n# Soul (Core Identity)\n\n");
+                sb.append(section.content().strip());
+            }
+            case MemoryTier.ManagedPolicy _ -> {
+                sb.append("\n\n# Managed Policy\n\n");
+                sb.append("The following policies are organization-managed. Follow them strictly.\n\n");
+                sb.append(section.content().strip());
+            }
+            case MemoryTier.WorkspaceMemory _ -> {
+                sb.append("\n\n# Project Instructions\n\n");
+                sb.append("The following instructions are from the project's ACECLAW.md. ");
+                sb.append("Follow them carefully.\n\n");
+                sb.append(section.content().strip());
+            }
+            case MemoryTier.UserMemory _ -> {
+                sb.append("\n\n# User Instructions\n\n");
+                sb.append("The following instructions are from your global ~/.aceclaw/ACECLAW.md file. ");
+                sb.append("Follow them carefully.\n\n");
+                sb.append(section.content().strip());
+            }
+            case MemoryTier.LocalMemory _ -> {
+                sb.append("\n\n# Local Developer Instructions\n\n");
+                sb.append("The following instructions are from this project's ACECLAW.local.md ");
+                sb.append("(per-developer, gitignored). Follow them carefully.\n\n");
+                sb.append(section.content().strip());
+            }
+            case MemoryTier.AutoMemory _ -> {
+                if (memoryStore != null && memoryStore.size() > 0) {
+                    String memorySection = memoryStore.formatForPrompt(workspacePath, maxAutoMemoryEntries);
+                    if (!memorySection.isEmpty()) {
+                        sb.append(memorySection);
+                    }
+                } else {
+                    sb.append("\n\n# Auto-Memory\n\n");
+                    sb.append("No memories stored yet for this workspace. ");
+                    sb.append("Memories will accumulate automatically as you work across sessions.\n");
+                }
+            }
+            case MemoryTier.MarkdownMemory _ -> {
+                sb.append("\n\n# Persistent Memory\n\n");
+                if (markdownMemoryDir != null) {
+                    sb.append("You have a persistent memory directory at `")
+                            .append(markdownMemoryDir).append("/`.\n");
+                    sb.append("Its contents persist across conversations.\n\n");
+                    sb.append("Guidelines:\n");
+                    sb.append("- `MEMORY.md` is always loaded into your system prompt ")
+                            .append("— lines after 200 will be truncated, so keep it concise\n");
+                    sb.append("- Create separate topic files (e.g., `debugging.md`, `patterns.md`) ")
+                            .append("for detailed notes and link to them from MEMORY.md\n");
+                    sb.append("- Use the read_file and write_file tools to update these files directly\n");
+                    sb.append("- Record insights about problem constraints, strategies, and lessons learned\n");
+                    sb.append("- Organize memory semantically by topic, not chronologically\n\n");
+                } else {
+                    sb.append("The following is from your persistent MEMORY.md file. ");
+                    sb.append("You can update this file using standard file tools.\n\n");
+                }
+                if (section.content() != null) {
+                    sb.append("## MEMORY.md\n\n");
+                    sb.append(section.content().strip());
+                } else {
+                    sb.append("No MEMORY.md file exists yet. Create one when you have ");
+                    sb.append("insights worth persisting across sessions.\n");
+                }
+            }
+            case MemoryTier.Journal _ -> {
+                sb.append("\n\n# Daily Journal\n\n");
+                sb.append("Recent activity log from previous sessions:\n\n");
+                sb.append(section.content().strip());
+                sb.append("\n");
+            }
+        }
         return sb.toString();
     }
 

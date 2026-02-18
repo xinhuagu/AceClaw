@@ -58,7 +58,7 @@ public final class MemoryTool implements Tool {
     public JsonNode inputSchema() {
         return SchemaBuilder.object()
                 .requiredProperty("action", SchemaBuilder.stringEnum(
-                        "The action to perform", "save", "search", "list"))
+                        "The action to perform", "save", "search", "list", "delete"))
                 .optionalProperty("content", SchemaBuilder.string(
                         "The memory content to save (required for 'save' action). " +
                         "Write a concise, actionable insight — not raw data."))
@@ -77,6 +77,8 @@ public final class MemoryTool implements Tool {
                         "Maximum results to return (default: 10 for search, 20 for list, max: 50)"))
                 .optionalProperty("global", SchemaBuilder.bool(
                         "If true, save to global memory (cross-project). Default: false (project-scoped)."))
+                .optionalProperty("id", SchemaBuilder.string(
+                        "Memory entry ID (required for 'delete' action). Use 'list' or 'search' to find IDs."))
                 .build();
     }
 
@@ -94,8 +96,9 @@ public final class MemoryTool implements Tool {
             case "save" -> executeSave(input);
             case "search" -> executeSearch(input);
             case "list" -> executeList(input);
+            case "delete" -> executeDelete(input);
             default -> new ToolResult(
-                    "Unknown action: " + action + ". Valid actions: save, search, list", true);
+                    "Unknown action: " + action + ". Valid actions: save, search, list, delete", true);
         };
     }
 
@@ -216,6 +219,23 @@ public final class MemoryTool implements Tool {
         return new ToolResult(formatEntries(results, header), false);
     }
 
+    private ToolResult executeDelete(JsonNode input) {
+        if (!input.has("id") || input.get("id").asText().isBlank()) {
+            return new ToolResult("Missing required parameter for 'delete': id. " +
+                    "Use 'list' or 'search' to find the memory ID first.", true);
+        }
+
+        var id = input.get("id").asText();
+        log.debug("Deleting memory: id={}", id);
+
+        boolean removed = memoryStore.remove(id, workingDir);
+        if (removed) {
+            return new ToolResult("Memory deleted successfully. ID: " + id, false);
+        } else {
+            return new ToolResult("Memory not found with ID: " + id, true);
+        }
+    }
+
     // -- Helpers --------------------------------------------------------------
 
     /**
@@ -247,7 +267,8 @@ public final class MemoryTool implements Tool {
             if (!entry.tags().isEmpty()) {
                 sb.append(" [").append(String.join(", ", entry.tags())).append("]");
             }
-            sb.append(" (").append(DATE_FMT.format(entry.createdAt())).append(")\n");
+            sb.append(" (").append(DATE_FMT.format(entry.createdAt()));
+            sb.append(", id=").append(entry.id()).append(")\n");
         }
 
         return sb.toString().trim();

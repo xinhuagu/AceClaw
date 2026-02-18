@@ -193,16 +193,19 @@ public final class AceClawDaemon {
         // 3. Permission manager — auto-approve all tools (no interactive prompts)
         var permissionManager = new PermissionManager(new DefaultPermissionPolicy(true));
 
-        // 4. System prompt (with 8-tier memory hierarchy + daily journal + model identity)
+        // 4. System prompt (with 8-tier memory hierarchy + daily journal + model identity + budget)
         DailyJournal journal = memoryStore != null ? memoryStore.getDailyJournal() : null;
         String systemPrompt = SystemPromptLoader.load(
                 workingDir, memoryStore, journal, markdownStore, model, config.provider());
 
-        // 5. Context compaction
+        // 5. Context compaction (accounting for actual system prompt size)
+        int systemPromptTokens = dev.aceclaw.core.agent.ContextEstimator.estimateTokens(systemPrompt);
         var compactionConfig = new CompactionConfig(
-                config.contextWindowTokens(), config.maxTokens(),
+                config.contextWindowTokens(), config.maxTokens(), systemPromptTokens,
                 0.85, 0.60, 5);
         var compactor = new MessageCompactor(llmClient, model, compactionConfig);
+        log.info("System prompt: {} chars (~{} tokens), effective conversation window: {} tokens",
+                systemPrompt.length(), systemPromptTokens, compactionConfig.effectiveWindowTokens());
 
         // 6. Streaming agent loop (with compaction support)
         var agentLoop = new StreamingAgentLoop(

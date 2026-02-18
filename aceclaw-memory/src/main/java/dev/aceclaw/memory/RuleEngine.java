@@ -9,7 +9,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.PathMatcher;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Stream;
 
 /**
@@ -39,9 +41,18 @@ public final class RuleEngine {
     private static final String RULES_DIR = ".aceclaw/rules";
 
     private final List<PathBasedRule> rules;
+    /** Cached PathMatcher instances keyed by glob pattern string. */
+    private final Map<String, PathMatcher> matcherCache;
 
     private RuleEngine(List<PathBasedRule> rules) {
         this.rules = List.copyOf(rules);
+        this.matcherCache = new HashMap<>();
+        for (var rule : this.rules) {
+            for (var pattern : rule.patterns()) {
+                matcherCache.computeIfAbsent(pattern,
+                        p -> FileSystems.getDefault().getPathMatcher("glob:" + p));
+            }
+        }
     }
 
     /**
@@ -216,10 +227,11 @@ public final class RuleEngine {
         return new PathBasedRule(name, List.copyOf(patterns), body);
     }
 
-    private static boolean matchesAnyPattern(String filePath, List<String> patterns) {
+    private boolean matchesAnyPattern(String filePath, List<String> patterns) {
+        Path path = Path.of(filePath);
         for (var pattern : patterns) {
-            PathMatcher matcher = FileSystems.getDefault().getPathMatcher("glob:" + pattern);
-            if (matcher.matches(Path.of(filePath))) {
+            PathMatcher matcher = matcherCache.get(pattern);
+            if (matcher != null && matcher.matches(path)) {
                 return true;
             }
         }

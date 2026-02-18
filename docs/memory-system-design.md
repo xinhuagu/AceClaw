@@ -1,6 +1,6 @@
 # AceClaw Memory System Design
 
-> Version 2.0 | 2026-02-18
+> Version 2.1 | 2026-02-18
 
 ## Architecture Overview
 
@@ -512,7 +512,7 @@ This complements auto-memory by providing a human-readable, editable knowledge b
 | **Timing attack on HMAC** | `MessageDigest.isEqual()` constant-time comparison |
 | **Key file exposure** | POSIX 600 permissions (owner read/write only) |
 | **Cross-project leakage** | SHA-256 workspace hash isolation. Separate JSONL files per project. |
-| **Unbounded growth** | Journal: 500 lines/day cap. MEMORY.md: 50KB/file, 500KB/workspace. Consolidator: dedup + merge + prune. |
+| **Unbounded growth** | Journal: 500 lines/day cap. MEMORY.md: 50KB/file, 500KB/workspace. Consolidator: dedup + merge + prune. System prompt budget: 150K chars total cap with priority-based truncation. |
 | **Injection via memory content** | Memories are plain text, not executable. Loaded into system prompt as markdown. |
 | **Stale memory pollution** | Consolidator prunes entries >90 days with 0 access. Similarity merge prevents near-duplicates. |
 | **Path traversal in rules** | RuleEngine validates file names (no `/`, `\`, `..`). PathMatcher scoped to project directory. |
@@ -521,9 +521,83 @@ This complements auto-memory by providing a human-readable, editable knowledge b
 
 ---
 
-## 8. AceClaw vs OpenClaw Memory Comparison
+## 8. System Prompt Size Budget
 
-### 8.1 Architecture Overview
+### 8.1 Problem Statement
+
+The 8-tier memory hierarchy, path-based rules, tool descriptions, and environment context are all injected into the system prompt. Without aggregate size control, the system prompt can grow unboundedly:
+
+- Large `ACECLAW.md` files (no per-file limit on human-authored tiers T1-T5)
+- 50 auto-memory entries formatted as markdown
+- MEMORY.md first 200 lines
+- Daily journal 2-day window (~1000 lines)
+- Path-based rules for all matching files
+
+If the system prompt consumes 80K+ tokens, the effective conversation space shrinks dramatically. Context compaction (MessageCompactor) only prunes **conversation history**, not the system prompt.
+
+### 8.2 Industry Comparison
+
+| Mechanism | OpenClaw | Claude Code | AceClaw (Planned) |
+|-----------|----------|-------------|-------------------|
+| **Per-file char cap** | 20,000 chars | Recommended ≤150 lines | 20,000 chars |
+| **Total char cap** | 150,000 chars | No explicit cap | 150,000 chars |
+| **Truncation strategy** | 70/20/10 (head/tail/marker) | None (size by convention) | 70/20/10 per tier |
+| **Low-priority loading** | Daily memory on-demand via tools | Subdirectory CLAUDE.md lazy-load | Journal on-demand if budget exceeded |
+| **Context-aware budget** | Tool output scales with model window | autocompact_pct override | Effective window deducts actual prompt size |
+| **Precise token counting** | ~4 chars/token estimate | API `/v1/messages/count_tokens` | ~4 chars/token + actual API usage |
+
+**Key insight:** Neither OpenClaw nor Claude Code uses a precise token budget for the system prompt. Character-based caps are sufficient and proven in production.
+
+### 8.3 Design: Two-Tier Character Budget
+
+Adopt OpenClaw's proven approach:
+
+```
+SystemPromptBudget:
+  maxPerTierChars:   20,000   # Per-tier character cap
+  maxTotalChars:    150,000   # Total system prompt character cap (all tiers + base prompt)
+```
+
+**Truncation priority** (lowest priority truncated first):
+
+```
+When total > maxTotalChars:
+  1. Truncate T8 Journal     (priority 50)  → 70/20/10 split
+  2. Truncate T7 Markdown    (priority 55)  → 70/20/10 split
+  3. Truncate T6 Auto-Memory (priority 60)  → reduce maxEntries from 50 → 25 → 10
+  4. Truncate T5 Local       (priority 65)  → 70/20/10 split
+  5. Truncate T4 User        (priority 70)  → 70/20/10 split
+  6. Truncate T3 Workspace   (priority 80)  → 70/20/10 split
+  7. T2 Managed Policy       (priority 90)  → NEVER truncated
+  8. T1 Soul                 (priority 100) → NEVER truncated
+```
+
+**70/20/10 split** (from OpenClaw):
+- 70% of budget from the **head** (core instructions)
+- 20% from the **tail** (most recent updates)
+- 10% reserved for truncation marker: `<!-- [TRUNCATED] Original: {N} chars, showing first {X} + last {Y} chars -->`
+
+### 8.4 Design: Context-Aware Effective Window
+
+CompactionConfig must account for actual system prompt size:
+
+```java
+// Before (wrong): fixed effective window
+effectiveWindow = contextWindowTokens - maxOutputTokens;
+
+// After (correct): deduct actual system prompt
+int systemPromptTokens = ContextEstimator.estimateTokens(systemPrompt);
+effectiveWindow = contextWindowTokens - maxOutputTokens - systemPromptTokens;
+compactionTrigger = (int)(effectiveWindow * 0.85);
+```
+
+This prevents the pathological case where a 80K-token system prompt + 85% trigger = compaction fires after only ~76K tokens of conversation.
+
+---
+
+## 9. AceClaw vs OpenClaw Memory Comparison
+
+### 9.1 Architecture Overview
 
 | Dimension | AceClaw | OpenClaw |
 |-----------|---------|----------|
@@ -536,7 +610,7 @@ This complements auto-memory by providing a human-readable, editable knowledge b
 | **Consolidation** | 3-pass (dedup + merge + prune) | None |
 | **Conditional rules** | Path-based glob matching | None |
 
-### 8.2 Feature-by-Feature Comparison
+### 9.2 Feature-by-Feature Comparison
 
 | Feature | AceClaw | OpenClaw | Winner |
 |---------|---------|----------|--------|
@@ -558,7 +632,7 @@ This complements auto-memory by providing a human-readable, editable knowledge b
 | **Multi-platform channels** | CLI + daemon (planned: web) | WhatsApp, Telegram, Slack, Discord | OpenClaw |
 | **Skill marketplace** | Not yet (planned P3) | ClawHub registry with pull-based updates | OpenClaw |
 
-### 8.3 Memory Lifecycle Comparison
+### 9.3 Memory Lifecycle Comparison
 
 ```
                     AceClaw                           OpenClaw
@@ -598,7 +672,7 @@ This complements auto-memory by providing a human-readable, editable knowledge b
                Self-maintaining via consolidation
 ```
 
-### 8.4 Why AceClaw's Approach is Better for Enterprise
+### 9.4 Why AceClaw's Approach is Better for Enterprise
 
 1. **Auditability** — Every memory entry is signed, timestamped, and source-tagged. Enterprise compliance teams can inspect `global.jsonl` and verify integrity via HMAC.
 
@@ -612,7 +686,7 @@ This complements auto-memory by providing a human-readable, editable knowledge b
 
 6. **Conditional compliance** — Path-based rules enforce per-file-type standards (test conventions, API guidelines, security practices) without polluting the global system prompt.
 
-### 8.5 Where OpenClaw Excels
+### 9.5 Where OpenClaw Excels
 
 1. **Community ecosystem** — ClawHub's 700+ skills provide a marketplace that AceClaw lacks. However, OpenClaw's marketplace has had security issues (credential stealers within 48 hours of going viral).
 
@@ -622,7 +696,7 @@ This complements auto-memory by providing a human-readable, editable knowledge b
 
 ---
 
-## 9. Class Dependency Graph
+## 10. Class Dependency Graph
 
 ```
 MemoryTier (sealed interface)
@@ -697,7 +771,7 @@ MessageCompactor (aceclaw-core)
 
 ---
 
-## 10. Configuration
+## 11. Configuration
 
 | Config Key | Default | Description |
 |-----------|---------|-------------|
@@ -718,10 +792,13 @@ MessageCompactor (aceclaw-core)
 | List default limit | 20 | Default results for memory list |
 | Max limit | 50 | Maximum results for any query |
 | Auto-memory max entries | 50 | Max entries injected into system prompt |
+| **System prompt per-tier cap** | **20,000 chars** | **Max chars per memory tier (planned P1.5)** |
+| **System prompt total cap** | **150,000 chars** | **Max total chars for all tiers + base prompt (planned P1.5)** |
+| **Truncation split** | **70/20/10** | **Head/tail/marker ratio when truncating a tier (planned P1.5)** |
 
 ---
 
-## 11. Future Roadmap
+## 12. Future Roadmap
 
 | Phase | Feature | Status |
 |-------|---------|--------|
@@ -733,6 +810,8 @@ MessageCompactor (aceclaw-core)
 | P1 | MemoryConsolidator (dedup + merge + prune) | **Done** |
 | P1 | Access tracking (accessCount, lastAccessedAt) | **Done** |
 | P1 | Local Memory tier (ACECLAW.local.md, gitignored) | **Done** |
+| **P1.5** | **System prompt budget (150K char cap, per-tier 20K cap, 70/20/10 truncation)** | **Next** |
+| **P1.5** | **Context-aware effective window (deduct actual prompt size from compaction calc)** | **Next** |
 | P2 | Dynamic rule matching during tool execution (per-file injection) | Planned |
 | P2 | CLAUDE.md import system (`@path/to/file`) | Planned |
 | P3 | Skill-based memory (skills remember their own patterns) | Planned |

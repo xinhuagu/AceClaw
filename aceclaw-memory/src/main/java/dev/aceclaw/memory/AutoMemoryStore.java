@@ -8,12 +8,14 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 /**
@@ -30,7 +32,9 @@ import java.util.stream.Collectors;
  * <p>Each line in a JSONL file is a {@link MemoryEntry} JSON object. On load,
  * entries with invalid HMAC signatures are skipped (tamper detection).
  *
- * <p>Thread-safe: uses {@link CopyOnWriteArrayList} for the in-memory index.
+ * <p>Thread-safe: uses {@link CopyOnWriteArrayList} for the in-memory index
+ * and a {@link ReentrantLock} to serialize all file I/O operations, preventing
+ * JSONL corruption from concurrent writes.
  */
 public final class AutoMemoryStore {
 
@@ -45,6 +49,10 @@ public final class AutoMemoryStore {
     private final ObjectMapper mapper;
     private final MemorySigner signer;
     private final CopyOnWriteArrayList<MemoryEntry> entries;
+    /** Serializes all file I/O to prevent JSONL corruption from concurrent writes. */
+    private final ReentrantLock fileLock = new ReentrantLock();
+    /** Serializes in-memory access tracking to prevent lost updates from concurrent queries. */
+    private final ReentrantLock accessLock = new ReentrantLock();
     private DailyJournal dailyJournal;
 
     /**
@@ -99,19 +107,24 @@ public final class AutoMemoryStore {
      * @param projectPath the project working directory (used to derive the project-specific file)
      */
     public void load(Path projectPath) {
-        entries.clear();
+        fileLock.lock();
+        try {
+            entries.clear();
 
-        // Load global memories
-        loadFile(memoryDir.resolve(GLOBAL_FILE));
+            // Load global memories
+            loadFile(memoryDir.resolve(GLOBAL_FILE));
 
-        // Load project-specific memories
-        if (projectPath != null) {
-            String projectHash = projectHash(projectPath);
-            loadFile(memoryDir.resolve(projectHash + ".jsonl"));
+            // Load project-specific memories
+            if (projectPath != null) {
+                String projectHash = projectHash(projectPath);
+                loadFile(memoryDir.resolve(projectHash + ".jsonl"));
+            }
+
+            log.info("Loaded {} memories ({} global + project)", entries.size(),
+                    countByFile(GLOBAL_FILE));
+        } finally {
+            fileLock.unlock();
         }
-
-        log.info("Loaded {} memories ({} global + project)", entries.size(),
-                countByFile(GLOBAL_FILE));
     }
 
     /**
@@ -138,12 +151,14 @@ public final class AutoMemoryStore {
 
         var entry = new MemoryEntry(id, category, content, tags, now, source, hmac, 0, null);
 
-        // Persist to disk
+        // Persist to disk first, then update in-memory index
         String fileName = global ? GLOBAL_FILE : projectHash(projectPath) + ".jsonl";
-        appendEntry(memoryDir.resolve(fileName), entry);
-
-        entries.add(entry);
-        log.debug("Added memory: category={}, tags={}, file={}", category, tags, fileName);
+        if (appendEntry(memoryDir.resolve(fileName), entry)) {
+            entries.add(entry);
+            log.debug("Added memory: category={}, tags={}, file={}", category, tags, fileName);
+        } else {
+            log.warn("Memory not added to index due to disk write failure: id={}", id);
+        }
         return entry;
     }
 
@@ -197,11 +212,16 @@ public final class AutoMemoryStore {
      * Also rewrites all backing files.
      */
     public void replaceEntries(List<MemoryEntry> newEntries, Path projectPath) {
-        entries.clear();
-        entries.addAll(newEntries);
-        rewriteFile(memoryDir.resolve(GLOBAL_FILE));
-        if (projectPath != null) {
-            rewriteFile(memoryDir.resolve(projectHash(projectPath) + ".jsonl"));
+        fileLock.lock();
+        try {
+            entries.clear();
+            entries.addAll(newEntries);
+            rewriteFile(memoryDir.resolve(GLOBAL_FILE));
+            if (projectPath != null) {
+                rewriteFile(memoryDir.resolve(projectHash(projectPath) + ".jsonl"));
+            }
+        } finally {
+            fileLock.unlock();
         }
     }
 
@@ -220,19 +240,24 @@ public final class AutoMemoryStore {
      * @return true if the entry was found and removed
      */
     public boolean remove(String id, Path projectPath) {
-        var removed = entries.stream().filter(e -> e.id().equals(id)).findFirst();
-        if (removed.isEmpty()) return false;
+        fileLock.lock();
+        try {
+            var removed = entries.stream().filter(e -> e.id().equals(id)).findFirst();
+            if (removed.isEmpty()) return false;
 
-        entries.removeIf(e -> e.id().equals(id));
+            entries.removeIf(e -> e.id().equals(id));
 
-        // Rewrite both files (we don't know which file it's in without tracking)
-        rewriteFile(memoryDir.resolve(GLOBAL_FILE));
-        if (projectPath != null) {
-            rewriteFile(memoryDir.resolve(projectHash(projectPath) + ".jsonl"));
+            // Rewrite both files (we don't know which file it's in without tracking)
+            rewriteFile(memoryDir.resolve(GLOBAL_FILE));
+            if (projectPath != null) {
+                rewriteFile(memoryDir.resolve(projectHash(projectPath) + ".jsonl"));
+            }
+
+            log.debug("Removed memory: id={}", id);
+            return true;
+        } finally {
+            fileLock.unlock();
         }
-
-        log.debug("Removed memory: id={}", id);
-        return true;
     }
 
     /**
@@ -321,15 +346,20 @@ public final class AutoMemoryStore {
      */
     private void trackAccess(List<MemoryEntry> accessed) {
         if (accessed.isEmpty()) return;
-        var accessedIds = new HashSet<String>();
-        for (var entry : accessed) {
-            accessedIds.add(entry.id());
-        }
-        for (int i = 0; i < entries.size(); i++) {
-            var entry = entries.get(i);
-            if (accessedIds.contains(entry.id())) {
-                entries.set(i, entry.withAccess());
+        accessLock.lock();
+        try {
+            var accessedIds = new HashSet<String>();
+            for (var entry : accessed) {
+                accessedIds.add(entry.id());
             }
+            for (int i = 0; i < entries.size(); i++) {
+                var entry = entries.get(i);
+                if (accessedIds.contains(entry.id())) {
+                    entries.set(i, entry.withAccess());
+                }
+            }
+        } finally {
+            accessLock.unlock();
         }
     }
 
@@ -362,16 +392,33 @@ public final class AutoMemoryStore {
         }
     }
 
-    private void appendEntry(Path file, MemoryEntry entry) {
+    /**
+     * Appends a single entry to a JSONL file under file lock.
+     *
+     * @return true if the write succeeded, false on failure
+     */
+    private boolean appendEntry(Path file, MemoryEntry entry) {
+        fileLock.lock();
         try {
             String json = mapper.writeValueAsString(entry);
             Files.writeString(file, json + "\n",
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            return true;
         } catch (IOException e) {
             log.error("Failed to persist memory entry: {}", e.getMessage());
+            return false;
+        } finally {
+            fileLock.unlock();
         }
     }
 
+    /**
+     * Rewrites a JSONL file, keeping only entries that exist in the in-memory index.
+     * Must be called while holding {@link #fileLock}.
+     *
+     * <p>Uses atomic write-to-temp-then-rename to prevent corruption if the process
+     * crashes mid-write.
+     */
     private void rewriteFile(Path file) {
         if (!Files.isRegularFile(file)) return;
 
@@ -394,8 +441,13 @@ public final class AutoMemoryStore {
                     // Skip malformed lines
                 }
             }
-            Files.writeString(file, kept.toString(),
+
+            // Atomic write: write to temp file, then rename
+            Path tmpFile = file.resolveSibling(file.getFileName() + ".tmp");
+            Files.writeString(tmpFile, kept.toString(),
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            Files.move(tmpFile, file, StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE);
         } catch (IOException e) {
             log.error("Failed to rewrite memory file {}: {}", file, e.getMessage());
         }
@@ -433,8 +485,8 @@ public final class AutoMemoryStore {
     private long countByFile(String fileName) {
         Path file = memoryDir.resolve(fileName);
         if (!Files.isRegularFile(file)) return 0;
-        try {
-            return Files.lines(file).filter(l -> !l.isBlank()).count();
+        try (var stream = Files.lines(file)) {
+            return stream.filter(l -> !l.isBlank()).count();
         } catch (IOException e) {
             return 0;
         }

@@ -170,8 +170,16 @@ public final class MemoryConsolidator {
 
     /**
      * Pass 3: Archive entries older than 90 days with zero access count.
+     *
+     * <p>If {@code archiveDir} is null, pruning is skipped entirely to prevent
+     * silent data loss (entries would be removed without being archived).
      */
     static int agePrune(List<MemoryEntry> entries, Path archiveDir) {
+        if (archiveDir == null) {
+            log.debug("Skipping age pruning: no archive directory configured");
+            return 0;
+        }
+
         Instant cutoff = Instant.now().minus(AGE_THRESHOLD);
         var toArchive = new ArrayList<MemoryEntry>();
 
@@ -181,24 +189,26 @@ public final class MemoryConsolidator {
             }
         }
 
-        if (!toArchive.isEmpty() && archiveDir != null) {
-            try {
-                Files.createDirectories(archiveDir);
-                Path archiveFile = archiveDir.resolve(ARCHIVE_FILE);
-                var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-                mapper.registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
+        if (toArchive.isEmpty()) {
+            return 0;
+        }
 
-                var sb = new StringBuilder();
-                for (var entry : toArchive) {
-                    sb.append(mapper.writeValueAsString(entry)).append("\n");
-                }
-                Files.writeString(archiveFile, sb.toString(),
-                        StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-                log.debug("Archived {} entries to {}", toArchive.size(), archiveFile);
-            } catch (IOException e) {
-                log.warn("Failed to write archive file: {}", e.getMessage());
-                return 0; // Don't remove entries if archiving failed
+        try {
+            Files.createDirectories(archiveDir);
+            Path archiveFile = archiveDir.resolve(ARCHIVE_FILE);
+            var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+            mapper.registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
+
+            var sb = new StringBuilder();
+            for (var entry : toArchive) {
+                sb.append(mapper.writeValueAsString(entry)).append("\n");
             }
+            Files.writeString(archiveFile, sb.toString(),
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            log.debug("Archived {} entries to {}", toArchive.size(), archiveFile);
+        } catch (IOException e) {
+            log.warn("Failed to write archive file: {}", e.getMessage());
+            return 0; // Don't remove entries if archiving failed
         }
 
         entries.removeAll(toArchive);

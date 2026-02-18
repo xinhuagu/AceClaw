@@ -87,6 +87,25 @@ public final class SystemPromptLoader {
     public static String load(Path projectPath, AutoMemoryStore memoryStore,
                               DailyJournal journal, MarkdownMemoryStore markdownStore,
                               String model, String provider) {
+        return load(projectPath, memoryStore, journal, markdownStore, model, provider,
+                SystemPromptBudget.DEFAULT);
+    }
+
+    /**
+     * Loads the full system prompt with 8-tier memory hierarchy and size budget.
+     *
+     * @param projectPath   the project working directory
+     * @param memoryStore   optional auto-memory store (may be null)
+     * @param journal       optional daily journal (may be null)
+     * @param markdownStore optional markdown memory store (may be null)
+     * @param model         the LLM model name (may be null)
+     * @param provider      the LLM provider name (may be null)
+     * @param budget        the system prompt size budget
+     * @return the assembled system prompt
+     */
+    public static String load(Path projectPath, AutoMemoryStore memoryStore,
+                              DailyJournal journal, MarkdownMemoryStore markdownStore,
+                              String model, String provider, SystemPromptBudget budget) {
         var sb = new StringBuilder();
         sb.append(basePrompt());
 
@@ -96,14 +115,36 @@ public final class SystemPromptLoader {
         // Git context
         appendGitContext(sb, projectPath);
 
-        // 8-tier memory hierarchy via MemoryTierLoader
+        // 8-tier memory hierarchy via MemoryTierLoader with budget enforcement
         var tierResult = MemoryTierLoader.loadAll(
                 GLOBAL_CONFIG_DIR, projectPath, memoryStore, journal, markdownStore);
-        String tierContent = MemoryTierLoader.assembleForSystemPrompt(
-                tierResult, memoryStore, projectPath, 50);
+        Path markdownMemoryDir = markdownStore != null ? markdownStore.memoryDir() : null;
+        var tierSections = MemoryTierLoader.formatTierSections(
+                tierResult, memoryStore, projectPath, 50, markdownMemoryDir);
+
+        // Apply budget constraints (per-tier + total caps, 70/20/10 truncation)
+        var budgetedSections = TierTruncator.applyBudget(tierSections, budget);
+        String tierContent = MemoryTierLoader.joinTierSections(budgetedSections);
+
         if (!tierContent.isEmpty()) {
             sb.append(tierContent);
-            log.info("Injected {} memory tiers into system prompt", tierResult.tiersLoaded());
+
+            // Detect and report truncated tiers so the agent is aware
+            var truncatedTiers = budgetedSections.stream()
+                    .filter(s -> s.content() != null && s.content().contains("[TRUNCATED]"))
+                    .map(s -> s.tier().displayName())
+                    .toList();
+            if (!truncatedTiers.isEmpty()) {
+                sb.append("\n\n<!-- Budget warning: the following memory tiers were truncated to fit the ")
+                        .append(budget.maxTotalChars()).append(" char system prompt budget: ")
+                        .append(String.join(", ", truncatedTiers))
+                        .append(". If the user asks about missing context, inform them that some memory ")
+                        .append("tiers were truncated. -->\n");
+                log.warn("Memory tiers truncated by budget: {}", truncatedTiers);
+            }
+
+            log.info("Injected {} memory tiers into system prompt (budget: {}/{} chars used)",
+                    tierResult.tiersLoaded(), tierContent.length(), budget.maxTotalChars());
         }
 
         // Path-based rules from {project}/.aceclaw/rules/*.md
@@ -177,18 +218,28 @@ public final class SystemPromptLoader {
 
     /**
      * Runs a git command and returns the trimmed stdout, or null on failure.
+     * Ensures the process is always destroyed and has a timeout to prevent hangs.
      */
     private static String runGitCommand(Path workingDir, String... command) {
+        Process process = null;
         try {
             var pb = new ProcessBuilder(command);
             pb.directory(workingDir.toFile());
             pb.redirectErrorStream(true);
-            var process = pb.start();
+            process = pb.start();
             String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
-            int exitCode = process.waitFor();
-            return exitCode == 0 ? output : null;
+            boolean finished = process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
+            if (!finished) {
+                log.debug("Git command timed out: {}", String.join(" ", command));
+                return null;
+            }
+            return process.exitValue() == 0 ? output : null;
         } catch (Exception e) {
             return null;
+        } finally {
+            if (process != null) {
+                process.destroyForcibly();
+            }
         }
     }
 

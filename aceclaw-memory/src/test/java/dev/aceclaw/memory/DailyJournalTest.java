@@ -8,6 +8,11 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDate;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -113,5 +118,86 @@ class DailyJournalTest {
     @Test
     void journalDirCreated() {
         assertThat(Files.isDirectory(journal.journalDir())).isTrue();
+    }
+
+    // =========================================================================
+    // Concurrent write safety
+    // =========================================================================
+
+    @Test
+    void concurrentAppendsProduceValidLines() throws Exception {
+        int threadCount = 8;
+        int entriesPerThread = 20;
+        var latch = new CountDownLatch(1);
+        var errors = new AtomicInteger(0);
+
+        try (ExecutorService executor = Executors.newFixedThreadPool(threadCount)) {
+            for (int t = 0; t < threadCount; t++) {
+                int threadId = t;
+                executor.submit(() -> {
+                    try {
+                        latch.await();
+                        for (int i = 0; i < entriesPerThread; i++) {
+                            journal.append("Thread " + threadId + " entry " + i);
+                        }
+                    } catch (Exception e) {
+                        errors.incrementAndGet();
+                    }
+                });
+            }
+
+            latch.countDown();
+            executor.shutdown();
+            assertThat(executor.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
+        }
+
+        assertThat(errors.get()).isEqualTo(0);
+
+        var lines = journal.loadDay(LocalDate.now());
+        assertThat(lines).hasSize(threadCount * entriesPerThread);
+
+        // Every line must be a complete, well-formed entry (no interleaving)
+        for (var line : lines) {
+            assertThat(line).matches("- \\[\\d{4}-.*\\] Thread \\d+ entry \\d+");
+        }
+    }
+
+    @Test
+    void concurrentAppendsRespectMaxLinesCap() throws Exception {
+        // Pre-fill journal to near capacity
+        int preFilled = DailyJournal.MAX_LINES_PER_FILE - 5;
+        var todayFile = journal.fileForDate(LocalDate.now());
+        var sb = new StringBuilder();
+        for (int i = 0; i < preFilled; i++) {
+            sb.append("- [2025-01-01T00:00:00Z] Pre-filled line ").append(i).append("\n");
+        }
+        Files.writeString(todayFile, sb.toString());
+
+        // Launch 10 threads each trying to append 5 entries (50 attempts, only 5 should fit)
+        int threadCount = 10;
+        int entriesPerThread = 5;
+        var latch = new CountDownLatch(1);
+
+        try (ExecutorService executor = Executors.newFixedThreadPool(threadCount)) {
+            for (int t = 0; t < threadCount; t++) {
+                int threadId = t;
+                executor.submit(() -> {
+                    try {
+                        latch.await();
+                        for (int i = 0; i < entriesPerThread; i++) {
+                            journal.append("Overflow " + threadId + "-" + i);
+                        }
+                    } catch (Exception ignored) {}
+                });
+            }
+
+            latch.countDown();
+            executor.shutdown();
+            assertThat(executor.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
+        }
+
+        var lines = journal.loadDay(LocalDate.now());
+        // Must not exceed MAX_LINES_PER_FILE
+        assertThat(lines.size()).isLessThanOrEqualTo(DailyJournal.MAX_LINES_PER_FILE);
     }
 }

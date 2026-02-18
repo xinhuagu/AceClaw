@@ -8,7 +8,13 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -228,5 +234,132 @@ class AutoMemoryStoreTest {
         var javaResults = store.query(MemoryEntry.Category.PATTERN, List.of("java"), 10);
         assertThat(javaResults).hasSize(1);
         assertThat(javaResults.getFirst().content()).contains("sealed interfaces");
+    }
+
+    // =========================================================================
+    // File locking and concurrent write safety
+    // =========================================================================
+
+    @Test
+    void concurrentAddsProduceValidJsonl() throws Exception {
+        int threadCount = 10;
+        int entriesPerThread = 20;
+        var latch = new CountDownLatch(1);
+        var errors = new AtomicInteger(0);
+
+        try (ExecutorService executor = Executors.newFixedThreadPool(threadCount)) {
+            for (int t = 0; t < threadCount; t++) {
+                int threadId = t;
+                executor.submit(() -> {
+                    try {
+                        latch.await();
+                        for (int i = 0; i < entriesPerThread; i++) {
+                            store.add(MemoryEntry.Category.PATTERN,
+                                    "Thread " + threadId + " entry " + i,
+                                    List.of("concurrent"), "test-" + threadId,
+                                    false, projectPath);
+                        }
+                    } catch (Exception e) {
+                        errors.incrementAndGet();
+                    }
+                });
+            }
+
+            // Release all threads simultaneously
+            latch.countDown();
+            executor.shutdown();
+            assertThat(executor.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
+        }
+
+        assertThat(errors.get()).isEqualTo(0);
+        assertThat(store.size()).isEqualTo(threadCount * entriesPerThread);
+
+        // Verify the JSONL file is valid by reloading from disk
+        var freshStore = new AutoMemoryStore(tempDir);
+        freshStore.load(projectPath);
+        assertThat(freshStore.size()).isEqualTo(threadCount * entriesPerThread);
+    }
+
+    @Test
+    void concurrentAddAndRemoveDoNotCorruptFile() throws Exception {
+        // Pre-populate with entries to remove
+        var idsToRemove = new ArrayList<String>();
+        for (int i = 0; i < 10; i++) {
+            var entry = store.add(MemoryEntry.Category.MISTAKE, "Entry to remove " + i,
+                    List.of("remove"), "setup", false, projectPath);
+            idsToRemove.add(entry.id());
+        }
+
+        var latch = new CountDownLatch(1);
+        var errors = new AtomicInteger(0);
+
+        try (ExecutorService executor = Executors.newFixedThreadPool(4)) {
+            // Thread 1-2: add new entries
+            for (int t = 0; t < 2; t++) {
+                int threadId = t;
+                executor.submit(() -> {
+                    try {
+                        latch.await();
+                        for (int i = 0; i < 10; i++) {
+                            store.add(MemoryEntry.Category.PATTERN,
+                                    "New entry " + threadId + "-" + i,
+                                    List.of("new"), "adder-" + threadId,
+                                    false, projectPath);
+                        }
+                    } catch (Exception e) {
+                        errors.incrementAndGet();
+                    }
+                });
+            }
+
+            // Thread 3-4: remove pre-populated entries
+            for (int t = 0; t < 2; t++) {
+                int start = t * 5;
+                executor.submit(() -> {
+                    try {
+                        latch.await();
+                        for (int i = start; i < start + 5; i++) {
+                            store.remove(idsToRemove.get(i), projectPath);
+                        }
+                    } catch (Exception e) {
+                        errors.incrementAndGet();
+                    }
+                });
+            }
+
+            latch.countDown();
+            executor.shutdown();
+            assertThat(executor.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
+        }
+
+        assertThat(errors.get()).isEqualTo(0);
+
+        // Verify file integrity by reloading
+        var freshStore = new AutoMemoryStore(tempDir);
+        freshStore.load(projectPath);
+        assertThat(freshStore.size()).isEqualTo(store.size());
+    }
+
+    @Test
+    void atomicRewritePreservesDataOnReload() throws IOException {
+        // Add entries, consolidate (triggers rewrite), then verify reload
+        store.add(MemoryEntry.Category.PATTERN, "Keep this",
+                List.of("test"), "test", false, projectPath);
+        store.add(MemoryEntry.Category.MISTAKE, "Keep this too",
+                List.of("test"), "test", false, projectPath);
+
+        // Trigger rewrite via replaceEntries
+        store.replaceEntries(new ArrayList<>(store.entries()), projectPath);
+
+        // Verify no .tmp files left behind
+        var tmpFiles = Files.list(tempDir.resolve("memory"))
+                .filter(p -> p.toString().endsWith(".tmp"))
+                .toList();
+        assertThat(tmpFiles).isEmpty();
+
+        // Verify data survived
+        var freshStore = new AutoMemoryStore(tempDir);
+        freshStore.load(projectPath);
+        assertThat(freshStore.size()).isEqualTo(2);
     }
 }

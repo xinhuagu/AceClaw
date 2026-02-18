@@ -296,7 +296,7 @@ public final class TerminalMarkdownRenderer {
             int[] colWidths = new int[numCols];
             for (List<String> row : rows) {
                 for (int c = 0; c < numCols && c < row.size(); c++) {
-                    int len = stripAnsi(row.get(c)).length();
+                    int len = displayWidth(stripAnsi(row.get(c)));
                     if (len > colWidths[c]) colWidths[c] = len;
                 }
             }
@@ -348,7 +348,7 @@ public final class TerminalMarkdownRenderer {
             out.print(DIM + BOX_LIGHT_VERTICAL + RESET);
             for (int c = 0; c < numCols; c++) {
                 String content = c < cells.size() ? cells.get(c) : "";
-                int visibleLen = stripAnsi(content).length();
+                int visibleLen = displayWidth(stripAnsi(content));
                 int padding = colWidths[c] - visibleLen;
                 TableCell.Alignment align = c < alignments.size() ? alignments.get(c) : null;
 
@@ -406,6 +406,11 @@ public final class TerminalMarkdownRenderer {
          */
         private static String stripAnsi(String text) {
             return text.replaceAll("\u001B\\[[0-9;]*m", "");
+        }
+
+        /** Delegates to TerminalTheme.displayWidth for CJK-aware width calculation. */
+        private static int displayWidth(String text) {
+            return TerminalTheme.displayWidth(text);
         }
     }
 }

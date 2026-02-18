@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Stream;
 
 /**
@@ -35,6 +36,8 @@ public final class MarkdownMemoryStore {
     private static final long MAX_TOTAL_SIZE = 500 * 1024; // 500KB total per workspace
 
     private final Path memoryDir;
+    /** Serializes write operations to prevent TOCTOU on size checks. */
+    private final ReentrantLock writeLock = new ReentrantLock();
 
     /**
      * Creates a markdown memory store for the given workspace memory directory.
@@ -161,25 +164,30 @@ public final class MarkdownMemoryStore {
     private void writeFile(String name, String content) throws IOException {
         byte[] bytes = content.getBytes();
 
-        // Check per-file size limit
+        // Check per-file size limit (can be done outside lock — deterministic, no TOCTOU)
         if (bytes.length > MAX_FILE_SIZE) {
             throw new IOException("File " + name + " exceeds maximum size of " +
                     (MAX_FILE_SIZE / 1024) + "KB (actual: " + (bytes.length / 1024) + "KB)");
         }
 
-        // Check total workspace size limit
-        long currentTotal = calculateTotalSize();
-        Path target = memoryDir.resolve(name);
-        long existingSize = Files.exists(target) ? Files.size(target) : 0;
-        long newTotal = currentTotal - existingSize + bytes.length;
-        if (newTotal > MAX_TOTAL_SIZE) {
-            throw new IOException("Total memory size would exceed " +
-                    (MAX_TOTAL_SIZE / 1024) + "KB limit (current: " +
-                    (currentTotal / 1024) + "KB, new file: " + (bytes.length / 1024) + "KB)");
-        }
+        writeLock.lock();
+        try {
+            // Check total workspace size limit under lock to prevent TOCTOU
+            long currentTotal = calculateTotalSize();
+            Path target = memoryDir.resolve(name);
+            long existingSize = Files.exists(target) ? Files.size(target) : 0;
+            long newTotal = currentTotal - existingSize + bytes.length;
+            if (newTotal > MAX_TOTAL_SIZE) {
+                throw new IOException("Total memory size would exceed " +
+                        (MAX_TOTAL_SIZE / 1024) + "KB limit (current: " +
+                        (currentTotal / 1024) + "KB, new file: " + (bytes.length / 1024) + "KB)");
+            }
 
-        Files.writeString(target, content);
-        log.debug("Wrote memory file: {} ({} bytes)", name, bytes.length);
+            Files.writeString(target, content);
+            log.debug("Wrote memory file: {} ({} bytes)", name, bytes.length);
+        } finally {
+            writeLock.unlock();
+        }
     }
 
     private long calculateTotalSize() {

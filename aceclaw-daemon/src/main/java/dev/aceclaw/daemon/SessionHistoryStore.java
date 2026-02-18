@@ -13,6 +13,7 @@ import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Persists session conversation history to disk as JSONL (one JSON object per line).
@@ -32,6 +33,8 @@ public final class SessionHistoryStore {
 
     private final Path historyDir;
     private final ObjectMapper mapper;
+    /** Serializes file I/O to prevent JSONL corruption from concurrent writes. */
+    private final ReentrantLock writeLock = new ReentrantLock();
 
     /**
      * Creates a history store under the given base directory.
@@ -55,6 +58,7 @@ public final class SessionHistoryStore {
      * Appends a single message to the session's history file.
      */
     public void appendMessage(String sessionId, AgentSession.ConversationMessage message) {
+        writeLock.lock();
         try {
             var entry = toEntry(message);
             String json = mapper.writeValueAsString(entry);
@@ -63,6 +67,8 @@ public final class SessionHistoryStore {
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         } catch (IOException e) {
             log.warn("Failed to persist message for session {}: {}", sessionId, e.getMessage());
+        } finally {
+            writeLock.unlock();
         }
     }
 
@@ -70,6 +76,7 @@ public final class SessionHistoryStore {
      * Saves all messages from a session to disk (full flush).
      */
     public void saveSession(AgentSession session) {
+        writeLock.lock();
         try {
             Path file = historyDir.resolve(session.id() + ".jsonl");
             var lines = new StringBuilder();
@@ -81,6 +88,8 @@ public final class SessionHistoryStore {
             log.debug("Saved session history: id={}, messages={}", session.id(), session.messages().size());
         } catch (IOException e) {
             log.warn("Failed to save session {}: {}", session.id(), e.getMessage());
+        } finally {
+            writeLock.unlock();
         }
     }
 

@@ -122,29 +122,88 @@ public final class TerminalTheme {
     }
 
     /**
-     * Truncates a string to fit within the given width, appending ellipsis if needed.
+     * Truncates a string to fit within the given display width,
+     * appending ellipsis if needed. CJK characters count as 2 columns.
      *
      * @param text  the text to fit
-     * @param width maximum visible width
+     * @param width maximum visible width in terminal columns
      * @return the possibly truncated text
      */
     public static String fitWidth(String text, int width) {
         if (text == null) return "";
-        if (width <= 3) return text.length() <= width ? text : "...".substring(0, width);
-        if (text.length() <= width) return text;
-        return text.substring(0, width - 3) + "...";
+        int dw = displayWidth(text);
+        if (dw <= width) return text;
+        if (width <= 3) return "...".substring(0, width);
+        // Truncate by display width, reserving 3 columns for "..."
+        int target = width - 3;
+        StringBuilder sb = new StringBuilder();
+        int w = 0;
+        for (int i = 0; i < text.length(); ) {
+            int cp = text.codePointAt(i);
+            int cpw = isWideChar(cp) ? 2 : 1;
+            if (w + cpw > target) break;
+            sb.appendCodePoint(cp);
+            w += cpw;
+            i += Character.charCount(cp);
+        }
+        sb.append("...");
+        return sb.toString();
     }
 
     /**
-     * Pads a string to the right to the given width.
+     * Pads a string to the right to the given display width.
+     * CJK characters count as 2 columns.
      *
      * @param text  the text to pad
-     * @param width target width
+     * @param width target display width in terminal columns
      * @return right-padded text
      */
     public static String padRight(String text, int width) {
         if (text == null) text = "";
-        if (text.length() >= width) return text;
-        return text + " ".repeat(width - text.length());
+        int dw = displayWidth(text);
+        if (dw >= width) return text;
+        return text + " ".repeat(width - dw);
+    }
+
+    /**
+     * Computes the display width of a string in a terminal.
+     * CJK characters and fullwidth characters occupy 2 columns.
+     */
+    public static int displayWidth(String text) {
+        if (text == null) return 0;
+        int width = 0;
+        for (int i = 0; i < text.length(); ) {
+            int cp = text.codePointAt(i);
+            width += isWideChar(cp) ? 2 : 1;
+            i += Character.charCount(cp);
+        }
+        return width;
+    }
+
+    /**
+     * Returns true if the given Unicode code point is a wide (double-width)
+     * character in a terminal — CJK ideographs, fullwidth forms, etc.
+     */
+    public static boolean isWideChar(int cp) {
+        if (cp >= 0x2E80 && cp <= 0x2FFF) return true;
+        if (cp >= 0x3000 && cp <= 0x303F) return true;
+        if (cp >= 0x3040 && cp <= 0x309F) return true;
+        if (cp >= 0x30A0 && cp <= 0x30FF) return true;
+        if (cp >= 0x3100 && cp <= 0x312F) return true;
+        if (cp >= 0x3130 && cp <= 0x318F) return true;
+        if (cp >= 0x3190 && cp <= 0x31FF) return true;
+        if (cp >= 0x3200 && cp <= 0x32FF) return true;
+        if (cp >= 0x3300 && cp <= 0x33FF) return true;
+        if (cp >= 0x3400 && cp <= 0x4DBF) return true;
+        if (cp >= 0x4E00 && cp <= 0x9FFF) return true;
+        if (cp >= 0xA000 && cp <= 0xA4CF) return true;
+        if (cp >= 0xAC00 && cp <= 0xD7AF) return true;
+        if (cp >= 0xF900 && cp <= 0xFAFF) return true;
+        if (cp >= 0xFE30 && cp <= 0xFE4F) return true;
+        if (cp >= 0xFF00 && cp <= 0xFF60) return true;
+        if (cp >= 0xFFE0 && cp <= 0xFFE6) return true;
+        if (cp >= 0x20000 && cp <= 0x2FA1F) return true;
+        if (cp >= 0x1F300 && cp <= 0x1F9FF) return true;
+        return false;
     }
 }

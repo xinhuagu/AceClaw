@@ -112,6 +112,32 @@ class MemoryConsolidatorTest {
     }
 
     @Test
+    void agePruneSkipsWhenArchiveDirNull() throws IOException {
+        // Add an old entry with 0 access count
+        var entries = new ArrayList<>(store.entries());
+        var oldEntry = new MemoryEntry(
+                java.util.UUID.randomUUID().toString(),
+                MemoryEntry.Category.PATTERN,
+                "Old pattern that should NOT be deleted",
+                List.of("old"),
+                Instant.now().minus(100, ChronoUnit.DAYS),
+                "test",
+                "skip-hmac",
+                0,
+                null);
+        entries.add(oldEntry);
+        store.replaceEntries(entries, projectPath);
+
+        assertThat(store.size()).isEqualTo(1);
+
+        // Consolidate with null archiveDir — should NOT prune (prevents data loss)
+        var result = MemoryConsolidator.consolidate(store, projectPath, null);
+
+        assertThat(result.pruned()).isEqualTo(0);
+        assertThat(store.size()).isEqualTo(1); // entry preserved
+    }
+
+    @Test
     void emptyStoreNoOp() {
         var result = MemoryConsolidator.consolidate(store, projectPath, tempDir.resolve("archive"));
 
