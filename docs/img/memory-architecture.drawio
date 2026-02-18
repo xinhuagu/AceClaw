@@ -1,0 +1,212 @@
+<mxGraphModel>
+  <root>
+    <mxCell id="0" />
+    <mxCell id="1" parent="0" />
+    
+    <!-- Title -->
+    <mxCell id="title" value="AceClaw Memory System Architecture" style="text;fontSize=18;fontStyle=1;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;fontColor=#1a1a2e;" vertex="1" parent="1">
+      <mxGeometry x="100" y="5" width="600" height="35" as="geometry" />
+    </mxCell>
+
+    <!-- 6-Tier Memory Hierarchy (Left Column) -->
+    <mxCell id="tier-header" value="6-Tier Memory Hierarchy" style="text;fontSize=13;fontStyle=1;align=center;fillColor=none;strokeColor=none;fontColor=#16213e;" vertex="1" parent="1">
+      <mxGeometry x="20" y="45" width="210" height="22" as="geometry" />
+    </mxCell>
+
+    <mxCell id="tier1" value="T1: Soul 
+SOUL.md (priority 100)" style="rounded=1;fillColor=#e8daef;strokeColor=#8e44ad;fontSize=11;align=center;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="20" y="72" width="210" height="32" as="geometry" />
+    </mxCell>
+    <mxCell id="tier2" value="T2: Managed Policy 
+managed-policy.md (priority 90)" style="rounded=1;fillColor=#fadbd8;strokeColor=#e74c3c;fontSize=11;align=center;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="20" y="109" width="210" height="32" as="geometry" />
+    </mxCell>
+    <mxCell id="tier3" value="T3: Workspace Memory 
+{project}/ACECLAW.md (priority 80)" style="rounded=1;fillColor=#d5f5e3;strokeColor=#27ae60;fontSize=11;align=center;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="20" y="146" width="210" height="32" as="geometry" />
+    </mxCell>
+    <mxCell id="tier4" value="T4: User Memory 
+~/.aceclaw/ACECLAW.md (priority 70)" style="rounded=1;fillColor=#d6eaf8;strokeColor=#2980b9;fontSize=11;align=center;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="20" y="183" width="210" height="32" as="geometry" />
+    </mxCell>
+    <mxCell id="tier5" value="T5: Auto-Memory 
+JSONL + HMAC-SHA256 (priority 60)" style="rounded=1;fillColor=#fdebd0;strokeColor=#e67e22;fontSize=11;align=center;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="20" y="220" width="210" height="32" as="geometry" />
+    </mxCell>
+    <mxCell id="tier6" value="T6: Daily Journal 
+journal/YYYY-MM-DD.md (priority 50)" style="rounded=1;fillColor=#f9e79f;strokeColor=#d4ac0d;fontSize=11;align=center;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="20" y="257" width="210" height="32" as="geometry" />
+    </mxCell>
+
+    <!-- Arrow from tiers to MemoryTierLoader -->
+    <mxCell id="e-tiers-loader" style="endArrow=classic;strokeColor=#6c3483;strokeWidth=2;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="tier3" target="loader">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <mxCell id="e-tiers-loader2" style="endArrow=classic;strokeColor=#6c3483;strokeWidth=1;exitX=1;exitY=0.5;entryX=0;entryY=0.25;dashed=1;" edge="1" parent="1" source="tier1" target="loader">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <mxCell id="e-tiers-loader3" style="endArrow=classic;strokeColor=#6c3483;strokeWidth=1;exitX=1;exitY=0.5;entryX=0;entryY=0.75;dashed=1;" edge="1" parent="1" source="tier5" target="loader">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- MemoryTierLoader (Center) -->
+    <mxCell id="loader" value="MemoryTierLoader
+
+loadAll()
+assembleForSystemPrompt()" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c3483;fontSize=11;align=center;whiteSpace=wrap;strokeWidth=2;fontStyle=0;" vertex="1" parent="1">
+      <mxGeometry x="270" y="72" width="220" height="65" as="geometry" />
+    </mxCell>
+
+    <!-- SystemPromptLoader -->
+    <mxCell id="sysloader" value="SystemPromptLoader
+
+base prompt + env + git
++ 6 memory tiers + model" style="rounded=1;fillColor=#e8f8f5;strokeColor=#1abc9c;fontSize=11;align=center;whiteSpace=wrap;strokeWidth=2;" vertex="1" parent="1">
+      <mxGeometry x="540" y="72" width="220" height="65" as="geometry" />
+    </mxCell>
+    <mxCell id="e-loader-sys" style="endArrow=classic;strokeColor=#1abc9c;strokeWidth=2;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="loader" target="sysloader">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- AutoMemoryStore (Center Box) -->
+    <mxCell id="store" value="AutoMemoryStore
+
+CopyOnWriteArrayList + JSONL
+add() | query() | search() | remove()
+formatForPrompt() | forWorkspace()" style="rounded=1;fillColor=#fdebd0;strokeColor=#e67e22;fontSize=11;align=center;whiteSpace=wrap;strokeWidth=2;" vertex="1" parent="1">
+      <mxGeometry x="270" y="160" width="220" height="75" as="geometry" />
+    </mxCell>
+
+    <!-- MemorySearchEngine -->
+    <mxCell id="search" value="MemorySearchEngine
+
+Score = 0.50*TF-IDF
++ 0.35*Recency (7-day half-life)
++ 0.15*Frequency (tag boost)" style="rounded=1;fillColor=#fcf3cf;strokeColor=#f39c12;fontSize=10;align=center;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="270" y="260" width="220" height="70" as="geometry" />
+    </mxCell>
+    <mxCell id="e-store-search" style="endArrow=classic;strokeColor=#e67e22;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="store" target="search">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <mxCell id="e-store-search-label" value="delegates" style="text;fontSize=9;fillColor=none;strokeColor=none;fontColor=#e67e22;align=center;" vertex="1" parent="1">
+      <mxGeometry x="390" y="240" width="50" height="16" as="geometry" />
+    </mxCell>
+
+    <!-- MemorySigner -->
+    <mxCell id="signer" value="MemorySigner
+HMAC-SHA256
+constant-time verify" style="rounded=1;fillColor=#f5b7b1;strokeColor=#c0392b;fontSize=10;align=center;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="270" y="350" width="105" height="50" as="geometry" />
+    </mxCell>
+    <mxCell id="e-search-signer" style="endArrow=classic;strokeColor=#c0392b;exitX=0.25;exitY=1;entryX=0.5;entryY=0;dashed=1;" edge="1" parent="1" source="search" target="signer">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- WorkspacePaths -->
+    <mxCell id="wspaths" value="WorkspacePaths
+SHA-256 hash isolation
+auto-migration" style="rounded=1;fillColor=#d5f5e3;strokeColor=#27ae60;fontSize=10;align=center;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="385" y="350" width="105" height="50" as="geometry" />
+    </mxCell>
+    <mxCell id="e-search-wspath" style="endArrow=classic;strokeColor=#27ae60;exitX=0.75;exitY=1;entryX=0.5;entryY=0;dashed=1;" edge="1" parent="1" source="search" target="wspaths">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- Memory Write Sources Header -->
+    <mxCell id="write-header" value="Memory Write Sources" style="text;fontSize=13;fontStyle=1;align=center;fillColor=none;strokeColor=none;fontColor=#16213e;" vertex="1" parent="1">
+      <mxGeometry x="555" y="148" width="200" height="22" as="geometry" />
+    </mxCell>
+
+    <!-- MemoryTool (Agent Active) -->
+    <mxCell id="memtool" value="MemoryTool
+Agent-callable: save / search / list
+16 categories, tags, global scope" style="rounded=1;fillColor=#aed6f1;strokeColor=#2471a3;fontSize=10;align=center;whiteSpace=wrap;strokeWidth=2;" vertex="1" parent="1">
+      <mxGeometry x="540" y="175" width="220" height="50" as="geometry" />
+    </mxCell>
+    <mxCell id="e-memtool-store" style="endArrow=classic;strokeColor=#2471a3;strokeWidth=2;exitX=0;exitY=0.5;entryX=1;entryY=0.35;" edge="1" parent="1" source="memtool" target="store">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <mxCell id="e-memtool-label" value="agent saves" style="text;fontSize=9;fillColor=none;strokeColor=none;fontColor=#2471a3;align=center;" vertex="1" parent="1">
+      <mxGeometry x="495" y="178" width="55" height="16" as="geometry" />
+    </mxCell>
+
+    <!-- SessionEndExtractor -->
+    <mxCell id="extractor" value="SessionEndExtractor
+Heuristic: corrections + preferences
+8 correction + 7 preference patterns" style="rounded=1;fillColor=#a9dfbf;strokeColor=#1e8449;fontSize=10;align=center;whiteSpace=wrap;strokeWidth=2;" vertex="1" parent="1">
+      <mxGeometry x="540" y="235" width="220" height="50" as="geometry" />
+    </mxCell>
+    <mxCell id="e-extractor-store" style="endArrow=classic;strokeColor=#1e8449;strokeWidth=2;exitX=0;exitY=0.5;entryX=1;entryY=0.65;" edge="1" parent="1" source="extractor" target="store">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <mxCell id="e-extractor-label" value="session end" style="text;fontSize=9;fillColor=none;strokeColor=none;fontColor=#1e8449;align=center;" vertex="1" parent="1">
+      <mxGeometry x="495" y="243" width="55" height="16" as="geometry" />
+    </mxCell>
+
+    <!-- MessageCompactor Phase 0 -->
+    <mxCell id="compactor" value="MessageCompactor (Phase 0)
+Context compaction memory flush
+file paths, commands, errors" style="rounded=1;fillColor=#d7bde2;strokeColor=#7d3c98;fontSize=10;align=center;whiteSpace=wrap;strokeWidth=2;" vertex="1" parent="1">
+      <mxGeometry x="540" y="295" width="220" height="50" as="geometry" />
+    </mxCell>
+    <mxCell id="e-compactor-store" style="endArrow=classic;strokeColor=#7d3c98;strokeWidth=1;exitX=0;exitY=0.5;entryX=1;entryY=0.5;dashed=1;" edge="1" parent="1" source="compactor" target="search">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <mxCell id="e-compactor-label" value="flush" style="text;fontSize=9;fillColor=none;strokeColor=none;fontColor=#7d3c98;align=center;" vertex="1" parent="1">
+      <mxGeometry x="497" y="305" width="40" height="16" as="geometry" />
+    </mxCell>
+
+    <!-- DailyJournal detail -->
+    <mxCell id="journal" value="DailyJournal
+Append-only markdown
+500-line cap per day
+today + yesterday window" style="rounded=1;fillColor=#f9e79f;strokeColor=#d4ac0d;fontSize=10;align=center;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="20" y="310" width="210" height="55" as="geometry" />
+    </mxCell>
+    <mxCell id="e-journal-store" style="endArrow=classic;strokeColor=#d4ac0d;exitX=1;exitY=0.3;entryX=0;entryY=0.85;dashed=1;" edge="1" parent="1" source="journal" target="store">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- Storage Layout -->
+    <mxCell id="storage-header" value="Storage Layout" style="text;fontSize=13;fontStyle=1;align=left;fillColor=none;strokeColor=none;fontColor=#16213e;" vertex="1" parent="1"><mxGeometry x="20" y="415" width="200" height="22" as="geometry" /></mxCell>
+    <mxCell id="storage" value="~/.aceclaw/
+  memory/
+    memory.key        (32B secret, POSIX 600)
+    global.jsonl      (cross-project)
+    project-{hash}.jsonl
+  workspaces/{sha256}/
+    memory/           (workspace store)
+    journal/          (daily YYYY-MM-DD.md)
+    workspace-path.txt
+  SOUL.md              (global identity)
+  ACECLAW.md           (user preferences)" style="rounded=1;fillColor=#f2f3f4;strokeColor=#7f8c8d;fontSize=9;fontFamily=Courier New;align=left;whiteSpace=wrap;spacingLeft=8;spacingTop=4;" vertex="1" parent="1"><mxGeometry x="20" y="440" width="290" height="165" as="geometry" /></mxCell>
+
+    <!-- MemoryEntry Record -->
+    <mxCell id="entry-header" value="MemoryEntry Record" style="text;fontSize=13;fontStyle=1;align=left;fillColor=none;strokeColor=none;fontColor=#16213e;" vertex="1" parent="1"><mxGeometry x="330" y="415" width="200" height="22" as="geometry" /></mxCell>
+    <mxCell id="entry" value="record MemoryEntry(
+  String id,         // UUID
+  Category category, // 16 types
+  String content,    // insight
+  List&lt;String&gt; tags, // searchable
+  Instant createdAt,
+  String source,     // origin
+  String hmac        // SHA256
+)" style="rounded=1;fillColor=#fdebd0;strokeColor=#e67e22;fontSize=9;fontFamily=Courier New;align=left;whiteSpace=wrap;spacingLeft=8;spacingTop=4;" vertex="1" parent="1"><mxGeometry x="330" y="440" width="200" height="130" as="geometry" /></mxCell>
+
+    <!-- Legend -->
+    <mxCell id="legend-box" value="" style="rounded=1;fillColor=#fafafa;strokeColor=#bdc3c7;strokeWidth=1;" vertex="1" parent="1"><mxGeometry x="555" y="405" width="210" height="115" as="geometry" /></mxCell>
+    <mxCell id="legend-header" value="Data Flow Legend" style="text;fontSize=11;fontStyle=1;align=center;fillColor=none;strokeColor=none;fontColor=#16213e;" vertex="1" parent="1"><mxGeometry x="555" y="409" width="210" height="18" as="geometry" /></mxCell>
+    <mxCell id="leg-line1" value="" style="endArrow=classic;strokeColor=#2471a3;strokeWidth=2;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="570" y="439" as="sourcePoint" /><mxPoint x="610" y="439" as="targetPoint" /></mxGeometry></mxCell>
+    <mxCell id="leg1" value="Agent active save (MemoryTool)" style="text;fontSize=9;fillColor=none;strokeColor=none;align=left;fontColor=#333;" vertex="1" parent="1"><mxGeometry x="615" y="431" width="150" height="16" as="geometry" /></mxCell>
+    <mxCell id="leg-line2" value="" style="endArrow=classic;strokeColor=#1e8449;strokeWidth=2;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="570" y="459" as="sourcePoint" /><mxPoint x="610" y="459" as="targetPoint" /></mxGeometry></mxCell>
+    <mxCell id="leg2" value="Session-end extraction" style="text;fontSize=9;fillColor=none;strokeColor=none;align=left;fontColor=#333;" vertex="1" parent="1"><mxGeometry x="615" y="451" width="150" height="16" as="geometry" /></mxCell>
+    <mxCell id="leg-line3" value="" style="endArrow=classic;strokeColor=#7d3c98;strokeWidth=1;dashed=1;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="570" y="479" as="sourcePoint" /><mxPoint x="610" y="479" as="targetPoint" /></mxGeometry></mxCell>
+    <mxCell id="leg3" value="Compaction memory flush" style="text;fontSize=9;fillColor=none;strokeColor=none;align=left;fontColor=#333;" vertex="1" parent="1"><mxGeometry x="615" y="471" width="150" height="16" as="geometry" /></mxCell>
+    <mxCell id="leg-line4" value="" style="endArrow=classic;strokeColor=#6c3483;strokeWidth=2;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="570" y="499" as="sourcePoint" /><mxPoint x="610" y="499" as="targetPoint" /></mxGeometry></mxCell>
+    <mxCell id="leg4" value="Tier loading to system prompt" style="text;fontSize=9;fillColor=none;strokeColor=none;align=left;fontColor=#333;" vertex="1" parent="1"><mxGeometry x="615" y="491" width="150" height="16" as="geometry" /></mxCell>
+
+    <!-- Categories bar -->
+    <mxCell id="cats" value="16 Categories: MISTAKE | PATTERN | PREFERENCE | CODEBASE_INSIGHT | STRATEGY | WORKFLOW | ENVIRONMENT | RELATIONSHIP | TERMINOLOGY | CONSTRAINT | DECISION | TOOL_USAGE | COMMUNICATION | CONTEXT | CORRECTION | BOOKMARK" style="rounded=1;fillColor=#fef9e7;strokeColor=#d4ac0d;fontSize=8;align=center;whiteSpace=wrap;" vertex="1" parent="1"><mxGeometry x="20" y="615" width="750" height="22" as="geometry" /></mxCell>
+
+  </root>
+</mxGraphModel>
