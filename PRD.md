@@ -760,7 +760,45 @@ Three-phase compaction strategy:
 
 Anchor preservation: key architectural decisions, user preferences, and error contexts are never compressed.
 
-### 10.6 Memory Security
+### 10.6 Agent Active Memory (P1)
+
+The agent must be able to **actively decide** what to remember during a conversation, not just passively rely on compaction extraction. Three capabilities:
+
+#### 10.6.1 Memory Management Tool
+
+A built-in `memory` tool with three actions that the agent can call during any turn:
+
+| Action | Parameters | Description |
+|--------|-----------|-------------|
+| `save` | content, category, tags[], global | Persist a new insight to auto-memory |
+| `search` | query, category?, limit? | Search memories using hybrid ranking (TF-IDF + recency) |
+| `list` | category?, limit? | List recent memories, optionally filtered by category |
+
+The tool is auto-approved (PermissionLevel.READ for search/list, PermissionLevel.WRITE for save). The agent decides autonomously when to call it — e.g., after discovering a codebase pattern, receiving a user correction, or completing a complex debugging session.
+
+#### 10.6.2 System Prompt Memory Guidance
+
+The system prompt must teach the agent **when** and **how** to use the memory tool:
+
+- After receiving a user correction → save as CORRECTION
+- After discovering a codebase convention → save as PATTERN
+- After a mistake + fix → save as MISTAKE
+- When the user states a preference → save as PREFERENCE
+- Before starting a complex task → search for relevant memories
+- At the start of a session → memories are already injected via the 6-tier hierarchy
+
+#### 10.6.3 Session-End Memory Extraction
+
+When a session is destroyed (explicitly or via daemon shutdown), the system automatically extracts key learnings from the conversation:
+
+1. Scan conversation history for: tool errors followed by corrections, user corrections of agent output, explicit preferences stated
+2. Use heuristic extraction (no LLM call) to identify: files modified, commands that failed/succeeded, patterns observed
+3. Store extracted insights to AutoMemoryStore with source `session-end:{sessionId}`
+4. Append session summary to DailyJournal
+
+This ensures no insight is lost even if the agent did not actively call `memory save` during the session.
+
+### 10.7 Memory Security
 
 - HMAC-SHA256 signed memory files for tamper detection
 - Content sanitization for injection patterns

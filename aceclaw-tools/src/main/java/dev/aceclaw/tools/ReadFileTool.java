@@ -43,13 +43,19 @@ public final class ReadFileTool implements Tool {
 
     @Override
     public String description() {
-        return "Reads a file from the filesystem. You can access any file directly by using this tool.\n" +
+        return "Reads a file from the filesystem. You can access any file directly by using this tool.\n\n" +
                "- The file_path can be absolute or relative to the working directory.\n" +
-               "- Returns file contents prefixed with line numbers.\n" +
+               "- Returns file contents prefixed with line numbers (like cat -n).\n" +
                "- By default reads up to 2000 lines from the beginning. Use offset and limit for large files.\n" +
                "- Lines longer than 2000 characters are truncated.\n" +
-               "- It is always better to speculatively read multiple potentially useful files in parallel.\n" +
-               "- Use this tool INSTEAD of bash with cat, head, or tail.";
+               "- You can read multiple files in parallel — always do this when you need to understand " +
+               "related files (e.g., a class and its test, a config and its consumer).\n\n" +
+               "IMPORTANT:\n" +
+               "- Use this tool INSTEAD of bash with cat, head, tail, or less.\n" +
+               "- If the file does not exist, you will get an error. Correct potential typos " +
+               "(readme.md → README.md) or use glob to find the right path.\n" +
+               "- Always read a file before editing it with edit_file.\n" +
+               "- For binary files, images, or very large files, consider whether you actually need the content.";
     }
 
     @Override

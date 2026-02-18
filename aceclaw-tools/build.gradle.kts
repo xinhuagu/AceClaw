@@ -2,6 +2,7 @@
 
 dependencies {
     implementation(project(":aceclaw-core"))
+    implementation(project(":aceclaw-memory"))
     implementation(project(":aceclaw-security"))
 
     implementation("com.fasterxml.jackson.core:jackson-databind")
@@ -12,4 +13,6 @@ dependencies {
 
     // Browser automation for BrowserTool
     implementation("com.microsoft.playwright:playwright")
+
+    testRuntimeOnly("ch.qos.logback:logback-classic")
 }

@@ -51,12 +51,21 @@ public final class GrepSearchTool implements Tool {
 
     @Override
     public String description() {
-        return "Searches file contents for lines matching a regex pattern.\n" +
-               "- Supports full regex syntax (e.g. \"log.*Error\", \"function\\\\s+\\\\w+\")\n" +
+        return "Searches file contents for lines matching a regex pattern. " +
+               "Use this to find code, definitions, usages, errors, or any text pattern.\n\n" +
+               "- Supports full regex syntax: \"log.*Error\", \"function\\\\s+\\\\w+\", \"TODO|FIXME|HACK\"\n" +
                "- Returns matching lines with file paths and line numbers\n" +
-               "- Filter files with include parameter (e.g. \"*.java\", \"*.ts\")\n" +
-               "- Skips hidden directories, build outputs, and binary files (>1MB)\n" +
-               "- Use this INSTEAD of bash with grep or rg";
+               "- Filter files with include parameter: \"*.java\", \"*.ts\", \"*.{py,rb}\"\n" +
+               "- Skips: hidden directories (.), node_modules, build, target, __pycache__, binary files (>1MB)\n" +
+               "- Default context: 0 lines before/after. Set context_lines for surrounding code.\n" +
+               "- Default max results: 50. Increase limit for broader searches.\n\n" +
+               "When to use:\n" +
+               "- Finding where a function/class/variable is defined or used\n" +
+               "- Searching for error messages, config keys, or string literals\n" +
+               "- Finding all files that import a specific module\n\n" +
+               "IMPORTANT: Use this tool INSTEAD of bash with grep, rg, ag, or ack.\n" +
+               "Tip: If searching for a specific class or function name, also try glob with a pattern " +
+               "like \"**/*ClassName*\" which may be faster for file-name-based searches.";
     }
 
     @Override

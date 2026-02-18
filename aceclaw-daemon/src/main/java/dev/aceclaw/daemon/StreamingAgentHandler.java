@@ -51,6 +51,7 @@ public final class StreamingAgentHandler {
             Map.entry("web_fetch", PermissionLevel.READ),
             Map.entry("web_search", PermissionLevel.READ),
             Map.entry("screen_capture", PermissionLevel.READ),
+            Map.entry("memory", PermissionLevel.READ),
             Map.entry("write_file", PermissionLevel.WRITE),
             Map.entry("edit_file", PermissionLevel.WRITE),
             Map.entry("bash", PermissionLevel.EXECUTE),

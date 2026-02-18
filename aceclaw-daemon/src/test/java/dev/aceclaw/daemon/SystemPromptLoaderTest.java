@@ -121,6 +121,64 @@ class SystemPromptLoaderTest {
     }
 
     @Test
+    void systemPromptContainsEnhancedSections() {
+        String prompt = SystemPromptLoader.load(workDir);
+
+        // Multi-step problem solving section
+        assertThat(prompt).contains("Multi-Step Problem Solving");
+        assertThat(prompt).contains("Understand");
+        assertThat(prompt).contains("Verify");
+
+        // Codebase understanding section
+        assertThat(prompt).contains("Understanding the Codebase");
+        assertThat(prompt).contains("existing patterns");
+
+        // Autonomous behavior
+        assertThat(prompt).contains("Be Autonomous");
+        assertThat(prompt).contains("NEVER Give Up");
+    }
+
+    @Test
+    void crossSessionMemoryViaJournal() throws IOException {
+        // Simulate Session A: journal entries are written during a turn
+        Path aceclawHome = tempDir.resolve(".aceclaw-home");
+        Path memDir = aceclawHome.resolve("memory");
+        Files.createDirectories(memDir);
+
+        var journal = new DailyJournal(memDir);
+        journal.append("User: Check the weather in Berlin -> Agent: Berlin is 5C and cloudy | Tools: web_search | Tokens: 1234");
+        journal.append("User: Fix the login bug -> Agent: Fixed null check in AuthService.java | Tools: read_file, edit_file | Tokens: 5678");
+
+        // Simulate Session B: new session loads journal into system prompt
+        String prompt = SystemPromptLoader.load(workDir, null, journal, "gpt-4o", "openai");
+
+        assertThat(prompt).contains("Daily Journal");
+        assertThat(prompt).contains("weather in Berlin");
+        assertThat(prompt).contains("Fix the login bug");
+        assertThat(prompt).contains("AuthService.java");
+    }
+
+    @Test
+    void crossProviderMemoryPersistence() throws IOException {
+        // Journal is workspace-scoped, not provider-scoped
+        // Session with anthropic writes to journal
+        Path aceclawHome = tempDir.resolve(".aceclaw-home");
+        Path memDir = aceclawHome.resolve("memory");
+        Files.createDirectories(memDir);
+
+        var journal = new DailyJournal(memDir);
+        journal.append("User: Refactored auth module -> Agent: Split into 3 files | Tools: edit_file | Tokens: 3000");
+
+        // Session with openai should see the same journal
+        String promptAnthropic = SystemPromptLoader.load(workDir, null, journal, "claude-3-opus", "anthropic");
+        String promptOpenai = SystemPromptLoader.load(workDir, null, journal, "gpt-4o", "openai");
+
+        // Both providers see the same journal content
+        assertThat(promptAnthropic).contains("Refactored auth module");
+        assertThat(promptOpenai).contains("Refactored auth module");
+    }
+
+    @Test
     void modelAndProviderAppearInPrompt() {
         String prompt = SystemPromptLoader.load(workDir, null, "claude-3-opus", "anthropic");
 

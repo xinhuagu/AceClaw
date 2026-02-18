@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 
 /**
  * Manages active agent sessions within the daemon.
@@ -18,6 +19,7 @@ public final class SessionManager {
     private static final Logger log = LoggerFactory.getLogger(SessionManager.class);
 
     private final ConcurrentHashMap<String, AgentSession> sessions = new ConcurrentHashMap<>();
+    private volatile Consumer<AgentSession> sessionEndCallback;
 
     /**
      * Creates a new session for the given project directory.
@@ -42,13 +44,31 @@ public final class SessionManager {
     }
 
     /**
+     * Sets a callback invoked before a session is deactivated.
+     * Used for session-end memory extraction.
+     *
+     * @param callback receives the session before deactivation
+     */
+    public void setSessionEndCallback(Consumer<AgentSession> callback) {
+        this.sessionEndCallback = callback;
+    }
+
+    /**
      * Destroys a session, deactivating it and removing from the active map.
+     * If a session-end callback is set, it is invoked before deactivation.
      *
      * @return true if the session existed and was destroyed
      */
     public boolean destroySession(String sessionId) {
         var session = sessions.remove(sessionId);
         if (session != null) {
+            if (sessionEndCallback != null) {
+                try {
+                    sessionEndCallback.accept(session);
+                } catch (Exception e) {
+                    log.warn("Session-end callback failed for {}: {}", sessionId, e.getMessage());
+                }
+            }
             session.deactivate();
             log.info("Session destroyed: id={}", sessionId);
             return true;

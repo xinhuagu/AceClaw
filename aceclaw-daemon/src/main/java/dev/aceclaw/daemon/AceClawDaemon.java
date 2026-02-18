@@ -126,6 +126,11 @@ public final class AceClawDaemon {
         toolRegistry.register(new ListDirTool(workingDir));
         toolRegistry.register(new WebFetchTool(workingDir));
 
+        // Memory management tool (agent can actively save/search/list memories)
+        if (memoryStore != null) {
+            toolRegistry.register(new dev.aceclaw.tools.MemoryTool(memoryStore, workingDir));
+        }
+
         // Browser tool (lazy Chromium instance, registered as shutdown participant)
         var browserTool = new BrowserTool(workingDir);
         toolRegistry.register(browserTool);
@@ -203,6 +208,33 @@ public final class AceClawDaemon {
             agentHandler.setDailyJournal(journal);
         }
         agentHandler.register(router);
+
+        // Session-end memory extraction
+        if (memoryStore != null) {
+            final var extractionJournal = journal;
+            sessionManager.setSessionEndCallback(session -> {
+                Thread.ofVirtual().name("session-end-extract").start(() -> {
+                    var extracted = SessionEndExtractor.extract(session.messages());
+                    for (var mem : extracted) {
+                        try {
+                            memoryStore.add(mem.category(), mem.content(), mem.tags(),
+                                    "session-end:" + session.id(), false, workingDir);
+                        } catch (Exception e) {
+                            log.warn("Failed to save session-end memory: {}", e.getMessage());
+                        }
+                    }
+                    if (!extracted.isEmpty()) {
+                        log.info("Extracted {} memories from session {} on destroy",
+                                extracted.size(), session.id());
+                    }
+                    if (extractionJournal != null) {
+                        extractionJournal.append("Session " + session.id().substring(0, 8) +
+                                " ended: " + session.messages().size() + " messages, " +
+                                extracted.size() + " memories extracted");
+                    }
+                });
+            });
+        }
 
         // Expose model name and provider info to health status endpoint
         router.setModelName(model);

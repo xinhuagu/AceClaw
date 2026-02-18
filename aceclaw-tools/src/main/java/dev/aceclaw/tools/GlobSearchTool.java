@@ -44,12 +44,21 @@ public final class GlobSearchTool implements Tool {
 
     @Override
     public String description() {
-        return "Fast file pattern matching tool that works with any codebase size.\n" +
-               "- Supports glob patterns like \"**/*.java\", \"src/**/*.ts\", \"*.md\"\n" +
+        return "Fast file pattern matching tool that works with any codebase size. " +
+               "Use this when you need to find files by name or path pattern.\n\n" +
+               "Pattern syntax:\n" +
+               "- **/*.java — all Java files recursively\n" +
+               "- src/**/*.ts — TypeScript files under src/\n" +
+               "- *.md — markdown files in current directory only\n" +
+               "- **/test*/**/*.java — test files in any test directory\n" +
+               "- **/*Config*.{java,yaml,yml} — config files with multiple extensions\n\n" +
+               "Behavior:\n" +
                "- Returns matching file paths sorted by modification time (most recent first)\n" +
-               "- Skips hidden directories (.), node_modules, build, target, __pycache__\n" +
-               "- Use this INSTEAD of bash with find or ls for file searching\n" +
-               "- Maximum 200 results returned";
+               "- Skips: hidden directories (.), node_modules, build, target, __pycache__, .git\n" +
+               "- Maximum 200 results returned\n\n" +
+               "IMPORTANT: Use this tool INSTEAD of bash with find, ls -R, or locate.\n" +
+               "Tip: If you know the exact file path, use read_file directly — glob is for discovery.\n" +
+               "Tip: If you need to search inside files (not just names), use grep instead.";
     }
 
     @Override

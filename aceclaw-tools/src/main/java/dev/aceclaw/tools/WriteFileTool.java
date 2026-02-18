@@ -33,12 +33,20 @@ public final class WriteFileTool implements Tool {
 
     @Override
     public String description() {
-        return "Writes content to a file. WARNING: This tool completely overwrites the file.\n" +
-               "- If the file exists, you MUST read it first with read_file to understand the current content.\n" +
+        return "Writes content to a file. WARNING: This tool completely OVERWRITES the existing file.\n\n" +
+               "CRITICAL RULES:\n" +
+               "- If the file already exists, you MUST read it first with read_file.\n" +
                "- ALWAYS prefer edit_file over write_file for modifying existing files.\n" +
-               "- Only use write_file when creating new files or when you need to replace the entire content.\n" +
-               "- Creates parent directories automatically if needed.\n" +
-               "- Use this INSTEAD of bash with echo, cat heredoc, or redirection.";
+               "- Only use write_file when:\n" +
+               "  1. Creating a brand new file that does not exist yet\n" +
+               "  2. Replacing the entire content of a file (rare — prefer edit_file)\n" +
+               "- Creates parent directories automatically if needed.\n\n" +
+               "Anti-patterns:\n" +
+               "- Do NOT use this to make small changes to existing files → use edit_file\n" +
+               "- Do NOT create files that are not absolutely necessary (avoid file bloat)\n" +
+               "- Do NOT create documentation files (README, docs) unless explicitly asked\n" +
+               "- Do NOT write files with content you haven't verified\n\n" +
+               "Use this tool INSTEAD of bash with echo >, cat <<EOF, tee, or redirection.";
     }
 
     @Override
