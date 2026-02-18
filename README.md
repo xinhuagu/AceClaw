@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/Gradle-8.14-02303A?logo=gradle&logoColor=white" alt="Gradle 8.14">
 </p>
 
-AceClaw is the Java implementation of [OpenClaw](https://github.com/openclaw) — built from the ground up with security as a foundational principle, not an afterthought. Every layer enforces isolation: the daemon exposes zero network surface, every tool invocation passes through a sealed permission gate, and every memory entry is cryptographically signed. OpenClaw was [breached within 48 hours of launch](https://github.com/openclaw); AceClaw exists because enterprise environments need an agent they can trust.
+AceClaw is the Java implementation of [OpenClaw](https://github.com/openclaw) — built from the ground up with security as a foundational principle, not an afterthought. Every layer enforces isolation: the daemon exposes zero network surface, every tool invocation passes through a sealed permission gate, and every memory entry is cryptographically signed.
 
 ## Security First
 
@@ -60,7 +60,7 @@ The `aceclaw-memory` module treats every persisted memory as a signed document:
 | **Architecture** | Single process | Daemon-first (persistent JVM + thin CLI) |
 | **Concurrency** | Node.js async | Virtual threads (Project Loom) |
 | **Memory** | 5-tier (T0-T4), MEMORY.md + daily logs, vector+BM25 search | 8-tier hierarchy, HMAC-signed JSONL, TF-IDF hybrid search, memory consolidation |
-| **Security** | Breached within 48h of launch | 3-layer defense: UDS isolation, sealed permission gate, HMAC-signed memory |
+| **Security** | SHA-256 dedup, no signing | 3-layer defense: UDS isolation, sealed permission gate, HMAC-signed memory |
 | **LLM Providers** | Pi SDK (multi-provider) | 7 providers (Anthropic, OpenAI, Groq, Together, Mistral, Copilot, Ollama) |
 | **Tools** | 50+ via community | 12 built-in + MCP extensibility |
 | **Skills** | 700+ community (SKILL.md) | Planned: adaptive skills with effectiveness metrics |

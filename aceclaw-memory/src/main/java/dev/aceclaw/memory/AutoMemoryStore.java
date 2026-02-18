@@ -151,13 +151,20 @@ public final class AutoMemoryStore {
 
         var entry = new MemoryEntry(id, category, content, tags, now, source, hmac, 0, null);
 
-        // Persist to disk first, then update in-memory index
+        // Persist to disk and update in-memory index atomically under fileLock
+        // to prevent remove() from rewriting the file before entries.add() runs.
         String fileName = global ? GLOBAL_FILE : projectHash(projectPath) + ".jsonl";
-        if (appendEntry(memoryDir.resolve(fileName), entry)) {
+        fileLock.lock();
+        try {
+            String json = mapper.writeValueAsString(entry);
+            Files.writeString(memoryDir.resolve(fileName), json + "\n",
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
             entries.add(entry);
             log.debug("Added memory: category={}, tags={}, file={}", category, tags, fileName);
-        } else {
-            log.warn("Memory not added to index due to disk write failure: id={}", id);
+        } catch (IOException e) {
+            log.error("Failed to persist memory entry: {}", e.getMessage());
+        } finally {
+            fileLock.unlock();
         }
         return entry;
     }
@@ -389,26 +396,6 @@ public final class AutoMemoryStore {
             log.debug("Loaded {} entries from {} ({} skipped)", loaded, file.getFileName(), skipped);
         } catch (IOException e) {
             log.warn("Failed to read memory file {}: {}", file, e.getMessage());
-        }
-    }
-
-    /**
-     * Appends a single entry to a JSONL file under file lock.
-     *
-     * @return true if the write succeeded, false on failure
-     */
-    private boolean appendEntry(Path file, MemoryEntry entry) {
-        fileLock.lock();
-        try {
-            String json = mapper.writeValueAsString(entry);
-            Files.writeString(file, json + "\n",
-                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-            return true;
-        } catch (IOException e) {
-            log.error("Failed to persist memory entry: {}", e.getMessage());
-            return false;
-        } finally {
-            fileLock.unlock();
         }
     }
 
