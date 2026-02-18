@@ -172,7 +172,8 @@ final class OpenAIMapper {
                 toolCall.put("type", "function");
                 ObjectNode function = objectMapper.createObjectNode();
                 function.put("name", tu.name());
-                function.put("arguments", tu.inputJson() != null ? tu.inputJson() : "{}");
+                String args = tu.inputJson();
+                function.put("arguments", (args != null && !args.isBlank()) ? args : "{}");
                 toolCall.set("function", function);
                 toolCallsArray.add(toolCall);
             }

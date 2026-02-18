@@ -146,7 +146,14 @@ final class AnthropicMapper {
                 node.put("id", tu.id());
                 node.put("name", tu.name());
                 try {
-                    node.set("input", objectMapper.readTree(tu.inputJson()));
+                    JsonNode inputNode = objectMapper.readTree(tu.inputJson());
+                    if (inputNode != null && inputNode.isObject()) {
+                        node.set("input", inputNode);
+                    } else {
+                        // readTree can return null for empty/null strings (Jackson 2.13+),
+                        // or a non-object node for malformed input — fall back to empty object
+                        node.putObject("input");
+                    }
                 } catch (Exception e) {
                     node.putObject("input");
                 }
