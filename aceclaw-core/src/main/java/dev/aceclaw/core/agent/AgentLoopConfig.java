@@ -12,16 +12,18 @@ import dev.aceclaw.infra.event.EventBus;
  * @param eventBus           event bus for publishing agent and tool events
  * @param permissionChecker  permission checker for tool execution authorization
  * @param memoryHandler      handler for persisting context extracted during compaction
+ * @param metricsCollector   collector for per-tool execution statistics (null = disabled)
  */
 public record AgentLoopConfig(
         String sessionId,
         EventBus eventBus,
         ToolPermissionChecker permissionChecker,
-        CompactionMemoryHandler memoryHandler
+        CompactionMemoryHandler memoryHandler,
+        ToolMetricsCollector metricsCollector
 ) {
 
     /** Empty config with all integrations disabled. */
-    public static final AgentLoopConfig EMPTY = new AgentLoopConfig(null, null, null, null);
+    public static final AgentLoopConfig EMPTY = new AgentLoopConfig(null, null, null, null, null);
 
     public static Builder builder() {
         return new Builder();
@@ -32,6 +34,7 @@ public record AgentLoopConfig(
         private EventBus eventBus;
         private ToolPermissionChecker permissionChecker;
         private CompactionMemoryHandler memoryHandler;
+        private ToolMetricsCollector metricsCollector;
 
         private Builder() {}
 
@@ -55,8 +58,13 @@ public record AgentLoopConfig(
             return this;
         }
 
+        public Builder metricsCollector(ToolMetricsCollector metricsCollector) {
+            this.metricsCollector = metricsCollector;
+            return this;
+        }
+
         public AgentLoopConfig build() {
-            return new AgentLoopConfig(sessionId, eventBus, permissionChecker, memoryHandler);
+            return new AgentLoopConfig(sessionId, eventBus, permissionChecker, memoryHandler, metricsCollector);
         }
     }
 }
