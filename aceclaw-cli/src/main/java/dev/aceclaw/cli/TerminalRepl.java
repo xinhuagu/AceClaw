@@ -443,6 +443,11 @@ public final class TerminalRepl {
             }
 
             var result = response.get("result");
+            if (result == null || !result.isObject()) {
+                out.println(WARNING + "Invalid model.list response from daemon" + RESET);
+                out.flush();
+                return;
+            }
             String currentModel = result.path("currentModel").asText("");
             String provider = result.path("provider").asText("");
             var modelsNode = result.get("models");
