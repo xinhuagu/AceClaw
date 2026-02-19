@@ -6,4 +6,7 @@ dependencies {
     implementation("io.modelcontextprotocol.sdk:mcp")
     implementation("com.fasterxml.jackson.core:jackson-databind")
     implementation("org.slf4j:slf4j-api")
+
+    testImplementation("org.mockito:mockito-core")
+    testImplementation("org.mockito:mockito-junit-jupiter")
 }

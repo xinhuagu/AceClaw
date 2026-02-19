@@ -1,16 +1,20 @@
 package dev.aceclaw.mcp;
 
-import dev.aceclaw.core.agent.Tool;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.aceclaw.core.agent.Tool;
 import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpSyncClient;
+import io.modelcontextprotocol.client.transport.HttpClientSseClientTransport;
+import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
 import io.modelcontextprotocol.client.transport.ServerParameters;
 import io.modelcontextprotocol.client.transport.StdioClientTransport;
 import io.modelcontextprotocol.json.jackson.JacksonMcpJsonMapper;
+import io.modelcontextprotocol.spec.McpClientTransport;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.net.http.HttpRequest;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -19,13 +23,13 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Manages the lifecycle of MCP server processes and their client connections.
+ * Manages the lifecycle of MCP server connections (stdio, SSE, and streamable HTTP).
  *
- * <p>For each configured server, spawns the process via {@link StdioClientTransport},
- * initializes the MCP protocol handshake, discovers available tools, and creates
- * {@link McpToolBridge} adapters for registration in AceClaw's {@link dev.aceclaw.core.agent.ToolRegistry}.
+ * <p>For each configured server, creates the appropriate transport, initializes the MCP
+ * protocol handshake, discovers available tools, and creates {@link McpToolBridge} adapters
+ * for registration in AceClaw's {@link dev.aceclaw.core.agent.ToolRegistry}.
  *
- * <p>Implements {@link AutoCloseable} for graceful shutdown of all server processes.
+ * <p>Implements {@link AutoCloseable} for graceful shutdown of all connections.
  */
 public final class McpClientManager implements AutoCloseable {
 
@@ -114,10 +118,92 @@ public final class McpClientManager implements AutoCloseable {
     }
 
     /**
-     * Returns the health status of each configured server.
+     * Returns the health status of each configured server, refreshed via ping.
      */
     public Map<String, ServerStatus> serverStatus() {
-        return Collections.unmodifiableMap(statuses);
+        // Refresh status of connected clients via ping
+        for (var entry : clients.entrySet()) {
+            var serverName = entry.getKey();
+            if (statuses.get(serverName) == ServerStatus.CONNECTED) {
+                try {
+                    entry.getValue().ping();
+                } catch (Exception e) {
+                    log.warn("MCP server '{}' ping failed: {}", serverName, e.getMessage());
+                    statuses.put(serverName, ServerStatus.FAILED);
+                }
+            }
+        }
+        return Collections.unmodifiableMap(new LinkedHashMap<>(statuses));
+    }
+
+    /**
+     * Pings all connected servers and returns a map of server name to success.
+     *
+     * @return map of server name to ping success (true = healthy)
+     */
+    public Map<String, Boolean> ping() {
+        var results = new LinkedHashMap<String, Boolean>();
+        for (var entry : clients.entrySet()) {
+            var serverName = entry.getKey();
+            try {
+                entry.getValue().ping();
+                results.put(serverName, true);
+            } catch (Exception e) {
+                log.warn("MCP server '{}' ping failed: {}", serverName, e.getMessage());
+                results.put(serverName, false);
+                statuses.put(serverName, ServerStatus.FAILED);
+            }
+        }
+        return results;
+    }
+
+    /**
+     * Reconnects to a specific MCP server by name.
+     * Closes any existing connection, re-creates the client, and re-discovers tools.
+     *
+     * @param serverName the name of the server to reconnect
+     * @return true if reconnection succeeded
+     */
+    public boolean reconnect(String serverName) {
+        var config = serverConfigs.get(serverName);
+        if (config == null) {
+            log.warn("Cannot reconnect unknown MCP server '{}'", serverName);
+            return false;
+        }
+
+        // Close existing client
+        var existing = clients.remove(serverName);
+        if (existing != null) {
+            try {
+                existing.closeGracefully();
+            } catch (Exception e) {
+                log.debug("Error closing existing connection for '{}': {}", serverName, e.getMessage());
+            }
+        }
+
+        // Remove old bridged tools for this server
+        bridgedTools.removeIf(t -> t.name().startsWith("mcp__" + serverName + "__"));
+
+        // Reconnect
+        try {
+            var client = createAndInitialize(serverName, config);
+            clients.put(serverName, client);
+            statuses.put(serverName, ServerStatus.CONNECTED);
+            discoverAndBridgeTools(serverName, client);
+            log.info("MCP server '{}' reconnected successfully", serverName);
+            return true;
+        } catch (Exception e) {
+            statuses.put(serverName, ServerStatus.FAILED);
+            log.error("MCP server '{}' reconnection failed: {}", serverName, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Returns the MCP client for the given server name, or null if not connected.
+     */
+    public McpSyncClient client(String serverName) {
+        return clients.get(serverName);
     }
 
     @Override
@@ -137,9 +223,27 @@ public final class McpClientManager implements AutoCloseable {
     }
 
     private McpSyncClient createAndInitialize(String serverName, McpServerConfig.ServerEntry config) {
-        log.info("Starting MCP server '{}': {} {}", serverName, config.command(), config.args());
+        log.info("Starting MCP server '{}' via {} transport", serverName, config.transport());
 
-        // Build server parameters
+        var jsonMapper = new JacksonMcpJsonMapper(new ObjectMapper());
+        McpClientTransport transport = switch (config.transport()) {
+            case STDIO -> createStdioTransport(config, jsonMapper);
+            case SSE -> createSseTransport(config, jsonMapper);
+            case STREAMABLE_HTTP -> createStreamableHttpTransport(config, jsonMapper);
+        };
+
+        var client = McpClient.sync(transport)
+                .requestTimeout(REQUEST_TIMEOUT)
+                .build();
+
+        client.initialize();
+        log.info("MCP server '{}' initialized successfully", serverName);
+
+        return client;
+    }
+
+    private McpClientTransport createStdioTransport(McpServerConfig.ServerEntry config,
+                                                     JacksonMcpJsonMapper jsonMapper) {
         var paramsBuilder = ServerParameters.builder(config.command());
         if (!config.args().isEmpty()) {
             paramsBuilder.args(config.args().toArray(new String[0]));
@@ -147,20 +251,36 @@ public final class McpClientManager implements AutoCloseable {
         if (!config.env().isEmpty()) {
             paramsBuilder.env(config.env());
         }
-        var params = paramsBuilder.build();
+        return new StdioClientTransport(paramsBuilder.build(), jsonMapper);
+    }
 
-        // Create transport and client
-        var jsonMapper = new JacksonMcpJsonMapper(new ObjectMapper());
-        var transport = new StdioClientTransport(params, jsonMapper);
-        var client = McpClient.sync(transport)
-                .requestTimeout(REQUEST_TIMEOUT)
-                .build();
+    private McpClientTransport createSseTransport(McpServerConfig.ServerEntry config,
+                                                   JacksonMcpJsonMapper jsonMapper) {
+        @SuppressWarnings("removal")
+        var builder = new HttpClientSseClientTransport.Builder(config.url())
+                .jsonMapper(jsonMapper);
 
-        // Initialize (protocol handshake)
-        client.initialize();
-        log.info("MCP server '{}' initialized successfully", serverName);
+        if (!config.headers().isEmpty()) {
+            builder.customizeRequest(reqBuilder -> applyHeaders(reqBuilder, config.headers()));
+        }
 
-        return client;
+        return builder.build();
+    }
+
+    private McpClientTransport createStreamableHttpTransport(McpServerConfig.ServerEntry config,
+                                                              JacksonMcpJsonMapper jsonMapper) {
+        var builder = HttpClientStreamableHttpTransport.builder(config.url())
+                .jsonMapper(jsonMapper);
+
+        if (!config.headers().isEmpty()) {
+            builder.customizeRequest(reqBuilder -> applyHeaders(reqBuilder, config.headers()));
+        }
+
+        return builder.build();
+    }
+
+    private static void applyHeaders(HttpRequest.Builder reqBuilder, Map<String, String> headers) {
+        headers.forEach(reqBuilder::header);
     }
 
     private void discoverAndBridgeTools(String serverName, McpSyncClient client) {

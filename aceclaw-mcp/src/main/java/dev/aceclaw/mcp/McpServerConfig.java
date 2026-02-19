@@ -1,6 +1,5 @@
 package dev.aceclaw.mcp;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,14 +23,23 @@ import java.util.Map;
  *   <li>{@code {project}/.aceclaw/mcp-servers.json} (project AceClaw-specific)</li>
  * </ol>
  *
- * <p>Expected JSON format:
+ * <p>Supports stdio, SSE, and streamable HTTP transports:
  * <pre>{@code
  * {
  *   "mcpServers": {
- *     "server-name": {
+ *     "local-server": {
  *       "command": "npx",
- *       "args": ["-y", "@package/mcp-server@latest"],
+ *       "args": ["-y", "@package/mcp-server"],
  *       "env": { "KEY": "value" }
+ *     },
+ *     "remote-sse": {
+ *       "url": "https://example.com/mcp",
+ *       "headers": { "Authorization": "Bearer xxx" }
+ *     },
+ *     "remote-streamable": {
+ *       "url": "https://example.com/mcp",
+ *       "transport": "streamable-http",
+ *       "headers": { "Authorization": "Bearer xxx" }
  *     }
  *   }
  * }
@@ -43,17 +51,50 @@ public final class McpServerConfig {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     /**
+     * Transport type for an MCP server connection.
+     */
+    public enum TransportType {
+        STDIO, SSE, STREAMABLE_HTTP
+    }
+
+    /**
      * A single MCP server entry from configuration.
      *
-     * @param command the executable command (e.g. "npx", "node", "python")
-     * @param args    command-line arguments
-     * @param env     environment variables to set for the server process
+     * @param command   the executable command (stdio only, e.g. "npx", "node", "python")
+     * @param args      command-line arguments (stdio only)
+     * @param env       environment variables for the server process (stdio only)
+     * @param url       the server URL (SSE/HTTP transports)
+     * @param headers   HTTP headers (SSE/HTTP transports)
+     * @param transport the transport type
      */
-    public record ServerEntry(String command, List<String> args, Map<String, String> env) {
-
+    public record ServerEntry(
+            String command,
+            List<String> args,
+            Map<String, String> env,
+            String url,
+            Map<String, String> headers,
+            TransportType transport
+    ) {
         public ServerEntry {
             args = args != null ? List.copyOf(args) : List.of();
             env = env != null ? Map.copyOf(env) : Map.of();
+            headers = headers != null ? Map.copyOf(headers) : Map.of();
+            transport = transport != null ? transport : TransportType.STDIO;
+        }
+
+        /** Creates a stdio server entry. */
+        public static ServerEntry stdio(String command, List<String> args, Map<String, String> env) {
+            return new ServerEntry(command, args, env, null, Map.of(), TransportType.STDIO);
+        }
+
+        /** Creates an SSE server entry. */
+        public static ServerEntry sse(String url, Map<String, String> headers) {
+            return new ServerEntry(null, List.of(), Map.of(), url, headers, TransportType.SSE);
+        }
+
+        /** Creates a streamable HTTP server entry. */
+        public static ServerEntry streamableHttp(String url, Map<String, String> headers) {
+            return new ServerEntry(null, List.of(), Map.of(), url, headers, TransportType.STREAMABLE_HTTP);
         }
     }
 
@@ -85,7 +126,7 @@ public final class McpServerConfig {
         return Collections.unmodifiableMap(result);
     }
 
-    private static void mergeFrom(Map<String, ServerEntry> target, Path configFile) {
+    static void mergeFrom(Map<String, ServerEntry> target, Path configFile) {
         if (!Files.isRegularFile(configFile)) {
             return;
         }
@@ -104,33 +145,55 @@ public final class McpServerConfig {
                 var name = entry.getKey();
                 var value = entry.getValue();
 
-                var command = value.has("command") ? value.get("command").asText() : null;
-                if (command == null || command.isBlank()) {
-                    log.warn("MCP server '{}' in {} has no command; skipping", name, configFile);
+                var hasCommand = value.has("command") && !value.get("command").asText().isBlank();
+                var hasUrl = value.has("url") && !value.get("url").asText().isBlank();
+
+                if (!hasCommand && !hasUrl) {
+                    log.warn("MCP server '{}' in {} has no command or url; skipping", name, configFile);
                     continue;
                 }
 
-                var args = new java.util.ArrayList<String>();
-                if (value.has("args") && value.get("args").isArray()) {
-                    for (var arg : value.get("args")) {
-                        args.add(arg.asText());
-                    }
-                }
+                if (hasUrl) {
+                    // Remote transport: SSE or streamable HTTP
+                    var url = value.get("url").asText();
+                    var headers = parseStringMap(value, "headers");
+                    var transportStr = value.has("transport") ? value.get("transport").asText() : "";
 
-                var env = new LinkedHashMap<String, String>();
-                if (value.has("env") && value.get("env").isObject()) {
-                    var envIt = value.get("env").fields();
-                    while (envIt.hasNext()) {
-                        var envEntry = envIt.next();
-                        env.put(envEntry.getKey(), envEntry.getValue().asText());
+                    if ("streamable-http".equals(transportStr)) {
+                        target.put(name, ServerEntry.streamableHttp(url, headers));
+                    } else {
+                        target.put(name, ServerEntry.sse(url, headers));
                     }
+                    log.debug("Loaded MCP server '{}' from {}: {} ({})", name, configFile, url,
+                            target.get(name).transport());
+                } else {
+                    // Stdio transport
+                    var command = value.get("command").asText();
+                    var args = new java.util.ArrayList<String>();
+                    if (value.has("args") && value.get("args").isArray()) {
+                        for (var arg : value.get("args")) {
+                            args.add(arg.asText());
+                        }
+                    }
+                    var env = parseStringMap(value, "env");
+                    target.put(name, ServerEntry.stdio(command, args, env));
+                    log.debug("Loaded MCP server '{}' from {}: {} {}", name, configFile, command, args);
                 }
-
-                target.put(name, new ServerEntry(command, args, env));
-                log.debug("Loaded MCP server '{}' from {}: {} {}", name, configFile, command, args);
             }
         } catch (IOException e) {
             log.warn("Failed to parse MCP config {}: {}", configFile, e.getMessage());
         }
+    }
+
+    private static Map<String, String> parseStringMap(com.fasterxml.jackson.databind.JsonNode parent, String fieldName) {
+        var result = new LinkedHashMap<String, String>();
+        if (parent.has(fieldName) && parent.get(fieldName).isObject()) {
+            var it = parent.get(fieldName).fields();
+            while (it.hasNext()) {
+                var e = it.next();
+                result.put(e.getKey(), e.getValue().asText());
+            }
+        }
+        return result;
     }
 }
