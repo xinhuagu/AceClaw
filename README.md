@@ -17,6 +17,102 @@ AceClaw is the Java implementation of [OpenClaw](https://github.com/openclaw) �
 
 ## Security First
 
+AceClaw defends across [five dimensions](#security-details):
+
+- **Zero network surface** — Daemon communicates only via Unix Domain Socket. No HTTP, no REST, no WebSocket.
+- **Sealed permissions** — 4-level hierarchy (`READ`/`WRITE`/`EXECUTE`/`DANGEROUS`) modeled as a sealed interface with compiler-enforced exhaustiveness. Sub-agents receive filtered tool registries to prevent privilege escalation.
+- **Signed memory** — Every persisted memory entry is HMAC-SHA256 signed with constant-time verification. Tampered entries are rejected on load.
+- **Content boundaries** — System prompt budget (150K char cap), tool result truncation (30K cap), and 8-tier priority ordering ensure human-authored content always outranks agent-generated memory.
+
+See [Security Details](#security-details) for the full 5-dimension breakdown and [Security Roadmap](#security-roadmap) for planned hardening.
+
+## Self-Learning
+
+AceClaw learns from its own behavior — no LLM calls required. Every tool execution, error recovery, and user correction is analyzed by heuristic detectors that produce type-safe insights.
+
+- **Automatic pattern detection** — `ErrorDetector` matches tool failures to subsequent retries. `SessionEndExtractor` captures user corrections, preferences, and feedback via regex-based passes. All detection is zero-cost (no API calls).
+- **Cross-session accumulation** — Insights start at 0.4 confidence and gain +0.2 per session where the same pattern recurs. Only patterns reaching 0.7 confidence are persisted, preventing one-off flukes from polluting memory.
+- **Strategy evolution** — Errors become `ErrorInsight`s, recurring sequences become `SuccessInsight`s, and unresolved errors become anti-patterns. A closed feedback loop: detect → persist → recall → avoid.
+- **Type-safe insight hierarchy** — `Insight` is a sealed interface (`ErrorInsight | SuccessInsight | PatternInsight`). The compiler enforces exhaustive handling — adding a new insight type is a compile error until all consumers are updated.
+- **Tool execution metrics** — `ToolMetricsCollector` tracks per-tool success rate, error count, and average latency using lock-free atomic counters. Session-scoped, zero synchronization overhead.
+
+See [Self-Learning Pipeline](docs/self-learning.md) for the full architecture, detection strategies, and persistence rules.
+
+## Long-Term Memory
+
+8-tier persistent memory hierarchy with HMAC-SHA256 signing, hybrid TF-IDF search, and 3-pass consolidation:
+
+```
+T1: Soul (identity)  →  T2: Managed Policy (enterprise)  →  T3: Workspace (ACECLAW.md)
+T4: User Memory      →  T5: Local Memory (gitignored)     →  T6: Auto-Memory (JSONL+HMAC)
+T7: Markdown Memory  →  T8: Daily Journal
+```
+
+- **HMAC-SHA256 integrity** — Every memory entry is signed. Mutable fields (`accessCount`, `lastAccessedAt`) are excluded from the signable payload so reads don't invalidate signatures.
+- **21 memory categories** — From `CODEBASE_INSIGHT` and `ERROR_RECOVERY` to `USER_FEEDBACK` and `ANTI_PATTERN`. Self-learning insights map directly to categories.
+- **3-pass consolidation** — Dedup, similarity merge (>80% threshold), age prune (90 days, zero access). Runs automatically at session end.
+- **Workspace isolation** — SHA-256 hashed paths under `~/.aceclaw/workspaces/`. No cross-project leakage.
+
+See [Memory System Design](docs/memory-system-design.md) for the full architecture, tier hierarchy, and comparison with Claude Code and OpenClaw.
+
+## Quick Start
+
+```bash
+# Build
+./gradlew clean build && ./gradlew :aceclaw-cli:installDist
+
+# Configure
+export ANTHROPIC_API_KEY="sk-ant-api03-..."
+
+# Run (auto-starts daemon)
+./aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli
+```
+
+Multi-provider support — see [Provider Configuration](docs/provider-configuration.md) for full setup:
+```bash
+# GitHub Copilot (use your subscription — no separate API key needed)
+./dev.sh copilot
+
+# Ollama (local, offline)
+./dev.sh ollama
+
+# Or any OpenAI-compatible provider
+export ACECLAW_PROVIDER="openai"   # or groq, together, mistral
+export OPENAI_API_KEY="sk-..."
+```
+
+## Architecture
+
+```
+CLI (Picocli + JLine3)
+  │ JSON-RPC 2.0 over UDS only ← zero network surface
+Daemon (persistent JVM, separate process group)
+  ├─ Request Router       → method dispatch
+  ├─ Session Manager      → per-project sessions (isolated state)
+  ├─ Streaming Agent Loop → ReAct loop (max 25 iterations)
+  ├─ Permission Manager   → sealed 4-level gate (READ/WRITE/EXECUTE/DANGEROUS)
+  ├─ Tool Registry        → 12 native tools + MCP (filtered per sub-agent)
+  ├─ Memory System        → 8-tier hierarchy, HMAC-signed, hybrid search
+  ├─ Self-Learning        → ErrorDetector, ToolMetrics, SessionEndExtractor
+  ├─ Context Compactor    → 3-phase (prune → summarize → memory flush)
+  └─ LLM Client Factory   → 7 providers, extended thinking, prompt caching
+```
+
+### Modules
+
+| Module | Purpose |
+|--------|---------|
+| `aceclaw-core` | LLM abstractions, agent loop, tool interface, context compaction |
+| `aceclaw-llm` | Anthropic + OpenAI-compatible LLM clients |
+| `aceclaw-tools` | 12 built-in tools (file ops, bash, glob, grep, web, browser) |
+| `aceclaw-security` | Sealed permission model (AutoAllow / PromptOnce / AlwaysAsk / Deny) |
+| `aceclaw-memory` | [8-tier memory hierarchy](docs/memory-system-design.md), hybrid search, consolidation, path-based rules, HMAC integrity |
+| `aceclaw-mcp` | MCP client integration for external tools |
+| `aceclaw-daemon` | Daemon process, UDS listener, streaming handler, [self-learning detectors](docs/self-learning.md) |
+| `aceclaw-cli` | CLI entry point, REPL, daemon lifecycle |
+
+## Security Details
+
 AceClaw defends across five dimensions:
 
 ### Architecture Isolation
@@ -71,82 +167,6 @@ HMAC-SHA256 provides **integrity** (tamper detection), not **confidentiality** �
 
 > **Planned:** AES-256 encryption at rest, per-entry key wrapping, key rotation without re-encryption. See [Security Roadmap](#security-roadmap).
 
-## AceClaw vs OpenClaw
-
-| Capability | OpenClaw | AceClaw |
-|------------|----------|---------|
-| **Language** | TypeScript/Node.js | Java 21 (GraalVM native) |
-| **Agent Loop** | External (Pi framework) | Self-implemented ReAct loop |
-| **Architecture** | Single process | Daemon-first (persistent JVM + thin CLI) |
-| **Concurrency** | Node.js async | Virtual threads (Project Loom) |
-| **Memory** | 5-tier (T0-T4), MEMORY.md + daily logs, vector+BM25 search | 8-tier hierarchy, HMAC-signed JSONL, TF-IDF hybrid search, memory consolidation |
-| **Security** | SHA-256 dedup, no signing | 5-layer defense: UDS isolation, sealed permissions, HMAC-signed memory, prompt budget caps, data protection |
-| **LLM Providers** | Pi SDK (multi-provider) | 7 providers (Anthropic, OpenAI, Groq, Together, Mistral, Copilot, Ollama) |
-| **Tools** | 50+ via community | 12 built-in + MCP extensibility |
-| **Skills** | 700+ community (SKILL.md) | Planned: adaptive skills with effectiveness metrics |
-| **Agent Teams** | Not supported | Planned: in-process virtual thread teammates |
-| **Type Safety** | TypeScript | Sealed interfaces + exhaustive pattern matching |
-| **Startup** | ~500ms (Node.js) | Sub-50ms (GraalVM native image) |
-
-## Quick Start
-
-```bash
-# Build
-./gradlew clean build && ./gradlew :aceclaw-cli:installDist
-
-# Configure
-export ANTHROPIC_API_KEY="sk-ant-api03-..."
-
-# Run (auto-starts daemon)
-./aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli
-```
-
-Multi-provider support — see [Provider Configuration](docs/provider-configuration.md) for full setup:
-```bash
-# GitHub Copilot (use your subscription — no separate API key needed)
-./dev.sh copilot
-
-# Ollama (local, offline)
-./dev.sh ollama
-
-# Or any OpenAI-compatible provider
-export ACECLAW_PROVIDER="openai"   # or groq, together, mistral
-export OPENAI_API_KEY="sk-..."
-```
-
-## Architecture
-
-```
-CLI (Picocli + JLine3)
-  │ JSON-RPC 2.0 over UDS only ← zero network surface
-Daemon (persistent JVM, separate process group)
-  ├─ Request Router       → method dispatch
-  ├─ Session Manager      → per-project sessions (isolated state)
-  ├─ Streaming Agent Loop → ReAct loop (max 25 iterations)
-  ├─ Permission Manager   → sealed 4-level gate (READ/WRITE/EXECUTE/DANGEROUS)
-  ├─ Tool Registry        → 12 native tools + MCP (filtered per sub-agent)
-  ├─ Memory System        → 8-tier hierarchy, HMAC-signed, hybrid search
-  ├─ Context Compactor    → 3-phase (prune → summarize → memory flush)
-  └─ LLM Client Factory   → 7 providers, extended thinking, prompt caching
-```
-
-### Modules
-
-| Module | Purpose |
-|--------|---------|
-| `aceclaw-core` | LLM abstractions, agent loop, tool interface, context compaction |
-| `aceclaw-llm` | Anthropic + OpenAI-compatible LLM clients |
-| `aceclaw-tools` | 12 built-in tools (file ops, bash, glob, grep, web, browser) |
-| `aceclaw-security` | Sealed permission model (AutoAllow / PromptOnce / AlwaysAsk / Deny) |
-| `aceclaw-memory` | [8-tier memory hierarchy](docs/memory-system-design.md), hybrid search, consolidation, path-based rules, HMAC integrity |
-| `aceclaw-mcp` | MCP client integration for external tools |
-| `aceclaw-daemon` | Daemon process, UDS listener, streaming handler |
-| `aceclaw-cli` | CLI entry point, REPL, daemon lifecycle |
-
-## Memory System
-
-8-tier persistent memory hierarchy with HMAC-SHA256 signing, hybrid TF-IDF search, and 3-pass consolidation. See [Memory System Design](docs/memory-system-design.md) for the full architecture, tier hierarchy, 21 memory categories, and comparison with Claude Code and OpenClaw.
-
 ## Security Roadmap
 
 AceClaw's security posture is iterative. The following items are designed but not yet implemented:
@@ -170,8 +190,9 @@ AceClaw's security posture is iterative. The following items are designed but no
 - [x] 8-tier memory hierarchy, hybrid search, daily journal, workspace isolation
 - [x] Markdown memory (MEMORY.md), path-based rules, memory consolidation
 - [x] Sub-agents: depth-1 delegation, filtered tool registries, task lifecycle
+- [x] Self-learning: insight hierarchy, error detection, tool metrics (#13-#14)
+- [ ] Self-learning: sequence/preference detectors, self-improvement engine (#15-#18)
 - [ ] Security hardening: content sandboxing, trust levels, encryption at rest
-- [ ] Self-learning: skill system, self-improvement loop, summary learning
 - [ ] Agent teams: virtual thread teammates, shared tasks, inter-agent messaging
 - [ ] Hook system: PreToolUse/PostToolUse lifecycle events
 
