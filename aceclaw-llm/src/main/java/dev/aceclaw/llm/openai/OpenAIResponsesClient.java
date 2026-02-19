@@ -140,7 +140,7 @@ public final class OpenAIResponsesClient implements LlmClient {
                 int statusCode = httpResponse.statusCode();
 
                 if (statusCode != 200) {
-                    String errorBody = httpResponse.body().reduce("", (a, b) -> a + b);
+                    String errorBody = httpResponse.body().limit(1000).reduce("", (a, b) -> a + b);
                     log.error("{} Responses API stream error: status={}, body={}", providerName, statusCode, errorBody);
                     long retryAfter = parseRetryAfter(httpResponse);
                     throw new LlmException(

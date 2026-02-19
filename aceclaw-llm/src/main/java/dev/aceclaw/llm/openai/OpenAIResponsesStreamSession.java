@@ -35,6 +35,8 @@ final class OpenAIResponsesStreamSession implements StreamSession {
 
     // Track tool call states by output_index for argument accumulation
     private final Map<Integer, ToolCallState> toolCallStates = new HashMap<>();
+    // Track message output_index → assigned block index
+    private final Map<Integer, Integer> messageBlockIndexMap = new HashMap<>();
     private int nextBlockIndex;
 
     OpenAIResponsesStreamSession(HttpResponse<Stream<String>> response, OpenAIResponsesMapper mapper) {
@@ -67,6 +69,9 @@ final class OpenAIResponsesStreamSession implements StreamSession {
                         try {
                             processEvent(currentEvent, data, handler);
                         } catch (Exception e) {
+                            if ("response.completed".equals(currentEvent) || "response.failed".equals(currentEvent)) {
+                                throw e;
+                            }
                             log.warn("Failed to process SSE event {}: {}", currentEvent, e.getMessage(), e);
                         }
                     }
@@ -107,6 +112,7 @@ final class OpenAIResponsesStreamSession implements StreamSession {
 
                 int blockIndex = nextBlockIndex++;
                 if ("message".equals(type)) {
+                    messageBlockIndexMap.put(outputIndex, blockIndex);
                     handler.onContentBlockStart(new StreamEvent.ContentBlockStart(
                             blockIndex, new ContentBlock.Text("")));
                 } else if ("function_call".equals(type)) {
@@ -151,11 +157,12 @@ final class OpenAIResponsesStreamSession implements StreamSession {
                         handler.onContentBlockStop(new StreamEvent.ContentBlockStop(state.blockIndex));
                     }
                 } else if ("message".equals(type)) {
-                    // Find block index for this message output
-                    // It was assigned as nextBlockIndex - N earlier; use a simple heuristic
-                    // Content block stop for text blocks
-                    handler.onContentBlockStop(new StreamEvent.ContentBlockStop(
-                            outputIndex < nextBlockIndex ? outputIndex : nextBlockIndex - 1));
+                    Integer blockIndex = messageBlockIndexMap.get(outputIndex);
+                    if (blockIndex == null) {
+                        // Fallback heuristic if mapping is missing
+                        blockIndex = outputIndex < nextBlockIndex ? outputIndex : nextBlockIndex - 1;
+                    }
+                    handler.onContentBlockStop(new StreamEvent.ContentBlockStop(blockIndex));
                 }
             }
 

@@ -118,7 +118,7 @@ public final class LlmClientFactory {
         String resolvedModel = model != null ? model : DEFAULT_MODELS.getOrDefault("copilot", "claude-sonnet-4.5");
 
         // Codex models only support the Responses API (/responses endpoint)
-        if (resolvedModel != null && resolvedModel.contains("codex")) {
+        if (resolvedModel.toLowerCase().contains("codex")) {
             return new OpenAIResponsesClient(
                     tokenProvider, resolvedBaseUrl, "/responses",
                     "copilot", resolvedModel, ProviderCapabilities.CODEX,
