@@ -10,6 +10,8 @@ import dev.aceclaw.memory.AutoMemoryStore;
 import dev.aceclaw.memory.DailyJournal;
 import dev.aceclaw.memory.MarkdownMemoryStore;
 import dev.aceclaw.memory.MemoryConsolidator;
+import dev.aceclaw.infra.event.EventBus;
+import dev.aceclaw.infra.event.SystemEvent;
 import dev.aceclaw.security.DefaultPermissionPolicy;
 import dev.aceclaw.security.PermissionManager;
 import dev.aceclaw.mcp.McpClientManager;
@@ -53,6 +55,7 @@ public final class AceClawDaemon {
     private final RequestRouter router;
     private final ConnectionBridge connectionBridge;
     private final UdsListener udsListener;
+    private final EventBus eventBus;
     private final Instant startedAt;
 
     private volatile boolean running;
@@ -68,6 +71,7 @@ public final class AceClawDaemon {
         // Infrastructure
         this.objectMapper = createObjectMapper();
         this.shutdownManager = new ShutdownManager();
+        this.eventBus = new EventBus();
 
         // Lock
         this.lock = new DaemonLock(homeDir.resolve("aceclaw.pid"));
@@ -321,6 +325,14 @@ public final class AceClawDaemon {
         // 2. Register shutdown participants (reverse order of startup)
         router.setShutdownCallback(this::shutdown);
 
+        // Event bus (start early, stop late)
+        eventBus.start();
+        shutdownManager.register(new ShutdownManager.ShutdownParticipant() {
+            @Override public String name() { return "Event Bus"; }
+            @Override public int priority() { return 5; }
+            @Override public void onShutdown() { eventBus.stop(); }
+        });
+
         shutdownManager.register(new ShutdownManager.ShutdownParticipant() {
             @Override public String name() { return "UDS Listener"; }
             @Override public int priority() { return 100; }
@@ -357,6 +369,7 @@ public final class AceClawDaemon {
 
         running = true;
         long bootMs = java.time.Duration.between(startedAt, Instant.now()).toMillis();
+        eventBus.publish(new SystemEvent.DaemonStarted(bootMs, Instant.now()));
         log.info("AceClaw daemon ready (boot: {}ms, socket: {})", bootMs, homeDir.resolve("aceclaw.sock"));
 
         // 4. Block until shutdown
@@ -369,6 +382,7 @@ public final class AceClawDaemon {
     public void shutdown() {
         if (!running) return;
         running = false;
+        eventBus.publish(new SystemEvent.DaemonShutdownInitiated("requested", Instant.now()));
         log.info("AceClaw daemon shutting down...");
         shutdownManager.executeShutdown();
     }
@@ -385,6 +399,13 @@ public final class AceClawDaemon {
      */
     public Path homeDir() {
         return homeDir;
+    }
+
+    /**
+     * Returns the event bus for publishing/subscribing to daemon events.
+     */
+    public EventBus eventBus() {
+        return eventBus;
     }
 
     /**
