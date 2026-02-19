@@ -34,28 +34,9 @@ class ModelSwitchTest {
                 sessionManager, agentLoop, toolRegistry, permissionManager, mapper);
         handler.setLlmConfig(mockClient, "test-model", "test prompt");
 
-        // Register model.list
-        router.register("model.list", params -> {
-            var result = mapper.createObjectNode();
-            result.put("currentModel", handler.getEffectiveModel());
-            result.put("defaultModel", handler.getDefaultModel());
-            result.put("provider", "test-provider");
-            var models = mapper.createArrayNode();
-            for (var m : mockClient.listModels()) {
-                models.add(m);
-            }
-            result.set("models", models);
-            return result;
-        });
-
-        router.register("model.switch", params -> {
-            var newModel = params.get("model").asText();
-            handler.setModelOverride(newModel);
-            var result = mapper.createObjectNode();
-            result.put("model", newModel);
-            result.put("switched", true);
-            return result;
-        });
+        // Use shared helpers for model RPC registration
+        ModelRpcHelper.registerModelList(router, mapper, handler, mockClient, "test-provider");
+        ModelRpcHelper.registerModelSwitch(router, mapper, handler);
     }
 
     @Test

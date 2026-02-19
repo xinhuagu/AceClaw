@@ -227,8 +227,7 @@ public final class OpenAICompatClient implements LlmClient {
                 return java.util.List.of();
             }
 
-            var jsonMapper = new com.fasterxml.jackson.databind.ObjectMapper();
-            var root = jsonMapper.readTree(response.body());
+            var root = mapper.objectMapper().readTree(response.body());
             var data = root.get("data");
             if (data == null || !data.isArray()) {
                 return java.util.List.of();

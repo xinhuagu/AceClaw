@@ -136,7 +136,7 @@ public final class StreamingAgentHandler {
         // Create a temporary agent loop with the permission-aware registry and compaction
         var permissionAwareLoop = new StreamingAgentLoop(
                 getLlmClient(), permissionAwareRegistry,
-                getModel(), getSystemPrompt(),
+                getModelForSession(sessionId), getSystemPrompt(),
                 maxTokens, thinkingBudget, compactor);
 
         // Wire stream event handler to SkillTool for sub-agent event forwarding
@@ -268,8 +268,8 @@ public final class StreamingAgentHandler {
 
     private dev.aceclaw.core.llm.LlmClient llmClient;
     private String model;
-    private final java.util.concurrent.atomic.AtomicReference<String> modelOverride =
-            new java.util.concurrent.atomic.AtomicReference<>();
+    private final java.util.concurrent.ConcurrentHashMap<String, String> sessionModelOverrides =
+            new java.util.concurrent.ConcurrentHashMap<>();
     private String systemPrompt;
     private int maxTokens = 16384;
     private int thinkingBudget = 10240;
@@ -323,22 +323,57 @@ public final class StreamingAgentHandler {
     }
 
     private String getModel() {
-        var override = modelOverride.get();
+        // When called from handlePrompt, the sessionId is on the call stack.
+        // For the agent loop, we need a way to resolve per-session.
+        // Default: return first override if only one session, else default model.
+        // The handlePrompt method uses getModelForSession directly.
+        return model;
+    }
+
+    /**
+     * Returns the effective model for a specific session (override or default).
+     */
+    String getModelForSession(String sessionId) {
+        var override = sessionModelOverrides.get(sessionId);
         return override != null ? override : model;
     }
 
     /**
      * Returns the current effective model (override or default).
+     * For backward compatibility, returns the first session override if any, else default.
      */
     public String getEffectiveModel() {
-        return getModel();
+        // If there's exactly one session override, return it for compatibility
+        var values = sessionModelOverrides.values();
+        if (values.size() == 1) {
+            return values.iterator().next();
+        }
+        return model;
     }
 
     /**
-     * Sets a session-level model override. Pass null to clear.
+     * Returns the effective model for a given session ID.
      */
-    public void setModelOverride(String modelId) {
-        modelOverride.set(modelId);
+    public String getEffectiveModel(String sessionId) {
+        return getModelForSession(sessionId);
+    }
+
+    /**
+     * Sets a per-session model override. Pass null to clear.
+     */
+    public void setModelOverride(String sessionId, String modelId) {
+        if (modelId == null) {
+            sessionModelOverrides.remove(sessionId);
+        } else {
+            sessionModelOverrides.put(sessionId, modelId);
+        }
+    }
+
+    /**
+     * Clears the model override for a session. Call on session close.
+     */
+    public void clearSessionOverride(String sessionId) {
+        sessionModelOverrides.remove(sessionId);
     }
 
     /**

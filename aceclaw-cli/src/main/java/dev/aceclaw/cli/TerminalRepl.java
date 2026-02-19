@@ -57,6 +57,9 @@ public final class TerminalRepl {
     private final SessionInfo sessionInfo;
     private final TerminalMarkdownRenderer markdownRenderer;
 
+    /** Tracks the effective model, updated after successful model switches. */
+    private volatile String effectiveModel;
+
     private volatile boolean streaming = false;
 
     /** Prevents duplicate cancel notifications on rapid Ctrl+C. */
@@ -101,6 +104,7 @@ public final class TerminalRepl {
         this.client = client;
         this.sessionId = sessionId;
         this.sessionInfo = sessionInfo;
+        this.effectiveModel = sessionInfo.model();
         this.markdownRenderer = new TerminalMarkdownRenderer();
     }
 
@@ -236,7 +240,7 @@ public final class TerminalRepl {
         var sb = new StringBuilder();
 
         sb.append(MUTED).append("\u2500").append(RESET).append(" ");
-        sb.append(INFO).append(BOLD).append(sessionInfo.model()).append(RESET);
+        sb.append(INFO).append(BOLD).append(effectiveModel).append(RESET);
 
         String branch = sessionInfo.gitBranch();
         if (branch != null && !branch.isBlank()) {
@@ -364,7 +368,7 @@ public final class TerminalRepl {
             case "/status" -> {
                 out.println();
                 out.println(BOLD + "Session Status" + RESET);
-                out.printf("  %sModel:%s       %s%n", MUTED, RESET, sessionInfo.model());
+                out.printf("  %sModel:%s       %s%n", MUTED, RESET, effectiveModel);
                 out.printf("  %sProject:%s     %s%n", MUTED, RESET, sessionInfo.project());
                 if (sessionInfo.gitBranch() != null) {
                     out.printf("  %sGit branch:%s  %s%n", MUTED, RESET, sessionInfo.gitBranch());
@@ -547,6 +551,7 @@ public final class TerminalRepl {
                 var error = response.get("error");
                 out.println(ERROR + "Failed to switch model: " + error.path("message").asText() + RESET);
             } else {
+                effectiveModel = modelId;
                 out.println(SUCCESS + "  \u2713 Switched to " + BOLD + modelId + RESET);
             }
             out.flush();

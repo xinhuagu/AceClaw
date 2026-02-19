@@ -288,31 +288,9 @@ public final class AceClawDaemon {
         final var agentHandlerRef = agentHandler;
         final var providerNameRef = config.provider();
 
-        router.register("model.list", params -> {
-            var result = objectMapper.createObjectNode();
-            result.put("currentModel", agentHandlerRef.getEffectiveModel());
-            result.put("defaultModel", agentHandlerRef.getDefaultModel());
-            result.put("provider", providerNameRef);
-            var modelsArray = objectMapper.createArrayNode();
-            for (var m2 : llmClientRef.listModels()) {
-                modelsArray.add(m2);
-            }
-            result.set("models", modelsArray);
-            return result;
-        });
-
-        router.register("model.switch", params -> {
-            if (params == null || !params.has("model") || params.get("model").isNull()) {
-                throw new IllegalArgumentException("Missing required parameter: model");
-            }
-            var newModel = params.get("model").asText();
-            agentHandlerRef.setModelOverride(newModel);
-            router.setModelName(newModel);
-            var result = objectMapper.createObjectNode();
-            result.put("model", newModel);
-            result.put("switched", true);
-            return result;
-        });
+        // Register model.list and model.switch via shared helper
+        ModelRpcHelper.registerModelList(router, objectMapper, agentHandlerRef, llmClientRef, providerNameRef);
+        ModelRpcHelper.registerModelSwitch(router, objectMapper, agentHandlerRef, llmClientRef);
 
         log.info("Agent handler wired: provider={}, model={}, tools={}",
                 config.provider(), model, toolRegistry.size());
