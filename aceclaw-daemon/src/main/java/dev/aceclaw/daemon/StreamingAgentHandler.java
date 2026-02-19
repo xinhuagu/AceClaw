@@ -2,6 +2,8 @@ package dev.aceclaw.daemon;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.aceclaw.infra.event.AgentEvent;
+import dev.aceclaw.infra.event.ToolEvent;
 import dev.aceclaw.core.agent.CancellationToken;
 import dev.aceclaw.core.agent.MessageCompactor;
 import dev.aceclaw.core.agent.StreamingAgentLoop;
@@ -73,6 +75,7 @@ public final class StreamingAgentHandler {
     private final ToolRegistry toolRegistry;
     private final PermissionManager permissionManager;
     private final ObjectMapper objectMapper;
+    private dev.aceclaw.infra.event.EventBus eventBus;
 
     /**
      * Creates a streaming agent handler.
@@ -130,7 +133,7 @@ public final class StreamingAgentHandler {
         var eventHandler = new StreamingNotificationHandler(cancelContext, objectMapper);
 
         // Wrap tools with permission checking for this request
-        var permissionAwareRegistry = createPermissionAwareRegistry(cancelContext);
+        var permissionAwareRegistry = createPermissionAwareRegistry(cancelContext, sessionId);
 
         // Create a temporary agent loop with the permission-aware registry and compaction
         var permissionAwareLoop = new StreamingAgentLoop(
@@ -140,6 +143,9 @@ public final class StreamingAgentHandler {
 
         // Start the cancel monitor thread to read from the socket
         cancelContext.startMonitor();
+        var turnNumber = session.messages().size() / 2 + 1;
+        var turnStart = java.time.Instant.now();
+        publishEvent(new AgentEvent.TurnStarted(sessionId, turnNumber, turnStart));
         try {
             var turn = permissionAwareLoop.runTurn(prompt, conversationHistory,
                     eventHandler, cancellationToken);
@@ -193,6 +199,9 @@ public final class StreamingAgentHandler {
                 result.put("compactionPhase", turn.compactionResult().phaseReached().name());
             }
 
+            var turnDurationMs = java.time.Duration.between(turnStart, java.time.Instant.now()).toMillis();
+            publishEvent(new AgentEvent.TurnCompleted(sessionId, turnNumber, turnDurationMs, java.time.Instant.now()));
+
             log.info("Streaming turn complete: sessionId={}, stopReason={}, tokens={}, cancelled={}, compacted={}",
                     sessionId, turn.finalStopReason(), turn.totalUsage().totalTokens(),
                     cancellationToken.isCancelled(), turn.wasCompacted());
@@ -200,6 +209,8 @@ public final class StreamingAgentHandler {
             return result;
 
         } catch (dev.aceclaw.core.llm.LlmException e) {
+            publishEvent(new AgentEvent.TurnError(sessionId, turnNumber, e.getMessage(), java.time.Instant.now()));
+
             // Translate LLM errors to user-friendly messages
             log.error("LLM error during prompt: statusCode={}, message={}",
                     e.statusCode(), e.getMessage(), e);
@@ -240,10 +251,10 @@ public final class StreamingAgentHandler {
      * Creates a ToolRegistry where each tool is wrapped with permission checking.
      * Tools that need user approval will use the StreamContext to ask the client.
      */
-    private ToolRegistry createPermissionAwareRegistry(StreamContext context) {
+    private ToolRegistry createPermissionAwareRegistry(StreamContext context, String sessionId) {
         var registry = new ToolRegistry();
         for (var tool : toolRegistry.all()) {
-            registry.register(new PermissionAwareTool(tool, permissionManager, context, objectMapper));
+            registry.register(new PermissionAwareTool(tool, permissionManager, context, objectMapper, sessionId));
         }
         return registry;
     }
@@ -290,6 +301,16 @@ public final class StreamingAgentHandler {
     /**
      * Sets the auto-memory store for persisting context extracted during compaction.
      */
+    public void setEventBus(dev.aceclaw.infra.event.EventBus eventBus) {
+        this.eventBus = eventBus;
+    }
+
+    private void publishEvent(dev.aceclaw.infra.event.AceClawEvent event) {
+        if (eventBus != null) {
+            eventBus.publish(event);
+        }
+    }
+
     public void setMemoryStore(AutoMemoryStore memoryStore, Path workingDir) {
         this.memoryStore = memoryStore;
         this.workingDir = workingDir;
@@ -349,9 +370,14 @@ public final class StreamingAgentHandler {
         }
         session.replaceMessages(compactedConversation);
 
+        var messagesBefore = result.originalTokenEstimate();
+        var messagesAfter = compactedConversation.size();
+        publishEvent(new AgentEvent.CompactionTriggered(
+                session.id(), messagesBefore, messagesAfter, java.time.Instant.now()));
+
         log.info("Session {} history replaced with {} compacted messages (was {})",
-                session.id(), compactedConversation.size(),
-                result.originalTokenEstimate() + " estimated tokens");
+                session.id(), messagesAfter,
+                messagesBefore + " estimated tokens");
 
         // Persist extracted context items to auto-memory (Phase 0 memory flush)
         if (memoryStore != null && !result.extractedContext().isEmpty()) {
@@ -736,19 +762,21 @@ public final class StreamingAgentHandler {
      * the permission manager and, if needed, sends a permission request
      * to the client and waits for the response.
      */
-    private static final class PermissionAwareTool implements Tool {
+    private final class PermissionAwareTool implements Tool {
 
         private final Tool delegate;
         private final PermissionManager permissionManager;
         private final StreamContext context;
         private final ObjectMapper objectMapper;
+        private final String sessionId;
 
         PermissionAwareTool(Tool delegate, PermissionManager permissionManager,
-                            StreamContext context, ObjectMapper objectMapper) {
+                            StreamContext context, ObjectMapper objectMapper, String sessionId) {
             this.delegate = delegate;
             this.permissionManager = permissionManager;
             this.context = context;
             this.objectMapper = objectMapper;
+            this.sessionId = sessionId;
         }
 
         @Override
@@ -782,11 +810,12 @@ public final class StreamingAgentHandler {
 
             switch (decision) {
                 case PermissionDecision.Approved ignored -> {
-                    // Proceed with execution
-                    return delegate.execute(inputJson);
+                    return executeWithEvents(inputJson);
                 }
 
                 case PermissionDecision.Denied denied -> {
+                    publishEvent(new ToolEvent.PermissionDenied(
+                            sessionId, delegate.name(), denied.reason(), java.time.Instant.now()));
                     log.info("Tool {} denied: {}", delegate.name(), denied.reason());
                     return new ToolResult("Permission denied: " + denied.reason(), true);
                 }
@@ -833,7 +862,7 @@ public final class StreamingAgentHandler {
 
                         log.info("Tool {} approved by user (requestId={}, remember={})",
                                 delegate.name(), responseRequestId, remember);
-                        return delegate.execute(inputJson);
+                        return executeWithEvents(inputJson);
 
                     } catch (IOException e) {
                         log.error("Failed to communicate permission request for tool {}: {}",
@@ -841,6 +870,23 @@ public final class StreamingAgentHandler {
                         return new ToolResult("Permission check failed: " + e.getMessage(), true);
                     }
                 }
+            }
+        }
+
+        private ToolResult executeWithEvents(String inputJson) throws Exception {
+            publishEvent(new ToolEvent.Invoked(sessionId, delegate.name(), java.time.Instant.now()));
+            var start = java.time.Instant.now();
+            try {
+                var result = delegate.execute(inputJson);
+                var durationMs = java.time.Duration.between(start, java.time.Instant.now()).toMillis();
+                publishEvent(new ToolEvent.Completed(
+                        sessionId, delegate.name(), durationMs, result.isError(), java.time.Instant.now()));
+                return result;
+            } catch (Exception e) {
+                var durationMs = java.time.Duration.between(start, java.time.Instant.now()).toMillis();
+                publishEvent(new ToolEvent.Completed(
+                        sessionId, delegate.name(), durationMs, true, java.time.Instant.now()));
+                throw e;
             }
         }
 

@@ -227,6 +227,7 @@ public final class AceClawDaemon {
         agentHandler.setLlmConfig(llmClient, model, systemPrompt);
         agentHandler.setTokenConfig(config.maxTokens(), config.thinkingBudget());
         agentHandler.setCompactor(compactor);
+        agentHandler.setEventBus(eventBus);
         agentHandler.setMemoryStore(memoryStore, workingDir);
         if (journal != null) {
             agentHandler.setDailyJournal(journal);
