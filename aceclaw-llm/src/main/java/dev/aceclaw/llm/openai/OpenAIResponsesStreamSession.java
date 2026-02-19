@@ -124,7 +124,16 @@ final class OpenAIResponsesStreamSession implements StreamSession {
                 }
             }
 
+            case "response.output_text.delta" -> {
+                // Flat text delta: { "delta": "Hello" } — delta is a plain string
+                String text = root.path("delta").asText("");
+                if (!text.isEmpty()) {
+                    handler.onTextDelta(new StreamEvent.TextDelta(text));
+                }
+            }
+
             case "response.content_part.delta" -> {
+                // Structured content part delta: { "delta": { "type": "text_delta", "text": "Hello" } }
                 JsonNode delta = root.path("delta");
                 String deltaType = delta.path("type").asText("");
                 if ("text_delta".equals(deltaType)) {
@@ -188,7 +197,7 @@ final class OpenAIResponsesStreamSession implements StreamSession {
                 handler.onError(new StreamEvent.StreamError(new LlmException(errorMsg)));
             }
 
-            default -> log.trace("Ignoring unknown Responses API event: {}", eventType);
+            default -> log.debug("Ignoring unknown Responses API event: {}", eventType);
         }
     }
 

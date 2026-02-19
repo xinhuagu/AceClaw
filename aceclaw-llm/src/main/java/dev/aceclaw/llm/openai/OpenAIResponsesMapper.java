@@ -60,7 +60,7 @@ final class OpenAIResponsesMapper {
             mapMessage(message, inputArray);
         }
 
-        // Tools (same format as chat completions)
+        // Tools (flat format: name/description/parameters at top level, unlike chat completions)
         if (!request.tools().isEmpty()) {
             ArrayNode toolsArray = root.putArray("tools");
             for (ToolDefinition tool : request.tools()) {
@@ -147,13 +147,13 @@ final class OpenAIResponsesMapper {
     }
 
     private ObjectNode mapToolDefinition(ToolDefinition tool) {
+        // Responses API uses a flat tool object (name/description/parameters at top level),
+        // NOT the nested { type: "function", function: { name, ... } } format from Chat Completions.
         ObjectNode node = objectMapper.createObjectNode();
         node.put("type", "function");
-        ObjectNode function = objectMapper.createObjectNode();
-        function.put("name", tool.name());
-        function.put("description", tool.description());
-        function.set("parameters", tool.inputSchema());
-        node.set("function", function);
+        node.put("name", tool.name());
+        node.put("description", tool.description());
+        node.set("parameters", tool.inputSchema());
         return node;
     }
 

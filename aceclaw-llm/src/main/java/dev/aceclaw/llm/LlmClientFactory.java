@@ -3,6 +3,7 @@ package dev.aceclaw.llm;
 import dev.aceclaw.core.llm.LlmClient;
 import dev.aceclaw.core.llm.ProviderCapabilities;
 import dev.aceclaw.llm.anthropic.AnthropicClient;
+import dev.aceclaw.llm.openai.CopilotRoutingClient;
 import dev.aceclaw.llm.openai.CopilotTokenProvider;
 import dev.aceclaw.llm.openai.OpenAICompatClient;
 import dev.aceclaw.llm.openai.OpenAIResponsesClient;
@@ -37,7 +38,7 @@ public final class LlmClientFactory {
             "groq", "llama-3.3-70b-versatile",
             "together", "meta-llama/Llama-3.3-70B-Instruct-Turbo",
             "mistral", "mistral-large-latest",
-            "copilot", "claude-sonnet-4.5",
+            "copilot", "gpt-5.2-codex",
             "ollama", "qwen3:4b"
     );
 
@@ -117,19 +118,20 @@ public final class LlmClientFactory {
         String resolvedBaseUrl = baseUrl != null ? baseUrl : DEFAULT_BASE_URLS.get("copilot");
         String resolvedModel = model != null ? model : DEFAULT_MODELS.getOrDefault("copilot", "claude-sonnet-4.5");
 
-        // Codex models only support the Responses API (/responses endpoint)
-        if (resolvedModel.toLowerCase().contains("codex")) {
-            return new OpenAIResponsesClient(
-                    tokenProvider, resolvedBaseUrl, "/responses",
-                    "copilot", resolvedModel, ProviderCapabilities.CODEX,
-                    COPILOT_API_HEADERS);
-        }
-
-        // Standard models use Chat Completions (no /v1 prefix)
-        return new OpenAICompatClient(
+        // Always create both clients so runtime model switching works.
+        // The routing client dispatches to the correct endpoint based on model name:
+        // - Codex models (e.g. gpt-5.2-codex) → Responses API (/responses)
+        // - All other models → Chat Completions API (/chat/completions)
+        var chatClient = new OpenAICompatClient(
                 tokenProvider, resolvedBaseUrl, "/chat/completions",
                 "copilot", resolvedModel, ProviderCapabilities.OPENAI,
                 COPILOT_API_HEADERS);
+        var responsesClient = new OpenAIResponsesClient(
+                tokenProvider, resolvedBaseUrl, "/responses",
+                "copilot", resolvedModel, ProviderCapabilities.CODEX,
+                COPILOT_API_HEADERS);
+
+        return new CopilotRoutingClient(chatClient, responsesClient, resolvedModel);
     }
 
     private static LlmClient createAnthropicClient(String apiKey, String refreshToken, String baseUrl) {

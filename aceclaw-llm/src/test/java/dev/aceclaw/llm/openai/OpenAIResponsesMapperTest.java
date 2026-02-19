@@ -126,7 +126,7 @@ class OpenAIResponsesMapperTest {
     }
 
     @Test
-    void toolDefinitions_wrappedInFunctionType() throws Exception {
+    void toolDefinitions_flatFormatWithNameAtTopLevel() throws Exception {
         var schema = objectMapper.createObjectNode().put("type", "object");
         var request = baseRequest()
                 .addTool(new ToolDefinition("my_tool", "does stuff", schema))
@@ -134,9 +134,11 @@ class OpenAIResponsesMapperTest {
         JsonNode root = objectMapper.readTree(mapper.toRequestJson(request, false));
         JsonNode tool = root.get("tools").get(0);
 
+        // Responses API uses flat tool format (name/description at top level, no "function" wrapper)
         assertThat(tool.get("type").asText()).isEqualTo("function");
-        assertThat(tool.get("function").get("name").asText()).isEqualTo("my_tool");
-        assertThat(tool.get("function").get("description").asText()).isEqualTo("does stuff");
+        assertThat(tool.get("name").asText()).isEqualTo("my_tool");
+        assertThat(tool.get("description").asText()).isEqualTo("does stuff");
+        assertThat(tool.has("function")).isFalse();
     }
 
     @Test
