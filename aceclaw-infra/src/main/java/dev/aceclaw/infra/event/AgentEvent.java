@@ -11,5 +11,5 @@ public sealed interface AgentEvent extends AceClawEvent {
 
     record TurnError(String sessionId, int turnNumber, String error, Instant timestamp) implements AgentEvent {}
 
-    record CompactionTriggered(String sessionId, int messagesBefore, int messagesAfter, Instant timestamp) implements AgentEvent {}
+    record CompactionTriggered(String sessionId, int estimatedTokensBefore, int estimatedTokensAfter, Instant timestamp) implements AgentEvent {}
 }

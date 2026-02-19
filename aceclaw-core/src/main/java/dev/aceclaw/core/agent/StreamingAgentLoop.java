@@ -115,7 +115,8 @@ public final class StreamingAgentLoop {
                         StreamEventHandler handler, CancellationToken cancellationToken)
             throws LlmException {
         long turnStart = System.currentTimeMillis();
-        int turnNumber = conversationHistory.size() / 2 + 1;
+        int turnNumber = (int) conversationHistory.stream()
+                .filter(m -> m instanceof Message.UserMessage).count() + 1;
         publishEvent(new AgentEvent.TurnStarted(config.sessionId(), turnNumber, Instant.now()));
 
         var newMessages = new ArrayList<Message>();
@@ -411,11 +412,20 @@ public final class StreamingAgentLoop {
     private ContentBlock.ToolResult executeSingleTool(ContentBlock.ToolUse toolUse) {
         // Check permission before execution
         if (config.permissionChecker() != null) {
-            var permResult = config.permissionChecker().check(toolUse.name(), toolUse.inputJson());
-            if (!permResult.allowed()) {
-                log.info("Tool {} denied: {}", toolUse.name(), permResult.reason());
+            try {
+                var permResult = config.permissionChecker().check(toolUse.name(), toolUse.inputJson());
+                if (permResult == null || !permResult.allowed()) {
+                    String reason = permResult != null ? permResult.reason() : "permission check returned null";
+                    log.info("Tool {} denied: {}", toolUse.name(), reason);
+                    publishEvent(new ToolEvent.PermissionDenied(
+                            config.sessionId(), toolUse.name(), reason, Instant.now()));
+                    return new ContentBlock.ToolResult(
+                            toolUse.id(), "Permission denied: " + toolUse.name(), true);
+                }
+            } catch (Exception e) {
+                log.error("Permission checker threw for tool {}: {}", toolUse.name(), e.getMessage(), e);
                 publishEvent(new ToolEvent.PermissionDenied(
-                        config.sessionId(), toolUse.name(), permResult.reason(), Instant.now()));
+                        config.sessionId(), toolUse.name(), "checker error: " + e.getMessage(), Instant.now()));
                 return new ContentBlock.ToolResult(
                         toolUse.id(), "Permission denied: " + toolUse.name(), true);
             }
