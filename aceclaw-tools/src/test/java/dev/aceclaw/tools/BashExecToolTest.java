@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.Locale;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -95,7 +96,7 @@ class BashExecToolTest {
     @Test
     void workingDirectoryIsUsed() throws Exception {
         // pwd on Unix, cd on Windows — both print the current directory
-        var isWindows = System.getProperty("os.name", "").toLowerCase().startsWith("win");
+        var isWindows = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("win");
         var cmd = isWindows ? "cd" : "pwd";
         var input = MAPPER.writeValueAsString(
                 MAPPER.createObjectNode().put("command", cmd));
