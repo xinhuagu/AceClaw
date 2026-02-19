@@ -290,7 +290,7 @@ public final class McpClientManager implements AutoCloseable {
     }
 
     private static void applyHeaders(HttpRequest.Builder reqBuilder, Map<String, String> headers) {
-        headers.forEach(reqBuilder::header);
+        headers.forEach(reqBuilder::setHeader);
     }
 
     private void discoverAndBridgeTools(String serverName, McpSyncClient client) {

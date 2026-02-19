@@ -145,21 +145,28 @@ public final class McpServerConfig {
                 var name = entry.getKey();
                 var value = entry.getValue();
 
-                var hasCommand = value.has("command") && !value.get("command").asText().isBlank();
-                var hasUrl = value.has("url") && !value.get("url").asText().isBlank();
+                var commandText = value.has("command") ? value.get("command").asText().trim() : "";
+                var urlText = value.has("url") ? value.get("url").asText().trim() : "";
+                var hasCommand = !commandText.isBlank();
+                var hasUrl = !urlText.isBlank();
 
                 if (!hasCommand && !hasUrl) {
                     log.warn("MCP server '{}' in {} has no command or url; skipping", name, configFile);
                     continue;
                 }
 
+                if (hasCommand && hasUrl) {
+                    log.warn("MCP server '{}' in {} has both command and url; preferring url-based transport",
+                            name, configFile);
+                }
+
                 if (hasUrl) {
                     // Remote transport: SSE or streamable HTTP
-                    var url = value.get("url").asText();
+                    var url = urlText;
                     var headers = parseStringMap(value, "headers");
-                    var transportStr = value.has("transport") ? value.get("transport").asText() : "";
+                    var transportStr = value.has("transport") ? value.get("transport").asText().trim() : "";
 
-                    if ("streamable-http".equals(transportStr)) {
+                    if ("streamable-http".equalsIgnoreCase(transportStr)) {
                         target.put(name, ServerEntry.streamableHttp(url, headers));
                     } else {
                         target.put(name, ServerEntry.sse(url, headers));
@@ -168,7 +175,7 @@ public final class McpServerConfig {
                             target.get(name).transport());
                 } else {
                     // Stdio transport
-                    var command = value.get("command").asText();
+                    var command = commandText;
                     var args = new java.util.ArrayList<String>();
                     if (value.has("args") && value.get("args").isArray()) {
                         for (var arg : value.get("args")) {
