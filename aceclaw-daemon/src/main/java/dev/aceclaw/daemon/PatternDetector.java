@@ -99,17 +99,6 @@ public final class PatternDetector {
         var evidence = new ArrayList<String>();
         evidence.add("current turn: " + String.join(" -> ", currentSeq));
 
-        // Check session history for similar sequences
-        if (sessionHistory != null) {
-            var historySequences = extractToolSequencesFromHistory(sessionHistory);
-            for (var histSeq : historySequences) {
-                if (isSubsequenceMatch(currentSeq, histSeq, MIN_SEQUENCE_LENGTH)) {
-                    frequency++;
-                    evidence.add("session history: " + String.join(" -> ", histSeq));
-                }
-            }
-        }
-
         // Check cross-session patterns from memory store
         if (memoryStore != null) {
             try {
@@ -354,30 +343,6 @@ public final class PatternDetector {
         return Arrays.stream(text.toLowerCase().split("\\W+"))
                 .filter(t -> !t.isBlank())
                 .collect(Collectors.toSet());
-    }
-
-    private List<List<String>> extractToolSequencesFromHistory(
-            List<AgentSession.ConversationMessage> history) {
-        // Group by assistant turns, extract tool names from the text
-        var sequences = new ArrayList<List<String>>();
-        var current = new ArrayList<String>();
-
-        for (var msg : history) {
-            if (msg instanceof AgentSession.ConversationMessage.Assistant assistant) {
-                // Extract tool names mentioned in assistant text (heuristic)
-                var text = assistant.content();
-                if (text != null && text.contains("tool:")) {
-                    // Simple extraction — real implementation uses structured data
-                    current.clear();
-                }
-            } else if (msg instanceof AgentSession.ConversationMessage.User) {
-                if (current.size() >= MIN_SEQUENCE_LENGTH) {
-                    sequences.add(List.copyOf(current));
-                }
-                current.clear();
-            }
-        }
-        return sequences;
     }
 
     private static Map<String, List<String>> extractErrorsFromHistory(
