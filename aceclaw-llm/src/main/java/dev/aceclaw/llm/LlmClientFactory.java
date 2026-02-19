@@ -5,6 +5,7 @@ import dev.aceclaw.core.llm.ProviderCapabilities;
 import dev.aceclaw.llm.anthropic.AnthropicClient;
 import dev.aceclaw.llm.openai.CopilotTokenProvider;
 import dev.aceclaw.llm.openai.OpenAICompatClient;
+import dev.aceclaw.llm.openai.OpenAIResponsesClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -113,10 +114,18 @@ public final class LlmClientFactory {
 
     private static LlmClient createCopilotClient(String githubToken, String baseUrl, String model) {
         var tokenProvider = new CopilotTokenProvider(githubToken);
-        // Use default endpoint; token exchange is deferred to first API call.
         String resolvedBaseUrl = baseUrl != null ? baseUrl : DEFAULT_BASE_URLS.get("copilot");
         String resolvedModel = model != null ? model : DEFAULT_MODELS.getOrDefault("copilot", "claude-sonnet-4.5");
-        // Copilot uses /chat/completions (no /v1 prefix)
+
+        // Codex models only support the Responses API (/responses endpoint)
+        if (resolvedModel != null && resolvedModel.contains("codex")) {
+            return new OpenAIResponsesClient(
+                    tokenProvider, resolvedBaseUrl, "/responses",
+                    "copilot", resolvedModel, ProviderCapabilities.CODEX,
+                    COPILOT_API_HEADERS);
+        }
+
+        // Standard models use Chat Completions (no /v1 prefix)
         return new OpenAICompatClient(
                 tokenProvider, resolvedBaseUrl, "/chat/completions",
                 "copilot", resolvedModel, ProviderCapabilities.OPENAI,

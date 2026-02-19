@@ -29,4 +29,8 @@ public record ProviderCapabilities(
     /** Generic OpenAI-compatible providers (Groq, Together, Ollama, etc.): minimal feature set. */
     public static final ProviderCapabilities OPENAI_COMPAT =
             new ProviderCapabilities(false, false, false, 0);
+
+    /** GitHub Copilot Codex models (Responses API): no extended thinking, no caching, no images. */
+    public static final ProviderCapabilities CODEX =
+            new ProviderCapabilities(false, false, false, 0);
 }
