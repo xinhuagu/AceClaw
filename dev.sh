@@ -6,8 +6,15 @@
 set -e
 
 PROVIDER="${1:-}"
+VALID_PROVIDERS="anthropic openai ollama copilot groq"
 
-export JAVA_HOME="${JAVA_HOME:-$(brew --prefix openjdk@21 2>/dev/null)/libexec/openjdk.jdk/Contents/Home}"
+# Auto-detect JAVA_HOME if not set
+if [ -z "$JAVA_HOME" ]; then
+    BREW_JDK="$(brew --prefix openjdk@21 2>/dev/null)/libexec/openjdk.jdk/Contents/Home"
+    if [ -d "$BREW_JDK" ]; then
+        export JAVA_HOME="$BREW_JDK"
+    fi
+fi
 
 ./gradlew :aceclaw-cli:installDist -q
 
@@ -22,8 +29,12 @@ if [ -f ~/.aceclaw/aceclaw.pid ]; then
     sleep 0.3
 fi
 
-# Set provider via env if specified
+# Validate and set provider via env if specified
 if [ -n "$PROVIDER" ]; then
+    case " $VALID_PROVIDERS " in
+        *" $PROVIDER "*) ;;
+        *) echo "❌ Invalid provider: $PROVIDER"; echo "Valid: $VALID_PROVIDERS"; exit 1 ;;
+    esac
     export ACECLAW_PROVIDER="$PROVIDER"
     echo "🔧 Provider: $PROVIDER"
 fi
