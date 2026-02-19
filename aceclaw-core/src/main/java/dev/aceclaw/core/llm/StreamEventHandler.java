@@ -34,4 +34,19 @@ public interface StreamEventHandler {
      * @param phase           the compaction phase reached ("PRUNED" or "SUMMARIZED")
      */
     default void onCompaction(int originalTokens, int compactedTokens, String phase) {}
+
+    /**
+     * Called when a sub-agent (skill or task) starts execution.
+     *
+     * @param agentId identifier for the sub-agent (e.g. "skill:commit")
+     * @param prompt  the prompt sent to the sub-agent
+     */
+    default void onSubAgentStart(String agentId, String prompt) {}
+
+    /**
+     * Called when a sub-agent (skill or task) finishes execution.
+     *
+     * @param agentId identifier for the sub-agent
+     */
+    default void onSubAgentEnd(String agentId) {}
 }
