@@ -59,6 +59,11 @@ public final class WriteFileTool implements Tool {
 
     /**
      * Returns the shared read-tracking set for integration with ReadFileTool.
+     *
+     * <p><b>Note:</b> This returns the live mutable set, not a copy. Modifications
+     * directly affect read-before-write enforcement. Intended for tool wiring in
+     * {@link dev.aceclaw.daemon.AceClawDaemon} only — pass this to
+     * {@code ReadFileTool}'s constructor so both tools share the same tracking state.
      */
     public Set<Path> readFiles() {
         return readFiles;

@@ -188,7 +188,9 @@ public final class TerminalRepl {
 
                 String trimmed = line.trim();
                 if (trimmed.startsWith("/")) {
-                    handleSlashCommand(out, trimmed);
+                    if (handleSlashCommand(out, trimmed)) {
+                        break; // Graceful exit — allows try-with-resources cleanup
+                    }
                 } else {
                     processInput(out, trimmed);
                 }
@@ -281,7 +283,10 @@ public final class TerminalRepl {
      *   <li>{@code /exit} — exit the REPL</li>
      * </ul>
      */
-    private void handleSlashCommand(PrintWriter out, String input) {
+    /**
+     * @return true if the REPL should exit after this command
+     */
+    private boolean handleSlashCommand(PrintWriter out, String input) {
         String[] parts = input.split("\\s+", 2);
         String command = parts[0].toLowerCase();
         String arg = parts.length > 1 ? parts[1].trim() : "";
@@ -333,8 +338,11 @@ public final class TerminalRepl {
                     request.put("id", id);
                     client.writeLine(client.objectMapper().writeValueAsString(request));
 
-                    String responseLine = client.readLine();
-                    if (responseLine != null) {
+                    // Read with timeout to avoid hanging the REPL if daemon doesn't respond
+                    String responseLine = client.readLine(5000);
+                    if (responseLine == null) {
+                        out.println(WARNING + "Timed out waiting for tool list from daemon" + RESET);
+                    } else {
                         var response = client.objectMapper().readTree(responseLine);
                         if (response.has("result") && response.get("result").isArray()) {
                             out.println();
@@ -382,7 +390,7 @@ public final class TerminalRepl {
             case "/exit", "/quit" -> {
                 out.println(MUTED + "Goodbye!" + RESET);
                 out.flush();
-                System.exit(0);
+                return true;
             }
 
             default -> {
@@ -391,6 +399,7 @@ public final class TerminalRepl {
                 out.flush();
             }
         }
+        return false;
     }
 
     /**

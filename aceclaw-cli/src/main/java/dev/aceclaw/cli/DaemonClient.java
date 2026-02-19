@@ -227,6 +227,54 @@ public final class DaemonClient implements AutoCloseable {
     }
 
     /**
+     * Reads the next newline-delimited line with a timeout.
+     *
+     * @param timeoutMs maximum time to wait in milliseconds
+     * @return the next line, or null if timed out or connection closed
+     * @throws IOException if I/O fails
+     */
+    public String readLine(long timeoutMs) throws IOException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        // Check buffer first
+        int newlineIdx = lineBuffer.indexOf("\n");
+        if (newlineIdx != -1) {
+            var line = lineBuffer.substring(0, newlineIdx).trim();
+            lineBuffer.delete(0, newlineIdx + 1);
+            return line.isEmpty() ? readLine(Math.max(0, deadline - System.currentTimeMillis())) : line;
+        }
+
+        channel.configureBlocking(false);
+        try {
+            var buffer = java.nio.ByteBuffer.allocate(BUFFER_SIZE);
+            while (System.currentTimeMillis() < deadline) {
+                buffer.clear();
+                int bytesRead = channel.read(buffer);
+                if (bytesRead == -1) {
+                    return lineBuffer.isEmpty() ? null : lineBuffer.toString().trim();
+                }
+                if (bytesRead == 0) {
+                    try { Thread.sleep(50); } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return null;
+                    }
+                    continue;
+                }
+                buffer.flip();
+                lineBuffer.append(java.nio.charset.StandardCharsets.UTF_8.decode(buffer));
+                newlineIdx = lineBuffer.indexOf("\n");
+                if (newlineIdx != -1) {
+                    var line = lineBuffer.substring(0, newlineIdx).trim();
+                    lineBuffer.delete(0, newlineIdx + 1);
+                    return line.isEmpty() ? readLine(Math.max(0, deadline - System.currentTimeMillis())) : line;
+                }
+            }
+            return null; // timed out
+        } finally {
+            channel.configureBlocking(true);
+        }
+    }
+
+    /**
      * Writes a raw line to the daemon socket (appending newline).
      *
      * <p>Used by the streaming REPL to send requests without holding the I/O lock

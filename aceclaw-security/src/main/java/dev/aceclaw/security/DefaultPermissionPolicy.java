@@ -78,10 +78,9 @@ public final class DefaultPermissionPolicy implements PermissionPolicy {
                     "Requested: " + request.description());
 
             case MODE_ACCEPT_EDITS -> switch (request.level()) {
-                case WRITE -> new PermissionDecision.Approved();
+                case READ, WRITE -> new PermissionDecision.Approved();
                 case EXECUTE, DANGEROUS -> new PermissionDecision.NeedsUserApproval(
                         formatPrompt(request));
-                default -> new PermissionDecision.Approved(); // READ already handled
             };
 
             // MODE_NORMAL (default)
