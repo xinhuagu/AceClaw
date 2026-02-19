@@ -268,6 +268,8 @@ public final class StreamingAgentHandler {
 
     private dev.aceclaw.core.llm.LlmClient llmClient;
     private String model;
+    private final java.util.concurrent.atomic.AtomicReference<String> modelOverride =
+            new java.util.concurrent.atomic.AtomicReference<>();
     private String systemPrompt;
     private int maxTokens = 16384;
     private int thinkingBudget = 10240;
@@ -321,6 +323,28 @@ public final class StreamingAgentHandler {
     }
 
     private String getModel() {
+        var override = modelOverride.get();
+        return override != null ? override : model;
+    }
+
+    /**
+     * Returns the current effective model (override or default).
+     */
+    public String getEffectiveModel() {
+        return getModel();
+    }
+
+    /**
+     * Sets a session-level model override. Pass null to clear.
+     */
+    public void setModelOverride(String modelId) {
+        modelOverride.set(modelId);
+    }
+
+    /**
+     * Returns the configured default model.
+     */
+    public String getDefaultModel() {
         return model;
     }
 

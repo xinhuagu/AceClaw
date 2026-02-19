@@ -8,6 +8,18 @@ package dev.aceclaw.core.llm;
 public interface LlmClient {
 
     /**
+     * Lists available models from this provider.
+     *
+     * <p>Not all providers support this. The default implementation returns
+     * an empty list, indicating that model listing is not available.
+     *
+     * @return list of model identifiers, or empty if not supported
+     */
+    default java.util.List<String> listModels() {
+        return java.util.List.of();
+    }
+
+    /**
      * Sends a non-streaming request and blocks until the full response is available.
      *
      * @param request the LLM request

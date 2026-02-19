@@ -203,6 +203,53 @@ public final class OpenAICompatClient implements LlmClient {
     }
 
     @Override
+    public java.util.List<String> listModels() {
+        try {
+            var builder = HttpRequest.newBuilder()
+                    .uri(URI.create(baseUrl + "/v1/models"))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("Content-Type", "application/json")
+                    .GET();
+
+            String token = tokenSupplier != null ? tokenSupplier.get() : null;
+            if (token != null && !token.isBlank() && !"not-configured".equals(token)) {
+                builder.header("Authorization", "Bearer " + token);
+            }
+            for (var entry : extraHeaders.entrySet()) {
+                builder.header(entry.getKey(), entry.getValue());
+            }
+
+            HttpResponse<String> response = httpClient.send(
+                    builder.build(), HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() != 200) {
+                log.debug("Failed to list models from {}: HTTP {}", providerName, response.statusCode());
+                return java.util.List.of();
+            }
+
+            var jsonMapper = new com.fasterxml.jackson.databind.ObjectMapper();
+            var root = jsonMapper.readTree(response.body());
+            var data = root.get("data");
+            if (data == null || !data.isArray()) {
+                return java.util.List.of();
+            }
+
+            var models = new java.util.ArrayList<String>();
+            for (var item : data) {
+                var id = item.path("id").asText(null);
+                if (id != null && !id.isBlank()) {
+                    models.add(id);
+                }
+            }
+            java.util.Collections.sort(models);
+            return models;
+        } catch (Exception e) {
+            log.debug("Failed to list models from {}: {}", providerName, e.getMessage());
+            return java.util.List.of();
+        }
+    }
+
+    @Override
     public String provider() {
         return providerName;
     }

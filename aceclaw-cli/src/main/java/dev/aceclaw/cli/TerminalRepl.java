@@ -318,13 +318,7 @@ public final class TerminalRepl {
             }
 
             case "/model" -> {
-                if (arg.isEmpty()) {
-                    out.println(INFO + "Current model: " + BOLD + sessionInfo.model() + RESET);
-                } else {
-                    out.println(MUTED + "Model switching requires daemon restart. " +
-                            "Set ACECLAW_MODEL=" + arg + " or update config.json." + RESET);
-                }
-                out.flush();
+                handleModelCommand(out, arg);
             }
 
             case "/tools" -> {
@@ -400,6 +394,166 @@ public final class TerminalRepl {
             }
         }
         return false;
+    }
+
+    /**
+     * Handles the /model command: lists available models and allows interactive switching.
+     * If an argument is provided, switches directly to that model.
+     */
+    private void handleModelCommand(PrintWriter out, String arg) {
+        if (client == null) {
+            out.println(WARNING + "Not connected to daemon." + RESET);
+            out.flush();
+            return;
+        }
+        try {
+            // Fetch model list from daemon
+            long id = client.nextRequestId();
+            var request = client.objectMapper().createObjectNode();
+            request.put("jsonrpc", "2.0");
+            request.put("method", "model.list");
+            request.put("id", id);
+            client.writeLine(client.objectMapper().writeValueAsString(request));
+
+            String responseLine = client.readLine(5000);
+            if (responseLine == null) {
+                out.println(WARNING + "Timed out waiting for model list from daemon" + RESET);
+                out.flush();
+                return;
+            }
+
+            var response = client.objectMapper().readTree(responseLine);
+            if (response.has("error")) {
+                out.println(WARNING + "model.list not supported by daemon" + RESET);
+                out.flush();
+                return;
+            }
+
+            var result = response.get("result");
+            String currentModel = result.path("currentModel").asText("");
+            String provider = result.path("provider").asText("");
+            var modelsNode = result.get("models");
+
+            // If arg provided, switch directly
+            if (!arg.isEmpty()) {
+                switchModel(out, arg);
+                return;
+            }
+
+            // Display current model info
+            out.println();
+            out.println(BOLD + "Model Selection" + RESET + MUTED + " (" + provider + ")" + RESET);
+            out.println();
+
+            if (modelsNode == null || !modelsNode.isArray() || modelsNode.isEmpty()) {
+                out.println(INFO + "  Current: " + BOLD + currentModel + RESET);
+                out.println(MUTED + "  (Model listing not supported by this provider. " +
+                        "Use /model <name> to switch directly.)" + RESET);
+                out.println();
+                out.flush();
+                return;
+            }
+
+            // Build numbered list
+            var models = new java.util.ArrayList<String>();
+            for (var m : modelsNode) {
+                models.add(m.asText());
+            }
+
+            for (int i = 0; i < models.size(); i++) {
+                String m = models.get(i);
+                boolean isCurrent = m.equals(currentModel);
+                out.printf("  %s%2d)%s %s%s%s%s%n",
+                        MUTED, i + 1, RESET,
+                        isCurrent ? BOLD + INFO : "",
+                        m,
+                        isCurrent ? " \u2190 current" : "",
+                        RESET);
+            }
+            out.println();
+            out.print(MUTED + "  Select model (number or name, Enter to cancel): " + RESET);
+            out.flush();
+
+            // Read selection
+            var reader = activeReader;
+            if (reader == null) return;
+
+            String selection;
+            try {
+                selection = reader.readLine("");
+            } catch (org.jline.reader.UserInterruptException | org.jline.reader.EndOfFileException e) {
+                out.println();
+                return;
+            }
+
+            if (selection == null || selection.isBlank()) {
+                out.println(MUTED + "  Cancelled." + RESET);
+                out.flush();
+                return;
+            }
+
+            // Resolve selection: number or model name
+            String selectedModel;
+            try {
+                int num = Integer.parseInt(selection.trim());
+                if (num < 1 || num > models.size()) {
+                    out.println(WARNING + "  Invalid selection." + RESET);
+                    out.flush();
+                    return;
+                }
+                selectedModel = models.get(num - 1);
+            } catch (NumberFormatException e) {
+                selectedModel = selection.trim();
+            }
+
+            if (selectedModel.equals(currentModel)) {
+                out.println(MUTED + "  Already using " + currentModel + RESET);
+                out.flush();
+                return;
+            }
+
+            switchModel(out, selectedModel);
+
+        } catch (IOException e) {
+            out.println(ERROR + "Failed to list models: " + e.getMessage() + RESET);
+            out.flush();
+        }
+    }
+
+    /**
+     * Sends a model.switch RPC call to the daemon.
+     */
+    private void switchModel(PrintWriter out, String modelId) {
+        try {
+            long id = client.nextRequestId();
+            var request = client.objectMapper().createObjectNode();
+            request.put("jsonrpc", "2.0");
+            request.put("method", "model.switch");
+            var params = client.objectMapper().createObjectNode();
+            params.put("model", modelId);
+            request.set("params", params);
+            request.put("id", id);
+            client.writeLine(client.objectMapper().writeValueAsString(request));
+
+            String responseLine = client.readLine(5000);
+            if (responseLine == null) {
+                out.println(WARNING + "Timed out waiting for model switch response" + RESET);
+                out.flush();
+                return;
+            }
+
+            var response = client.objectMapper().readTree(responseLine);
+            if (response.has("error")) {
+                var error = response.get("error");
+                out.println(ERROR + "Failed to switch model: " + error.path("message").asText() + RESET);
+            } else {
+                out.println(SUCCESS + "  \u2713 Switched to " + BOLD + modelId + RESET);
+            }
+            out.flush();
+        } catch (IOException e) {
+            out.println(ERROR + "Failed to switch model: " + e.getMessage() + RESET);
+            out.flush();
+        }
     }
 
     /**

@@ -61,18 +61,17 @@ class TerminalReplTest {
     }
 
     @Test
-    void modelWithNoArg_showsCurrentModel() {
+    void modelWithNoArg_showsNotConnectedWhenNullClient() {
         boolean shouldExit = repl.handleSlashCommand(out, "/model");
         assertThat(shouldExit).isFalse();
-        assertThat(outputBuffer.toString()).contains("claude-sonnet-4-5-20250929");
+        assertThat(outputBuffer.toString()).contains("Not connected to daemon");
     }
 
     @Test
-    void modelWithArg_showsSwitchMessage() {
+    void modelWithArg_showsNotConnectedWhenNullClient() {
         boolean shouldExit = repl.handleSlashCommand(out, "/model gpt-4o");
         assertThat(shouldExit).isFalse();
-        String output = outputBuffer.toString();
-        assertThat(output).contains("gpt-4o");
+        assertThat(outputBuffer.toString()).contains("Not connected to daemon");
     }
 
     @Test
