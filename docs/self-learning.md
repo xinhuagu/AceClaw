@@ -26,31 +26,44 @@ This document covers the architecture defined by issues #13–#18.
    │ (per-tool stats)  │  │  tool results) │  │                      │
    └────────┬─────────┘  └───────┬────────┘  └──────────┬───────────┘
             │                     │                       │
-            ▼                     ▼                       ▼
-   ┌──────────────────┐  ┌────────────────┐  ┌──────────────────────┐
-   │ Metrics Snapshot  │  │ ErrorDetector  │  │ SessionEndExtractor  │
-   │ (success rate,    │  │ (error→fix     │  │ (corrections, prefs, │
-   │  avg latency)     │  │  pattern match)│  │  feedback, files)    │
-   └────────┬─────────┘  └───────┬────────┘  └──────────┬───────────┘
-            │                     │                       │
-            │              ┌──────┴──────┐                │
-            │              ▼             ▼                │
-            │     ErrorInsight    PatternInsight          │
-            │                                             │
-            └──────────────┬──────────────────────────────┘
-                           ▼
-                  ┌─────────────────┐
-                  │  AutoMemoryStore │
-                  │ (HMAC-signed    │
-                  │  JSONL storage) │
-                  └────────┬────────┘
-                           ▼
-                  ┌─────────────────┐
-                  │ Memory          │
-                  │ Consolidator    │
-                  │ (dedup, merge,  │
-                  │  age-prune)     │
-                  └─────────────────┘
+            │          ┌──────────┼───────────────────────┘
+            │          ▼          ▼
+            │  ┌────────────────────────────────┐
+            │  │   SelfImprovementEngine        │
+            │  │  (facade: analyze + persist)    │
+            │  │                                 │
+            │  │  ├── ErrorDetector              │
+            │  │  │   (error→fix pattern match)  │
+            │  │  │   → ErrorInsight             │
+            │  │  │                              │
+            │  │  └── PatternDetector            │
+            │  │      (sequences, corrections,   │
+            │  │       workflows, preferences)   │
+            │  │      → PatternInsight           │
+            │  │                                 │
+            │  │  deduplicate + filter (≥0.7)    │
+            │  └──────────────┬─────────────────┘
+            │                 │
+            │          ┌──────┘    ┌──────────────────────┐
+            │          │           │ SessionEndExtractor   │
+            │          │           │ (corrections, prefs,  │
+            │          │           │  feedback, files)     │
+            │          │           └──────────┬────────────┘
+            │          │                      │
+            └──────────┼──────────────────────┘
+                       ▼
+              ┌─────────────────┐
+              │  AutoMemoryStore │
+              │ (HMAC-signed    │
+              │  JSONL storage) │
+              └────────┬────────┘
+                       ▼
+              ┌─────────────────┐
+              │ Memory          │
+              │ Consolidator    │
+              │ (dedup, merge,  │
+              │  age-prune)     │
+              └─────────────────┘
 ```
 
 **Data flow:** The agent loop produces raw signals (tool metrics, turn messages, conversation history). Detectors analyze those signals into typed insights. Insights are persisted as signed memory entries and consolidated at session end.
@@ -192,6 +205,39 @@ AgentLoopConfig
 
 ---
 
+## SelfImprovementEngine
+
+The `SelfImprovementEngine` is the facade that orchestrates all detectors into a unified post-turn learning pipeline. Located in `aceclaw-daemon`, it runs asynchronously on a virtual thread after each agent turn.
+
+**Pipeline:**
+```
+Agent Turn
+  ├── ErrorDetector  → ErrorInsights
+  └── PatternDetector → PatternInsights
+        ↓
+  SelfImprovementEngine (deduplicate + filter)
+        ↓
+  AutoMemoryStore.add() (persist high-confidence insights)
+```
+
+**Key behaviors:**
+
+| Step | Description |
+|------|-------------|
+| **Analyze** | Runs both detectors, collects all insights |
+| **Deduplicate** | Groups by category + Jaccard similarity (>= 0.7), keeps highest-confidence |
+| **Filter** | Only insights with `confidence >= 0.7` pass to persistence |
+| **Memory dedup** | Checks existing `AutoMemoryStore` entries before writing (avoids duplicates) |
+| **Persist** | Writes to AutoMemoryStore with `self-improve:{sessionId}` source tag |
+
+**Integration points:**
+- `StreamingAgentHandler` — holds engine reference via `setSelfImprovementEngine()`, fires async virtual thread after each turn completes
+- `AceClawDaemon.wireAgentHandler()` — creates `ErrorDetector`, `PatternDetector`, and `SelfImprovementEngine`, wires into handler when `memoryStore` is available
+
+**Failure isolation:** All exceptions are caught and logged — the engine never propagates errors to the agent session or blocks the response to the user.
+
+---
+
 ## Strategy Refinement
 
 The `DetectedPattern` record bridges raw detection into the `Insight` hierarchy:
@@ -285,11 +331,11 @@ All extracted entries are capped at 200 characters and tagged for searchability.
 
 ## Related Issues
 
-| Issue | Title |
-|-------|-------|
-| #13 | Insight type hierarchy + DetectedPattern + ToolMetricsCollector |
-| #14 | ErrorDetector for error-correction patterns |
-| #15 | SequenceDetector for repeated tool sequences |
-| #16 | PreferenceDetector for user corrections |
-| #17 | SelfImprovementEngine orchestrator |
-| #18 | Wire self-improvement into AgentSession lifecycle |
+| Issue | Title | Status |
+|-------|-------|--------|
+| #13 | Insight type hierarchy + DetectedPattern + ToolMetricsCollector | Done (PR #19) |
+| #14 | ErrorDetector for error-correction patterns | Done (PR #20) |
+| #15 | PatternDetector for recurring tool sequences and workflows | Done (PR #21) |
+| #16 | SelfImprovementEngine orchestrator + daemon integration | Done (PR #22) |
+| #17 | StrategyRefinement — anti-pattern generation and preference strengthening | Planned |
+| #18 | E2E integration test for self-learning pipeline | Planned |
