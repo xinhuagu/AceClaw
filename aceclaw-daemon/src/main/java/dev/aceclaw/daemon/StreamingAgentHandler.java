@@ -181,6 +181,26 @@ public final class StreamingAgentHandler {
                 logTurnToJournal(prompt, turn);
             }
 
+            // Run self-improvement analysis asynchronously (fire-and-forget)
+            if (selfImprovementEngine != null) {
+                final var turnRef = turn;
+                final var historyRef = session.messages();
+                final var sessionIdRef = sessionId;
+                final var projectPathRef = session.projectPath();
+                Thread.ofVirtual().name("self-improve-" + sessionId.substring(0, 8)).start(() -> {
+                    try {
+                        var insights = selfImprovementEngine.analyze(turnRef, historyRef, Map.of());
+                        if (!insights.isEmpty()) {
+                            int persisted = selfImprovementEngine.persist(insights, sessionIdRef, projectPathRef);
+                            log.debug("Self-improvement: {} insights analyzed, {} persisted (session={})",
+                                    insights.size(), persisted, sessionIdRef);
+                        }
+                    } catch (Exception e) {
+                        log.warn("Self-improvement analysis failed: {}", e.getMessage());
+                    }
+                });
+            }
+
             // Build the final response
             var result = objectMapper.createObjectNode();
             result.put("sessionId", sessionId);
@@ -277,6 +297,7 @@ public final class StreamingAgentHandler {
     private AutoMemoryStore memoryStore;
     private DailyJournal dailyJournal;
     private Path workingDir;
+    private SelfImprovementEngine selfImprovementEngine;
 
     /**
      * Sets the LLM configuration for permission-aware agent loop creation.
@@ -316,6 +337,13 @@ public final class StreamingAgentHandler {
      */
     public void setDailyJournal(DailyJournal dailyJournal) {
         this.dailyJournal = dailyJournal;
+    }
+
+    /**
+     * Sets the self-improvement engine for post-turn learning analysis.
+     */
+    public void setSelfImprovementEngine(SelfImprovementEngine selfImprovementEngine) {
+        this.selfImprovementEngine = selfImprovementEngine;
     }
 
     private dev.aceclaw.core.llm.LlmClient getLlmClient() {

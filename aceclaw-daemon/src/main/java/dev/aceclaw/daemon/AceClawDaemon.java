@@ -245,6 +245,16 @@ public final class AceClawDaemon {
         if (journal != null) {
             agentHandler.setDailyJournal(journal);
         }
+
+        // 9. Self-improvement engine (post-turn learning analysis)
+        if (memoryStore != null) {
+            var errorDetector = new ErrorDetector(memoryStore);
+            var patternDetector = new PatternDetector(memoryStore);
+            var selfImprovementEngine = new SelfImprovementEngine(errorDetector, patternDetector, memoryStore);
+            agentHandler.setSelfImprovementEngine(selfImprovementEngine);
+            log.info("Self-improvement engine wired");
+        }
+
         agentHandler.register(router);
 
         // Session-end memory extraction + consolidation
