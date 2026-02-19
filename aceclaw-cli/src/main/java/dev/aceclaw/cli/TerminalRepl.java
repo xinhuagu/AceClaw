@@ -411,11 +411,20 @@ public final class TerminalRepl {
             return;
         }
         try {
+            // If arg provided, switch directly without listing
+            if (!arg.isEmpty()) {
+                switchModel(out, arg);
+                return;
+            }
+
             // Fetch model list from daemon
             long id = client.nextRequestId();
             var request = client.objectMapper().createObjectNode();
             request.put("jsonrpc", "2.0");
             request.put("method", "model.list");
+            var listParams = client.objectMapper().createObjectNode();
+            listParams.put("sessionId", sessionId);
+            request.set("params", listParams);
             request.put("id", id);
             client.writeLine(client.objectMapper().writeValueAsString(request));
 
@@ -437,12 +446,6 @@ public final class TerminalRepl {
             String currentModel = result.path("currentModel").asText("");
             String provider = result.path("provider").asText("");
             var modelsNode = result.get("models");
-
-            // If arg provided, switch directly
-            if (!arg.isEmpty()) {
-                switchModel(out, arg);
-                return;
-            }
 
             // Display current model info
             out.println();
@@ -535,6 +538,7 @@ public final class TerminalRepl {
             request.put("method", "model.switch");
             var params = client.objectMapper().createObjectNode();
             params.put("model", modelId);
+            params.put("sessionId", sessionId);
             request.set("params", params);
             request.put("id", id);
             client.writeLine(client.objectMapper().writeValueAsString(request));
