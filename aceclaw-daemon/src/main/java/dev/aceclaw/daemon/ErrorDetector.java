@@ -120,19 +120,22 @@ public final class ErrorDetector {
             }
 
             for (var block : blocks) {
-                if (block instanceof ContentBlock.ToolUse tu) {
-                    toolUseMap.put(tu.id(), new ToolCall(tu.name(), tu.inputJson(), order++));
-                } else if (block instanceof ContentBlock.ToolResult tr) {
-                    var call = toolUseMap.get(tr.toolUseId());
-                    if (call == null) continue;
+                switch (block) {
+                    case ContentBlock.ToolUse tu ->
+                            toolUseMap.put(tu.id(), new ToolCall(tu.name(), tu.inputJson(), order++));
+                    case ContentBlock.ToolResult tr -> {
+                        var call = toolUseMap.get(tr.toolUseId());
+                        if (call == null) continue;
 
-                    int resultOrder = order++;
-                    if (tr.isError()) {
-                        errorResults.add(new ErrorResult(tr.toolUseId(), call.name, tr.content(), resultOrder));
-                    } else {
-                        successByTool.computeIfAbsent(call.name, _ -> new ArrayList<>())
-                                .add(new SuccessResult(tr.toolUseId(), resultOrder));
+                        int resultOrder = order++;
+                        if (tr.isError()) {
+                            errorResults.add(new ErrorResult(tr.toolUseId(), call.name, tr.content(), resultOrder));
+                        } else {
+                            successByTool.computeIfAbsent(call.name, _ -> new ArrayList<>())
+                                    .add(new SuccessResult(tr.toolUseId(), resultOrder));
+                        }
                     }
+                    case ContentBlock.Text _, ContentBlock.Thinking _ -> { }
                 }
             }
         }
