@@ -1,5 +1,7 @@
 package dev.aceclaw.mcp;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -14,6 +16,20 @@ class McpServerConfigTest {
 
     @TempDir
     Path tempDir;
+
+    private String originalUserHome;
+
+    @BeforeEach
+    void isolateUserHome() {
+        originalUserHome = System.getProperty("user.home");
+        // Point user.home to tempDir so tests don't pick up real ~/.aceclaw/mcp-servers.json
+        System.setProperty("user.home", tempDir.toString());
+    }
+
+    @AfterEach
+    void restoreUserHome() {
+        System.setProperty("user.home", originalUserHome);
+    }
 
     @Test
     void parseValidStdioConfig() throws IOException {

@@ -110,6 +110,9 @@ public final class McpResourceBridge {
      * @throws IllegalArgumentException if the server is unknown or not connected
      */
     public List<ResourceContent> readResource(String serverName, String uri) {
+        if (uri == null || uri.isBlank()) {
+            throw new IllegalArgumentException("Resource URI must not be null or blank");
+        }
         var client = clientManager.client(serverName);
         if (client == null) {
             throw new IllegalArgumentException("MCP server '%s' is not connected".formatted(serverName));
@@ -124,6 +127,8 @@ public final class McpResourceBridge {
                 contents.add(new ResourceContent(text.uri(), text.mimeType(), text.text(), null));
             } else if (c instanceof McpSchema.BlobResourceContents blob) {
                 contents.add(new ResourceContent(blob.uri(), blob.mimeType(), null, blob.blob()));
+            } else {
+                log.debug("Unknown MCP resource content type: {}", c.getClass().getSimpleName());
             }
         }
 

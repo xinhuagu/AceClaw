@@ -121,16 +121,15 @@ public final class McpClientManager implements AutoCloseable {
      * Returns the health status of each configured server, refreshed via ping.
      */
     public Map<String, ServerStatus> serverStatus() {
-        // Refresh status of connected clients via ping
+        // Refresh status of all clients with an entry (including FAILED — they may have recovered)
         for (var entry : clients.entrySet()) {
             var serverName = entry.getKey();
-            if (statuses.get(serverName) == ServerStatus.CONNECTED) {
-                try {
-                    entry.getValue().ping();
-                } catch (Exception e) {
-                    log.warn("MCP server '{}' ping failed: {}", serverName, e.getMessage());
-                    statuses.put(serverName, ServerStatus.FAILED);
-                }
+            try {
+                entry.getValue().ping();
+                statuses.put(serverName, ServerStatus.CONNECTED);
+            } catch (Exception e) {
+                log.warn("MCP server '{}' ping failed: {}", serverName, e.getMessage());
+                statuses.put(serverName, ServerStatus.FAILED);
             }
         }
         return Collections.unmodifiableMap(new LinkedHashMap<>(statuses));
@@ -148,6 +147,7 @@ public final class McpClientManager implements AutoCloseable {
             try {
                 entry.getValue().ping();
                 results.put(serverName, true);
+                statuses.put(serverName, ServerStatus.CONNECTED);
             } catch (Exception e) {
                 log.warn("MCP server '{}' ping failed: {}", serverName, e.getMessage());
                 results.put(serverName, false);
@@ -236,7 +236,17 @@ public final class McpClientManager implements AutoCloseable {
                 .requestTimeout(REQUEST_TIMEOUT)
                 .build();
 
-        client.initialize();
+        try {
+            client.initialize();
+        } catch (Exception e) {
+            // Clean up transport resources on initialization failure
+            try {
+                client.closeGracefully();
+            } catch (Exception closeEx) {
+                log.debug("Cleanup after failed init for '{}': {}", serverName, closeEx.getMessage());
+            }
+            throw e;
+        }
         log.info("MCP server '{}' initialized successfully", serverName);
 
         return client;
