@@ -184,7 +184,7 @@ public final class StreamingAgentHandler {
             // Run self-improvement analysis asynchronously (fire-and-forget)
             if (selfImprovementEngine != null) {
                 final var turnRef = turn;
-                final var historyRef = session.messages();
+                final var historyRef = List.copyOf(session.messages());
                 final var sessionIdRef = sessionId;
                 final var projectPathRef = session.projectPath();
                 Thread.ofVirtual().name("self-improve-" + sessionId.substring(0, 8)).start(() -> {
