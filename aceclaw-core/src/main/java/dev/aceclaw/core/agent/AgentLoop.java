@@ -1,9 +1,13 @@
 package dev.aceclaw.core.agent;
 
 import dev.aceclaw.core.llm.*;
+import dev.aceclaw.infra.event.AgentEvent;
+import dev.aceclaw.infra.event.EventBus;
+import dev.aceclaw.infra.event.ToolEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.StructuredTaskScope;
@@ -34,6 +38,7 @@ public final class AgentLoop {
     private final ToolRegistry toolRegistry;
     private final String model;
     private final String systemPrompt;
+    private final AgentLoopConfig config;
 
     /**
      * Creates an agent loop.
@@ -44,10 +49,25 @@ public final class AgentLoop {
      * @param systemPrompt system prompt for the LLM (may be null)
      */
     public AgentLoop(LlmClient llmClient, ToolRegistry toolRegistry, String model, String systemPrompt) {
+        this(llmClient, toolRegistry, model, systemPrompt, AgentLoopConfig.EMPTY);
+    }
+
+    /**
+     * Creates an agent loop with optional integrations.
+     *
+     * @param llmClient    the LLM client for sending requests
+     * @param toolRegistry registry of available tools
+     * @param model        model identifier
+     * @param systemPrompt system prompt for the LLM (may be null)
+     * @param config       optional integrations config
+     */
+    public AgentLoop(LlmClient llmClient, ToolRegistry toolRegistry, String model,
+                     String systemPrompt, AgentLoopConfig config) {
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry;
         this.model = model;
         this.systemPrompt = systemPrompt;
+        this.config = config != null ? config : AgentLoopConfig.EMPTY;
     }
 
     /**
@@ -60,6 +80,10 @@ public final class AgentLoop {
      * @throws LlmException if the LLM call fails
      */
     public Turn runTurn(String userPrompt, List<Message> conversationHistory) throws LlmException {
+        long turnStart = System.currentTimeMillis();
+        int turnNumber = conversationHistory.size() / 2 + 1;
+        publishEvent(new AgentEvent.TurnStarted(config.sessionId(), turnNumber, Instant.now()));
+
         var newMessages = new ArrayList<Message>();
         var allMessages = new ArrayList<>(conversationHistory);
 
@@ -73,53 +97,67 @@ public final class AgentLoop {
         int totalCacheCreationTokens = 0;
         int totalCacheReadTokens = 0;
 
-        for (int iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
-            log.debug("ReAct iteration {} (messages: {})", iteration + 1, allMessages.size());
+        try {
+            for (int iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+                log.debug("ReAct iteration {} (messages: {})", iteration + 1, allMessages.size());
 
-            // Build and send the LLM request
-            var request = buildRequest(allMessages);
-            var response = llmClient.sendMessage(request);
+                // Build and send the LLM request
+                var request = buildRequest(allMessages);
+                var response = llmClient.sendMessage(request);
 
-            // Accumulate usage
-            var usage = response.usage();
-            totalInputTokens += usage.inputTokens();
-            totalOutputTokens += usage.outputTokens();
-            totalCacheCreationTokens += usage.cacheCreationInputTokens();
-            totalCacheReadTokens += usage.cacheReadInputTokens();
+                // Accumulate usage
+                var usage = response.usage();
+                totalInputTokens += usage.inputTokens();
+                totalOutputTokens += usage.outputTokens();
+                totalCacheCreationTokens += usage.cacheCreationInputTokens();
+                totalCacheReadTokens += usage.cacheReadInputTokens();
 
-            // Add assistant message to conversation
-            var assistantMessage = new Message.AssistantMessage(response.content());
-            allMessages.add(assistantMessage);
-            newMessages.add(assistantMessage);
+                // Add assistant message to conversation
+                var assistantMessage = new Message.AssistantMessage(response.content());
+                allMessages.add(assistantMessage);
+                newMessages.add(assistantMessage);
 
-            // Check stop reason
-            switch (response.stopReason()) {
-                case END_TURN, MAX_TOKENS, STOP_SEQUENCE, ERROR -> {
-                    log.debug("Turn complete: stopReason={}, iterations={}",
-                            response.stopReason(), iteration + 1);
-                    var totalUsage = new Usage(
-                            totalInputTokens, totalOutputTokens,
-                            totalCacheCreationTokens, totalCacheReadTokens);
-                    return new Turn(newMessages, response.stopReason(), totalUsage);
-                }
-                case TOOL_USE -> {
-                    var toolUseBlocks = response.toolUseBlocks();
-                    log.debug("Tool use requested: {} tool(s)", toolUseBlocks.size());
+                // Check stop reason
+                switch (response.stopReason()) {
+                    case END_TURN, MAX_TOKENS, STOP_SEQUENCE, ERROR -> {
+                        log.debug("Turn complete: stopReason={}, iterations={}",
+                                response.stopReason(), iteration + 1);
+                        var totalUsage = new Usage(
+                                totalInputTokens, totalOutputTokens,
+                                totalCacheCreationTokens, totalCacheReadTokens);
+                        var turn = new Turn(newMessages, response.stopReason(), totalUsage);
+                        long durationMs = System.currentTimeMillis() - turnStart;
+                        publishEvent(new AgentEvent.TurnCompleted(
+                                config.sessionId(), turnNumber, durationMs, Instant.now()));
+                        return turn;
+                    }
+                    case TOOL_USE -> {
+                        var toolUseBlocks = response.toolUseBlocks();
+                        log.debug("Tool use requested: {} tool(s)", toolUseBlocks.size());
 
-                    var toolResults = executeTools(toolUseBlocks);
-                    var toolResultMessage = Message.toolResults(toolResults);
-                    allMessages.add(toolResultMessage);
-                    newMessages.add(toolResultMessage);
+                        var toolResults = executeTools(toolUseBlocks);
+                        var toolResultMessage = Message.toolResults(toolResults);
+                        allMessages.add(toolResultMessage);
+                        newMessages.add(toolResultMessage);
+                    }
                 }
             }
-        }
 
-        // Exceeded max iterations — return what we have
-        log.warn("ReAct loop exceeded max iterations ({})", MAX_ITERATIONS);
-        var totalUsage = new Usage(
-                totalInputTokens, totalOutputTokens,
-                totalCacheCreationTokens, totalCacheReadTokens);
-        return new Turn(newMessages, StopReason.END_TURN, totalUsage);
+            // Exceeded max iterations — return what we have
+            log.warn("ReAct loop exceeded max iterations ({})", MAX_ITERATIONS);
+            var totalUsage = new Usage(
+                    totalInputTokens, totalOutputTokens,
+                    totalCacheCreationTokens, totalCacheReadTokens);
+            var turn = new Turn(newMessages, StopReason.END_TURN, totalUsage);
+            long durationMs = System.currentTimeMillis() - turnStart;
+            publishEvent(new AgentEvent.TurnCompleted(
+                    config.sessionId(), turnNumber, durationMs, Instant.now()));
+            return turn;
+        } catch (LlmException e) {
+            publishEvent(new AgentEvent.TurnError(
+                    config.sessionId(), turnNumber, e.getMessage(), Instant.now()));
+            throw e;
+        }
     }
 
     private LlmRequest buildRequest(List<Message> messages) {
@@ -171,6 +209,18 @@ public final class AgentLoop {
     }
 
     private ContentBlock.ToolResult executeSingleTool(ContentBlock.ToolUse toolUse) {
+        // Check permission before execution
+        if (config.permissionChecker() != null) {
+            var permResult = config.permissionChecker().check(toolUse.name(), toolUse.inputJson());
+            if (!permResult.allowed()) {
+                log.info("Tool {} denied: {}", toolUse.name(), permResult.reason());
+                publishEvent(new ToolEvent.PermissionDenied(
+                        config.sessionId(), toolUse.name(), permResult.reason(), Instant.now()));
+                return new ContentBlock.ToolResult(
+                        toolUse.id(), "Permission denied: " + toolUse.name(), true);
+            }
+        }
+
         var toolOpt = toolRegistry.get(toolUse.name());
         if (toolOpt.isEmpty()) {
             log.warn("Unknown tool requested: {}", toolUse.name());
@@ -178,14 +228,29 @@ public final class AgentLoop {
         }
 
         var tool = toolOpt.get();
+        publishEvent(new ToolEvent.Invoked(config.sessionId(), tool.name(), Instant.now()));
+        long toolStart = System.currentTimeMillis();
+
         try {
             log.debug("Executing tool: {} (id: {})", tool.name(), toolUse.id());
             var result = tool.execute(toolUse.inputJson());
+            long toolDuration = System.currentTimeMillis() - toolStart;
             log.debug("Tool {} completed: isError={}", tool.name(), result.isError());
+            publishEvent(new ToolEvent.Completed(
+                    config.sessionId(), tool.name(), toolDuration, result.isError(), Instant.now()));
             return new ContentBlock.ToolResult(toolUse.id(), result.output(), result.isError());
         } catch (Exception e) {
+            long toolDuration = System.currentTimeMillis() - toolStart;
             log.error("Tool {} threw exception: {}", tool.name(), e.getMessage(), e);
+            publishEvent(new ToolEvent.Completed(
+                    config.sessionId(), tool.name(), toolDuration, true, Instant.now()));
             return new ContentBlock.ToolResult(toolUse.id(), "Tool error: " + e.getMessage(), true);
+        }
+    }
+
+    private void publishEvent(dev.aceclaw.infra.event.AceClawEvent event) {
+        if (config.eventBus() != null) {
+            config.eventBus().publish(event);
         }
     }
 }

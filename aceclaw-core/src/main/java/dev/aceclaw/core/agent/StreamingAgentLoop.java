@@ -3,9 +3,12 @@ package dev.aceclaw.core.agent;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.llm.*;
+import dev.aceclaw.infra.event.AgentEvent;
+import dev.aceclaw.infra.event.ToolEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -42,38 +45,37 @@ public final class StreamingAgentLoop {
     private final int maxTokens;
     private final int thinkingBudget;
     private final MessageCompactor compactor;
+    private final AgentLoopConfig config;
 
     /**
      * Creates a streaming agent loop with default token settings and no compaction.
-     *
-     * @param llmClient    the LLM client for streaming requests
-     * @param toolRegistry registry of available tools
-     * @param model        model identifier
-     * @param systemPrompt system prompt for the LLM (may be null)
      */
     public StreamingAgentLoop(LlmClient llmClient, ToolRegistry toolRegistry,
                               String model, String systemPrompt) {
-        this(llmClient, toolRegistry, model, systemPrompt, 16384, 10240, null);
+        this(llmClient, toolRegistry, model, systemPrompt, 16384, 10240, null, AgentLoopConfig.EMPTY);
     }
 
     /**
      * Creates a streaming agent loop with configurable token settings and no compaction.
-     *
-     * @param llmClient      the LLM client for streaming requests
-     * @param toolRegistry   registry of available tools
-     * @param model          model identifier
-     * @param systemPrompt   system prompt for the LLM (may be null)
-     * @param maxTokens      maximum tokens to generate per request
-     * @param thinkingBudget tokens reserved for extended thinking (0 = disabled)
      */
     public StreamingAgentLoop(LlmClient llmClient, ToolRegistry toolRegistry,
                               String model, String systemPrompt,
                               int maxTokens, int thinkingBudget) {
-        this(llmClient, toolRegistry, model, systemPrompt, maxTokens, thinkingBudget, null);
+        this(llmClient, toolRegistry, model, systemPrompt, maxTokens, thinkingBudget, null, AgentLoopConfig.EMPTY);
     }
 
     /**
      * Creates a streaming agent loop with full configuration including compaction.
+     */
+    public StreamingAgentLoop(LlmClient llmClient, ToolRegistry toolRegistry,
+                              String model, String systemPrompt,
+                              int maxTokens, int thinkingBudget,
+                              MessageCompactor compactor) {
+        this(llmClient, toolRegistry, model, systemPrompt, maxTokens, thinkingBudget, compactor, AgentLoopConfig.EMPTY);
+    }
+
+    /**
+     * Creates a streaming agent loop with full configuration including integrations.
      *
      * @param llmClient      the LLM client for streaming requests
      * @param toolRegistry   registry of available tools
@@ -82,11 +84,12 @@ public final class StreamingAgentLoop {
      * @param maxTokens      maximum tokens to generate per request
      * @param thinkingBudget tokens reserved for extended thinking (0 = disabled)
      * @param compactor      optional message compactor (null = no compaction)
+     * @param config         optional integrations config
      */
     public StreamingAgentLoop(LlmClient llmClient, ToolRegistry toolRegistry,
                               String model, String systemPrompt,
                               int maxTokens, int thinkingBudget,
-                              MessageCompactor compactor) {
+                              MessageCompactor compactor, AgentLoopConfig config) {
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry;
         this.model = model;
@@ -94,20 +97,11 @@ public final class StreamingAgentLoop {
         this.maxTokens = maxTokens;
         this.thinkingBudget = thinkingBudget;
         this.compactor = compactor;
+        this.config = config != null ? config : AgentLoopConfig.EMPTY;
     }
 
     /**
      * Runs a single agent turn with streaming, invoking the handler for real-time token delivery.
-     *
-     * <p>If a {@link MessageCompactor} is configured, context size is checked before each
-     * LLM call. Uses actual {@code inputTokens} from API responses when available, falling
-     * back to character-based estimation for the first call.
-     *
-     * @param userPrompt          the user's prompt text
-     * @param conversationHistory previous messages in the conversation
-     * @param handler             callback for streaming events
-     * @return the turn result containing all new messages and usage statistics
-     * @throws LlmException if the LLM call fails
      */
     public Turn runTurn(String userPrompt, List<Message> conversationHistory, StreamEventHandler handler)
             throws LlmException {
@@ -116,28 +110,14 @@ public final class StreamingAgentLoop {
 
     /**
      * Runs a single agent turn with streaming and cancellation support.
-     *
-     * <p>When a non-null {@link CancellationToken} is provided, the loop checks
-     * for cancellation at three well-defined checkpoints:
-     * <ol>
-     *   <li>Before each LLM call — returns immediately with accumulated messages</li>
-     *   <li>After the SSE stream completes — flushes partial content, returns</li>
-     *   <li>After tool execution — tools finish, then returns</li>
-     * </ol>
-     *
-     * <p>The token also propagates cancellation to the active {@link StreamSession}
-     * so that an in-flight SSE stream is interrupted immediately.
-     *
-     * @param userPrompt          the user's prompt text
-     * @param conversationHistory previous messages in the conversation
-     * @param handler             callback for streaming events
-     * @param cancellationToken   optional cancellation token (null = no cancellation support)
-     * @return the turn result containing all new messages and usage statistics
-     * @throws LlmException if the LLM call fails
      */
     public Turn runTurn(String userPrompt, List<Message> conversationHistory,
                         StreamEventHandler handler, CancellationToken cancellationToken)
             throws LlmException {
+        long turnStart = System.currentTimeMillis();
+        int turnNumber = conversationHistory.size() / 2 + 1;
+        publishEvent(new AgentEvent.TurnStarted(config.sessionId(), turnNumber, Instant.now()));
+
         var newMessages = new ArrayList<Message>();
         var allMessages = new ArrayList<>(conversationHistory);
 
@@ -157,137 +137,155 @@ public final class StreamingAgentLoop {
         // Track compaction result across iterations
         CompactionResult compactionResult = null;
 
-        for (int iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+        try {
+            for (int iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
 
-            // Checkpoint 1: before LLM call
-            if (cancellationToken != null && cancellationToken.isCancelled()) {
-                log.info("Cancellation detected before LLM call (iteration {})", iteration + 1);
-                return buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
-                        totalCacheCreationTokens, totalCacheReadTokens, compactionResult);
-            }
+                // Checkpoint 1: before LLM call
+                if (cancellationToken != null && cancellationToken.isCancelled()) {
+                    log.info("Cancellation detected before LLM call (iteration {})", iteration + 1);
+                    var turn = buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
+                            totalCacheCreationTokens, totalCacheReadTokens, compactionResult);
+                    publishTurnCompleted(turnNumber, turnStart);
+                    return turn;
+                }
 
-            // Check if context compaction is needed before this LLM call
-            if (compactor != null) {
-                compactionResult = checkAndCompact(
-                        allMessages, lastInputTokens, compactionResult, handler);
-            }
+                // Check if context compaction is needed before this LLM call
+                if (compactor != null) {
+                    compactionResult = checkAndCompact(
+                            allMessages, lastInputTokens, compactionResult, handler);
+                }
 
-            log.debug("Streaming ReAct iteration {} (messages: {})", iteration + 1, allMessages.size());
+                log.debug("Streaming ReAct iteration {} (messages: {})", iteration + 1, allMessages.size());
 
-            var request = buildRequest(allMessages);
+                var request = buildRequest(allMessages);
 
-            // Stream the response, accumulating content blocks
-            var accumulator = new StreamAccumulator(handler);
-            var session = llmClient.streamMessage(request);
+                // Stream the response, accumulating content blocks
+                var accumulator = new StreamAccumulator(handler);
+                var session = llmClient.streamMessage(request);
 
-            // Register the session with the cancellation token so cancel() propagates
-            if (cancellationToken != null) {
-                cancellationToken.setActiveSession(session);
-            }
-            try {
-                session.onEvent(accumulator);
-            } finally {
+                // Register the session with the cancellation token so cancel() propagates
                 if (cancellationToken != null) {
-                    cancellationToken.setActiveSession(null);
+                    cancellationToken.setActiveSession(session);
                 }
-            }
+                try {
+                    session.onEvent(accumulator);
+                } finally {
+                    if (cancellationToken != null) {
+                        cancellationToken.setActiveSession(null);
+                    }
+                }
 
-            // Checkpoint 2: after stream completes
-            if (cancellationToken != null && cancellationToken.isCancelled()) {
-                log.info("Cancellation detected after stream (iteration {})", iteration + 1);
-                // Flush any partial content from the accumulator
-                var partialBlocks = accumulator.buildContentBlocks();
-                if (!partialBlocks.isEmpty()) {
-                    var partialMessage = new Message.AssistantMessage(partialBlocks);
-                    newMessages.add(partialMessage);
+                // Checkpoint 2: after stream completes
+                if (cancellationToken != null && cancellationToken.isCancelled()) {
+                    log.info("Cancellation detected after stream (iteration {})", iteration + 1);
+                    var partialBlocks = accumulator.buildContentBlocks();
+                    if (!partialBlocks.isEmpty()) {
+                        var partialMessage = new Message.AssistantMessage(partialBlocks);
+                        newMessages.add(partialMessage);
+                    }
+                    if (accumulator.usage != null) {
+                        totalInputTokens += accumulator.usage.inputTokens();
+                        totalOutputTokens += accumulator.usage.outputTokens();
+                        totalCacheCreationTokens += accumulator.usage.cacheCreationInputTokens();
+                        totalCacheReadTokens += accumulator.usage.cacheReadInputTokens();
+                    }
+                    var turn = buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
+                            totalCacheCreationTokens, totalCacheReadTokens, compactionResult);
+                    publishTurnCompleted(turnNumber, turnStart);
+                    return turn;
                 }
-                // Include usage from this partial stream
+
+                // Check for stream errors
+                if (accumulator.error != null) {
+                    throw accumulator.error;
+                }
+
+                // Accumulate usage and track actual input tokens
                 if (accumulator.usage != null) {
                     totalInputTokens += accumulator.usage.inputTokens();
                     totalOutputTokens += accumulator.usage.outputTokens();
                     totalCacheCreationTokens += accumulator.usage.cacheCreationInputTokens();
                     totalCacheReadTokens += accumulator.usage.cacheReadInputTokens();
+                    lastInputTokens = accumulator.usage.inputTokens();
                 }
-                return buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
-                        totalCacheCreationTokens, totalCacheReadTokens, compactionResult);
-            }
 
-            // Check for stream errors
-            if (accumulator.error != null) {
-                throw accumulator.error;
-            }
+                // Build assistant message from accumulated content
+                var contentBlocks = accumulator.buildContentBlocks();
 
-            // Accumulate usage and track actual input tokens
-            if (accumulator.usage != null) {
-                totalInputTokens += accumulator.usage.inputTokens();
-                totalOutputTokens += accumulator.usage.outputTokens();
-                totalCacheCreationTokens += accumulator.usage.cacheCreationInputTokens();
-                totalCacheReadTokens += accumulator.usage.cacheReadInputTokens();
-                lastInputTokens = accumulator.usage.inputTokens();
-            }
-
-            // Build assistant message from accumulated content
-            var contentBlocks = accumulator.buildContentBlocks();
-
-            // Fallback: some local models (e.g. Ollama) return tool calls as plain
-            // text JSON instead of proper tool_calls. Detect and convert them.
-            var stopReason = accumulator.stopReason != null ? accumulator.stopReason : StopReason.ERROR;
-            if (stopReason == StopReason.END_TURN) {
-                var converted = tryConvertTextToToolUse(contentBlocks);
-                if (converted != null) {
-                    contentBlocks = converted;
-                    stopReason = StopReason.TOOL_USE;
-                    log.info("Converted text-based tool call to native ToolUse block");
+                // Fallback: some local models return tool calls as plain text JSON
+                var stopReason = accumulator.stopReason != null ? accumulator.stopReason : StopReason.ERROR;
+                if (stopReason == StopReason.END_TURN) {
+                    var converted = tryConvertTextToToolUse(contentBlocks);
+                    if (converted != null) {
+                        contentBlocks = converted;
+                        stopReason = StopReason.TOOL_USE;
+                        log.info("Converted text-based tool call to native ToolUse block");
+                    }
                 }
-            }
 
-            var assistantMessage = new Message.AssistantMessage(contentBlocks);
-            allMessages.add(assistantMessage);
-            newMessages.add(assistantMessage);
+                var assistantMessage = new Message.AssistantMessage(contentBlocks);
+                allMessages.add(assistantMessage);
+                newMessages.add(assistantMessage);
 
-            // Check stop reason
-            switch (stopReason) {
-                case END_TURN, MAX_TOKENS, STOP_SEQUENCE, ERROR -> {
-                    log.debug("Streaming turn complete: stopReason={}, iterations={}",
-                            stopReason, iteration + 1);
-                    var totalUsage = new Usage(
-                            totalInputTokens, totalOutputTokens,
-                            totalCacheCreationTokens, totalCacheReadTokens);
-                    return new Turn(newMessages, stopReason, totalUsage, compactionResult);
-                }
-                case TOOL_USE -> {
-                    var toolUseBlocks = contentBlocks.stream()
-                            .filter(b -> b instanceof ContentBlock.ToolUse)
-                            .map(b -> (ContentBlock.ToolUse) b)
-                            .toList();
-                    log.debug("Streaming tool use requested: {} tool(s)", toolUseBlocks.size());
+                // Check stop reason
+                switch (stopReason) {
+                    case END_TURN, MAX_TOKENS, STOP_SEQUENCE, ERROR -> {
+                        log.debug("Streaming turn complete: stopReason={}, iterations={}",
+                                stopReason, iteration + 1);
+                        var totalUsage = new Usage(
+                                totalInputTokens, totalOutputTokens,
+                                totalCacheCreationTokens, totalCacheReadTokens);
+                        var turn = new Turn(newMessages, stopReason, totalUsage, compactionResult);
+                        publishTurnCompleted(turnNumber, turnStart);
+                        return turn;
+                    }
+                    case TOOL_USE -> {
+                        var toolUseBlocks = contentBlocks.stream()
+                                .filter(b -> b instanceof ContentBlock.ToolUse)
+                                .map(b -> (ContentBlock.ToolUse) b)
+                                .toList();
+                        log.debug("Streaming tool use requested: {} tool(s)", toolUseBlocks.size());
 
-                    var toolResults = executeTools(toolUseBlocks);
-                    var toolResultMessage = Message.toolResults(toolResults);
-                    allMessages.add(toolResultMessage);
-                    newMessages.add(toolResultMessage);
+                        var toolResults = executeTools(toolUseBlocks);
+                        var toolResultMessage = Message.toolResults(toolResults);
+                        allMessages.add(toolResultMessage);
+                        newMessages.add(toolResultMessage);
 
-                    // Checkpoint 3: after tool execution
-                    if (cancellationToken != null && cancellationToken.isCancelled()) {
-                        log.info("Cancellation detected after tool execution (iteration {})", iteration + 1);
-                        return buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
-                                totalCacheCreationTokens, totalCacheReadTokens, compactionResult);
+                        // Checkpoint 3: after tool execution
+                        if (cancellationToken != null && cancellationToken.isCancelled()) {
+                            log.info("Cancellation detected after tool execution (iteration {})", iteration + 1);
+                            var turn = buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
+                                    totalCacheCreationTokens, totalCacheReadTokens, compactionResult);
+                            publishTurnCompleted(turnNumber, turnStart);
+                            return turn;
+                        }
                     }
                 }
             }
-        }
 
-        // Exceeded max iterations
-        log.warn("Streaming ReAct loop exceeded max iterations ({})", MAX_ITERATIONS);
-        var totalUsage = new Usage(
-                totalInputTokens, totalOutputTokens,
-                totalCacheCreationTokens, totalCacheReadTokens);
-        return new Turn(newMessages, StopReason.END_TURN, totalUsage, compactionResult);
+            // Exceeded max iterations
+            log.warn("Streaming ReAct loop exceeded max iterations ({})", MAX_ITERATIONS);
+            var totalUsage = new Usage(
+                    totalInputTokens, totalOutputTokens,
+                    totalCacheCreationTokens, totalCacheReadTokens);
+            var turn = new Turn(newMessages, StopReason.END_TURN, totalUsage, compactionResult);
+            publishTurnCompleted(turnNumber, turnStart);
+            return turn;
+        } catch (LlmException e) {
+            publishEvent(new AgentEvent.TurnError(
+                    config.sessionId(), turnNumber, e.getMessage(), Instant.now()));
+            throw e;
+        }
+    }
+
+    private void publishTurnCompleted(int turnNumber, long turnStart) {
+        long durationMs = System.currentTimeMillis() - turnStart;
+        publishEvent(new AgentEvent.TurnCompleted(
+                config.sessionId(), turnNumber, durationMs, Instant.now()));
     }
 
     /**
      * Builds a Turn result for a cancelled agent turn.
-     * Uses END_TURN as the stop reason (the client already handles displaying "[Cancelled]").
      */
     private static Turn buildCancelledTurn(List<Message> newMessages,
                                            int totalInputTokens, int totalOutputTokens,
@@ -300,9 +298,6 @@ public final class StreamingAgentLoop {
 
     /**
      * Checks if compaction is needed and runs it if so.
-     * Uses actual API token count when available, falls back to estimation.
-     *
-     * @return the compaction result (possibly from a previous iteration), or null
      */
     private CompactionResult checkAndCompact(
             ArrayList<Message> allMessages, int lastInputTokens,
@@ -310,10 +305,8 @@ public final class StreamingAgentLoop {
 
         boolean needsCompaction;
         if (lastInputTokens > 0) {
-            // Use actual token count from the last API response
             needsCompaction = compactor.needsCompaction(lastInputTokens);
         } else {
-            // First iteration — use estimation
             needsCompaction = compactor.needsCompactionEstimate(
                     allMessages, systemPrompt, toolRegistry.toDefinitions());
         }
@@ -325,11 +318,30 @@ public final class StreamingAgentLoop {
         log.info("Context compaction triggered (lastInputTokens={}, threshold={})",
                 lastInputTokens, compactor.config().triggerTokens());
 
+        publishEvent(new AgentEvent.CompactionTriggered(
+                config.sessionId(), allMessages.size(), 0, Instant.now()));
+
         var result = compactor.compact(allMessages, systemPrompt);
 
         // Replace allMessages with compacted version
         allMessages.clear();
         allMessages.addAll(result.compactedMessages());
+
+        // Publish compaction event with actual message counts
+        publishEvent(new AgentEvent.CompactionTriggered(
+                config.sessionId(), result.originalTokenEstimate(),
+                result.compactedTokenEstimate(), Instant.now()));
+
+        // Persist extracted context to auto-memory
+        if (config.memoryHandler() != null && !result.extractedContext().isEmpty()) {
+            try {
+                config.memoryHandler().persist(
+                        result.extractedContext(),
+                        "compaction:" + (config.sessionId() != null ? config.sessionId() : "unknown"));
+            } catch (Exception e) {
+                log.warn("Failed to persist compaction context to memory: {}", e.getMessage());
+            }
+        }
 
         // Notify handler about compaction
         handler.onCompaction(
@@ -346,7 +358,6 @@ public final class StreamingAgentLoop {
     }
 
     private LlmRequest buildRequest(List<Message> messages) {
-        // Only enable extended thinking if the provider supports it
         int effectiveThinkingBudget = thinkingBudget;
         if (effectiveThinkingBudget > 0 && !llmClient.capabilities().supportsExtendedThinking()) {
             effectiveThinkingBudget = 0;
@@ -371,8 +382,7 @@ public final class StreamingAgentLoop {
     }
 
     /**
-     * Executes tool calls, using virtual threads for parallel execution
-     * when multiple tools are requested.
+     * Executes tool calls, using virtual threads for parallel execution.
      */
     private List<ContentBlock.ToolResult> executeTools(List<ContentBlock.ToolUse> toolUseBlocks) {
         if (toolUseBlocks.size() == 1) {
@@ -399,6 +409,18 @@ public final class StreamingAgentLoop {
     }
 
     private ContentBlock.ToolResult executeSingleTool(ContentBlock.ToolUse toolUse) {
+        // Check permission before execution
+        if (config.permissionChecker() != null) {
+            var permResult = config.permissionChecker().check(toolUse.name(), toolUse.inputJson());
+            if (!permResult.allowed()) {
+                log.info("Tool {} denied: {}", toolUse.name(), permResult.reason());
+                publishEvent(new ToolEvent.PermissionDenied(
+                        config.sessionId(), toolUse.name(), permResult.reason(), Instant.now()));
+                return new ContentBlock.ToolResult(
+                        toolUse.id(), "Permission denied: " + toolUse.name(), true);
+            }
+        }
+
         var toolOpt = toolRegistry.get(toolUse.name());
         if (toolOpt.isEmpty()) {
             log.warn("Unknown tool requested: {}", toolUse.name());
@@ -406,25 +428,33 @@ public final class StreamingAgentLoop {
         }
 
         var tool = toolOpt.get();
+        publishEvent(new ToolEvent.Invoked(config.sessionId(), tool.name(), Instant.now()));
+        long toolStart = System.currentTimeMillis();
+
         try {
             log.debug("Executing tool: {} (id: {})", tool.name(), toolUse.id());
             var result = tool.execute(toolUse.inputJson());
+            long toolDuration = System.currentTimeMillis() - toolStart;
             String output = truncateToolResult(result.output(), MAX_TOOL_RESULT_CHARS);
             if (output.length() != result.output().length()) {
                 log.debug("Tool {} result truncated: {} -> {} chars [truncated]",
                         tool.name(), result.output().length(), output.length());
             }
             log.debug("Tool {} completed: isError={}", tool.name(), result.isError());
+            publishEvent(new ToolEvent.Completed(
+                    config.sessionId(), tool.name(), toolDuration, result.isError(), Instant.now()));
             return new ContentBlock.ToolResult(toolUse.id(), output, result.isError());
         } catch (Exception e) {
+            long toolDuration = System.currentTimeMillis() - toolStart;
             log.error("Tool {} threw exception: {}", tool.name(), e.getMessage(), e);
+            publishEvent(new ToolEvent.Completed(
+                    config.sessionId(), tool.name(), toolDuration, true, Instant.now()));
             return new ContentBlock.ToolResult(toolUse.id(), "Tool error: " + e.getMessage(), true);
         }
     }
 
     /**
      * Truncates a tool result to fit within the given character limit.
-     * Keeps 40% from the head and 60% from the tail (error messages tend to be at the end).
      */
     static String truncateToolResult(String output, int maxChars) {
         if (output == null || output.length() <= maxChars) {
@@ -438,29 +468,23 @@ public final class StreamingAgentLoop {
                 + output.substring(output.length() - tailChars);
     }
 
+    private void publishEvent(dev.aceclaw.infra.event.AceClawEvent event) {
+        if (config.eventBus() != null) {
+            config.eventBus().publish(event);
+        }
+    }
+
     /** Shared JSON mapper for text-to-tool-call fallback parsing. */
     private static final ObjectMapper JSON = new ObjectMapper();
 
     /**
      * Detects text content that is actually a tool call JSON from models that
-     * don't support native tool calling (common with Ollama local models).
-     *
-     * <p>Returns a modified content block list with the text replaced by a
-     * {@link ContentBlock.ToolUse} block, or {@code null} if no conversion was possible.
-     *
-     * <p>Only converts when:
-     * <ul>
-     *   <li>There are no existing ToolUse blocks (model didn't use native format)</li>
-     *   <li>The text (trimmed) is a valid JSON object</li>
-     *   <li>The JSON has "name" matching a registered tool and an "arguments" object</li>
-     * </ul>
+     * don't support native tool calling.
      */
     private List<ContentBlock> tryConvertTextToToolUse(List<ContentBlock> blocks) {
-        // Skip if there are already native tool use blocks
         boolean hasToolUse = blocks.stream().anyMatch(b -> b instanceof ContentBlock.ToolUse);
         if (hasToolUse) return null;
 
-        // Find the text block(s) — concatenate if multiple
         String fullText = blocks.stream()
                 .filter(b -> b instanceof ContentBlock.Text)
                 .map(b -> ((ContentBlock.Text) b).text())
@@ -478,15 +502,11 @@ public final class StreamingAgentLoop {
 
             if (toolName == null || toolName.isBlank()) return null;
             if (arguments == null || !arguments.isObject()) return null;
-
-            // Verify this is actually one of our registered tools
             if (toolRegistry.get(toolName).isEmpty()) return null;
 
-            // Convert to proper ToolUse block
             String toolId = "text-tool-" + UUID.randomUUID().toString().substring(0, 8);
             String argsJson = JSON.writeValueAsString(arguments);
 
-            // Rebuild blocks: keep non-text blocks (like Thinking), replace text with ToolUse
             var result = new ArrayList<ContentBlock>();
             for (var block : blocks) {
                 if (block instanceof ContentBlock.Text) {
@@ -501,7 +521,6 @@ public final class StreamingAgentLoop {
             return List.copyOf(result);
 
         } catch (Exception e) {
-            // Not valid JSON or doesn't match pattern — not a tool call
             return null;
         }
     }
@@ -514,12 +533,10 @@ public final class StreamingAgentLoop {
 
         private final StreamEventHandler delegate;
 
-        // Accumulated state
         private final StringBuilder textBuilder = new StringBuilder();
         private final StringBuilder thinkingBuilder = new StringBuilder();
         private final List<ContentBlock> contentBlocks = new ArrayList<>();
 
-        // Current tool-use block being accumulated
         private String currentToolUseId;
         private String currentToolUseName;
         private final StringBuilder toolUseJsonBuilder = new StringBuilder();
@@ -541,7 +558,6 @@ public final class StreamingAgentLoop {
 
         @Override
         public void onContentBlockStart(StreamEvent.ContentBlockStart event) {
-            // Finalize any pending text or thinking block
             flushTextBlock();
             flushThinkingBlock();
 
