@@ -9,11 +9,18 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Writes content to a file, creating it if it does not exist.
  *
  * <p>Overwrites the entire file contents. Creates parent directories as needed.
+ *
+ * <p><b>Read-before-write enforcement:</b> If the target file already exists,
+ * it must have been read (via {@code read_file}) in the current session before
+ * it can be overwritten. This prevents accidental data loss from blind writes.
+ * New files (that don't exist yet) are exempt from this check.
  */
 public final class WriteFileTool implements Tool {
 
@@ -22,8 +29,39 @@ public final class WriteFileTool implements Tool {
 
     private final Path workingDir;
 
+    /**
+     * Tracks files that have been read in the current session.
+     * Shared with ReadFileTool via {@link #markFileRead(Path)}.
+     */
+    private final Set<Path> readFiles;
+
     public WriteFileTool(Path workingDir) {
+        this(workingDir, ConcurrentHashMap.newKeySet());
+    }
+
+    /**
+     * Creates a WriteFileTool with a shared read-tracking set.
+     *
+     * @param workingDir the working directory for resolving relative paths
+     * @param readFiles  shared set tracking which files have been read
+     */
+    public WriteFileTool(Path workingDir, Set<Path> readFiles) {
         this.workingDir = workingDir;
+        this.readFiles = readFiles;
+    }
+
+    /**
+     * Marks a file as having been read. Called by ReadFileTool.
+     */
+    public void markFileRead(Path absolutePath) {
+        readFiles.add(absolutePath.toAbsolutePath().normalize());
+    }
+
+    /**
+     * Returns the shared read-tracking set for integration with ReadFileTool.
+     */
+    public Set<Path> readFiles() {
+        return readFiles;
     }
 
     @Override
@@ -60,6 +98,18 @@ public final class WriteFileTool implements Tool {
         var filePath = resolveFilePath(input.get("file_path").asText());
         var content = input.get("content").asText();
 
+        // Read-before-write enforcement: existing files must be read first
+        if (Files.exists(filePath)) {
+            Path normalized = filePath.toAbsolutePath().normalize();
+            if (!readFiles.contains(normalized)) {
+                log.warn("Write rejected: {} exists but has not been read first", filePath);
+                return new ToolResult(
+                        "Cannot overwrite existing file without reading it first. " +
+                        "Use read_file to read '" + filePath + "' before overwriting it. " +
+                        "This prevents accidental data loss.", true);
+            }
+        }
+
         log.debug("Writing file: {} ({} chars)", filePath, content.length());
 
         try {
@@ -70,6 +120,10 @@ public final class WriteFileTool implements Tool {
             }
 
             Files.writeString(filePath, content);
+
+            // Mark as read after writing (so subsequent writes don't require re-read)
+            readFiles.add(filePath.toAbsolutePath().normalize());
+
             return new ToolResult("File written successfully: " + filePath, false);
         } catch (IOException e) {
             log.error("Failed to write file {}: {}", filePath, e.getMessage());

@@ -58,6 +58,7 @@ public final class AceClawConfig {
     private int contextWindowTokens;
     private String logLevel;
     private String braveSearchApiKey;
+    private String permissionMode;
     private String defaultProfile;
     private Map<String, ConfigFileFormat> profiles;
     private Map<String, String> providerModels;
@@ -69,6 +70,7 @@ public final class AceClawConfig {
         this.thinkingBudget = DEFAULT_THINKING_BUDGET;
         this.contextWindowTokens = DEFAULT_CONTEXT_WINDOW;
         this.logLevel = DEFAULT_LOG_LEVEL;
+        this.permissionMode = "normal";
         this.providerModels = new java.util.HashMap<>();
     }
 
@@ -131,6 +133,10 @@ public final class AceClawConfig {
         var envBraveKey = System.getenv("BRAVE_SEARCH_API_KEY");
         if (envBraveKey != null && !envBraveKey.isBlank()) {
             config.braveSearchApiKey = envBraveKey;
+        }
+        var envPermMode = System.getenv("ACECLAW_PERMISSION_MODE");
+        if (envPermMode != null && !envPermMode.isBlank()) {
+            config.permissionMode = envPermMode.toLowerCase();
         }
 
         // 5. If apiKey is an OAuth token and no refresh token configured,
@@ -236,6 +242,18 @@ public final class AceClawConfig {
      */
     public String braveSearchApiKey() {
         return braveSearchApiKey;
+    }
+
+    /**
+     * Returns the permission mode: "normal", "accept-edits", "plan", or "auto-accept".
+     *
+     * <p>Defaults to "normal" (prompt for every dangerous operation).
+     * Can be overridden via {@code ACECLAW_PERMISSION_MODE} env var or config file.
+     *
+     * @see dev.aceclaw.security.DefaultPermissionPolicy
+     */
+    public String permissionMode() {
+        return permissionMode;
     }
 
     /**
@@ -379,6 +397,9 @@ public final class AceClawConfig {
         if (fileConfig.braveSearchApiKey != null && !fileConfig.braveSearchApiKey.isBlank()) {
             this.braveSearchApiKey = fileConfig.braveSearchApiKey;
         }
+        if (fileConfig.permissionMode != null && !fileConfig.permissionMode.isBlank()) {
+            this.permissionMode = fileConfig.permissionMode.toLowerCase();
+        }
     }
 
     /**
@@ -396,6 +417,7 @@ public final class AceClawConfig {
         public int contextWindowTokens;
         public String logLevel;
         public String braveSearchApiKey;
+        public String permissionMode;
         public String defaultProfile;
         public Map<String, ConfigFileFormat> profiles;
         public Map<String, String> providerModels;

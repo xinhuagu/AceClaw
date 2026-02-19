@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -17,6 +18,9 @@ import java.util.stream.Collectors;
  *
  * <p>Returns file contents prefixed with line numbers. Supports offset and
  * limit parameters for reading portions of large files.
+ *
+ * <p>Integrates with {@link WriteFileTool} to track which files have been read,
+ * enforcing the read-before-write safety requirement.
  */
 public final class ReadFileTool implements Tool {
 
@@ -32,8 +36,22 @@ public final class ReadFileTool implements Tool {
 
     private final Path workingDir;
 
+    /** Shared set with WriteFileTool tracking which files have been read. */
+    private final Set<Path> readFiles;
+
     public ReadFileTool(Path workingDir) {
+        this(workingDir, null);
+    }
+
+    /**
+     * Creates a ReadFileTool with a shared read-tracking set.
+     *
+     * @param workingDir the working directory for resolving relative paths
+     * @param readFiles  shared set tracking which files have been read (may be null)
+     */
+    public ReadFileTool(Path workingDir, Set<Path> readFiles) {
         this.workingDir = workingDir;
+        this.readFiles = readFiles;
     }
 
     @Override
@@ -86,7 +104,12 @@ public final class ReadFileTool implements Tool {
         log.debug("Reading file: {} (offset={}, limit={})", filePath, offset, limit);
 
         try {
-            return readFileContents(filePath, offset, limit);
+            var result = readFileContents(filePath, offset, limit);
+            // Track successful reads for write-before-read enforcement
+            if (!result.isError() && readFiles != null) {
+                readFiles.add(filePath.toAbsolutePath().normalize());
+            }
+            return result;
         } catch (IOException e) {
             log.error("Failed to read file {}: {}", filePath, e.getMessage());
             return new ToolResult("Error reading file: " + e.getMessage(), true);

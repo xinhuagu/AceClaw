@@ -124,10 +124,11 @@ public final class AceClawDaemon {
         LlmClient llmClient = LlmClientFactory.create(
                 config.provider(), apiKey, config.refreshToken(), config.baseUrl(), model);
 
-        // 2. Tool registry
+        // 2. Tool registry (with shared read-tracking for read-before-write enforcement)
         var toolRegistry = new ToolRegistry();
-        toolRegistry.register(new ReadFileTool(workingDir));
-        toolRegistry.register(new WriteFileTool(workingDir));
+        var writeFileTool = new WriteFileTool(workingDir);
+        toolRegistry.register(new ReadFileTool(workingDir, writeFileTool.readFiles()));
+        toolRegistry.register(writeFileTool);
         toolRegistry.register(new EditFileTool(workingDir));
         toolRegistry.register(new BashExecTool(workingDir));
         toolRegistry.register(new GlobSearchTool(workingDir));
@@ -195,8 +196,8 @@ public final class AceClawDaemon {
         toolRegistry.register(new dev.aceclaw.tools.TaskTool(subAgentRunner, agentTypeRegistry));
         log.info("Sub-agent types available: {}", agentTypeRegistry.names());
 
-        // 4. Permission manager — auto-approve all tools (no interactive prompts)
-        var permissionManager = new PermissionManager(new DefaultPermissionPolicy(true));
+        // 4. Permission manager — mode from config (default: "normal")
+        var permissionManager = new PermissionManager(new DefaultPermissionPolicy(config.permissionMode()));
 
         // 5. System prompt (with 8-tier memory hierarchy + daily journal + model identity + budget)
         DailyJournal journal = memoryStore != null ? memoryStore.getDailyJournal() : null;

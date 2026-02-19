@@ -186,7 +186,12 @@ public final class TerminalRepl {
                     }
                 }
 
-                processInput(out, line.trim());
+                String trimmed = line.trim();
+                if (trimmed.startsWith("/")) {
+                    handleSlashCommand(out, trimmed);
+                } else {
+                    processInput(out, trimmed);
+                }
             }
 
         } catch (IOException e) {
@@ -258,6 +263,147 @@ public final class TerminalRepl {
         if (k >= 100) return String.format("%.0fK", k);
         if (k >= 10) return String.format("%.0fK", k);
         return String.format("%.1fK", k);
+    }
+
+    // -- Slash commands -------------------------------------------------------
+
+    /**
+     * Handles slash commands entered at the REPL prompt.
+     *
+     * <p>Supported commands:
+     * <ul>
+     *   <li>{@code /help} — show available commands</li>
+     *   <li>{@code /clear} — clear the screen</li>
+     *   <li>{@code /compact} — trigger context compaction</li>
+     *   <li>{@code /model} — show or switch the current model</li>
+     *   <li>{@code /tools} — list available tools</li>
+     *   <li>{@code /status} — show session status (tokens, model, context)</li>
+     *   <li>{@code /exit} — exit the REPL</li>
+     * </ul>
+     */
+    private void handleSlashCommand(PrintWriter out, String input) {
+        String[] parts = input.split("\\s+", 2);
+        String command = parts[0].toLowerCase();
+        String arg = parts.length > 1 ? parts[1].trim() : "";
+
+        switch (command) {
+            case "/help", "/?" -> {
+                out.println();
+                out.println(BOLD + "Available commands:" + RESET);
+                out.println(INFO + "  /help" + RESET + "     Show this help message");
+                out.println(INFO + "  /clear" + RESET + "    Clear the screen");
+                out.println(INFO + "  /compact" + RESET + "  Trigger context compaction");
+                out.println(INFO + "  /model" + RESET + "    Show current model (or /model <name> to switch)");
+                out.println(INFO + "  /tools" + RESET + "    List available tools");
+                out.println(INFO + "  /status" + RESET + "   Show session status");
+                out.println(INFO + "  /exit" + RESET + "     Exit the REPL");
+                out.println();
+                out.flush();
+            }
+
+            case "/clear" -> {
+                out.print("\033[2J\033[H"); // ANSI: clear screen + move cursor to top
+                out.flush();
+            }
+
+            case "/compact" -> {
+                out.println(MUTED + "Requesting context compaction..." + RESET);
+                out.flush();
+                sendRpcNotification("session.compact");
+            }
+
+            case "/model" -> {
+                if (arg.isEmpty()) {
+                    out.println(INFO + "Current model: " + BOLD + sessionInfo.model() + RESET);
+                } else {
+                    out.println(MUTED + "Model switching requires daemon restart. " +
+                            "Set ACECLAW_MODEL=" + arg + " or update config.json." + RESET);
+                }
+                out.flush();
+            }
+
+            case "/tools" -> {
+                out.println(MUTED + "Requesting tool list..." + RESET);
+                out.flush();
+                try {
+                    long id = client.nextRequestId();
+                    var request = client.objectMapper().createObjectNode();
+                    request.put("jsonrpc", "2.0");
+                    request.put("method", "tools.list");
+                    request.put("id", id);
+                    client.writeLine(client.objectMapper().writeValueAsString(request));
+
+                    String responseLine = client.readLine();
+                    if (responseLine != null) {
+                        var response = client.objectMapper().readTree(responseLine);
+                        if (response.has("result") && response.get("result").isArray()) {
+                            out.println();
+                            out.println(BOLD + "Available tools:" + RESET);
+                            for (var tool : response.get("result")) {
+                                String name = tool.path("name").asText();
+                                String desc = tool.path("description").asText();
+                                // Truncate description to first sentence
+                                int dot = desc.indexOf('.');
+                                if (dot > 0 && dot < 80) desc = desc.substring(0, dot + 1);
+                                else if (desc.length() > 80) desc = desc.substring(0, 77) + "...";
+                                out.printf("  %s%-16s%s %s%s%s%n", INFO, name, RESET, MUTED, desc, RESET);
+                            }
+                            out.println();
+                        } else if (response.has("error")) {
+                            out.println(WARNING + "tools.list not supported by daemon" + RESET);
+                        }
+                    }
+                } catch (IOException e) {
+                    out.println(ERROR + "Failed to list tools: " + e.getMessage() + RESET);
+                }
+                out.flush();
+            }
+
+            case "/status" -> {
+                out.println();
+                out.println(BOLD + "Session Status" + RESET);
+                out.printf("  %sModel:%s       %s%n", MUTED, RESET, sessionInfo.model());
+                out.printf("  %sProject:%s     %s%n", MUTED, RESET, sessionInfo.project());
+                if (sessionInfo.gitBranch() != null) {
+                    out.printf("  %sGit branch:%s  %s%n", MUTED, RESET, sessionInfo.gitBranch());
+                }
+                out.printf("  %sContext:%s     %s / %s (%d%%)%n", MUTED, RESET,
+                        formatTokenCount(latestInputTokens),
+                        formatTokenCount(sessionInfo.contextWindowTokens()),
+                        sessionInfo.contextWindowTokens() > 0
+                                ? latestInputTokens * 100 / sessionInfo.contextWindowTokens() : 0);
+                out.printf("  %sTotal usage:%s %s in / %s out%n", MUTED, RESET,
+                        formatTokenCount(totalInputTokens),
+                        formatTokenCount(totalOutputTokens));
+                out.println();
+                out.flush();
+            }
+
+            case "/exit", "/quit" -> {
+                out.println(MUTED + "Goodbye!" + RESET);
+                out.flush();
+                System.exit(0);
+            }
+
+            default -> {
+                out.println(WARNING + "Unknown command: " + command +
+                        ". Type /help for available commands." + RESET);
+                out.flush();
+            }
+        }
+    }
+
+    /**
+     * Sends a JSON-RPC notification to the daemon (no response expected).
+     */
+    private void sendRpcNotification(String method) {
+        try {
+            var params = client.objectMapper().createObjectNode();
+            params.put("sessionId", sessionId);
+            client.sendNotification(method, params);
+        } catch (IOException e) {
+            log.warn("Failed to send {} notification: {}", method, e.getMessage());
+        }
     }
 
     // -- Input processing ----------------------------------------------------
