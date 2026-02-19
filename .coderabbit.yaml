@@ -1,0 +1,32 @@
+# CodeRabbit Configuration
+# Docs: https://docs.coderabbit.ai/configuration
+
+language: en
+reviews:
+  profile: chill        # chill = fewer nitpicks, assertive = strict
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  learnings:
+    scope: auto     # learns from 👍👎 reactions
+
+path_instructions:
+  - path: "aceclaw-security/**"
+    instructions: "Review security module changes with extra scrutiny. Check for permission bypasses, HMAC integrity issues, and unsafe defaults."
+  - path: "aceclaw-memory/**"
+    instructions: "Verify HMAC signing is maintained, check for memory tier ordering issues, and ensure workspace isolation."
+  - path: "aceclaw-core/**"
+    instructions: "Focus on agent loop correctness, tool execution safety, and LLM client error handling."
+  - path: "aceclaw-tools/**"
+    instructions: "Check cross-platform compatibility (Windows/macOS/Linux). Verify ProcessBuilder commands work on all platforms."
+  - path: "aceclaw-daemon/**"
+    instructions: "Check UDS listener lifecycle, shutdown ordering, and thread safety with virtual threads."
