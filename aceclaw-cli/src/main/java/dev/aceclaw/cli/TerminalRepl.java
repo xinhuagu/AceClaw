@@ -286,7 +286,7 @@ public final class TerminalRepl {
     /**
      * @return true if the REPL should exit after this command
      */
-    private boolean handleSlashCommand(PrintWriter out, String input) {
+    boolean handleSlashCommand(PrintWriter out, String input) {
         String[] parts = input.split("\\s+", 2);
         String command = parts[0].toLowerCase();
         String arg = parts.length > 1 ? parts[1].trim() : "";
