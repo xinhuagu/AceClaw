@@ -7,14 +7,18 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Executes a bash command and returns stdout/stderr.
+ * Executes a shell command and returns stdout/stderr.
  *
- * <p>Commands are executed via {@code /bin/bash -c} with a configurable
- * timeout. Output is captured and truncated if it exceeds size limits.
+ * <p>On Unix/macOS, commands are executed via {@code /bin/bash -c},
+ * falling back to {@code /bin/sh -c} when bash is not present (e.g. Alpine/BusyBox).
+ * On Windows, commands are executed via {@code cmd.exe /c}.
+ * Timeout is configurable; output is captured and truncated if it exceeds size limits.
  */
 public final class BashExecTool implements Tool {
 
@@ -30,6 +34,12 @@ public final class BashExecTool implements Tool {
     private static final int MAX_OUTPUT_CHARS = 30_000;
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+
+        static final boolean IS_WINDOWS = System.getProperty("os.name", "")
+            .toLowerCase(Locale.ROOT).startsWith("win");
+
+    /** Prefer bash, fall back to sh for Alpine/BusyBox. */
+    static final String UNIX_SHELL = Files.exists(Path.of("/bin/bash")) ? "/bin/bash" : "/bin/sh";
 
     private final Path workingDir;
 
@@ -51,7 +61,7 @@ public final class BashExecTool implements Tool {
     public JsonNode inputSchema() {
         return SchemaBuilder.object()
                 .requiredProperty("command", SchemaBuilder.string(
-                        "The bash command to execute"))
+                        "The shell command to execute"))
                 .optionalProperty("timeout", SchemaBuilder.integer(
                         "Timeout in seconds (default: 120, max: 600)"))
                 .build();
@@ -71,7 +81,7 @@ public final class BashExecTool implements Tool {
             timeoutSeconds = Math.max(1, Math.min(input.get("timeout").asInt(DEFAULT_TIMEOUT_SECONDS), MAX_TIMEOUT_SECONDS));
         }
 
-        log.debug("Executing bash command: {} (timeout: {}s)", command, timeoutSeconds);
+        log.debug("Executing shell command: {} (timeout: {}s, windows: {})", command, timeoutSeconds, IS_WINDOWS);
 
         try {
             return runCommand(command, timeoutSeconds);
@@ -82,8 +92,13 @@ public final class BashExecTool implements Tool {
     }
 
     private ToolResult runCommand(String command, int timeoutSeconds) throws IOException {
-        var processBuilder = new ProcessBuilder("/bin/bash", "-c", command)
-                .directory(workingDir.toFile())
+        ProcessBuilder processBuilder;
+        if (IS_WINDOWS) {
+            processBuilder = new ProcessBuilder("cmd.exe", "/c", command);
+        } else {
+            processBuilder = new ProcessBuilder(UNIX_SHELL, "-c", command);
+        }
+        processBuilder.directory(workingDir.toFile())
                 .redirectErrorStream(true);
 
         var process = processBuilder.start();
