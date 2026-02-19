@@ -154,6 +154,31 @@ class EventBusTest {
     }
 
     @Test
+    void unsubscribeStopsDeliveryAndRemoves() throws Exception {
+        var count = new AtomicInteger(0);
+        var latch = new CountDownLatch(1);
+
+        var sub = bus.subscribe(AgentEvent.class, event -> {
+            count.incrementAndGet();
+            latch.countDown();
+        });
+
+        // First event should arrive
+        bus.publish(new AgentEvent.TurnStarted("s1", 1, Instant.now()));
+        assertThat(latch.await(2, TimeUnit.SECONDS)).isTrue();
+        assertThat(count.get()).isEqualTo(1);
+
+        // Unsubscribe
+        sub.unsubscribe();
+        assertThat(bus.subscriberCount()).isZero();
+
+        // Second event should not arrive
+        bus.publish(new AgentEvent.TurnStarted("s1", 2, Instant.now()));
+        Thread.sleep(100);
+        assertThat(count.get()).isEqualTo(1);
+    }
+
+    @Test
     void queueCapacityDropsExcessEvents() {
         var smallBus = new EventBus(2);
         smallBus.start();

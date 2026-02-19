@@ -8,6 +8,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 /**
  * Type-safe, asynchronous event bus for internal AceClaw communication.
@@ -95,7 +96,7 @@ public final class EventBus {
      * @return a handle that can be used to unsubscribe
      */
     public <T extends AceClawEvent> Subscription<T> subscribe(Class<T> eventType, EventHandler<T> handler) {
-        var subscription = new Subscription<>(eventType, handler, queueCapacity, running);
+        var subscription = new Subscription<>(eventType, handler, queueCapacity, running, s -> subscriptions.remove(s));
         subscriptions.add(subscription);
 
         if (running.get()) {
@@ -146,19 +147,35 @@ public final class EventBus {
         private final BlockingQueue<AceClawEvent> queue;
         private final AtomicBoolean busRunning;
         private final AtomicBoolean active = new AtomicBoolean(true);
+        private final Consumer<Subscription<?>> removalCallback;
         private volatile Thread drainThread;
 
-        Subscription(Class<T> eventType, EventHandler<T> handler, int capacity, AtomicBoolean busRunning) {
+        Subscription(Class<T> eventType, EventHandler<T> handler, int capacity,
+                     AtomicBoolean busRunning, Consumer<Subscription<?>> removalCallback) {
             this.eventType = eventType;
             this.handler = handler;
             this.queue = new LinkedBlockingQueue<>(capacity);
             this.busRunning = busRunning;
+            this.removalCallback = removalCallback;
         }
 
         void start() {
             drainThread = Thread.ofVirtual()
                     .name("eventbus-" + eventType.getSimpleName().toLowerCase())
                     .start(this::drainLoop);
+        }
+
+        /**
+         * Unsubscribes this subscription: stops the drain thread and removes
+         * it from the event bus. Safe to call multiple times.
+         */
+        public void unsubscribe() {
+            if (active.compareAndSet(true, false)) {
+                if (drainThread != null) {
+                    drainThread.interrupt();
+                }
+                removalCallback.accept(this);
+            }
         }
 
         void stop() {
