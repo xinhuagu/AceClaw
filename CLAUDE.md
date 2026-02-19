@@ -46,6 +46,7 @@ Daemon (persistent JVM)
   ├── StreamingAgentLoop → LLM call → tool execution cycle (max 25 iterations)
   ├── PermissionManager → READ auto-approved, WRITE/EXECUTE need user approval
   ├── ToolRegistry → 6 tools (read_file, write_file, edit_file, bash, glob, grep)
+  ├── SelfImprovementEngine → post-turn learning (ErrorDetector + PatternDetector)
   └── AnthropicClient → Claude API (supports both API key and OAuth token auth)
 ```
 
