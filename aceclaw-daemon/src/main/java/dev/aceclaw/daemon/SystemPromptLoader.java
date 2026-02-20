@@ -13,6 +13,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Set;
 
 /**
  * Loads and assembles the system prompt for the agent.
@@ -103,6 +104,45 @@ public final class SystemPromptLoader {
      * @param budget        the system prompt size budget
      * @return the assembled system prompt
      */
+    /**
+     * Loads the full system prompt with dynamic tool guidance.
+     *
+     * <p>This overload generates tool-specific guidance sections based on which
+     * tools are actually registered, avoiding references to unavailable tools.
+     *
+     * @param projectPath        the project working directory
+     * @param memoryStore        optional auto-memory store (may be null)
+     * @param journal            optional daily journal (may be null)
+     * @param markdownStore      optional markdown memory store (may be null)
+     * @param model              the LLM model name (may be null)
+     * @param provider           the LLM provider name (may be null)
+     * @param budget             the system prompt size budget
+     * @param registeredToolNames the set of tool names currently registered (may be null)
+     * @param hasBraveApiKey     whether a Brave Search API key is configured
+     * @return the assembled system prompt
+     */
+    public static String load(Path projectPath, AutoMemoryStore memoryStore,
+                              DailyJournal journal, MarkdownMemoryStore markdownStore,
+                              String model, String provider, SystemPromptBudget budget,
+                              Set<String> registeredToolNames, boolean hasBraveApiKey) {
+        String prompt = load(projectPath, memoryStore, journal, markdownStore, model, provider, budget);
+
+        // Inject dynamic tool guidance if tool names are provided
+        if (registeredToolNames != null && !registeredToolNames.isEmpty()) {
+            String guidance = ToolGuidanceGenerator.generate(registeredToolNames, hasBraveApiKey);
+            // Insert guidance at the placeholder comment location
+            String placeholder = "<!-- Dynamic tool guidance (priority, tool-specific guidelines, fallback chain) injected by ToolGuidanceGenerator -->";
+            if (prompt.contains(placeholder)) {
+                prompt = prompt.replace(placeholder, guidance);
+            } else {
+                // Fallback: append after base prompt section
+                prompt = prompt + guidance;
+            }
+        }
+
+        return prompt;
+    }
+
     public static String load(Path projectPath, AutoMemoryStore memoryStore,
                               DailyJournal journal, MarkdownMemoryStore markdownStore,
                               String model, String provider, SystemPromptBudget budget) {

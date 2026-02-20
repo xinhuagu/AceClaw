@@ -1,7 +1,8 @@
-Searches the web using Brave Search and returns results with title, URL, and snippet.
+Searches the web and returns results with title, URL, and snippet.
 
-Use this for finding up-to-date information, documentation, solutions, and resources
-from the internet. Returns real-time search results.
+Uses Brave Search API when BRAVE_SEARCH_API_KEY is configured, or DuckDuckGo
+Lite as a free fallback when no API key is set. Both backends return real-time
+search results.
 
 When to use:
 - Finding documentation or API references for a library or tool

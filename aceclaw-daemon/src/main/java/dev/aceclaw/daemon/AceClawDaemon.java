@@ -194,9 +194,11 @@ public final class AceClawDaemon {
             toolRegistry.register(new ScreenCaptureTool(workingDir));
         }
 
-        // Web search (requires Brave Search API key)
+        // Web search (Brave when API key set, DuckDuckGo Lite fallback otherwise)
         if (config.braveSearchApiKey() != null) {
             toolRegistry.register(new WebSearchTool(workingDir, config.braveSearchApiKey()));
+        } else {
+            toolRegistry.register(new WebSearchTool(workingDir));
         }
 
         // MCP servers (config-driven external tool providers)
@@ -278,8 +280,14 @@ public final class AceClawDaemon {
         log.info("System prompt budget: {}K per tier, {}K total (context={}K, maxOutput={}K)",
                 promptBudget.maxPerTierChars() / 1000, promptBudget.maxTotalChars() / 1000,
                 contextWindow / 1000, config.maxTokens() / 1000);
+
+        // Collect registered tool names for dynamic tool guidance in system prompt
+        var toolNames = toolRegistry.all().stream()
+                .map(dev.aceclaw.core.agent.Tool::name)
+                .collect(java.util.stream.Collectors.toSet());
         String systemPrompt = SystemPromptLoader.load(
-                workingDir, memoryStore, journal, markdownStore, model, config.provider(), promptBudget);
+                workingDir, memoryStore, journal, markdownStore, model, config.provider(), promptBudget,
+                toolNames, config.braveSearchApiKey() != null);
 
         // 5b. Inject skill descriptions into system prompt so the LLM knows
         //     what each skill does and when to invoke it proactively.
