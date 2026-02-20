@@ -306,7 +306,19 @@ public final class AceClawDaemon {
             agentHandler.setDailyJournal(journal);
         }
 
-        // 9. Self-improvement engine (post-turn learning analysis + strategy refinement)
+        // 9. Hook system (command hooks at tool lifecycle points)
+        var hookRegistry = HookRegistry.load(config.hooks());
+        if (!hookRegistry.isEmpty()) {
+            var hookExecutor = new CommandHookExecutor(hookRegistry, objectMapper, workingDir);
+            agentHandler.setHookExecutor(hookExecutor);
+            log.info("Hook system wired: {} matchers across {} event types",
+                    hookRegistry.size(),
+                    (hookRegistry.hasHooksFor("PreToolUse") ? 1 : 0) +
+                    (hookRegistry.hasHooksFor("PostToolUse") ? 1 : 0) +
+                    (hookRegistry.hasHooksFor("PostToolUseFailure") ? 1 : 0));
+        }
+
+        // 10. Self-improvement engine (post-turn learning analysis + strategy refinement)
         if (memoryStore != null) {
             var errorDetector = new ErrorDetector(memoryStore);
             var patternDetector = new PatternDetector(memoryStore);

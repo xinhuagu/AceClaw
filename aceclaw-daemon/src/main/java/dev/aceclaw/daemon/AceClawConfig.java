@@ -8,6 +8,9 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -62,6 +65,7 @@ public final class AceClawConfig {
     private String defaultProfile;
     private Map<String, ConfigFileFormat> profiles;
     private Map<String, String> providerModels;
+    private Map<String, List<HookMatcherFormat>> hooks;
 
     private AceClawConfig() {
         this.provider = "anthropic";
@@ -261,6 +265,14 @@ public final class AceClawConfig {
     }
 
     /**
+     * Returns the hooks configuration map (event name to list of hook matchers).
+     * Returns null if no hooks are configured.
+     */
+    public Map<String, List<HookMatcherFormat>> hooks() {
+        return hooks;
+    }
+
+    /**
      * Returns whether an API key is configured.
      */
     public boolean hasApiKey() {
@@ -364,6 +376,17 @@ public final class AceClawConfig {
                 this.providerModels.putAll(fileConfig.providerModels);
             }
 
+            // Hooks: project config appends to global config per event type
+            if (fileConfig.hooks != null && !fileConfig.hooks.isEmpty()) {
+                if (this.hooks == null) {
+                    this.hooks = new HashMap<>();
+                }
+                for (var hookEntry : fileConfig.hooks.entrySet()) {
+                    this.hooks.computeIfAbsent(hookEntry.getKey(), _ -> new ArrayList<>())
+                            .addAll(hookEntry.getValue());
+                }
+            }
+
             log.debug("Loaded config from {}", configFile);
         } catch (IOException e) {
             log.warn("Failed to read config file {}: {}", configFile, e.getMessage());
@@ -425,5 +448,27 @@ public final class AceClawConfig {
         public String defaultProfile;
         public Map<String, ConfigFileFormat> profiles;
         public Map<String, String> providerModels;
+        public Map<String, List<HookMatcherFormat>> hooks;
+    }
+
+    /**
+     * JSON structure for a hook matcher entry in config.
+     * <pre>{ "matcher": "bash", "hooks": [{ "type": "command", "command": "...", "timeout": 30 }] }</pre>
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static final class HookMatcherFormat {
+        public String matcher;
+        public List<HookConfigFormat> hooks;
+    }
+
+    /**
+     * JSON structure for a single hook config entry.
+     * <pre>{ "type": "command", "command": "echo ok", "timeout": 60 }</pre>
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static final class HookConfigFormat {
+        public String type;
+        public String command;
+        public int timeout;
     }
 }

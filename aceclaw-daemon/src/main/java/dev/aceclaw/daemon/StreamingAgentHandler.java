@@ -4,6 +4,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.CancellationAware;
 import dev.aceclaw.core.agent.CancellationToken;
+import dev.aceclaw.core.agent.HookEvent;
+import dev.aceclaw.core.agent.HookExecutor;
+import dev.aceclaw.core.agent.HookResult;
 import dev.aceclaw.core.agent.MessageCompactor;
 import dev.aceclaw.core.agent.StreamingAgentLoop;
 import dev.aceclaw.core.agent.Tool;
@@ -133,8 +136,8 @@ public final class StreamingAgentHandler {
         // Create a StreamEventHandler that forwards events via the cancel-aware context
         var eventHandler = new StreamingNotificationHandler(cancelContext, objectMapper);
 
-        // Wrap tools with permission checking for this request
-        var permissionAwareRegistry = createPermissionAwareRegistry(cancelContext);
+        // Wrap tools with permission checking and hooks for this request
+        var permissionAwareRegistry = createPermissionAwareRegistry(cancelContext, sessionId);
 
         // Create a temporary agent loop with the permission-aware registry and compaction
         var permissionAwareLoop = new StreamingAgentLoop(
@@ -274,13 +277,16 @@ public final class StreamingAgentHandler {
     }
 
     /**
-     * Creates a ToolRegistry where each tool is wrapped with permission checking.
+     * Creates a ToolRegistry where each tool is wrapped with permission checking and hooks.
      * Tools that need user approval will use the StreamContext to ask the client.
      */
-    private ToolRegistry createPermissionAwareRegistry(StreamContext context) {
+    private ToolRegistry createPermissionAwareRegistry(StreamContext context, String sessionId) {
         var registry = new ToolRegistry();
+        String cwd = workingDir != null ? workingDir.toAbsolutePath().toString() : System.getProperty("user.dir");
         for (var tool : toolRegistry.all()) {
-            registry.register(new PermissionAwareTool(tool, permissionManager, context, objectMapper));
+            registry.register(new PermissionAwareTool(
+                    tool, permissionManager, context, objectMapper,
+                    hookExecutor, sessionId, cwd));
         }
         return registry;
     }
@@ -301,6 +307,7 @@ public final class StreamingAgentHandler {
     private DailyJournal dailyJournal;
     private Path workingDir;
     private SelfImprovementEngine selfImprovementEngine;
+    private HookExecutor hookExecutor;
 
     /**
      * Sets the LLM configuration for permission-aware agent loop creation.
@@ -347,6 +354,13 @@ public final class StreamingAgentHandler {
      */
     public void setSelfImprovementEngine(SelfImprovementEngine selfImprovementEngine) {
         this.selfImprovementEngine = selfImprovementEngine;
+    }
+
+    /**
+     * Sets the hook executor for running lifecycle hooks (PreToolUse, PostToolUse, etc.).
+     */
+    public void setHookExecutor(HookExecutor hookExecutor) {
+        this.hookExecutor = hookExecutor;
     }
 
     private dev.aceclaw.core.llm.LlmClient getLlmClient() {
@@ -869,13 +883,20 @@ public final class StreamingAgentHandler {
         private final PermissionManager permissionManager;
         private final StreamContext context;
         private final ObjectMapper objectMapper;
+        private final HookExecutor hookExecutor;
+        private final String sessionId;
+        private final String cwd;
 
         PermissionAwareTool(Tool delegate, PermissionManager permissionManager,
-                            StreamContext context, ObjectMapper objectMapper) {
+                            StreamContext context, ObjectMapper objectMapper,
+                            HookExecutor hookExecutor, String sessionId, String cwd) {
             this.delegate = delegate;
             this.permissionManager = permissionManager;
             this.context = context;
             this.objectMapper = objectMapper;
+            this.hookExecutor = hookExecutor;
+            this.sessionId = sessionId;
+            this.cwd = cwd;
         }
 
         @Override
@@ -902,6 +923,37 @@ public final class StreamingAgentHandler {
 
         @Override
         public ToolResult execute(String inputJson) throws Exception {
+            // --- PreToolUse hooks (before permission check) ---
+            String effectiveInputJson = inputJson;
+            if (hookExecutor != null) {
+                try {
+                    var toolInput = objectMapper.readTree(inputJson);
+                    if (toolInput == null || !toolInput.isObject()) {
+                        toolInput = objectMapper.createObjectNode();
+                    }
+                    var preEvent = new HookEvent.PreToolUse(sessionId, cwd, delegate.name(), toolInput);
+                    var hookResult = hookExecutor.execute(preEvent);
+
+                    switch (hookResult) {
+                        case HookResult.Block blocked -> {
+                            log.info("Tool {} blocked by PreToolUse hook: {}", delegate.name(), blocked.reason());
+                            return new ToolResult("Blocked by hook: " + blocked.reason(), true);
+                        }
+                        case HookResult.Proceed proceed -> {
+                            if (proceed.updatedInput() != null) {
+                                effectiveInputJson = objectMapper.writeValueAsString(proceed.updatedInput());
+                                log.debug("Tool {} input modified by PreToolUse hook", delegate.name());
+                            }
+                        }
+                        case HookResult.Error err ->
+                                log.warn("PreToolUse hook error for {}: {}", delegate.name(), err.message());
+                    }
+                } catch (Exception e) {
+                    log.warn("PreToolUse hook failed for {}: {}", delegate.name(), e.getMessage());
+                }
+            }
+
+            // --- Permission check ---
             // Determine the permission level for this tool
             // MCP tools default to EXECUTE since they can have side effects
             var level = delegate.name().startsWith("mcp__")
@@ -909,15 +961,16 @@ public final class StreamingAgentHandler {
                     : TOOL_PERMISSION_LEVELS.getOrDefault(delegate.name(), PermissionLevel.EXECUTE);
 
             // Build a human-readable description of what the tool will do
-            var toolDescription = buildToolDescription(delegate.name(), inputJson);
+            var toolDescription = buildToolDescription(delegate.name(), effectiveInputJson);
 
             var permRequest = new PermissionRequest(delegate.name(), toolDescription, level);
             var decision = permissionManager.check(permRequest);
 
+            final String finalInputJson = effectiveInputJson;
+
             switch (decision) {
                 case PermissionDecision.Approved ignored -> {
-                    // Proceed with execution
-                    return delegate.execute(inputJson);
+                    return executeWithPostHooks(finalInputJson);
                 }
 
                 case PermissionDecision.Denied denied -> {
@@ -967,7 +1020,7 @@ public final class StreamingAgentHandler {
 
                         log.info("Tool {} approved by user (requestId={}, remember={})",
                                 delegate.name(), responseRequestId, remember);
-                        return delegate.execute(inputJson);
+                        return executeWithPostHooks(finalInputJson);
 
                     } catch (IOException e) {
                         log.error("Failed to communicate permission request for tool {}: {}",
@@ -976,6 +1029,56 @@ public final class StreamingAgentHandler {
                     }
                 }
             }
+        }
+
+        /**
+         * Executes the tool and fires PostToolUse or PostToolUseFailure hooks.
+         */
+        private ToolResult executeWithPostHooks(String inputJson) throws Exception {
+            ToolResult result;
+            try {
+                result = delegate.execute(inputJson);
+            } catch (Exception e) {
+                // Fire PostToolUseFailure hook (non-blocking, fire-and-forget)
+                firePostHookAsync(inputJson, null, e.getMessage());
+                throw e;
+            }
+
+            // Fire PostToolUse or PostToolUseFailure based on result
+            if (result.isError()) {
+                firePostHookAsync(inputJson, null, result.output());
+            } else {
+                firePostHookAsync(inputJson, result.output(), null);
+            }
+
+            return result;
+        }
+
+        /**
+         * Fires PostToolUse or PostToolUseFailure hooks on a virtual thread (fire-and-forget).
+         */
+        private void firePostHookAsync(String inputJson, String output, String error) {
+            if (hookExecutor == null) return;
+            Thread.ofVirtual().name("hook-post-" + delegate.name()).start(() -> {
+                try {
+                    var toolInput = objectMapper.readTree(inputJson);
+                    if (toolInput == null || !toolInput.isObject()) {
+                        toolInput = objectMapper.createObjectNode();
+                    }
+                    HookEvent event;
+                    if (error != null) {
+                        event = new HookEvent.PostToolUseFailure(
+                                sessionId, cwd, delegate.name(), toolInput, error);
+                    } else {
+                        event = new HookEvent.PostToolUse(
+                                sessionId, cwd, delegate.name(), toolInput,
+                                output != null ? output : "");
+                    }
+                    hookExecutor.execute(event);
+                } catch (Exception e) {
+                    log.warn("Post-tool hook failed for {}: {}", delegate.name(), e.getMessage());
+                }
+            });
         }
 
         /**
