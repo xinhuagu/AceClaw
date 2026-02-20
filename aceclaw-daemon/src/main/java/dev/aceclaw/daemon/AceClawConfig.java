@@ -42,7 +42,7 @@ public final class AceClawConfig {
     private static final String DEFAULT_MODEL = "claude-sonnet-4-5-20250929";
     private static final int DEFAULT_MAX_TOKENS = 16384;
     private static final int DEFAULT_THINKING_BUDGET = 10240;
-    private static final int DEFAULT_CONTEXT_WINDOW = 200_000;
+    private static final int DEFAULT_CONTEXT_WINDOW = 0;
     private static final String DEFAULT_LOG_LEVEL = "INFO";
 
     /** Claude CLI credentials directory. */

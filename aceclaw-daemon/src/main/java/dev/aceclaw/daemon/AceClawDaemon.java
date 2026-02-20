@@ -125,6 +125,13 @@ public final class AceClawDaemon {
         LlmClient llmClient = LlmClientFactory.create(
                 config.provider(), apiKey, config.refreshToken(), config.baseUrl(), model);
 
+        // Resolve effective context window: explicit config > provider default
+        int contextWindow = config.contextWindowTokens() > 0
+                ? config.contextWindowTokens()
+                : llmClient.capabilities().contextWindowTokens();
+        String contextSource = config.contextWindowTokens() > 0 ? "from config" : "auto-detected";
+        log.info("Context window: {}K ({})", contextWindow / 1000, contextSource);
+
         // 2. Tool registry (with shared read-tracking for read-before-write enforcement)
         var toolRegistry = new ToolRegistry();
         var writeFileTool = new WriteFileTool(workingDir);
@@ -230,17 +237,26 @@ public final class AceClawDaemon {
         //    Budget scales with context window: small models (32K) get smaller memory budgets
         DailyJournal journal = memoryStore != null ? memoryStore.getDailyJournal() : null;
         var promptBudget = SystemPromptBudget.forContextWindow(
-                config.contextWindowTokens(), config.maxTokens());
+                contextWindow, config.maxTokens());
         log.info("System prompt budget: {}K per tier, {}K total (context={}K, maxOutput={}K)",
                 promptBudget.maxPerTierChars() / 1000, promptBudget.maxTotalChars() / 1000,
-                config.contextWindowTokens() / 1000, config.maxTokens() / 1000);
+                contextWindow / 1000, config.maxTokens() / 1000);
         String systemPrompt = SystemPromptLoader.load(
                 workingDir, memoryStore, journal, markdownStore, model, config.provider(), promptBudget);
+
+        // 5b. Inject skill descriptions into system prompt so the LLM knows
+        //     what each skill does and when to invoke it proactively.
+        if (!skillRegistry.isEmpty()) {
+            String skillDescriptions = skillRegistry.formatDescriptions();
+            if (!skillDescriptions.isEmpty()) {
+                systemPrompt = systemPrompt + "\n\n" + skillDescriptions;
+            }
+        }
 
         // 6. Context compaction (accounting for actual system prompt size)
         int systemPromptTokens = dev.aceclaw.core.agent.ContextEstimator.estimateTokens(systemPrompt);
         var compactionConfig = new CompactionConfig(
-                config.contextWindowTokens(), config.maxTokens(), systemPromptTokens,
+                contextWindow, config.maxTokens(), systemPromptTokens,
                 0.85, 0.60, 5);
         var compactor = new MessageCompactor(llmClient, model, compactionConfig);
         log.info("System prompt: {} chars (~{} tokens), effective conversation window: {} tokens",
@@ -320,7 +336,7 @@ public final class AceClawDaemon {
 
         // Expose model name and provider info to health status endpoint
         router.setModelName(model);
-        router.setProviderInfo(config.provider(), config.contextWindowTokens());
+        router.setProviderInfo(config.provider(), contextWindow);
 
         // Register model.list and model.switch RPC methods
         final var llmClientRef = llmClient;
