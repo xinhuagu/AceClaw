@@ -47,6 +47,8 @@ public final class AceClawConfig {
     private static final int DEFAULT_THINKING_BUDGET = 10240;
     private static final int DEFAULT_CONTEXT_WINDOW = 0;
     private static final String DEFAULT_LOG_LEVEL = "INFO";
+    private static final boolean DEFAULT_BOOT_ENABLED = true;
+    private static final int DEFAULT_BOOT_TIMEOUT_SECONDS = 120;
 
     /** Claude CLI credentials directory. */
     private static final Path CLAUDE_CLI_DIR = Path.of(System.getProperty("user.home"), ".claude");
@@ -62,6 +64,8 @@ public final class AceClawConfig {
     private String logLevel;
     private String braveSearchApiKey;
     private String permissionMode;
+    private boolean bootEnabled;
+    private int bootTimeoutSeconds;
     private String defaultProfile;
     private Map<String, ConfigFileFormat> profiles;
     private Map<String, String> providerModels;
@@ -75,6 +79,8 @@ public final class AceClawConfig {
         this.contextWindowTokens = DEFAULT_CONTEXT_WINDOW;
         this.logLevel = DEFAULT_LOG_LEVEL;
         this.permissionMode = "normal";
+        this.bootEnabled = DEFAULT_BOOT_ENABLED;
+        this.bootTimeoutSeconds = DEFAULT_BOOT_TIMEOUT_SECONDS;
         this.providerModels = new java.util.HashMap<>();
     }
 
@@ -265,6 +271,22 @@ public final class AceClawConfig {
     }
 
     /**
+     * Returns whether BOOT.md execution is enabled at daemon startup.
+     * Defaults to true.
+     */
+    public boolean bootEnabled() {
+        return bootEnabled;
+    }
+
+    /**
+     * Returns the maximum time in seconds for BOOT.md execution.
+     * Defaults to 120.
+     */
+    public int bootTimeoutSeconds() {
+        return bootTimeoutSeconds;
+    }
+
+    /**
      * Returns the hooks configuration map (event name to list of hook matchers).
      * Returns null if no hooks are configured.
      */
@@ -431,6 +453,12 @@ public final class AceClawConfig {
         if (fileConfig.permissionMode != null && !fileConfig.permissionMode.isBlank()) {
             this.permissionMode = fileConfig.permissionMode.toLowerCase();
         }
+        if (fileConfig.bootEnabled != null) {
+            this.bootEnabled = fileConfig.bootEnabled;
+        }
+        if (fileConfig.bootTimeoutSeconds > 0) {
+            this.bootTimeoutSeconds = fileConfig.bootTimeoutSeconds;
+        }
     }
 
     /**
@@ -449,6 +477,8 @@ public final class AceClawConfig {
         public String logLevel;
         public String braveSearchApiKey;
         public String permissionMode;
+        public Boolean bootEnabled;
+        public int bootTimeoutSeconds;
         public String defaultProfile;
         public Map<String, ConfigFileFormat> profiles;
         public Map<String, String> providerModels;
