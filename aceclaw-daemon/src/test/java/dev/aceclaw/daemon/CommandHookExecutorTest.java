@@ -105,6 +105,9 @@ class CommandHookExecutorTest {
 
     @Test
     void exit0WithDenyDecisionBlocks() {
+        // Exit 0 with {"decision":"deny"} in stdout is a valid way to block per Claude Code's
+        // hook contract. This is distinct from exit 2 (hard block via exit code). The JSON-level
+        // deny allows hooks to provide structured context alongside the block decision.
         var executor = buildExecutor("PreToolUse", "bash", scriptPath("deny.sh"));
         var event = new HookEvent.PreToolUse("s1", "/tmp", "bash", emptyInput());
 
@@ -272,22 +275,14 @@ class CommandHookExecutorTest {
      */
     private static Map<String, List<AceClawConfig.HookMatcherFormat>> buildRawConfig(
             String eventName, HookMatcher matcher) {
-        var matcherFormats = new ArrayList<AceClawConfig.HookMatcherFormat>();
-        var mf = new AceClawConfig.HookMatcherFormat();
-        mf.matcher = matcher.matcher() != null ? matcher.matcher().pattern() : null;
         var hookFormats = new ArrayList<AceClawConfig.HookConfigFormat>();
         for (var hc : matcher.hooks()) {
-            var hf = new AceClawConfig.HookConfigFormat();
-            hf.type = hc.type();
-            hf.command = hc.command();
-            hf.timeout = hc.timeout();
-            hookFormats.add(hf);
+            hookFormats.add(new AceClawConfig.HookConfigFormat(hc.type(), hc.command(), hc.timeout()));
         }
-        mf.hooks = hookFormats;
-        matcherFormats.add(mf);
+        var mf = new AceClawConfig.HookMatcherFormat(
+                matcher.matcher() != null ? matcher.matcher().pattern() : null,
+                hookFormats);
 
-        var map = new HashMap<String, List<AceClawConfig.HookMatcherFormat>>();
-        map.put(eventName, matcherFormats);
-        return map;
+        return Map.of(eventName, List.of(mf));
     }
 }

@@ -456,19 +456,12 @@ public final class AceClawConfig {
      * <pre>{ "matcher": "bash", "hooks": [{ "type": "command", "command": "...", "timeout": 30 }] }</pre>
      */
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public static final class HookMatcherFormat {
-        public String matcher;
-        public List<HookConfigFormat> hooks;
-    }
+    public record HookMatcherFormat(String matcher, List<HookConfigFormat> hooks) {}
 
     /**
      * JSON structure for a single hook config entry.
      * <pre>{ "type": "command", "command": "echo ok", "timeout": 60 }</pre>
      */
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public static final class HookConfigFormat {
-        public String type;
-        public String command;
-        public int timeout;
-    }
+    public record HookConfigFormat(String type, String command, int timeout) {}
 }

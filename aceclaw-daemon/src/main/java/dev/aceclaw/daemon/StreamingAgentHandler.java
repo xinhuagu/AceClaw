@@ -282,7 +282,16 @@ public final class StreamingAgentHandler {
      */
     private ToolRegistry createPermissionAwareRegistry(StreamContext context, String sessionId) {
         var registry = new ToolRegistry();
-        String cwd = workingDir != null ? workingDir.toAbsolutePath().toString() : System.getProperty("user.dir");
+        // Prefer session's project path for hook cwd (each session may have a different working directory)
+        var session = sessionManager.getSession(sessionId);
+        String cwd;
+        if (session != null && session.projectPath() != null) {
+            cwd = session.projectPath().toAbsolutePath().toString();
+        } else if (workingDir != null) {
+            cwd = workingDir.toAbsolutePath().toString();
+        } else {
+            cwd = System.getProperty("user.dir");
+        }
         for (var tool : toolRegistry.all()) {
             registry.register(new PermissionAwareTool(
                     tool, permissionManager, context, objectMapper,

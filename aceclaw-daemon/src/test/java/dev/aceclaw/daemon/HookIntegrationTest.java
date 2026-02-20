@@ -116,23 +116,15 @@ class HookIntegrationTest {
         var hookConfigs = new HashMap<String, List<AceClawConfig.HookMatcherFormat>>();
 
         // PreToolUse: block bash
-        var preMatcherFormat = new AceClawConfig.HookMatcherFormat();
-        preMatcherFormat.matcher = "bash";
-        var preHookFormat = new AceClawConfig.HookConfigFormat();
-        preHookFormat.type = "command";
-        preHookFormat.command = scriptDir.resolve("block_bash.sh").toAbsolutePath().toString();
-        preHookFormat.timeout = 10;
-        preMatcherFormat.hooks = List.of(preHookFormat);
+        var preHookFormat = new AceClawConfig.HookConfigFormat(
+                "command", scriptDir.resolve("block_bash.sh").toAbsolutePath().toString(), 10);
+        var preMatcherFormat = new AceClawConfig.HookMatcherFormat("bash", List.of(preHookFormat));
         hookConfigs.put("PreToolUse", List.of(preMatcherFormat));
 
         // PostToolUse: audit all tools
-        var postMatcherFormat = new AceClawConfig.HookMatcherFormat();
-        postMatcherFormat.matcher = null; // match all
-        var postHookFormat = new AceClawConfig.HookConfigFormat();
-        postHookFormat.type = "command";
-        postHookFormat.command = scriptDir.resolve("audit_post.sh").toAbsolutePath().toString();
-        postHookFormat.timeout = 10;
-        postMatcherFormat.hooks = List.of(postHookFormat);
+        var postHookFormat = new AceClawConfig.HookConfigFormat(
+                "command", scriptDir.resolve("audit_post.sh").toAbsolutePath().toString(), 10);
+        var postMatcherFormat = new AceClawConfig.HookMatcherFormat(null, List.of(postHookFormat));
         hookConfigs.put("PostToolUse", List.of(postMatcherFormat));
 
         var hookRegistry = HookRegistry.load(hookConfigs);
@@ -286,12 +278,9 @@ class HookIntegrationTest {
 
             var result = sendPromptAndCollectEvents(channel, params, 2);
 
-            // Wait for the async PostToolUse hook to complete (fire-and-forget on virtual thread)
-            Thread.sleep(1000);
-
-            // Verify the audit marker file was created by the PostToolUse hook
+            // Poll for the async PostToolUse hook to complete (fire-and-forget on virtual thread)
             var auditMarker = tempDir.resolve("audit-marker.json");
-            assertThat(Files.exists(auditMarker))
+            assertThat(waitForFile(auditMarker, 5000))
                     .as("PostToolUse hook should have created audit marker file")
                     .isTrue();
 
@@ -343,12 +332,12 @@ class HookIntegrationTest {
 
             var result = sendPromptAndCollectEvents(channel, params, 2);
 
-            // Wait for async PostToolUse hooks
-            Thread.sleep(500);
+            // Poll for async PostToolUse hooks
+            var auditMarker = tempDir.resolve("audit-marker.json");
+            waitForFile(auditMarker, 5000);
 
             // Bash was blocked → no PostToolUse for bash
             // read_file succeeded → PostToolUse audit marker should exist for read_file
-            var auditMarker = tempDir.resolve("audit-marker.json");
             assertThat(Files.exists(auditMarker)).isTrue();
             var markerJson = objectMapper.readTree(Files.readString(auditMarker));
             assertThat(markerJson.get("tool_name").asText()).isEqualTo("read_file");
@@ -361,6 +350,17 @@ class HookIntegrationTest {
     }
 
     // -- Helper methods (mirrors DaemonIntegrationTest) --
+
+    /** Polls for a file to appear, returning true if found within the timeout. */
+    private static boolean waitForFile(Path file, long timeoutMs) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            if (Files.exists(file)) return true;
+            Thread.sleep(50);
+        }
+        return Files.exists(file);
+    }
+
 
     private static void createScript(String name, String content) throws IOException {
         var path = scriptDir.resolve(name);

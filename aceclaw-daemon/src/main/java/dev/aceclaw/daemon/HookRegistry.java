@@ -114,10 +114,10 @@ public final class HookRegistry {
             for (var mf : matcherFormats) {
                 try {
                     var hookConfigs = new ArrayList<HookConfig>();
-                    if (mf.hooks != null) {
-                        for (var hf : mf.hooks) {
-                            String type = hf.type != null ? hf.type : "command";
-                            hookConfigs.add(new HookConfig(type, hf.command, hf.timeout));
+                    if (mf.hooks() != null) {
+                        for (var hf : mf.hooks()) {
+                            String type = hf.type() != null ? hf.type() : "command";
+                            hookConfigs.add(new HookConfig(type, hf.command(), hf.timeout()));
                         }
                     }
                     if (hookConfigs.isEmpty()) {
@@ -125,13 +125,13 @@ public final class HookRegistry {
                     }
 
                     Pattern pattern = null;
-                    if (mf.matcher != null && !mf.matcher.isBlank()) {
-                        pattern = Pattern.compile(mf.matcher);
+                    if (mf.matcher() != null && !mf.matcher().isBlank()) {
+                        pattern = Pattern.compile(mf.matcher());
                     }
 
                     hookMatchers.add(new HookMatcher(pattern, hookConfigs));
                 } catch (PatternSyntaxException e) {
-                    log.warn("Invalid hook matcher regex '{}': {}", mf.matcher, e.getMessage());
+                    log.warn("Invalid hook matcher regex '{}': {}", mf.matcher(), e.getMessage());
                 } catch (IllegalArgumentException e) {
                     log.warn("Invalid hook config: {}", e.getMessage());
                 }

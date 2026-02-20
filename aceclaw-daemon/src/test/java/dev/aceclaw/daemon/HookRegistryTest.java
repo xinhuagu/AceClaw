@@ -75,21 +75,13 @@ class HookRegistryTest {
         var matcherFormats = new ArrayList<AceClawConfig.HookMatcherFormat>();
 
         // First matcher: all tools
-        var mf1 = new AceClawConfig.HookMatcherFormat();
-        mf1.matcher = null;
-        var hf1 = new AceClawConfig.HookConfigFormat();
-        hf1.type = "command";
-        hf1.command = "echo first";
-        mf1.hooks = List.of(hf1);
+        var hf1 = new AceClawConfig.HookConfigFormat("command", "echo first", 0);
+        var mf1 = new AceClawConfig.HookMatcherFormat(null, List.of(hf1));
         matcherFormats.add(mf1);
 
         // Second matcher: bash only
-        var mf2 = new AceClawConfig.HookMatcherFormat();
-        mf2.matcher = "bash";
-        var hf2 = new AceClawConfig.HookConfigFormat();
-        hf2.type = "command";
-        hf2.command = "echo second";
-        mf2.hooks = List.of(hf2);
+        var hf2 = new AceClawConfig.HookConfigFormat("command", "echo second", 0);
+        var mf2 = new AceClawConfig.HookMatcherFormat("bash", List.of(hf2));
         matcherFormats.add(mf2);
 
         var configMap = new HashMap<String, List<AceClawConfig.HookMatcherFormat>>();
@@ -165,20 +157,8 @@ class HookRegistryTest {
 
     private static Map<String, List<AceClawConfig.HookMatcherFormat>> buildConfigMap(
             String eventName, String matcher, String type, String command, int timeout) {
-        var hf = new AceClawConfig.HookConfigFormat();
-        hf.type = type;
-        hf.command = command;
-        hf.timeout = timeout;
-
-        var mf = new AceClawConfig.HookMatcherFormat();
-        mf.matcher = matcher;
-        mf.hooks = List.of(hf);
-
-        var list = new ArrayList<AceClawConfig.HookMatcherFormat>();
-        list.add(mf);
-
-        var map = new HashMap<String, List<AceClawConfig.HookMatcherFormat>>();
-        map.put(eventName, list);
-        return map;
+        var hf = new AceClawConfig.HookConfigFormat(type, command, timeout);
+        var mf = new AceClawConfig.HookMatcherFormat(matcher, List.of(hf));
+        return Map.of(eventName, List.of(mf));
     }
 }
