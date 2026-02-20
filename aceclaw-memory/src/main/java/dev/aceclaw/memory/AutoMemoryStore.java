@@ -394,6 +394,7 @@ public final class AutoMemoryStore {
             var catEntries = entries.stream()
                     .filter(e -> e.category() == cat)
                     .filter(e -> e.tags().contains(toolName))
+                    .sorted(Comparator.comparing(MemoryEntry::createdAt).reversed())
                     .limit(maxEntries)
                     .toList();
 
