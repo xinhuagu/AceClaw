@@ -10,6 +10,7 @@ import dev.aceclaw.memory.AutoMemoryStore;
 import dev.aceclaw.memory.DailyJournal;
 import dev.aceclaw.memory.MarkdownMemoryStore;
 import dev.aceclaw.memory.MemoryConsolidator;
+import dev.aceclaw.memory.StrategyRefiner;
 import dev.aceclaw.security.DefaultPermissionPolicy;
 import dev.aceclaw.security.PermissionManager;
 import dev.aceclaw.mcp.McpClientManager;
@@ -246,13 +247,15 @@ public final class AceClawDaemon {
             agentHandler.setDailyJournal(journal);
         }
 
-        // 9. Self-improvement engine (post-turn learning analysis)
+        // 9. Self-improvement engine (post-turn learning analysis + strategy refinement)
         if (memoryStore != null) {
             var errorDetector = new ErrorDetector(memoryStore);
             var patternDetector = new PatternDetector(memoryStore);
-            var selfImprovementEngine = new SelfImprovementEngine(errorDetector, patternDetector, memoryStore);
+            var strategyRefiner = new StrategyRefiner(memoryStore);
+            var selfImprovementEngine = new SelfImprovementEngine(
+                    errorDetector, patternDetector, memoryStore, strategyRefiner);
             agentHandler.setSelfImprovementEngine(selfImprovementEngine);
-            log.info("Self-improvement engine wired");
+            log.info("Self-improvement engine wired (with strategy refinement)");
         }
 
         agentHandler.register(router);

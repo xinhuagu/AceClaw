@@ -5,11 +5,14 @@ import dev.aceclaw.core.agent.Turn;
 import dev.aceclaw.memory.AutoMemoryStore;
 import dev.aceclaw.memory.Insight;
 import dev.aceclaw.memory.MemoryEntry;
+import dev.aceclaw.memory.StrategyRefiner;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Orchestrates the self-learning pipeline: runs detectors, deduplicates insights,
@@ -42,16 +45,48 @@ public final class SelfImprovementEngine {
     /** Maximum length for insight content stored in memory. */
     private static final int MAX_CONTENT_LENGTH = 500;
 
+    /** Number of turns between strategy refinement runs. */
+    static final int REFINE_DEBOUNCE_TURNS = 10;
+
+    /** Minimum accumulated persisted insights before attempting refinement. */
+    static final int REFINE_MIN_PERSISTED = 3;
+
     private final ErrorDetector errorDetector;
     private final PatternDetector patternDetector;
     private final AutoMemoryStore memoryStore;
+    private final StrategyRefiner strategyRefiner;
 
+    private final AtomicInteger turnsSinceRefinement = new AtomicInteger();
+    private final AtomicInteger persistedSinceLastRefinement = new AtomicInteger();
+    /** Serializes the check-refine-reset block so only one thread runs refine() at a time. */
+    private final ReentrantLock refinementLock = new ReentrantLock();
+
+    /**
+     * Creates a self-improvement engine without strategy refinement.
+     * Backward-compatible with existing code and tests.
+     */
     public SelfImprovementEngine(ErrorDetector errorDetector,
                                   PatternDetector patternDetector,
                                   AutoMemoryStore memoryStore) {
+        this(errorDetector, patternDetector, memoryStore, null);
+    }
+
+    /**
+     * Creates a self-improvement engine with optional strategy refinement.
+     *
+     * @param errorDetector    detects error-correction patterns
+     * @param patternDetector  detects recurring behavioral patterns
+     * @param memoryStore      persistent memory for insights
+     * @param strategyRefiner  optional refiner that consolidates insights into strategies (nullable)
+     */
+    public SelfImprovementEngine(ErrorDetector errorDetector,
+                                  PatternDetector patternDetector,
+                                  AutoMemoryStore memoryStore,
+                                  StrategyRefiner strategyRefiner) {
         this.errorDetector = Objects.requireNonNull(errorDetector, "errorDetector");
         this.patternDetector = Objects.requireNonNull(patternDetector, "patternDetector");
         this.memoryStore = Objects.requireNonNull(memoryStore, "memoryStore");
+        this.strategyRefiner = strategyRefiner;
     }
 
     /**
@@ -65,6 +100,8 @@ public final class SelfImprovementEngine {
     public List<Insight> analyze(Turn turn,
                                   List<AgentSession.ConversationMessage> sessionHistory,
                                   Map<String, ToolMetrics> toolMetrics) {
+        turnsSinceRefinement.incrementAndGet();
+
         var insights = new ArrayList<Insight>();
 
         try {
@@ -120,6 +157,38 @@ public final class SelfImprovementEngine {
                         insight.targetCategory(), insight.confidence(), truncate(content));
             } catch (Exception e) {
                 log.warn("Failed to persist insight: {}", e.getMessage());
+            }
+        }
+
+        // Accumulate persisted count across turns and trigger refinement when enough have built up.
+        // The lock serializes refinement so only one thread runs refine() at a time.
+        // Subtracting the snapshot (instead of zeroing) preserves increments from concurrent threads.
+        persistedSinceLastRefinement.addAndGet(persisted);
+        if (strategyRefiner != null
+                && persistedSinceLastRefinement.get() >= REFINE_MIN_PERSISTED
+                && turnsSinceRefinement.get() >= REFINE_DEBOUNCE_TURNS
+                && refinementLock.tryLock()) {
+            try {
+                // Snapshot under lock — other threads can still increment atomically
+                int snapshotPersisted = persistedSinceLastRefinement.get();
+                int snapshotTurns = turnsSinceRefinement.get();
+                if (snapshotPersisted >= REFINE_MIN_PERSISTED && snapshotTurns >= REFINE_DEBOUNCE_TURNS) {
+                    var result = strategyRefiner.refine(insights, projectPath);
+                    if (result.hasChanges()) {
+                        log.info("Strategy refinement after {} turns ({} persisted): {} strategies, {} anti-patterns, {} preferences ({} consolidated)",
+                                snapshotTurns, snapshotPersisted,
+                                result.strategiesCreated(),
+                                result.antiPatternsCreated(), result.preferencesStrengthened(),
+                                result.entriesConsolidated());
+                    }
+                    // Subtract snapshot values to preserve concurrent increments
+                    turnsSinceRefinement.addAndGet(-snapshotTurns);
+                    persistedSinceLastRefinement.addAndGet(-snapshotPersisted);
+                }
+            } catch (Exception e) {
+                log.warn("Strategy refinement failed: {}", e.getMessage());
+            } finally {
+                refinementLock.unlock();
             }
         }
 
