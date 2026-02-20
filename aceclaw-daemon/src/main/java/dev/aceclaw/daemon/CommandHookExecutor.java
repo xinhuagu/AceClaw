@@ -90,6 +90,11 @@ public final class CommandHookExecutor implements HookExecutor {
 
     /**
      * Executes a single hook command and returns its result.
+     *
+     * <p>Stdout and stderr are read concurrently on virtual threads to avoid
+     * pipe deadlocks — if the process writes more than the OS pipe buffer size
+     * before we read, it would block waiting for the reader, while we block on
+     * {@code waitFor()}.
      */
     private HookResult executeOne(HookConfig hookConfig, HookEvent event) {
         try {
@@ -111,17 +116,45 @@ public final class CommandHookExecutor implements HookExecutor {
                 os.flush();
             }
 
+            // Read stdout and stderr concurrently to prevent pipe deadlock.
+            // The process might block writing to stdout/stderr if the pipe buffer
+            // fills before we consume it — we must drain both streams while waiting.
+            var stdoutHolder = new String[1];
+            var stderrHolder = new String[1];
+            var stdoutThread = Thread.ofVirtual().start(() -> {
+                try {
+                    stdoutHolder[0] = new String(
+                            process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+                } catch (IOException e) {
+                    stdoutHolder[0] = "";
+                }
+            });
+            var stderrThread = Thread.ofVirtual().start(() -> {
+                try {
+                    stderrHolder[0] = new String(
+                            process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+                } catch (IOException e) {
+                    stderrHolder[0] = "";
+                }
+            });
+
             // Wait for completion with timeout
             boolean finished = process.waitFor(hookConfig.timeout(), TimeUnit.SECONDS);
             if (!finished) {
                 process.destroyForcibly();
+                stdoutThread.join(1000);
+                stderrThread.join(1000);
                 log.warn("Hook command timed out after {}s: {}", hookConfig.timeout(), hookConfig.command());
                 return new HookResult.Error(-1, "Hook timed out after " + hookConfig.timeout() + "s");
             }
 
+            // Wait for reader threads to finish (process is done, streams will close)
+            stdoutThread.join(5000);
+            stderrThread.join(5000);
+
             int exitCode = process.exitValue();
-            String stdout = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
-            String stderr = new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+            String stdout = stdoutHolder[0] != null ? stdoutHolder[0] : "";
+            String stderr = stderrHolder[0] != null ? stderrHolder[0] : "";
 
             return interpretExitCode(exitCode, stdout, stderr, hookConfig.command());
 
