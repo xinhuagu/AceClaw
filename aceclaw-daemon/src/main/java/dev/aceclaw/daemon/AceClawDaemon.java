@@ -544,7 +544,7 @@ public final class AceClawDaemon {
         long bootMs = java.time.Duration.between(startedAt, Instant.now()).toMillis();
         log.info("AceClaw daemon ready (boot: {}ms, socket: {})", bootMs, homeDir.resolve("aceclaw.sock"));
 
-        // 5. Block until shutdown
+        // 6. Block until shutdown
         awaitShutdown();
     }
 

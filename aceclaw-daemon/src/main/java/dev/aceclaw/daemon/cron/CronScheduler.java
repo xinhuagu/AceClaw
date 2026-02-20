@@ -1,6 +1,7 @@
 package dev.aceclaw.daemon.cron;
 
 import dev.aceclaw.core.agent.AgentLoopConfig;
+import dev.aceclaw.core.agent.CancellationToken;
 import dev.aceclaw.core.agent.StreamingAgentLoop;
 import dev.aceclaw.core.agent.ToolRegistry;
 import dev.aceclaw.core.llm.LlmClient;
@@ -283,12 +284,13 @@ public final class CronScheduler {
         String cronPrompt = "[CRON] Executing scheduled task '" + job.name() + "' (id: " + job.id() + "):\n\n"
                 + job.prompt();
 
+        var cancellationToken = new CancellationToken();
         var executor = Executors.newVirtualThreadPerTaskExecutor();
         try {
             var future = CompletableFuture.supplyAsync(() -> {
                 try {
                     var turn = agentLoop.runTurn(cronPrompt, new ArrayList<>(),
-                            new SilentStreamHandler());
+                            new SilentStreamHandler(), cancellationToken);
                     return turn.text();
                 } catch (LlmException e) {
                     throw new CompletionException(e);
@@ -298,6 +300,7 @@ public final class CronScheduler {
             try {
                 return future.get(job.timeoutSeconds(), TimeUnit.SECONDS);
             } catch (TimeoutException e) {
+                cancellationToken.cancel();
                 future.cancel(true);
                 throw new TimeoutException("Cron job '" + job.id() + "' timed out after "
                         + job.timeoutSeconds() + "s");

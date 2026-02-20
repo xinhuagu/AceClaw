@@ -92,14 +92,22 @@ public final class JobStore {
 
         Files.createDirectories(cronDir);
         Path tempFile = cronDir.resolve(JOBS_FILE + ".tmp");
-        mapper.writeValue(tempFile.toFile(), snapshot);
-
         try {
-            Files.move(tempFile, jobsFile, StandardCopyOption.REPLACE_EXISTING,
-                    StandardCopyOption.ATOMIC_MOVE);
-        } catch (AtomicMoveNotSupportedException e) {
-            // Fallback to non-atomic move on filesystems that don't support it
-            Files.move(tempFile, jobsFile, StandardCopyOption.REPLACE_EXISTING);
+            mapper.writeValue(tempFile.toFile(), snapshot);
+            try {
+                Files.move(tempFile, jobsFile, StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                // Fallback to non-atomic move on filesystems that don't support it
+                Files.move(tempFile, jobsFile, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            // Clean up temp file if write or move failed
+            try {
+                Files.deleteIfExists(tempFile);
+            } catch (IOException ignored) {
+                // Best-effort cleanup
+            }
         }
         log.debug("Saved {} cron job(s) to {}", snapshot.size(), jobsFile);
     }

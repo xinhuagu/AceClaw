@@ -217,7 +217,7 @@ class CronSchedulerTest {
 
     @Test
     @Order(13)
-    void scheduler_executesJobOnTick() throws IOException, InterruptedException {
+    void scheduler_executesJobOnTick() throws IOException {
         var jobStore = new JobStore(homeDir);
         // Create a job that should fire immediately (lastRunAt = EPOCH, expression = every minute)
         var job = CronJob.create("test-exec", "Test Exec", "* * * * *", "Do the thing");
@@ -229,11 +229,11 @@ class CronSchedulerTest {
         var scheduler = new CronScheduler(
                 jobStore, mockLlm, toolRegistry,
                 "mock-model", "system prompt",
-                4096, 0, null, 1);
+                4096, 0, null, 60);
         scheduler.start();
 
-        // Wait for tick to execute
-        Thread.sleep(2500);
+        // Invoke tick directly for deterministic testing (no Thread.sleep)
+        scheduler.tick();
         scheduler.stop();
 
         // Verify job was executed

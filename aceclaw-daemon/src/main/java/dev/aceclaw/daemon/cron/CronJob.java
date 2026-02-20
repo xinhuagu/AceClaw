@@ -41,6 +41,12 @@ public record CronJob(
         int consecutiveFailures
 ) {
 
+    /** Compact constructor: defensive copies for mutable collections. */
+    public CronJob {
+        allowedTools = allowedTools != null ? Set.copyOf(allowedTools) : Set.of();
+        retryBackoff = retryBackoff != null ? List.copyOf(retryBackoff) : DEFAULT_RETRY_BACKOFF;
+    }
+
     /** Default timeout for cron job execution. */
     public static final int DEFAULT_TIMEOUT_SECONDS = 300;
 
