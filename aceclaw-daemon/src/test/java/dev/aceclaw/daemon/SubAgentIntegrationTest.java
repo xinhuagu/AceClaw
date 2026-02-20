@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import dev.aceclaw.core.agent.AgentTypeRegistry;
 import dev.aceclaw.core.agent.StreamingAgentLoop;
+import dev.aceclaw.core.agent.SubAgentPermissionChecker;
 import dev.aceclaw.core.agent.SubAgentRunner;
 import dev.aceclaw.core.agent.ToolRegistry;
 import dev.aceclaw.security.DefaultPermissionPolicy;
@@ -72,14 +73,19 @@ class SubAgentIntegrationTest {
         toolRegistry.register(new GlobSearchTool(workDir));
         toolRegistry.register(new GrepSearchTool(workDir));
 
-        // Sub-agent infrastructure
-        var agentTypeRegistry = AgentTypeRegistry.withBuiltins();
-        var subAgentRunner = new SubAgentRunner(
-                mockLlm, toolRegistry, "mock-model", workDir, 4096, 0);
-        toolRegistry.register(new TaskTool(subAgentRunner, agentTypeRegistry));
-
         // Permission manager — auto-approve READ, prompt for WRITE/EXECUTE
+        // Created early because sub-agent permission checker references it.
         permissionManager = new PermissionManager(new DefaultPermissionPolicy());
+
+        // Sub-agent infrastructure (with permission checker)
+        var agentTypeRegistry = AgentTypeRegistry.withBuiltins();
+        var readOnlyTools = java.util.Set.of("read_file", "glob", "grep");
+        var subAgentPermChecker = new SubAgentPermissionChecker(
+                readOnlyTools, permissionManager::hasSessionApproval);
+        var subAgentRunner = new SubAgentRunner(
+                mockLlm, toolRegistry, "mock-model", workDir, 4096, 0,
+                subAgentPermChecker, null);
+        toolRegistry.register(new TaskTool(subAgentRunner, agentTypeRegistry));
 
         // Agent loop + handler
         var agentLoop = new StreamingAgentLoop(
@@ -237,6 +243,51 @@ class SubAgentIntegrationTest {
                         .as("Sub-agent should not have access to 'task' tool")
                         .isFalse();
             }
+
+            destroySession(channel, sessionId, 3);
+        }
+    }
+
+    @Test
+    @Order(4)
+    void testSubAgentWriteDeniedWithoutSessionApproval() throws Exception {
+        try (var channel = connectToSocket()) {
+            String sessionId = createSession(channel, 1);
+
+            // Parent delegates to "general" sub-agent
+            mockLlm.enqueueResponse(MockLlmClient.toolUseResponse(
+                    "Let me delegate this write task.",
+                    "toolu_task_004", "task",
+                    "{\"agent_type\":\"general\",\"prompt\":\"Write a file called test.txt with content hello.\"}"
+            ));
+            // Sub-agent tries to use write_file — should get "Permission denied" tool result
+            // because write_file is not read-only and not session-approved.
+            // The sub-agent receives the error and responds with text.
+            mockLlm.enqueueResponse(MockLlmClient.toolUseResponse(
+                    "I will write the file.",
+                    "toolu_write_001", "write_file",
+                    "{\"file_path\":\"test.txt\",\"content\":\"hello\"}"
+            ));
+            // After permission denied tool result, sub-agent gives up
+            mockLlm.enqueueResponse(MockLlmClient.textResponse(
+                    "I cannot write files — permission was denied."));
+            // Parent follow-up after receiving sub-agent result
+            mockLlm.enqueueResponse(MockLlmClient.textResponse(
+                    "The sub-agent was unable to write the file due to permission restrictions."));
+
+            var promptParams = objectMapper.createObjectNode();
+            promptParams.put("sessionId", sessionId);
+            promptParams.put("prompt", "Write test.txt via a sub-agent");
+
+            var result = sendPromptAndCollectEvents(channel, promptParams, 2);
+
+            var response = result.finalResponse();
+            assertThat(response.has("result")).isTrue();
+            assertThat(response.get("result").get("response").asText())
+                    .containsIgnoringCase("permission");
+
+            // Verify the file was NOT created
+            assertThat(workDir.resolve("test.txt")).doesNotExist();
 
             destroySession(channel, sessionId, 3);
         }

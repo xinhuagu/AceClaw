@@ -6,7 +6,9 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
 import java.util.List;
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -128,6 +130,175 @@ class SubAgentRunnerTest {
         runner.run(config, "test task", null);
 
         assertThat(mockClient.lastRequest.systemPrompt()).contains(tempDir.toString());
+    }
+
+    // -- TD-2: Cancellation tests --
+
+    @Test
+    void cancellationStopsSubAgent() throws Exception {
+        var cancelledLatch = new CountDownLatch(1);
+        var cancelled = new AtomicBoolean(false);
+
+        // A client that blocks until cancellation is triggered
+        var blockingClient = new LlmClient() {
+            @Override
+            public LlmResponse sendMessage(LlmRequest request) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public StreamSession streamMessage(LlmRequest request) {
+                return new StreamSession() {
+                    @Override
+                    public void onEvent(StreamEventHandler handler) {
+                        handler.onMessageStart(new StreamEvent.MessageStart("msg", "mock"));
+                        handler.onContentBlockStart(new StreamEvent.ContentBlockStart(0, new ContentBlock.Text("")));
+                        handler.onTextDelta(new StreamEvent.TextDelta("partial"));
+                        // Signal that streaming has started
+                        cancelledLatch.countDown();
+                        // Simulate a long-running stream that checks cancellation
+                        try { Thread.sleep(5000); } catch (InterruptedException e) {
+                            cancelled.set(true);
+                        }
+                        handler.onContentBlockStop(new StreamEvent.ContentBlockStop(0));
+                        handler.onMessageDelta(new StreamEvent.MessageDelta(StopReason.END_TURN, new Usage(10, 5)));
+                        handler.onComplete(new StreamEvent.StreamComplete());
+                    }
+
+                    @Override
+                    public void cancel() {
+                        cancelled.set(true);
+                    }
+                };
+            }
+
+            @Override public String provider() { return "mock"; }
+            @Override public String defaultModel() { return "mock"; }
+        };
+
+        var parentRegistry = new ToolRegistry();
+        var runner = new SubAgentRunner(
+                blockingClient, parentRegistry, "model", tempDir, 4096, 0);
+
+        var token = new CancellationToken();
+        var config = new SubAgentConfig("test", "", null, List.of(), List.of(), 25, "test");
+
+        // Run the sub-agent in a separate thread
+        var resultHolder = new String[1];
+        var thread = Thread.ofVirtual().start(() -> {
+            try {
+                resultHolder[0] = runner.run(config, "do stuff", null, token);
+            } catch (LlmException e) {
+                // Expected if cancelled
+            }
+        });
+
+        // Wait for streaming to start, then cancel
+        assertThat(cancelledLatch.await(3, TimeUnit.SECONDS)).isTrue();
+        token.cancel();
+
+        thread.join(5000);
+        // The token was propagated and cancel() was called on the session
+        assertThat(token.isCancelled()).isTrue();
+        assertThat(cancelled.get()).isTrue();
+    }
+
+    @Test
+    void nullCancellationTokenAllowed() throws Exception {
+        var mockClient = new SimpleMockLlmClient("result");
+        var parentRegistry = new ToolRegistry();
+
+        var runner = new SubAgentRunner(
+                mockClient, parentRegistry, "model", tempDir, 4096, 0);
+
+        var config = new SubAgentConfig("test", "", null, List.of(), List.of(), 25, "test");
+        // Should not throw with null token
+        var result = runner.run(config, "do stuff", null, null);
+        assertThat(result).isEqualTo("result");
+    }
+
+    // -- TD-5: Project rules tests --
+
+    @Test
+    void systemPromptIncludesProjectRules() throws Exception {
+        var mockClient = new SimpleMockLlmClient("done");
+        var parentRegistry = new ToolRegistry();
+
+        var runner = new SubAgentRunner(
+                mockClient, parentRegistry, "model", tempDir, 4096, 0,
+                null, "# Build\n\nUse Java 21 with preview features.");
+
+        var config = new SubAgentConfig("test", "", null, List.of(), List.of(), 25, "test template");
+        runner.run(config, "test task", null);
+
+        var prompt = mockClient.lastRequest.systemPrompt();
+        assertThat(prompt).contains("Project Rules");
+        assertThat(prompt).contains("Java 21");
+        assertThat(prompt).contains("test template");
+    }
+
+    @Test
+    void rulesNullHandled() throws Exception {
+        var mockClient = new SimpleMockLlmClient("done");
+        var parentRegistry = new ToolRegistry();
+
+        var runner = new SubAgentRunner(
+                mockClient, parentRegistry, "model", tempDir, 4096, 0,
+                null, null);
+
+        var config = new SubAgentConfig("test", "", null, List.of(), List.of(), 25, "template");
+        runner.run(config, "test task", null);
+
+        var prompt = mockClient.lastRequest.systemPrompt();
+        assertThat(prompt).doesNotContain("Project Rules");
+        assertThat(prompt).contains("template");
+    }
+
+    @Test
+    void rulesTruncatedForSmallModel() throws Exception {
+        var mockClient = new SimpleMockLlmClient("done");
+        var parentRegistry = new ToolRegistry();
+
+        // Create rules that exceed the 2000 char cap for small models
+        String longRules = "x".repeat(5000);
+        var runner = new SubAgentRunner(
+                mockClient, parentRegistry, "claude-haiku-3", tempDir, 4096, 0,
+                null, longRules);
+
+        // Inheriting model — parent is haiku, so cap should be 2000
+        var config = new SubAgentConfig("haiku-agent", "", null,
+                List.of(), List.of(), 25, "test");
+        runner.run(config, "test task", null);
+
+        var prompt = mockClient.lastRequest.systemPrompt();
+        assertThat(prompt).contains("[truncated]");
+        // The full 5000-char rules should not appear
+        assertThat(prompt).doesNotContain("x".repeat(5000));
+    }
+
+    // -- TD-6: Prompt caching tests --
+
+    @Test
+    void sameTypeAgentsProduceSamePrompt() throws Exception {
+        var mockClient = new SimpleMockLlmClient("done");
+        var parentRegistry = new ToolRegistry();
+
+        var runner = new SubAgentRunner(
+                mockClient, parentRegistry, "model", tempDir, 4096, 0,
+                null, "shared rules");
+
+        var config = new SubAgentConfig("explore", "", null,
+                List.of("read_file"), List.of(), 25, "Explore the codebase.");
+
+        // Run twice
+        runner.run(config, "task 1", null);
+        var prompt1 = mockClient.lastRequest.systemPrompt();
+
+        runner.run(config, "task 2", null);
+        var prompt2 = mockClient.lastRequest.systemPrompt();
+
+        // System prompts should be identical (enables prompt caching)
+        assertThat(prompt1).isEqualTo(prompt2);
     }
 
     // -- Test helpers ---------------------------------------------------------

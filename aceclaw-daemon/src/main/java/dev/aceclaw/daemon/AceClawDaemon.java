@@ -189,11 +189,29 @@ public final class AceClawDaemon {
 
         log.info("Registered {} base tools", toolRegistry.size());
 
-        // 3. Sub-agent infrastructure (task delegation) and skills
+        // 3. Permission manager — mode from config (default: "normal")
+        //    Created early because sub-agent permission checker references it.
+        var permissionManager = new PermissionManager(new DefaultPermissionPolicy(config.permissionMode()));
+
+        // 4. Sub-agent infrastructure (task delegation) and skills
         var agentTypeRegistry = AgentTypeRegistry.load(workingDir);
+
+        // Sub-agent permission checker: auto-approve READ tools + session-approved, deny rest
+        // Note: "memory" excluded — MemoryTool has save/delete (write operations).
+        // "skill" included — skill execution is gated by skill config's allowedTools.
+        var readOnlyTools = java.util.Set.of(
+                "read_file", "glob", "grep", "list_directory",
+                "web_fetch", "web_search", "screen_capture", "skill");
+        var subAgentPermChecker = new SubAgentPermissionChecker(
+                readOnlyTools, permissionManager::hasSessionApproval);
+
+        // Project rules for sub-agent system prompts
+        String projectRules = SystemPromptLoader.extractProjectRules(workingDir);
+
         var subAgentRunner = new SubAgentRunner(
                 llmClient, toolRegistry, model, workingDir,
-                config.maxTokens(), config.thinkingBudget());
+                config.maxTokens(), config.thinkingBudget(),
+                subAgentPermChecker, projectRules);
         toolRegistry.register(new dev.aceclaw.tools.TaskTool(subAgentRunner, agentTypeRegistry));
         log.info("Sub-agent types available: {}", agentTypeRegistry.names());
 
@@ -207,9 +225,6 @@ public final class AceClawDaemon {
         } else {
             log.debug("No skills found, SkillTool not registered");
         }
-
-        // 4. Permission manager — mode from config (default: "normal")
-        var permissionManager = new PermissionManager(new DefaultPermissionPolicy(config.permissionMode()));
 
         // 5. System prompt (with 8-tier memory hierarchy + daily journal + model identity + budget)
         //    Budget scales with context window: small models (32K) get smaller memory budgets

@@ -2,6 +2,7 @@ package dev.aceclaw.daemon;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.aceclaw.core.agent.CancellationAware;
 import dev.aceclaw.core.agent.CancellationToken;
 import dev.aceclaw.core.agent.MessageCompactor;
 import dev.aceclaw.core.agent.StreamingAgentLoop;
@@ -860,7 +861,7 @@ public final class StreamingAgentHandler {
      * the permission manager and, if needed, sends a permission request
      * to the client and waits for the response.
      */
-    private static final class PermissionAwareTool implements Tool {
+    private static final class PermissionAwareTool implements Tool, CancellationAware {
 
         private final Tool delegate;
         private final PermissionManager permissionManager;
@@ -873,6 +874,13 @@ public final class StreamingAgentHandler {
             this.permissionManager = permissionManager;
             this.context = context;
             this.objectMapper = objectMapper;
+        }
+
+        @Override
+        public void setCancellationToken(CancellationToken token) {
+            if (delegate instanceof CancellationAware ca) {
+                ca.setCancellationToken(token);
+            }
         }
 
         @Override
