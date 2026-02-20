@@ -228,13 +228,14 @@ public final class SubAgentRunner {
         String taskId = UUID.randomUUID().toString();
         Instant startedAt = Instant.now();
 
+        var factory = Thread.ofVirtual().name("bg-task-" + taskId.substring(0, 8)).factory();
         var future = CompletableFuture.supplyAsync(() -> {
             try {
                 return runWithTranscript(config, prompt, null, cancellationToken, taskId);
             } catch (Exception e) {
                 throw new java.util.concurrent.CompletionException(e);
             }
-        }, Thread.ofVirtual().name("bg-task-" + taskId.substring(0, 8)).factory()::newThread);
+        }, runnable -> factory.newThread(runnable).start());
 
         var task = new BackgroundTask(taskId, config.name(), prompt, future, startedAt);
         backgroundTasks.put(taskId, task);
