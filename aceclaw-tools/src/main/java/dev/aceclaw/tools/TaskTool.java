@@ -3,6 +3,8 @@ package dev.aceclaw.tools;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.AgentTypeRegistry;
+import dev.aceclaw.core.agent.CancellationAware;
+import dev.aceclaw.core.agent.CancellationToken;
 import dev.aceclaw.core.agent.SubAgentConfig;
 import dev.aceclaw.core.agent.SubAgentRunner;
 import dev.aceclaw.core.agent.Tool;
@@ -15,18 +17,27 @@ import org.slf4j.LoggerFactory;
  * <p>The parent agent invokes this tool to spawn a child agent for focused tasks
  * like codebase exploration, planning, or general-purpose work. Sub-agents run
  * with filtered tool sets and fresh conversation history.
+ *
+ * <p>Implements {@link CancellationAware} so the parent loop's cancellation
+ * token propagates to the sub-agent loop.
  */
-public final class TaskTool implements Tool {
+public final class TaskTool implements Tool, CancellationAware {
 
     private static final Logger log = LoggerFactory.getLogger(TaskTool.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final SubAgentRunner runner;
     private final AgentTypeRegistry typeRegistry;
+    private volatile CancellationToken cancellationToken;
 
     public TaskTool(SubAgentRunner runner, AgentTypeRegistry typeRegistry) {
         this.runner = runner;
         this.typeRegistry = typeRegistry;
+    }
+
+    @Override
+    public void setCancellationToken(CancellationToken token) {
+        this.cancellationToken = token;
     }
 
     @Override
@@ -91,7 +102,7 @@ public final class TaskTool implements Tool {
         log.info("Delegating task to sub-agent '{}': prompt length={}", agentType, prompt.length());
 
         try {
-            var result = runner.run(config, prompt, null);
+            var result = runner.run(config, prompt, null, cancellationToken);
             if (result.isEmpty()) {
                 return new ToolResult("Sub-agent completed but produced no text output.", false);
             }

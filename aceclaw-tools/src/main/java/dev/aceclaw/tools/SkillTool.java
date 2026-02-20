@@ -2,6 +2,8 @@ package dev.aceclaw.tools;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.aceclaw.core.agent.CancellationAware;
+import dev.aceclaw.core.agent.CancellationToken;
 import dev.aceclaw.core.agent.SkillConfig;
 import dev.aceclaw.core.agent.SkillContentResolver;
 import dev.aceclaw.core.agent.SkillRegistry;
@@ -25,7 +27,7 @@ import java.util.List;
  *       a sub-agent that runs in isolation via {@link SubAgentRunner}</li>
  * </ul>
  */
-public final class SkillTool implements Tool {
+public final class SkillTool implements Tool, CancellationAware {
 
     private static final Logger log = LoggerFactory.getLogger(SkillTool.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -34,6 +36,7 @@ public final class SkillTool implements Tool {
     private final SkillContentResolver contentResolver;
     private final SubAgentRunner subAgentRunner;
     private volatile StreamEventHandler currentHandler;
+    private volatile CancellationToken cancellationToken;
 
     /**
      * Creates a skill tool.
@@ -47,6 +50,11 @@ public final class SkillTool implements Tool {
         this.skillRegistry = skillRegistry;
         this.contentResolver = contentResolver;
         this.subAgentRunner = subAgentRunner;
+    }
+
+    @Override
+    public void setCancellationToken(CancellationToken token) {
+        this.cancellationToken = token;
     }
 
     /**
@@ -163,7 +171,7 @@ public final class SkillTool implements Tool {
             handler.onSubAgentStart("skill:" + skillName, prompt);
         }
         try {
-            var result = subAgentRunner.run(subConfig, prompt, handler);
+            var result = subAgentRunner.run(subConfig, prompt, handler, cancellationToken);
             if (result.isEmpty()) {
                 return new ToolResult("Skill '" + skillName + "' completed but produced no output.", false);
             }

@@ -269,6 +269,48 @@ public final class SystemPromptLoader {
     }
 
     /**
+     * Extracts project rules from CLAUDE.md and ACECLAW.md in the project directory.
+     *
+     * <p>These rules are injected into sub-agent system prompts so they follow
+     * the same conventions as the parent agent. Returns empty string if neither
+     * file exists.
+     *
+     * @param projectPath the project root directory
+     * @return concatenated project rules, or empty string if none found
+     */
+    public static String extractProjectRules(Path projectPath) {
+        var sb = new StringBuilder();
+
+        // CLAUDE.md (standard convention)
+        var claudeMd = projectPath.resolve("CLAUDE.md");
+        if (Files.isReadable(claudeMd)) {
+            try {
+                String content = Files.readString(claudeMd, StandardCharsets.UTF_8);
+                if (!content.isBlank()) {
+                    sb.append("## CLAUDE.md\n\n").append(content.strip()).append("\n\n");
+                }
+            } catch (IOException e) {
+                log.debug("Failed to read CLAUDE.md: {}", e.getMessage());
+            }
+        }
+
+        // .aceclaw/ACECLAW.md (project-specific config)
+        var aceClawMd = projectPath.resolve(".aceclaw").resolve("ACECLAW.md");
+        if (Files.isReadable(aceClawMd)) {
+            try {
+                String content = Files.readString(aceClawMd, StandardCharsets.UTF_8);
+                if (!content.isBlank()) {
+                    sb.append("## ACECLAW.md\n\n").append(content.strip()).append("\n\n");
+                }
+            } catch (IOException e) {
+                log.debug("Failed to read ACECLAW.md: {}", e.getMessage());
+            }
+        }
+
+        return sb.toString();
+    }
+
+    /**
      * Returns the built-in base system prompt from the classpath resource.
      * Falls back to a minimal prompt if the resource cannot be loaded.
      */

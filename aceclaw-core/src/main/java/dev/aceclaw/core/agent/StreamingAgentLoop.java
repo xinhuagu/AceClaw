@@ -47,6 +47,9 @@ public final class StreamingAgentLoop {
     private final MessageCompactor compactor;
     private final AgentLoopConfig config;
 
+    /** The cancellation token for the current turn (set during runTurn, cleared on exit). */
+    private volatile CancellationToken activeCancellationToken;
+
     /**
      * Creates a streaming agent loop with default token settings and no compaction.
      */
@@ -114,6 +117,7 @@ public final class StreamingAgentLoop {
     public Turn runTurn(String userPrompt, List<Message> conversationHistory,
                         StreamEventHandler handler, CancellationToken cancellationToken)
             throws LlmException {
+        this.activeCancellationToken = cancellationToken;
         long turnStart = System.currentTimeMillis();
         int turnNumber = (int) conversationHistory.stream()
                 .filter(m -> m instanceof Message.UserMessage).count() + 1;
@@ -276,6 +280,8 @@ public final class StreamingAgentLoop {
             publishEvent(new AgentEvent.TurnError(
                     config.sessionId(), turnNumber, e.getMessage(), Instant.now()));
             throw e;
+        } finally {
+            this.activeCancellationToken = null;
         }
     }
 
@@ -438,6 +444,12 @@ public final class StreamingAgentLoop {
         }
 
         var tool = toolOpt.get();
+
+        // Propagate cancellation token to tools that spawn sub-agents
+        if (tool instanceof CancellationAware ca) {
+            ca.setCancellationToken(activeCancellationToken);
+        }
+
         publishEvent(new ToolEvent.Invoked(config.sessionId(), tool.name(), Instant.now()));
         long toolStart = System.currentTimeMillis();
 
