@@ -4,6 +4,15 @@ on:
   push:
     branches: [ main ]
   pull_request:
+    types: [ opened, synchronize, reopened ]
+
+# Cancel in-progress runs for the same PR/branch
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -18,4 +27,47 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - run: ./gradlew build test --no-daemon
+      - name: Build and test
+        run: ./gradlew build test --no-daemon
+
+  # When main gets new commits, re-test all open PRs
+  retrigger-prs:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Re-run CI for open PRs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pulls } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 30,
+            });
+
+            for (const pr of pulls) {
+              console.log(`Triggering re-run for PR #${pr.number}: ${pr.title}`);
+
+              // Find the latest CI workflow run for this PR's head SHA
+              const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                head_sha: pr.head.sha,
+                per_page: 5,
+              });
+
+              const ciRun = runs.workflow_runs.find(r => r.name === 'CI');
+              if (ciRun) {
+                await github.rest.actions.reRunWorkflow({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  run_id: ciRun.id,
+                });
+                console.log(`  Re-triggered run ${ciRun.id}`);
+              } else {
+                console.log(`  No CI run found for SHA ${pr.head.sha}, skipping`);
+              }
+            }
