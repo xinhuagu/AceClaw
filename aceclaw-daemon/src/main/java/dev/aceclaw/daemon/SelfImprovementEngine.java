@@ -5,6 +5,7 @@ import dev.aceclaw.core.agent.Turn;
 import dev.aceclaw.memory.AutoMemoryStore;
 import dev.aceclaw.memory.Insight;
 import dev.aceclaw.memory.MemoryEntry;
+import dev.aceclaw.memory.StrategyRefiner;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -42,16 +43,43 @@ public final class SelfImprovementEngine {
     /** Maximum length for insight content stored in memory. */
     private static final int MAX_CONTENT_LENGTH = 500;
 
+    /** Number of turns between strategy refinement runs. */
+    static final int REFINE_DEBOUNCE_TURNS = 10;
+
     private final ErrorDetector errorDetector;
     private final PatternDetector patternDetector;
     private final AutoMemoryStore memoryStore;
+    private final StrategyRefiner strategyRefiner;
 
+    private int turnsSinceRefinement;
+
+    /**
+     * Creates a self-improvement engine without strategy refinement.
+     * Backward-compatible with existing code and tests.
+     */
     public SelfImprovementEngine(ErrorDetector errorDetector,
                                   PatternDetector patternDetector,
                                   AutoMemoryStore memoryStore) {
+        this(errorDetector, patternDetector, memoryStore, null);
+    }
+
+    /**
+     * Creates a self-improvement engine with optional strategy refinement.
+     *
+     * @param errorDetector    detects error-correction patterns
+     * @param patternDetector  detects recurring behavioral patterns
+     * @param memoryStore      persistent memory for insights
+     * @param strategyRefiner  optional refiner that consolidates insights into strategies (nullable)
+     */
+    public SelfImprovementEngine(ErrorDetector errorDetector,
+                                  PatternDetector patternDetector,
+                                  AutoMemoryStore memoryStore,
+                                  StrategyRefiner strategyRefiner) {
         this.errorDetector = Objects.requireNonNull(errorDetector, "errorDetector");
         this.patternDetector = Objects.requireNonNull(patternDetector, "patternDetector");
         this.memoryStore = Objects.requireNonNull(memoryStore, "memoryStore");
+        this.strategyRefiner = strategyRefiner;
+        this.turnsSinceRefinement = 0;
     }
 
     /**
@@ -65,6 +93,8 @@ public final class SelfImprovementEngine {
     public List<Insight> analyze(Turn turn,
                                   List<AgentSession.ConversationMessage> sessionHistory,
                                   Map<String, ToolMetrics> toolMetrics) {
+        turnsSinceRefinement++;
+
         var insights = new ArrayList<Insight>();
 
         try {
@@ -120,6 +150,22 @@ public final class SelfImprovementEngine {
                         insight.targetCategory(), insight.confidence(), truncate(content));
             } catch (Exception e) {
                 log.warn("Failed to persist insight: {}", e.getMessage());
+            }
+        }
+
+        // Trigger strategy refinement if enough insights have accumulated and enough turns have passed
+        if (persisted >= 3 && turnsSinceRefinement >= REFINE_DEBOUNCE_TURNS && strategyRefiner != null) {
+            try {
+                var result = strategyRefiner.refine(insights, projectPath);
+                if (result.hasChanges()) {
+                    log.info("Strategy refinement after {} turns: {} strategies, {} anti-patterns, {} preferences ({} consolidated)",
+                            turnsSinceRefinement, result.strategiesCreated(),
+                            result.antiPatternsCreated(), result.preferencesStrengthened(),
+                            result.entriesConsolidated());
+                }
+                turnsSinceRefinement = 0;
+            } catch (Exception e) {
+                log.warn("Strategy refinement failed: {}", e.getMessage());
             }
         }
 
