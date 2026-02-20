@@ -60,6 +60,12 @@ public final class AceClawDaemon {
     private final UdsListener udsListener;
     private final Instant startedAt;
 
+    // Set during wireAgentHandler(), used for boot execution
+    private LlmClient bootLlmClient;
+    private ToolRegistry bootToolRegistry;
+    private String bootModel;
+    private String bootSystemPrompt;
+
     private volatile boolean running;
 
     private AceClawDaemon(Path homeDir) {
@@ -388,6 +394,12 @@ public final class AceClawDaemon {
         ModelRpcHelper.registerModelList(router, objectMapper, agentHandlerRef, llmClientRef, providerNameRef);
         ModelRpcHelper.registerModelSwitch(router, objectMapper, agentHandlerRef, llmClientRef);
 
+        // Store references for boot execution
+        this.bootLlmClient = llmClient;
+        this.bootToolRegistry = toolRegistry;
+        this.bootModel = model;
+        this.bootSystemPrompt = systemPrompt;
+
         log.info("Agent handler wired: provider={}, model={}, tools={}",
                 config.provider(), model, toolRegistry.size());
     }
@@ -473,6 +485,26 @@ public final class AceClawDaemon {
 
         // 3. Start health monitor
         healthMonitor.start();
+
+        // 3.5 Execute BOOT.md (best-effort, runs before accepting connections)
+        if (config.bootEnabled()) {
+            try {
+                Path workingDir = Path.of(System.getProperty("user.dir"));
+                var bootResult = BootExecutor.execute(
+                        homeDir, workingDir,
+                        bootLlmClient, bootToolRegistry,
+                        bootModel, bootSystemPrompt,
+                        config.maxTokens(), config.thinkingBudget(),
+                        config.bootTimeoutSeconds());
+                if (bootResult.executed()) {
+                    log.info("Boot completed: {}", bootResult.summary());
+                }
+            } catch (Exception e) {
+                log.error("Boot execution failed (daemon will continue): {}", e.getMessage(), e);
+            }
+        } else {
+            log.debug("Boot execution disabled via config");
+        }
 
         // 4. Start UDS listener
         try {
