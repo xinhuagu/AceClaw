@@ -3,6 +3,10 @@ package dev.aceclaw.daemon;
 import dev.aceclaw.core.agent.Turn;
 import dev.aceclaw.core.llm.*;
 import dev.aceclaw.memory.AutoMemoryStore;
+import dev.aceclaw.memory.ErrorClass;
+import dev.aceclaw.memory.Insight;
+import dev.aceclaw.memory.Insight.ErrorInsight;
+import dev.aceclaw.memory.Insight.RecoveryRecipe;
 import dev.aceclaw.memory.MemoryEntry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,9 +41,11 @@ class ErrorDetectorTest {
         var insights = detector.analyze(turn);
 
         assertThat(insights).hasSize(1);
-        assertThat(insights.getFirst().toolName()).isEqualTo("read_file");
-        assertThat(insights.getFirst().errorMessage()).contains("File not found");
-        assertThat(insights.getFirst().confidence()).isEqualTo(0.4);
+        assertThat(insights.getFirst()).isInstanceOf(ErrorInsight.class);
+        var error = (ErrorInsight) insights.getFirst();
+        assertThat(error.toolName()).isEqualTo("read_file");
+        assertThat(error.errorMessage()).contains("File not found");
+        assertThat(error.confidence()).isEqualTo(0.4);
     }
 
     @Test
@@ -61,7 +67,10 @@ class ErrorDetectorTest {
         var insights = detector.analyze(turn);
 
         assertThat(insights).hasSize(2);
-        var toolNames = insights.stream().map(i -> i.toolName()).toList();
+        var toolNames = insights.stream()
+                .filter(ErrorInsight.class::isInstance)
+                .map(i -> ((ErrorInsight) i).toolName())
+                .toList();
         assertThat(toolNames).containsExactlyInAnyOrder("read_file", "bash");
     }
 
@@ -150,8 +159,9 @@ class ErrorDetectorTest {
         var insights = detector.analyze(turn);
 
         assertThat(insights).hasSize(1);
-        assertThat(insights.getFirst().errorMessage().length()).isLessThanOrEqualTo(500);
-        assertThat(insights.getFirst().errorMessage()).endsWith("...");
+        var error = (ErrorInsight) insights.getFirst();
+        assertThat(error.errorMessage().length()).isLessThanOrEqualTo(500);
+        assertThat(error.errorMessage()).endsWith("...");
     }
 
     @Test
@@ -210,6 +220,101 @@ class ErrorDetectorTest {
 
         assertThat(insights).hasSize(1);
         assertThat(insights.getFirst().confidence()).isEqualTo(1.0);
+    }
+
+    // -- multi-step recovery tests --
+
+    @Test
+    void detectsMultiStepRecovery() {
+        // Error on read_file → bash (intermediate) → success on read_file
+        var messages = List.of(
+                assistantWithToolUse("tu-1", "read_file", "{\"path\":\"/missing.txt\"}"),
+                toolResult("tu-1", "File not found: /missing.txt", true),
+                assistantWithToolUse("tu-2", "bash", "{\"command\":\"find / -name missing.txt\"}"),
+                toolResult("tu-2", "/home/user/missing.txt", false),
+                assistantWithToolUse("tu-3", "read_file", "{\"path\":\"/home/user/missing.txt\"}"),
+                toolResult("tu-3", "file contents here", false)
+        );
+
+        var turn = new Turn(messages, StopReason.END_TURN, new Usage(0, 0));
+        var insights = detector.analyze(turn);
+
+        // Should produce both an ErrorInsight (Phase 1: simple correction) and a RecoveryRecipe (Phase 2: multi-step)
+        assertThat(insights).anyMatch(i -> i instanceof ErrorInsight);
+        assertThat(insights).anyMatch(i -> i instanceof RecoveryRecipe);
+        var recipe = insights.stream()
+                .filter(RecoveryRecipe.class::isInstance)
+                .map(RecoveryRecipe.class::cast)
+                .findFirst().orElseThrow();
+        assertThat(recipe.toolName()).isEqualTo("read_file");
+        assertThat(recipe.steps()).hasSizeGreaterThanOrEqualTo(3); // error detect + bash intermediate + retry
+        assertThat(recipe.triggerPattern()).contains("PATH_NOT_FOUND");
+    }
+
+    @Test
+    void multiStepRecoveryRequiresIntermediateSteps() {
+        // Error on read_file → success on read_file (NO intermediate tool)
+        // This should produce an ErrorInsight, NOT a RecoveryRecipe
+        var messages = List.of(
+                assistantWithToolUse("tu-1", "read_file", "{\"path\":\"/missing.txt\"}"),
+                toolResult("tu-1", "File not found: /missing.txt", true),
+                assistantWithToolUse("tu-2", "read_file", "{\"path\":\"/correct.txt\"}"),
+                toolResult("tu-2", "file contents here", false)
+        );
+
+        var turn = new Turn(messages, StopReason.END_TURN, new Usage(0, 0));
+        var insights = detector.analyze(turn);
+
+        assertThat(insights).noneMatch(i -> i instanceof RecoveryRecipe);
+        assertThat(insights).anyMatch(i -> i instanceof ErrorInsight);
+    }
+
+    @Test
+    void multiStepRecoveryIncludesAllIntermediateTools() {
+        // Error on read_file → bash → grep (both intermediate) → success on read_file
+        var messages = List.of(
+                assistantWithToolUse("tu-1", "read_file", "{\"path\":\"/missing.txt\"}"),
+                toolResult("tu-1", "File not found: /missing.txt", true),
+                assistantWithToolUse("tu-2", "bash", "{\"command\":\"ls /\"}"),
+                toolResult("tu-2", "home\nusr\ntmp", false),
+                assistantWithToolUse("tu-3", "grep", "{\"pattern\":\"missing\"}"),
+                toolResult("tu-3", "/home/user/missing.txt", false),
+                assistantWithToolUse("tu-4", "read_file", "{\"path\":\"/home/user/missing.txt\"}"),
+                toolResult("tu-4", "file contents", false)
+        );
+
+        var turn = new Turn(messages, StopReason.END_TURN, new Usage(0, 0));
+        var insights = detector.analyze(turn);
+
+        // Should have both ErrorInsight and RecoveryRecipe
+        assertThat(insights).anyMatch(i -> i instanceof ErrorInsight);
+        var recipes = insights.stream()
+                .filter(RecoveryRecipe.class::isInstance)
+                .map(RecoveryRecipe.class::cast)
+                .toList();
+        assertThat(recipes).hasSize(1);
+        var recipe = recipes.getFirst();
+        // Steps: error detect + bash + grep + retry = 4
+        assertThat(recipe.steps()).hasSize(4);
+        assertThat(recipe.steps().get(1).toolName()).isEqualTo("bash");
+        assertThat(recipe.steps().get(2).toolName()).isEqualTo("grep");
+    }
+
+    @Test
+    void errorClassSetOnErrorInsight() {
+        var messages = List.of(
+                assistantWithToolUse("tu-1", "read_file", "{\"path\":\"/secret.txt\"}"),
+                toolResult("tu-1", "Permission denied: /secret.txt", true),
+                assistantWithToolUse("tu-2", "read_file", "{\"path\":\"/other.txt\"}"),
+                toolResult("tu-2", "content", false)
+        );
+
+        var turn = new Turn(messages, StopReason.END_TURN, new Usage(0, 0));
+        var insights = detector.analyze(turn);
+
+        assertThat(insights).hasSize(1);
+        var error = (ErrorInsight) insights.getFirst();
+        assertThat(error.errorClass()).isEqualTo(ErrorClass.PERMISSION);
     }
 
     // -- helpers --

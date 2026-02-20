@@ -79,8 +79,8 @@ class SelfImprovementEngineTest {
     @Test
     void deduplicateRemovesSimilarInsights() {
         var insights = List.<Insight>of(
-                new ErrorInsight("read_file", "File not found: /a.txt", "Used correct path", 0.8),
-                new ErrorInsight("read_file", "File not found: /b.txt", "Used correct path", 0.6)
+                ErrorInsight.of("read_file", "File not found: /a.txt", "Used correct path", 0.8),
+                ErrorInsight.of("read_file", "File not found: /b.txt", "Used correct path", 0.6)
         );
 
         var result = engine.deduplicate(insights);
@@ -94,7 +94,7 @@ class SelfImprovementEngineTest {
     @Test
     void deduplicateKeepsDifferentInsights() {
         var insights = List.<Insight>of(
-                new ErrorInsight("read_file", "File not found", "Used correct path", 0.8),
+                ErrorInsight.of("read_file", "File not found", "Used correct path", 0.8),
                 new PatternInsight(PatternType.WORKFLOW, "Recurring workflow: build and test",
                         3, 0.7, List.of("prompt: build and test"))
         );
@@ -113,7 +113,7 @@ class SelfImprovementEngineTest {
     @Test
     void deduplicateHandlesSingleInsight() {
         var insights = List.<Insight>of(
-                new ErrorInsight("bash", "Permission denied", "Used sudo", 0.5)
+                ErrorInsight.of("bash", "Permission denied", "Used sudo", 0.5)
         );
         assertThat(engine.deduplicate(insights)).hasSize(1);
     }
@@ -123,8 +123,8 @@ class SelfImprovementEngineTest {
     @Test
     void persistStoresHighConfidenceInsights() {
         var insights = List.<Insight>of(
-                new ErrorInsight("read_file", "File not found", "Used correct path", 0.9),
-                new ErrorInsight("bash", "Permission denied", "Changed dir", 0.8)
+                ErrorInsight.of("read_file", "File not found", "Used correct path", 0.9),
+                ErrorInsight.of("bash", "Permission denied", "Changed dir", 0.8)
         );
 
         int count = engine.persist(insights, "test-session", tempDir);
@@ -138,8 +138,8 @@ class SelfImprovementEngineTest {
     @Test
     void persistSkipsLowConfidenceInsights() {
         var insights = List.<Insight>of(
-                new ErrorInsight("read_file", "File not found", "Retry", 0.3), // below 0.7
-                new ErrorInsight("bash", "Timeout", "Retry with longer timeout", 0.5) // below 0.7
+                ErrorInsight.of("read_file", "File not found", "Retry", 0.3), // below 0.7
+                ErrorInsight.of("bash", "Timeout", "Retry with longer timeout", 0.5) // below 0.7
         );
 
         int count = engine.persist(insights, "test-session", tempDir);
@@ -159,7 +159,7 @@ class SelfImprovementEngineTest {
 
         // Now try to persist a very similar insight
         var insights = List.<Insight>of(
-                new ErrorInsight("read_file", "File not found: /missing.txt", "Used correct path", 0.9)
+                ErrorInsight.of("read_file", "File not found: /missing.txt", "Used correct path", 0.9)
         );
 
         int count = engine.persist(insights, "test-session", tempDir);
@@ -177,8 +177,8 @@ class SelfImprovementEngineTest {
     @Test
     void persistReturnsCorrectCount() {
         var insights = List.<Insight>of(
-                new ErrorInsight("bash", "command failed", "fixed command", 0.9),
-                new ErrorInsight("edit_file", "merge conflict", "resolved manually", 0.3), // below threshold
+                ErrorInsight.of("bash", "command failed", "fixed command", 0.9),
+                ErrorInsight.of("edit_file", "merge conflict", "resolved manually", 0.3), // below threshold
                 new PatternInsight(PatternType.USER_PREFERENCE, "User prefers explicit types",
                         2, 0.8, List.of("correction: use explicit types"))
         );

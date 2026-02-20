@@ -7,11 +7,16 @@ import dev.aceclaw.core.agent.Tool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.charset.Charset;
+import java.nio.charset.MalformedInputException;
+import java.nio.charset.StandardCharsets;
+import java.nio.charset.UnsupportedCharsetException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 /**
  * Reads file contents with optional line range.
@@ -73,6 +78,8 @@ public final class ReadFileTool implements Tool {
                         "Line number to start reading from (1-based). Defaults to 1."))
                 .optionalProperty("limit", SchemaBuilder.integer(
                         "Maximum number of lines to read. Defaults to " + DEFAULT_LIMIT + "."))
+                .optionalProperty("encoding", SchemaBuilder.string(
+                        "Charset name (e.g. \"ISO-8859-1\", \"Shift_JIS\"). Defaults to UTF-8 with auto-detection fallback."))
                 .build();
     }
 
@@ -83,12 +90,25 @@ public final class ReadFileTool implements Tool {
         var filePath = resolveFilePath(input);
         int offset = getIntParam(input, "offset", 1);
         int limit = getIntParam(input, "limit", DEFAULT_LIMIT);
+        var encodingParam = getStringParam(input, "encoding", null);
 
         if (offset < 1) {
             return new ToolResult("offset must be >= 1", true);
         }
         if (limit < 1) {
             return new ToolResult("limit must be >= 1", true);
+        }
+
+        Charset charset;
+        boolean explicitEncoding = encodingParam != null;
+        if (explicitEncoding) {
+            try {
+                charset = Charset.forName(encodingParam);
+            } catch (UnsupportedCharsetException e) {
+                return new ToolResult("Unsupported charset: " + encodingParam, true);
+            }
+        } else {
+            charset = StandardCharsets.UTF_8;
         }
 
         if (!Files.exists(filePath)) {
@@ -101,23 +121,47 @@ public final class ReadFileTool implements Tool {
             return new ToolResult("File is not readable: " + filePath, true);
         }
 
-        log.debug("Reading file: {} (offset={}, limit={})", filePath, offset, limit);
+        log.debug("Reading file: {} (offset={}, limit={}, charset={})", filePath, offset, limit, charset);
 
         try {
-            var result = readFileContents(filePath, offset, limit);
-            // Track successful reads for write-before-read enforcement
-            if (!result.isError() && readFiles != null) {
-                readFiles.add(filePath.toAbsolutePath().normalize());
-            }
+            var result = readFileContents(filePath, offset, limit, charset);
+            trackRead(filePath, result);
             return result;
+        } catch (MalformedInputException e) {
+            if (explicitEncoding) {
+                return new ToolResult("Failed to decode file with charset " + charset + ": " + e.getMessage(), true);
+            }
+            // Auto-detect charset using `file -bi`
+            var detected = detectCharset(filePath);
+            if (detected == null) {
+                return new ToolResult("File is not valid UTF-8 and charset auto-detection failed", true);
+            }
+            log.info("Auto-detected charset {} for file {}", detected, filePath);
+            try {
+                var result = readFileContents(filePath, offset, limit, detected);
+                var prefixed = new ToolResult(
+                        "[Detected encoding: " + detected.name() + "]\n" + result.output(),
+                        result.isError());
+                trackRead(filePath, prefixed);
+                return prefixed;
+            } catch (IOException retryEx) {
+                log.error("Failed to read file {} with detected charset {}: {}", filePath, detected, retryEx.getMessage());
+                return new ToolResult("Error reading file with detected charset " + detected + ": " + retryEx.getMessage(), true);
+            }
         } catch (IOException e) {
             log.error("Failed to read file {}: {}", filePath, e.getMessage());
             return new ToolResult("Error reading file: " + e.getMessage(), true);
         }
     }
 
-    private ToolResult readFileContents(Path filePath, int offset, int limit) throws IOException {
-        var allLines = Files.readAllLines(filePath);
+    private void trackRead(Path filePath, ToolResult result) {
+        if (!result.isError() && readFiles != null) {
+            readFiles.add(filePath.toAbsolutePath().normalize());
+        }
+    }
+
+    private ToolResult readFileContents(Path filePath, int offset, int limit, Charset charset) throws IOException {
+        var allLines = Files.readAllLines(filePath, charset);
         int totalLines = allLines.size();
 
         if (totalLines == 0) {
@@ -151,6 +195,50 @@ public final class ReadFileTool implements Tool {
         return new ToolResult(sb.toString(), false);
     }
 
+    /**
+     * Detects the charset of a file using the system {@code file -bi} command.
+     * Parses the "charset=xxx" field from the output.
+     *
+     * @return the detected Charset, or null if detection fails
+     */
+    private Charset detectCharset(Path filePath) {
+        try {
+            var pb = new ProcessBuilder("file", "-bi", filePath.toAbsolutePath().toString());
+            pb.redirectErrorStream(true);
+            var process = pb.start();
+            String output;
+            try (var reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                output = reader.readLine();
+            }
+            int exitCode = process.waitFor();
+            if (exitCode != 0 || output == null) {
+                log.debug("file -bi exited with code {} for {}", exitCode, filePath);
+                return null;
+            }
+            // Output format: "text/plain; charset=iso-8859-1" or similar
+            var parts = output.split("charset=");
+            if (parts.length < 2) {
+                log.debug("No charset field in file -bi output: {}", output);
+                return null;
+            }
+            var charsetName = parts[1].strip();
+            if (charsetName.isEmpty() || "binary".equalsIgnoreCase(charsetName)
+                    || "unknown-8bit".equalsIgnoreCase(charsetName)) {
+                return null;
+            }
+            return Charset.forName(charsetName);
+        } catch (UnsupportedCharsetException e) {
+            log.debug("Detected charset not supported by JVM: {}", e.getCharsetName());
+            return null;
+        } catch (IOException | InterruptedException e) {
+            log.debug("Charset detection failed for {}: {}", filePath, e.getMessage());
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            return null;
+        }
+    }
+
     private Path resolveFilePath(JsonNode input) {
         var raw = input.get("file_path").asText();
         var path = Path.of(raw);
@@ -163,6 +251,13 @@ public final class ReadFileTool implements Tool {
     private static int getIntParam(JsonNode input, String field, int defaultValue) {
         if (input.has(field) && !input.get(field).isNull()) {
             return input.get(field).asInt(defaultValue);
+        }
+        return defaultValue;
+    }
+
+    private static String getStringParam(JsonNode input, String field, String defaultValue) {
+        if (input.has(field) && !input.get(field).isNull() && !input.get(field).asText().isBlank()) {
+            return input.get(field).asText();
         }
         return defaultValue;
     }

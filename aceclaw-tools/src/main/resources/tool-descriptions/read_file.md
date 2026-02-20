@@ -24,6 +24,9 @@ Parameter details:
 - file_path: Absolute or relative path. Relative paths resolve against the working directory.
 - offset: Line number to start reading from (1-based). Use for large files to skip headers.
 - limit: Maximum lines to read. Default 2000. Use with offset for paginated reading.
+- encoding: Optional charset name (e.g. "ISO-8859-1", "Shift_JIS", "IBM037"). If omitted, defaults to
+  UTF-8. When a file cannot be decoded as UTF-8, the tool automatically detects the encoding using
+  `file -bi` and retries. Use this parameter to override auto-detection when you know the encoding.
 
 Common workflows:
 - Read then edit: read_file → understand code → edit_file (never skip the read step)

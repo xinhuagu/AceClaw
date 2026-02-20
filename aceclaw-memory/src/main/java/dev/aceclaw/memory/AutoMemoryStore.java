@@ -316,6 +316,8 @@ public final class AutoMemoryStore {
 
     /**
      * Formats a list of entries as a markdown section for system prompt injection.
+     * Strategy-related categories (ERROR_RECOVERY, SUCCESSFUL_STRATEGY, RECOVERY_RECIPE)
+     * are sub-grouped by tool name (first tag) for easier per-tool lookup.
      */
     private String formatEntries(List<MemoryEntry> relevant) {
         var sb = new StringBuilder();
@@ -323,7 +325,13 @@ public final class AutoMemoryStore {
         sb.append("The following are insights learned from previous sessions. ");
         sb.append("Use them to avoid repeating mistakes and follow established patterns.\n\n");
 
-        // Group by category for readability
+        // Categories that should be sub-grouped by tool name
+        var toolGroupedCategories = Set.of(
+                MemoryEntry.Category.ERROR_RECOVERY,
+                MemoryEntry.Category.SUCCESSFUL_STRATEGY,
+                MemoryEntry.Category.RECOVERY_RECIPE
+        );
+
         var byCategory = relevant.stream()
                 .collect(Collectors.groupingBy(MemoryEntry::category));
 
@@ -332,12 +340,71 @@ public final class AutoMemoryStore {
             if (catEntries == null || catEntries.isEmpty()) continue;
 
             sb.append("## ").append(formatCategory(cat)).append("\n\n");
-            for (var entry : catEntries) {
-                sb.append("- ").append(entry.content());
-                if (!entry.tags().isEmpty()) {
-                    sb.append(" [").append(String.join(", ", entry.tags())).append("]");
+
+            if (toolGroupedCategories.contains(cat)) {
+                // Sub-group by tool name (first tag)
+                var byTool = catEntries.stream()
+                        .collect(Collectors.groupingBy(
+                                e -> e.tags().isEmpty() ? "general" : e.tags().getFirst(),
+                                LinkedHashMap::new,
+                                Collectors.toList()));
+                for (var toolEntry : byTool.entrySet()) {
+                    sb.append("### ").append(toolEntry.getKey()).append("\n");
+                    for (var entry : toolEntry.getValue()) {
+                        sb.append("- ").append(entry.content());
+                        if (entry.tags().size() > 1) {
+                            sb.append(" [").append(String.join(", ", entry.tags().subList(1, entry.tags().size()))).append("]");
+                        }
+                        sb.append("\n");
+                    }
                 }
                 sb.append("\n");
+            } else {
+                for (var entry : catEntries) {
+                    sb.append("- ").append(entry.content());
+                    if (!entry.tags().isEmpty()) {
+                        sb.append(" [").append(String.join(", ", entry.tags())).append("]");
+                    }
+                    sb.append("\n");
+                }
+                sb.append("\n");
+            }
+        }
+
+        return sb.toString();
+    }
+
+    /**
+     * Formats strategy entries for a specific tool name as a compact markdown section.
+     * Useful for injecting tool-specific strategies into tool prompts.
+     *
+     * @param toolName   the tool to filter strategies for
+     * @param maxEntries maximum entries per category
+     * @return formatted strategy section, or empty string if no strategies found
+     */
+    public String formatToolStrategies(String toolName, int maxEntries) {
+        var categories = List.of(
+                MemoryEntry.Category.ERROR_RECOVERY,
+                MemoryEntry.Category.SUCCESSFUL_STRATEGY,
+                MemoryEntry.Category.RECOVERY_RECIPE
+        );
+
+        var sb = new StringBuilder();
+        for (var cat : categories) {
+            var catEntries = entries.stream()
+                    .filter(e -> e.category() == cat)
+                    .filter(e -> e.tags().contains(toolName))
+                    .limit(maxEntries)
+                    .toList();
+
+            if (catEntries.isEmpty()) continue;
+
+            if (sb.isEmpty()) {
+                sb.append("## Strategies for ").append(toolName).append("\n\n");
+            }
+            sb.append("### ").append(formatCategory(cat)).append("\n");
+            for (var entry : catEntries) {
+                sb.append("- ").append(entry.content()).append("\n");
             }
             sb.append("\n");
         }
@@ -509,6 +576,7 @@ public final class AutoMemoryStore {
             case SUCCESSFUL_STRATEGY -> "Successful Strategies";
             case ANTI_PATTERN -> "Anti-Patterns";
             case USER_FEEDBACK -> "User Feedback";
+            case RECOVERY_RECIPE -> "Recovery Recipes";
         };
     }
 }

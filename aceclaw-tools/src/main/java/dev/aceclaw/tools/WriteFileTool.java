@@ -7,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Set;
@@ -124,7 +125,7 @@ public final class WriteFileTool implements Tool {
                 Files.createDirectories(parent);
             }
 
-            Files.writeString(filePath, content);
+            Files.writeString(filePath, content, StandardCharsets.UTF_8);
 
             // Mark as read after writing (so subsequent writes don't require re-read)
             readFiles.add(filePath.toAbsolutePath().normalize());

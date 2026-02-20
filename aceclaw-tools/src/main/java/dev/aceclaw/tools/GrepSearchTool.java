@@ -7,6 +7,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.nio.charset.MalformedInputException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
@@ -193,7 +195,13 @@ public final class GrepSearchTool implements Tool {
     }
 
     private List<MatchResult> searchFile(Path file, Pattern regex, int contextLines) throws IOException {
-        var lines = Files.readAllLines(file);
+        List<String> lines;
+        try {
+            lines = Files.readAllLines(file, StandardCharsets.UTF_8);
+        } catch (MalformedInputException e) {
+            log.debug("Skipping non-UTF-8 file: {}", file);
+            return List.of();
+        }
         var results = new ArrayList<MatchResult>();
 
         for (int i = 0; i < lines.size(); i++) {

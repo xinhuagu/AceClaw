@@ -340,6 +340,77 @@ class AutoMemoryStoreTest {
         assertThat(freshStore.size()).isEqualTo(store.size());
     }
 
+    // =========================================================================
+    // Proactive strategy injection — per-tool grouping
+    // =========================================================================
+
+    @Test
+    void formatEntriesGroupsErrorRecoveriesByTool() {
+        store.add(MemoryEntry.Category.ERROR_RECOVERY,
+                "read_file: file not found, check path",
+                List.of("read_file", "error-recovery"), "test", false, projectPath);
+        store.add(MemoryEntry.Category.ERROR_RECOVERY,
+                "bash: permission denied, use sudo",
+                List.of("bash", "error-recovery"), "test", false, projectPath);
+
+        String prompt = store.formatForPrompt(projectPath, 50);
+        assertThat(prompt).contains("## Error Recoveries");
+        assertThat(prompt).contains("### read_file");
+        assertThat(prompt).contains("### bash");
+    }
+
+    @Test
+    void formatEntriesGroupsRecoveryRecipesByTool() {
+        store.add(MemoryEntry.Category.RECOVERY_RECIPE,
+                "Recovery recipe: detect encoding -> convert -> retry",
+                List.of("read_file", "recovery-recipe"), "test", false, projectPath);
+
+        String prompt = store.formatForPrompt(projectPath, 50);
+        assertThat(prompt).contains("## Recovery Recipes");
+        assertThat(prompt).contains("### read_file");
+    }
+
+    @Test
+    void formatEntriesKeepsFlatFormatForNonStrategyCategories() {
+        store.add(MemoryEntry.Category.PATTERN,
+                "Use records for DTOs",
+                List.of("java", "design"), "test", false, projectPath);
+
+        String prompt = store.formatForPrompt(projectPath, 50);
+        assertThat(prompt).contains("## Code Patterns");
+        // Should NOT have ### subheadings for non-strategy categories
+        assertThat(prompt).doesNotContain("### java");
+    }
+
+    @Test
+    void formatToolStrategiesReturnsFilteredEntries() {
+        store.add(MemoryEntry.Category.ERROR_RECOVERY,
+                "read_file: missing path resolved",
+                List.of("read_file", "error-recovery"), "test", false, projectPath);
+        store.add(MemoryEntry.Category.SUCCESSFUL_STRATEGY,
+                "grep then read works well",
+                List.of("grep", "successful-strategy"), "test", false, projectPath);
+        store.add(MemoryEntry.Category.RECOVERY_RECIPE,
+                "encoding recovery recipe",
+                List.of("read_file", "recovery-recipe"), "test", false, projectPath);
+
+        String strategies = store.formatToolStrategies("read_file", 10);
+        assertThat(strategies).contains("Strategies for read_file");
+        assertThat(strategies).contains("read_file: missing path resolved");
+        assertThat(strategies).contains("encoding recovery recipe");
+        assertThat(strategies).doesNotContain("grep then read");
+    }
+
+    @Test
+    void formatToolStrategiesReturnsEmptyForUnknownTool() {
+        store.add(MemoryEntry.Category.ERROR_RECOVERY,
+                "some error",
+                List.of("bash"), "test", false, projectPath);
+
+        String strategies = store.formatToolStrategies("unknown_tool", 10);
+        assertThat(strategies).isEmpty();
+    }
+
     @Test
     void atomicRewritePreservesDataOnReload() throws IOException {
         // Add entries, consolidate (triggers rewrite), then verify reload

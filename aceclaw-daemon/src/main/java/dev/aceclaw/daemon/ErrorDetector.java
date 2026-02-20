@@ -4,7 +4,11 @@ import dev.aceclaw.core.agent.Turn;
 import dev.aceclaw.core.llm.ContentBlock;
 import dev.aceclaw.core.llm.Message;
 import dev.aceclaw.memory.AutoMemoryStore;
+import dev.aceclaw.memory.ErrorClass;
+import dev.aceclaw.memory.Insight;
 import dev.aceclaw.memory.Insight.ErrorInsight;
+import dev.aceclaw.memory.Insight.RecoveryRecipe;
+import dev.aceclaw.memory.Insight.RecoveryStep;
 import dev.aceclaw.memory.MemoryEntry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -48,12 +52,12 @@ public final class ErrorDetector {
     }
 
     /**
-     * Analyzes a completed turn for error-correction patterns.
+     * Analyzes a completed turn for error-correction patterns and multi-step recoveries.
      *
      * @param turn the completed turn to analyze
-     * @return detected error insights (never null, may be empty)
+     * @return detected insights (ErrorInsight and/or RecoveryRecipe; never null, may be empty)
      */
-    public List<ErrorInsight> analyze(Turn turn) {
+    public List<Insight> analyze(Turn turn) {
         if (turn == null || turn.newMessages().isEmpty()) {
             return List.of();
         }
@@ -69,9 +73,10 @@ public final class ErrorDetector {
             return List.of();
         }
 
-        var insights = new ArrayList<ErrorInsight>();
+        var insights = new ArrayList<Insight>();
         var resolved = new HashSet<String>();
 
+        // Phase 1: simple error-correction (same tool error → same tool success)
         for (var error : errorResults) {
             var toolCall = toolUseMap.get(error.toolUseId);
             if (toolCall == null) continue;
@@ -88,17 +93,79 @@ public final class ErrorDetector {
             if (resolution.isEmpty()) continue;
 
             resolved.add(resolution.get().toolUseId);
+            resolved.add(error.toolUseId);
 
             String errorMessage = truncate(error.content, MAX_ERROR_MESSAGE_CHARS);
             String resolutionDesc = describeResolution(toolName, toolCall, toolUseMap.get(resolution.get().toolUseId));
 
             double confidence = computeConfidence(toolName, errorMessage);
 
-            insights.add(new ErrorInsight(toolName, errorMessage, resolutionDesc, confidence));
+            insights.add(ErrorInsight.of(toolName, errorMessage, resolutionDesc, confidence));
             log.debug("Detected error-correction: tool={}, confidence={}", toolName, confidence);
         }
 
+        // Phase 2: multi-step recovery (error → intermediate tools → success)
+        insights.addAll(detectMultiStepRecoveries(toolUseMap, errorResults, successByTool, resolved));
+
         return List.copyOf(insights);
+    }
+
+    /**
+     * Detects multi-step recovery patterns where an error on tool A is resolved
+     * by using intermediate tools B, C, etc. before retrying tool A successfully.
+     * Runs independently of Phase 1 — an error may produce both an ErrorInsight
+     * (simple correction) and a RecoveryRecipe (if intermediate tools are present).
+     */
+    private List<RecoveryRecipe> detectMultiStepRecoveries(
+            LinkedHashMap<String, ToolCall> toolUseMap,
+            List<ErrorResult> errorResults,
+            HashMap<String, List<SuccessResult>> successByTool,
+            Set<String> resolved) {
+
+        var recipes = new ArrayList<RecoveryRecipe>();
+
+        for (var error : errorResults) {
+            var toolCall = toolUseMap.get(error.toolUseId);
+            if (toolCall == null) continue;
+            String toolName = toolCall.name;
+
+            // Find a subsequent success for the same tool
+            var successes = successByTool.getOrDefault(toolName, List.of());
+            var resolution = successes.stream()
+                    .filter(s -> s.order > error.order)
+                    .findFirst();
+
+            if (resolution.isEmpty()) continue;
+
+            int errorOrder = error.order;
+            int successOrder = resolution.get().order;
+
+            // Collect intermediate tool calls between error and success
+            var intermediateSteps = new ArrayList<RecoveryStep>();
+            for (var entry : toolUseMap.entrySet()) {
+                var call = entry.getValue();
+                if (call.order > errorOrder && call.order < successOrder && !call.name.equals(toolName)) {
+                    intermediateSteps.add(new RecoveryStep(
+                            "Use " + call.name, call.name, null));
+                }
+            }
+
+            // Only produce a recipe if there are intermediate steps (otherwise it's a simple retry)
+            if (!intermediateSteps.isEmpty()) {
+                var allSteps = new ArrayList<RecoveryStep>();
+                allSteps.add(new RecoveryStep("Detect error: " + truncate(error.content, 100), null, null));
+                allSteps.addAll(intermediateSteps);
+                allSteps.add(new RecoveryStep("Retry " + toolName, toolName, null));
+
+                String triggerPattern = ErrorClass.classify(error.content).name() + ": " + truncate(error.content, 200);
+                double confidence = computeConfidence(toolName, error.content);
+
+                recipes.add(new RecoveryRecipe(triggerPattern, allSteps, toolName, confidence));
+                log.debug("Detected multi-step recovery: tool={}, steps={}", toolName, allSteps.size());
+            }
+        }
+
+        return recipes;
     }
 
     private void collectToolData(

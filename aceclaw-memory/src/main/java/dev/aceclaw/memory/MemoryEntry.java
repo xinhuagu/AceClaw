@@ -80,7 +80,9 @@ public record MemoryEntry(
         /** An approach that failed or should be avoided. */
         ANTI_PATTERN,
         /** User feedback about agent behavior (positive or negative). */
-        USER_FEEDBACK
+        USER_FEEDBACK,
+        /** A multi-step recovery procedure for a specific error type. */
+        RECOVERY_RECIPE
     }
 
     /**

@@ -12,19 +12,19 @@ class InsightTest {
 
     @Test
     void errorInsightTargetCategory() {
-        var insight = new Insight.ErrorInsight("bash", "command not found", "use full path", 0.9);
+        var insight = Insight.ErrorInsight.of("bash", "command not found", "use full path", 0.9);
         assertThat(insight.targetCategory()).isEqualTo(MemoryEntry.Category.ERROR_RECOVERY);
     }
 
     @Test
     void errorInsightDescription() {
-        var insight = new Insight.ErrorInsight("read_file", "file not found", "check path exists", 0.8);
+        var insight = Insight.ErrorInsight.of("read_file", "file not found", "check path exists", 0.8);
         assertThat(insight.description()).contains("read_file").contains("file not found").contains("check path exists");
     }
 
     @Test
     void errorInsightTags() {
-        var insight = new Insight.ErrorInsight("grep", "pattern error", "escape regex", 0.7);
+        var insight = Insight.ErrorInsight.of("grep", "pattern error", "escape regex", 0.7);
         assertThat(insight.tags()).contains("grep", "error-recovery");
     }
 
@@ -88,9 +88,11 @@ class InsightTest {
     @Test
     void sealedExhaustivenessSwitch() {
         List<Insight> insights = List.of(
-                new Insight.ErrorInsight("bash", "err", "fix", 0.5),
+                Insight.ErrorInsight.of("bash", "err", "fix", 0.5),
                 new Insight.SuccessInsight(List.of("grep"), "search", 0.6),
-                new Insight.PatternInsight(PatternType.WORKFLOW, "flow", 3, 0.7, List.of("e"))
+                new Insight.PatternInsight(PatternType.WORKFLOW, "flow", 3, 0.7, List.of("e")),
+                new Insight.RecoveryRecipe("file not found", List.of(
+                        new Insight.RecoveryStep("check path", "glob", "*.java")), "read_file", 0.8)
         );
 
         for (Insight insight : insights) {
@@ -98,6 +100,7 @@ class InsightTest {
                 case Insight.ErrorInsight _ -> "error";
                 case Insight.SuccessInsight _ -> "success";
                 case Insight.PatternInsight _ -> "pattern";
+                case Insight.RecoveryRecipe _ -> "recipe";
             };
             assertThat(type).isNotEmpty();
         }
@@ -105,11 +108,11 @@ class InsightTest {
 
     @Test
     void confidenceBoundsValidation() {
-        assertThatThrownBy(() -> new Insight.ErrorInsight("bash", "err", "fix", -0.1))
+        assertThatThrownBy(() -> Insight.ErrorInsight.of("bash", "err", "fix", -0.1))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("confidence");
 
-        assertThatThrownBy(() -> new Insight.ErrorInsight("bash", "err", "fix", 1.1))
+        assertThatThrownBy(() -> Insight.ErrorInsight.of("bash", "err", "fix", 1.1))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("confidence");
 
@@ -124,16 +127,16 @@ class InsightTest {
     @Test
     void confidenceBoundaryValues() {
         // 0.0 and 1.0 should both be accepted
-        var zero = new Insight.ErrorInsight("bash", "err", "fix", 0.0);
+        var zero = Insight.ErrorInsight.of("bash", "err", "fix", 0.0);
         assertThat(zero.confidence()).isEqualTo(0.0);
 
-        var one = new Insight.ErrorInsight("bash", "err", "fix", 1.0);
+        var one = Insight.ErrorInsight.of("bash", "err", "fix", 1.0);
         assertThat(one.confidence()).isEqualTo(1.0);
     }
 
     @Test
     void nullFieldsRejected() {
-        assertThatThrownBy(() -> new Insight.ErrorInsight(null, "err", "fix", 0.5))
+        assertThatThrownBy(() -> Insight.ErrorInsight.of(null, "err", "fix", 0.5))
                 .isInstanceOf(NullPointerException.class);
 
         assertThatThrownBy(() -> new Insight.SuccessInsight(null, "task", 0.5))

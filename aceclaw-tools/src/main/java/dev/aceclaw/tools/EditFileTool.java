@@ -7,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -84,7 +85,7 @@ public final class EditFileTool implements Tool {
         log.debug("Editing file: {} (replaceAll={})", filePath, replaceAll);
 
         try {
-            var content = Files.readString(filePath);
+            var content = Files.readString(filePath, StandardCharsets.UTF_8);
 
             if (!content.contains(oldString)) {
                 return new ToolResult("old_string not found in file: " + filePath, true);
@@ -104,7 +105,7 @@ public final class EditFileTool implements Tool {
             }
 
             var newContent = content.replace(oldString, newString);
-            Files.writeString(filePath, newContent);
+            Files.writeString(filePath, newContent, StandardCharsets.UTF_8);
 
             int replacements = replaceAll ? countOccurrences(content, oldString) : 1;
             return new ToolResult(
