@@ -18,6 +18,9 @@ import org.slf4j.LoggerFactory;
  * like codebase exploration, planning, or general-purpose work. Sub-agents run
  * with filtered tool sets and fresh conversation history.
  *
+ * <p>Supports both synchronous execution (default) and background execution
+ * via the {@code run_in_background} parameter.
+ *
  * <p>Implements {@link CancellationAware} so the parent loop's cancellation
  * token propagates to the sub-agent loop.
  */
@@ -62,6 +65,9 @@ public final class TaskTool implements Tool, CancellationAware {
                 .optionalProperty("max_turns", SchemaBuilder.integer(
                         "Maximum ReAct iterations for the sub-agent (default: " +
                         SubAgentConfig.DEFAULT_MAX_TURNS + "). Use lower values for simple tasks."))
+                .optionalProperty("run_in_background", SchemaBuilder.bool(
+                        "If true, launch the sub-agent asynchronously and return a task_id " +
+                        "immediately. Use task_output to check status or retrieve results. Default: false."))
                 .build();
     }
 
@@ -99,6 +105,17 @@ public final class TaskTool implements Tool, CancellationAware {
             }
         }
 
+        boolean runInBackground = input.has("run_in_background")
+                && input.get("run_in_background").asBoolean(false);
+
+        if (runInBackground) {
+            return executeBackground(config, agentType, prompt);
+        } else {
+            return executeSynchronous(config, agentType, prompt);
+        }
+    }
+
+    private ToolResult executeSynchronous(SubAgentConfig config, String agentType, String prompt) {
         log.info("Delegating task to sub-agent '{}': prompt length={}", agentType, prompt.length());
 
         try {
@@ -110,6 +127,23 @@ public final class TaskTool implements Tool, CancellationAware {
         } catch (Exception e) {
             log.error("Sub-agent '{}' failed: {}", agentType, e.getMessage(), e);
             return new ToolResult("Sub-agent error: " + e.getMessage(), true);
+        }
+    }
+
+    private ToolResult executeBackground(SubAgentConfig config, String agentType, String prompt) {
+        log.info("Launching background sub-agent '{}': prompt length={}", agentType, prompt.length());
+
+        try {
+            var task = runner.runInBackground(config, prompt, cancellationToken);
+            return new ToolResult(
+                    "Background task launched successfully.\n" +
+                    "Task ID: " + task.taskId() + "\n" +
+                    "Agent: " + agentType + "\n\n" +
+                    "Use task_output with this task_id to check status or retrieve results.",
+                    false);
+        } catch (Exception e) {
+            log.error("Failed to launch background sub-agent '{}': {}", agentType, e.getMessage(), e);
+            return new ToolResult("Failed to launch background task: " + e.getMessage(), true);
         }
     }
 }

@@ -219,7 +219,14 @@ public final class AceClawDaemon {
                 llmClient, toolRegistry, model, workingDir,
                 config.maxTokens(), config.thinkingBudget(),
                 subAgentPermChecker, projectRules);
+
+        // Transcript store for sub-agent debugging/auditing
+        var transcriptStore = new TranscriptStore(homeDir.resolve("transcripts"));
+        subAgentRunner.setTranscriptStore(transcriptStore, "default");
+        transcriptStore.cleanup(); // Clean up old transcripts on startup
+
         toolRegistry.register(new dev.aceclaw.tools.TaskTool(subAgentRunner, agentTypeRegistry));
+        toolRegistry.register(new dev.aceclaw.tools.TaskOutputTool(subAgentRunner));
         log.info("Sub-agent types available: {}", agentTypeRegistry.names());
 
         // Skill system (project + user skills from .aceclaw/skills/)
