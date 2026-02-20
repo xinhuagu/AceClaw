@@ -382,8 +382,12 @@ public final class AceClawConfig {
                     this.hooks = new HashMap<>();
                 }
                 for (var hookEntry : fileConfig.hooks.entrySet()) {
+                    var hooksForEvent = hookEntry.getValue();
+                    if (hooksForEvent == null || hooksForEvent.isEmpty()) {
+                        continue;
+                    }
                     this.hooks.computeIfAbsent(hookEntry.getKey(), _ -> new ArrayList<>())
-                            .addAll(hookEntry.getValue());
+                            .addAll(hooksForEvent);
                 }
             }
 

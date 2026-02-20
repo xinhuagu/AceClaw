@@ -1049,13 +1049,15 @@ public final class StreamingAgentHandler {
                 result = delegate.execute(inputJson);
             } catch (Exception e) {
                 // Fire PostToolUseFailure hook (non-blocking, fire-and-forget)
-                firePostHookAsync(inputJson, null, e.getMessage());
+                var msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                firePostHookAsync(inputJson, null, msg);
                 throw e;
             }
 
             // Fire PostToolUse or PostToolUseFailure based on result
             if (result.isError()) {
-                firePostHookAsync(inputJson, null, result.output());
+                var msg = result.output() != null ? result.output() : "Tool error";
+                firePostHookAsync(inputJson, null, msg);
             } else {
                 firePostHookAsync(inputJson, result.output(), null);
             }
