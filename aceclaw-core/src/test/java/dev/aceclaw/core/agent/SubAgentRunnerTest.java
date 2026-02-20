@@ -194,12 +194,13 @@ class SubAgentRunnerTest {
         });
 
         // Wait for streaming to start, then cancel
-        cancelledLatch.await(3, TimeUnit.SECONDS);
+        assertThat(cancelledLatch.await(3, TimeUnit.SECONDS)).isTrue();
         token.cancel();
 
         thread.join(5000);
-        // The token was propagated and cancel() was called
+        // The token was propagated and cancel() was called on the session
         assertThat(token.isCancelled()).isTrue();
+        assertThat(cancelled.get()).isTrue();
     }
 
     @Test
@@ -254,18 +255,18 @@ class SubAgentRunnerTest {
     }
 
     @Test
-    void rulesTruncatedForNonInheritingModel() throws Exception {
+    void rulesTruncatedForSmallModel() throws Exception {
         var mockClient = new SimpleMockLlmClient("done");
         var parentRegistry = new ToolRegistry();
 
-        // Create rules that exceed the 2000 char cap for non-inheriting models
+        // Create rules that exceed the 2000 char cap for small models
         String longRules = "x".repeat(5000);
         var runner = new SubAgentRunner(
-                mockClient, parentRegistry, "model", tempDir, 4096, 0,
+                mockClient, parentRegistry, "claude-haiku-3", tempDir, 4096, 0,
                 null, longRules);
 
-        // Non-inheriting model (explicit model set)
-        var config = new SubAgentConfig("haiku-agent", "", "haiku-model",
+        // Inheriting model — parent is haiku, so cap should be 2000
+        var config = new SubAgentConfig("haiku-agent", "", null,
                 List.of(), List.of(), 25, "test");
         runner.run(config, "test task", null);
 

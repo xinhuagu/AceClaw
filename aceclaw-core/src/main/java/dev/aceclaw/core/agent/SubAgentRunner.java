@@ -175,7 +175,8 @@ public final class SubAgentRunner {
 
         // 1. Project rules (shared prefix — enables prompt cache hits)
         if (projectRules != null && !projectRules.isBlank()) {
-            int cap = config.inheritsModel() ? RULES_CAP_LARGE : RULES_CAP_SMALL;
+            String resolvedModel = config.inheritsModel() ? parentModel : config.model();
+            int cap = isSmallModel(resolvedModel) ? RULES_CAP_SMALL : RULES_CAP_LARGE;
             String rules = projectRules.length() > cap
                     ? projectRules.substring(0, cap) + "\n... [truncated]\n"
                     : projectRules;
@@ -200,5 +201,14 @@ public final class SubAgentRunner {
         }
 
         return sb.toString();
+    }
+
+    /**
+     * Heuristic to detect small/cheap models that get a smaller rules budget.
+     */
+    private static boolean isSmallModel(String model) {
+        if (model == null) return false;
+        String lower = model.toLowerCase();
+        return lower.contains("haiku") || lower.contains("mini") || lower.contains("flash");
     }
 }
