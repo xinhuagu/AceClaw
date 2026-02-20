@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import dev.aceclaw.core.agent.*;
 import dev.aceclaw.core.llm.LlmClient;
+import dev.aceclaw.infra.event.EventBus;
+import dev.aceclaw.infra.health.*;
 import dev.aceclaw.llm.LlmClientFactory;
 import dev.aceclaw.memory.AutoMemoryStore;
 import dev.aceclaw.memory.DailyJournal;
@@ -51,6 +53,8 @@ public final class AceClawDaemon {
     private final SessionHistoryStore historyStore;
     private final AutoMemoryStore memoryStore;
     private final MarkdownMemoryStore markdownStore;
+    private final EventBus eventBus;
+    private final HealthMonitor healthMonitor;
     private final RequestRouter router;
     private final ConnectionBridge connectionBridge;
     private final UdsListener udsListener;
@@ -69,6 +73,13 @@ public final class AceClawDaemon {
         // Infrastructure
         this.objectMapper = createObjectMapper();
         this.shutdownManager = new ShutdownManager();
+
+        // Event bus (async pub/sub for health events, agent events, etc.)
+        this.eventBus = new EventBus();
+        eventBus.start();
+
+        // Health monitor (aggregates per-component health checks)
+        this.healthMonitor = new HealthMonitor(eventBus);
 
         // Lock
         this.lock = new DaemonLock(homeDir.resolve("aceclaw.pid"));
@@ -122,8 +133,18 @@ public final class AceClawDaemon {
             apiKey = "not-configured";
         }
         String model = config.resolvedModel();
-        LlmClient llmClient = LlmClientFactory.create(
+        LlmClient rawLlmClient = LlmClientFactory.create(
                 config.provider(), apiKey, config.refreshToken(), config.baseUrl(), model);
+
+        // Wrap LLM client with circuit breaker for fault isolation
+        var cbConfig = CircuitBreakerConfig.defaultForLlm();
+        var circuitBreaker = new CircuitBreaker(cbConfig, eventBus);
+        LlmClient llmClient = new CircuitBreakerLlmClient(rawLlmClient, circuitBreaker);
+
+        // Register circuit breaker health check
+        healthMonitor.register(new CircuitBreakerHealthCheck(circuitBreaker));
+        log.info("LLM circuit breaker enabled: threshold={}, timeout={}s",
+                cbConfig.failureThreshold(), cbConfig.resetTimeout().toSeconds());
 
         // Resolve effective context window: explicit config > provider default
         int contextWindow = config.contextWindowTokens() > 0
@@ -334,9 +355,10 @@ public final class AceClawDaemon {
             });
         }
 
-        // Expose model name and provider info to health status endpoint
+        // Expose model name, provider info, and health monitor to status endpoint
         router.setModelName(model);
         router.setProviderInfo(config.provider(), contextWindow);
+        router.setHealthMonitor(healthMonitor);
 
         // Register model.list and model.switch RPC methods
         final var llmClientRef = llmClient;
@@ -411,6 +433,18 @@ public final class AceClawDaemon {
         });
 
         shutdownManager.register(new ShutdownManager.ShutdownParticipant() {
+            @Override public String name() { return "Health Monitor"; }
+            @Override public int priority() { return 92; }
+            @Override public void onShutdown() { healthMonitor.stop(); }
+        });
+
+        shutdownManager.register(new ShutdownManager.ShutdownParticipant() {
+            @Override public String name() { return "Event Bus"; }
+            @Override public int priority() { return 15; }
+            @Override public void onShutdown() { eventBus.stop(); }
+        });
+
+        shutdownManager.register(new ShutdownManager.ShutdownParticipant() {
             @Override public String name() { return "Daemon Lock"; }
             @Override public int priority() { return 10; }
             @Override public void onShutdown() { lock.release(); }
@@ -418,7 +452,10 @@ public final class AceClawDaemon {
 
         shutdownManager.installShutdownHook();
 
-        // 3. Start UDS listener
+        // 3. Start health monitor
+        healthMonitor.start();
+
+        // 4. Start UDS listener
         try {
             udsListener.start();
         } catch (Exception e) {
@@ -430,7 +467,7 @@ public final class AceClawDaemon {
         long bootMs = java.time.Duration.between(startedAt, Instant.now()).toMillis();
         log.info("AceClaw daemon ready (boot: {}ms, socket: {})", bootMs, homeDir.resolve("aceclaw.sock"));
 
-        // 4. Block until shutdown
+        // 5. Block until shutdown
         awaitShutdown();
     }
 

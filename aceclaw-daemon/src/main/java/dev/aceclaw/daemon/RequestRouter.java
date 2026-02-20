@@ -3,6 +3,7 @@ package dev.aceclaw.daemon;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import dev.aceclaw.infra.health.HealthMonitor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -50,6 +51,7 @@ public final class RequestRouter {
     private volatile String modelName;
     private volatile String providerName;
     private volatile int contextWindowTokens;
+    private volatile HealthMonitor healthMonitor;
 
     public RequestRouter(SessionManager sessionManager, ObjectMapper objectMapper) {
         this.sessionManager = sessionManager;
@@ -72,6 +74,13 @@ public final class RequestRouter {
     public void setProviderInfo(String provider, int contextWindowTokens) {
         this.providerName = provider;
         this.contextWindowTokens = contextWindowTokens;
+    }
+
+    /**
+     * Sets the health monitor for per-component health reporting.
+     */
+    public void setHealthMonitor(HealthMonitor healthMonitor) {
+        this.healthMonitor = healthMonitor;
     }
 
     /**
@@ -241,7 +250,30 @@ public final class RequestRouter {
 
     private Object handleHealthStatus(JsonNode params) {
         var result = objectMapper.createObjectNode();
-        result.put("status", "healthy");
+
+        var monitor = this.healthMonitor;
+        if (monitor != null) {
+            var snapshot = monitor.snapshot();
+            result.put("status", snapshot.status().name().toLowerCase());
+
+            // Per-component health breakdown
+            if (!snapshot.components().isEmpty()) {
+                var components = objectMapper.createObjectNode();
+                for (var entry : snapshot.components().entrySet()) {
+                    var comp = objectMapper.createObjectNode();
+                    comp.put("status", entry.getValue().status().name().toLowerCase());
+                    if (!entry.getValue().detail().isEmpty()) {
+                        comp.put("detail", entry.getValue().detail());
+                    }
+                    comp.put("timestamp", entry.getValue().timestamp().toString());
+                    components.set(entry.getKey(), comp);
+                }
+                result.set("components", components);
+            }
+        } else {
+            result.put("status", "healthy");
+        }
+
         result.put("activeSessions", sessionManager.sessionCount());
         result.put("timestamp", Instant.now().toString());
         result.put("version", "0.1.0-SNAPSHOT");
