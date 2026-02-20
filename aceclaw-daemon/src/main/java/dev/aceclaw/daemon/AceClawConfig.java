@@ -51,6 +51,7 @@ public final class AceClawConfig {
     private static final int DEFAULT_BOOT_TIMEOUT_SECONDS = 120;
     private static final boolean DEFAULT_SCHEDULER_ENABLED = true;
     private static final int DEFAULT_SCHEDULER_TICK_SECONDS = 60;
+    private static final boolean DEFAULT_HEARTBEAT_ENABLED = true;
 
     /** Claude CLI credentials directory. */
     private static final Path CLAUDE_CLI_DIR = Path.of(System.getProperty("user.home"), ".claude");
@@ -70,6 +71,8 @@ public final class AceClawConfig {
     private int bootTimeoutSeconds;
     private boolean schedulerEnabled;
     private int schedulerTickSeconds;
+    private boolean heartbeatEnabled;
+    private String heartbeatActiveHours;
     private String defaultProfile;
     private Map<String, ConfigFileFormat> profiles;
     private Map<String, String> providerModels;
@@ -87,6 +90,7 @@ public final class AceClawConfig {
         this.bootTimeoutSeconds = DEFAULT_BOOT_TIMEOUT_SECONDS;
         this.schedulerEnabled = DEFAULT_SCHEDULER_ENABLED;
         this.schedulerTickSeconds = DEFAULT_SCHEDULER_TICK_SECONDS;
+        this.heartbeatEnabled = DEFAULT_HEARTBEAT_ENABLED;
         this.providerModels = new java.util.HashMap<>();
     }
 
@@ -309,6 +313,22 @@ public final class AceClawConfig {
     }
 
     /**
+     * Returns whether heartbeat tasks from HEARTBEAT.md are enabled.
+     * Defaults to true.
+     */
+    public boolean heartbeatEnabled() {
+        return heartbeatEnabled;
+    }
+
+    /**
+     * Returns the active hours window for heartbeat tasks in "HH:mm-HH:mm" format.
+     * Returns null if heartbeat tasks should always be active.
+     */
+    public String heartbeatActiveHours() {
+        return heartbeatActiveHours;
+    }
+
+    /**
      * Returns the hooks configuration map (event name to list of hook matchers).
      * Returns null if no hooks are configured.
      */
@@ -487,6 +507,14 @@ public final class AceClawConfig {
         if (fileConfig.schedulerTickSeconds > 0) {
             this.schedulerTickSeconds = fileConfig.schedulerTickSeconds;
         }
+        if (fileConfig.heartbeatEnabled != null) {
+            this.heartbeatEnabled = fileConfig.heartbeatEnabled;
+        }
+        if (fileConfig.heartbeatActiveHours != null) {
+            // Blank value explicitly clears inherited activeHours (= always active)
+            this.heartbeatActiveHours = fileConfig.heartbeatActiveHours.isBlank()
+                    ? null : fileConfig.heartbeatActiveHours;
+        }
     }
 
     /**
@@ -509,6 +537,8 @@ public final class AceClawConfig {
         public int bootTimeoutSeconds;
         public Boolean schedulerEnabled;
         public int schedulerTickSeconds;
+        public Boolean heartbeatEnabled;
+        public String heartbeatActiveHours;
         public String defaultProfile;
         public Map<String, ConfigFileFormat> profiles;
         public Map<String, String> providerModels;

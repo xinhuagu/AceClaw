@@ -7,6 +7,7 @@ import dev.aceclaw.core.agent.*;
 import dev.aceclaw.core.llm.LlmClient;
 import dev.aceclaw.daemon.cron.CronScheduler;
 import dev.aceclaw.daemon.cron.JobStore;
+import dev.aceclaw.daemon.heartbeat.HeartbeatRunner;
 import dev.aceclaw.infra.event.EventBus;
 import dev.aceclaw.infra.health.*;
 import dev.aceclaw.llm.LlmClientFactory;
@@ -546,6 +547,29 @@ public final class AceClawDaemon {
             }
         } else {
             log.debug("Cron scheduler disabled via config");
+        }
+
+        // 6. Start heartbeat runner (after cron scheduler, syncs HEARTBEAT.md into cron jobs)
+        if (config.heartbeatEnabled() && cronScheduler != null) {
+            try {
+                Path hbWorkingDir = Path.of(System.getProperty("user.dir"));
+                var heartbeatRunner = new HeartbeatRunner(
+                        cronScheduler, homeDir, hbWorkingDir,
+                        config.heartbeatActiveHours(), config.schedulerTickSeconds());
+                heartbeatRunner.start();
+
+                shutdownManager.register(new ShutdownManager.ShutdownParticipant() {
+                    @Override public String name() { return "Heartbeat Runner"; }
+                    @Override public int priority() { return 89; }
+                    @Override public void onShutdown() { heartbeatRunner.stop(); }
+                });
+            } catch (Exception e) {
+                log.error("Heartbeat runner startup failed (daemon will continue): {}", e.getMessage(), e);
+            }
+        } else if (!config.heartbeatEnabled()) {
+            log.debug("Heartbeat runner disabled via config");
+        } else {
+            log.debug("Heartbeat runner enabled but cron scheduler is disabled; skipping startup");
         }
 
         running = true;
