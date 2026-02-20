@@ -116,3 +116,14 @@ Integration tests in `aceclaw-daemon` use `MockLlmClient` (queue-based programma
 - Use Java records for immutable data types
 - Use sealed interfaces with pattern matching for type hierarchies
 - `Process.getInputStream()` not `Process.inputStream()` (Java 21 API)
+
+### Defensive Coding (Clean Code)
+
+Every public API boundary must be null-safe and bounds-safe:
+
+- **Record constructors**: Always null-guard `List` fields — `signals = signals != null ? List.copyOf(signals) : List.of()`
+- **Method parameters**: Use `Objects.requireNonNull(param, "param")` on parameters used in `.equals()` or passed to downstream calls
+- **String truncation**: Always check length before `substring()` — `s.length() > max ? s.substring(0, max) + "..." : s`. Never assume the string is long enough
+- **Nullable return values**: When calling methods that may return null (e.g. `response.text()`, `Jackson readTree("")`), check for null before using. Throw a meaningful exception instead of letting NPE propagate
+- **Exception wrapping**: When a method declares a specific exception type (e.g. `throws LlmException`), wrap unexpected exceptions (e.g. `IllegalArgumentException`) into the declared type with `new LlmException("message", cause)` — don't let undeclared exceptions leak
+- **Collection parameters**: If a method receives a `List` that it calls `.stream()` on, guard against null — `var safe = list != null ? list : List.of()`
