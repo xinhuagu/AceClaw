@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * {@link StreamSession} objects. Each call to {@link #streamMessage(LlmRequest)}
  * pops the next response from the queue and returns it.
  */
-final class MockLlmClient implements LlmClient {
+public final class MockLlmClient implements LlmClient {
 
     private final ConcurrentLinkedQueue<Object> responses = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<LlmRequest> capturedRequests = new ConcurrentLinkedQueue<>();
@@ -23,28 +23,28 @@ final class MockLlmClient implements LlmClient {
      * Enqueues a canned streaming response. Events are fired synchronously
      * when {@link StreamSession#onEvent(StreamEventHandler)} is called.
      */
-    void enqueueResponse(List<StreamEvent> events) {
+    public void enqueueResponse(List<StreamEvent> events) {
         responses.add(events);
     }
 
     /**
      * Enqueues a pre-built {@link StreamSession} (e.g. a pausing session for cancel tests).
      */
-    void enqueueSession(StreamSession session) {
+    public void enqueueSession(StreamSession session) {
         responses.add(session);
     }
 
     /**
      * Returns all captured requests (in order).
      */
-    List<LlmRequest> capturedRequests() {
+    public List<LlmRequest> capturedRequests() {
         return List.copyOf(capturedRequests);
     }
 
     /**
      * Clears all queued responses and captured requests.
      */
-    void reset() {
+    public void reset() {
         responses.clear();
         capturedRequests.clear();
     }
@@ -83,7 +83,7 @@ final class MockLlmClient implements LlmClient {
     /**
      * Creates events for a simple text-only response.
      */
-    static List<StreamEvent> textResponse(String text) {
+    public static List<StreamEvent> textResponse(String text) {
         return List.of(
                 new StreamEvent.MessageStart("msg-mock", "mock-model"),
                 new StreamEvent.ContentBlockStart(0, new ContentBlock.Text("")),
@@ -102,7 +102,7 @@ final class MockLlmClient implements LlmClient {
      * @param toolName   tool name
      * @param inputJson  tool input JSON
      */
-    static List<StreamEvent> toolUseResponse(String prefixText, String toolId,
+    public static List<StreamEvent> toolUseResponse(String prefixText, String toolId,
                                              String toolName, String inputJson) {
         return List.of(
                 new StreamEvent.MessageStart("msg-mock", "mock-model"),
@@ -120,7 +120,7 @@ final class MockLlmClient implements LlmClient {
     /**
      * Creates events for an error response.
      */
-    static List<StreamEvent> errorResponse(String message) {
+    public static List<StreamEvent> errorResponse(String message) {
         return List.of(
                 new StreamEvent.MessageStart("msg-mock", "mock-model"),
                 new StreamEvent.StreamError(new LlmException(message, 500))
@@ -137,7 +137,7 @@ final class MockLlmClient implements LlmClient {
      * @param arrivedLatch   signalled after the first half of text is delivered
      * @param continueLatch  waited on before delivering the second half
      */
-    static PausingStreamSession pausingTextResponse(String text,
+    public static PausingStreamSession pausingTextResponse(String text,
                                                      CountDownLatch arrivedLatch,
                                                      CountDownLatch continueLatch) {
         int mid = text.length() / 2;
