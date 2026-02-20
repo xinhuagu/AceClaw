@@ -184,23 +184,27 @@ public final class BootExecutor {
 
         // Run in a virtual thread with timeout
         var executor = Executors.newVirtualThreadPerTaskExecutor();
-        var future = CompletableFuture.supplyAsync(() -> {
-            try {
-                var turn = agentLoop.runTurn(bootPrompt, new ArrayList<>(),
-                        new SilentStreamHandler());
-                return turn.text();
-            } catch (LlmException e) {
-                throw new CompletionException(e);
-            }
-        }, executor);
-
         try {
-            return future.get(timeoutMs, TimeUnit.MILLISECONDS);
-        } catch (TimeoutException e) {
-            future.cancel(true);
-            throw e;
-        } catch (ExecutionException e) {
-            throw (Exception) e.getCause();
+            var future = CompletableFuture.supplyAsync(() -> {
+                try {
+                    var turn = agentLoop.runTurn(bootPrompt, new ArrayList<>(),
+                            new SilentStreamHandler());
+                    return turn.text();
+                } catch (LlmException e) {
+                    throw new CompletionException(e);
+                }
+            }, executor);
+
+            try {
+                return future.get(timeoutMs, TimeUnit.MILLISECONDS);
+            } catch (TimeoutException e) {
+                future.cancel(true);
+                throw e;
+            } catch (ExecutionException e) {
+                throw (Exception) e.getCause();
+            }
+        } finally {
+            executor.close();
         }
     }
 
