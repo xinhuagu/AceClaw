@@ -36,7 +36,8 @@ public final class PlanningPromptBuilder {
      * @return the formatted user prompt
      */
     public static String buildUserPrompt(String goal, List<ToolDefinition> availableTools) {
-        var toolNames = availableTools.stream()
+        var tools = availableTools != null ? availableTools : List.<ToolDefinition>of();
+        var toolNames = tools.stream()
                 .map(ToolDefinition::name)
                 .collect(Collectors.joining(", "));
 

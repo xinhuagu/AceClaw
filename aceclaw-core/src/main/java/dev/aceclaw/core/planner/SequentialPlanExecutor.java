@@ -201,9 +201,10 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                 var prevStep = plan.steps().get(i);
                 sb.append("- Step ").append(i + 1).append(": ").append(prevStep.name());
                 if (prev.success()) {
-                    String summary = prev.output() != null
-                            ? prev.output().substring(0, Math.min(100, prev.output().length()))
-                            : "done";
+                    String output = prev.output();
+                    String summary = output != null && output.length() > 100
+                            ? output.substring(0, 100) + "..."
+                            : (output != null ? output : "done");
                     sb.append(" - ").append(summary);
                 } else {
                     sb.append(" - FAILED: ").append(prev.error());

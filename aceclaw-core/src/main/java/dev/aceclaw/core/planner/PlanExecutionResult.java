@@ -20,6 +20,6 @@ public record PlanExecutionResult(
 ) {
 
     public PlanExecutionResult {
-        stepResults = List.copyOf(stepResults);
+        stepResults = stepResults != null ? List.copyOf(stepResults) : List.of();
     }
 }

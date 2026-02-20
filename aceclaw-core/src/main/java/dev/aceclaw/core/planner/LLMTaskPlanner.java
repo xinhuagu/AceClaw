@@ -45,10 +45,18 @@ public final class LLMTaskPlanner implements TaskPlanner {
         var response = llmClient.sendMessage(request);
         var text = response.text();
 
+        if (text == null || text.isBlank()) {
+            throw new LlmException("Empty plan response from LLM");
+        }
+
         log.debug("Plan generation response ({} chars): {}",
                 text.length(), truncate(text, 200));
 
-        return TaskPlanParser.parse(text, goal);
+        try {
+            return TaskPlanParser.parse(text, goal);
+        } catch (IllegalArgumentException e) {
+            throw new LlmException("Failed to parse plan response", e);
+        }
     }
 
     private static String truncate(String text, int maxLen) {

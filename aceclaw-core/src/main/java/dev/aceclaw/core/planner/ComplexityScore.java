@@ -12,6 +12,6 @@ import java.util.List;
 public record ComplexityScore(int score, boolean shouldPlan, List<String> signals) {
 
     public ComplexityScore {
-        signals = List.copyOf(signals);
+        signals = signals != null ? List.copyOf(signals) : List.of();
     }
 }

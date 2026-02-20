@@ -3,6 +3,7 @@ package dev.aceclaw.core.planner;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * An immutable task plan consisting of sequential steps to achieve a goal.
@@ -36,6 +37,7 @@ public record TaskPlan(
      * Returns a copy with a specific step's status updated.
      */
     public TaskPlan withStepStatus(String stepId, StepStatus newStatus) {
+        Objects.requireNonNull(stepId, "stepId");
         var updatedSteps = new ArrayList<PlannedStep>();
         for (var step : steps) {
             if (step.stepId().equals(stepId)) {
