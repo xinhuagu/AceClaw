@@ -52,6 +52,8 @@ public final class AceClawConfig {
     private static final boolean DEFAULT_SCHEDULER_ENABLED = true;
     private static final int DEFAULT_SCHEDULER_TICK_SECONDS = 60;
     private static final boolean DEFAULT_HEARTBEAT_ENABLED = true;
+    private static final boolean DEFAULT_PLANNER_ENABLED = true;
+    private static final int DEFAULT_PLANNER_THRESHOLD = 5;
 
     /** Claude CLI credentials directory. */
     private static final Path CLAUDE_CLI_DIR = Path.of(System.getProperty("user.home"), ".claude");
@@ -76,6 +78,8 @@ public final class AceClawConfig {
     private String defaultProfile;
     private Map<String, ConfigFileFormat> profiles;
     private Map<String, String> providerModels;
+    private boolean plannerEnabled;
+    private int plannerThreshold;
     private Map<String, List<HookMatcherFormat>> hooks;
 
     private AceClawConfig() {
@@ -91,6 +95,8 @@ public final class AceClawConfig {
         this.schedulerEnabled = DEFAULT_SCHEDULER_ENABLED;
         this.schedulerTickSeconds = DEFAULT_SCHEDULER_TICK_SECONDS;
         this.heartbeatEnabled = DEFAULT_HEARTBEAT_ENABLED;
+        this.plannerEnabled = DEFAULT_PLANNER_ENABLED;
+        this.plannerThreshold = DEFAULT_PLANNER_THRESHOLD;
         this.providerModels = new java.util.HashMap<>();
     }
 
@@ -329,6 +335,22 @@ public final class AceClawConfig {
     }
 
     /**
+     * Returns whether the task planner is enabled.
+     * Defaults to true.
+     */
+    public boolean plannerEnabled() {
+        return plannerEnabled;
+    }
+
+    /**
+     * Returns the complexity score threshold for triggering planning.
+     * Defaults to 5.
+     */
+    public int plannerThreshold() {
+        return plannerThreshold;
+    }
+
+    /**
      * Returns the hooks configuration map (event name to list of hook matchers).
      * Returns null if no hooks are configured.
      */
@@ -515,6 +537,12 @@ public final class AceClawConfig {
             this.heartbeatActiveHours = fileConfig.heartbeatActiveHours.isBlank()
                     ? null : fileConfig.heartbeatActiveHours;
         }
+        if (fileConfig.plannerEnabled != null) {
+            this.plannerEnabled = fileConfig.plannerEnabled;
+        }
+        if (fileConfig.plannerThreshold > 0) {
+            this.plannerThreshold = fileConfig.plannerThreshold;
+        }
     }
 
     /**
@@ -539,6 +567,8 @@ public final class AceClawConfig {
         public int schedulerTickSeconds;
         public Boolean heartbeatEnabled;
         public String heartbeatActiveHours;
+        public Boolean plannerEnabled;
+        public int plannerThreshold;
         public String defaultProfile;
         public Map<String, ConfigFileFormat> profiles;
         public Map<String, String> providerModels;

@@ -15,6 +15,13 @@ import dev.aceclaw.core.llm.ContentBlock;
 import dev.aceclaw.core.llm.Message;
 import dev.aceclaw.core.llm.StreamEvent;
 import dev.aceclaw.core.llm.StreamEventHandler;
+import dev.aceclaw.core.planner.ComplexityEstimator;
+import dev.aceclaw.core.planner.LLMTaskPlanner;
+import dev.aceclaw.core.planner.PlanExecutionResult;
+import dev.aceclaw.core.planner.PlannedStep;
+import dev.aceclaw.core.planner.SequentialPlanExecutor;
+import dev.aceclaw.core.planner.StepResult;
+import dev.aceclaw.core.planner.TaskPlan;
 import dev.aceclaw.memory.AutoMemoryStore;
 import dev.aceclaw.memory.DailyJournal;
 import dev.aceclaw.memory.MemoryEntry;
@@ -155,6 +162,19 @@ public final class StreamingAgentHandler {
         // Start the cancel monitor thread to read from the socket
         cancelContext.startMonitor();
         try {
+            // Check if this task warrants upfront planning
+            if (plannerEnabled) {
+                var estimator = new ComplexityEstimator(plannerThreshold);
+                var complexityScore = estimator.estimate(prompt);
+
+                if (complexityScore.shouldPlan()) {
+                    log.info("Complex task detected (score={}, signals={}), generating plan",
+                            complexityScore.score(), complexityScore.signals());
+                    return executePlannedPrompt(prompt, session, sessionId, cancelContext,
+                            eventHandler, permissionAwareLoop, cancellationToken);
+                }
+            }
+
             var turn = permissionAwareLoop.runTurn(prompt, conversationHistory,
                     eventHandler, cancellationToken);
 
@@ -254,6 +274,244 @@ public final class StreamingAgentHandler {
     }
 
     /**
+     * Executes a complex prompt via the planner: generates a plan, streams it to the user,
+     * then executes each step sequentially through the agent loop.
+     */
+    private Object executePlannedPrompt(
+            String prompt, AgentSession session, String sessionId,
+            StreamContext cancelContext, StreamEventHandler eventHandler,
+            StreamingAgentLoop permissionAwareLoop, CancellationToken cancellationToken) throws Exception {
+
+        // 1. Generate plan
+        var planner = new LLMTaskPlanner(getLlmClient(), getModelForSession(sessionId));
+        var toolDefs = toolRegistry.toDefinitions();
+
+        TaskPlan plan;
+        try {
+            plan = planner.plan(prompt, toolDefs);
+        } catch (Exception e) {
+            log.warn("Plan generation failed, falling back to direct execution: {}", e.getMessage());
+            // Fall back to direct execution
+            var conversationHistory = toMessages(session.messages());
+            var turn = permissionAwareLoop.runTurn(prompt, conversationHistory,
+                    eventHandler, cancellationToken);
+            return buildTurnResult(turn, session, sessionId, prompt, cancellationToken);
+        }
+
+        log.info("Plan generated: {} steps for goal: {}", plan.steps().size(),
+                truncate(prompt, 80));
+
+        // 2. Send plan_created notification to client
+        try {
+            var params = objectMapper.createObjectNode();
+            params.put("planId", plan.planId());
+            params.put("stepCount", plan.steps().size());
+            params.put("goal", truncate(prompt, 200));
+            var stepsArray = objectMapper.createArrayNode();
+            for (int i = 0; i < plan.steps().size(); i++) {
+                var step = plan.steps().get(i);
+                var stepNode = objectMapper.createObjectNode();
+                stepNode.put("index", i + 1);
+                stepNode.put("name", step.name());
+                stepNode.put("description", step.description());
+                stepsArray.add(stepNode);
+            }
+            params.set("steps", stepsArray);
+            cancelContext.sendNotification("stream.plan_created", params);
+        } catch (IOException e) {
+            log.warn("Failed to send plan_created notification: {}", e.getMessage());
+        }
+
+        // 3. Execute the plan
+        var conversationHistory = toMessages(session.messages());
+        var listener = new SequentialPlanExecutor.PlanEventListener() {
+            @Override
+            public void onStepStarted(PlannedStep step, int stepIndex, int totalSteps) {
+                try {
+                    var p = objectMapper.createObjectNode();
+                    p.put("planId", plan.planId());
+                    p.put("stepId", step.stepId());
+                    p.put("stepIndex", stepIndex + 1);
+                    p.put("totalSteps", totalSteps);
+                    p.put("stepName", step.name());
+                    cancelContext.sendNotification("stream.plan_step_started", p);
+                } catch (IOException e) {
+                    log.warn("Failed to send plan_step_started notification: {}", e.getMessage());
+                }
+            }
+
+            @Override
+            public void onStepCompleted(PlannedStep step, int stepIndex, StepResult result) {
+                try {
+                    var p = objectMapper.createObjectNode();
+                    p.put("planId", plan.planId());
+                    p.put("stepId", step.stepId());
+                    p.put("stepIndex", stepIndex + 1);
+                    p.put("stepName", step.name());
+                    p.put("success", result.success());
+                    p.put("durationMs", result.durationMs());
+                    p.put("tokensUsed", result.tokensUsed());
+                    cancelContext.sendNotification("stream.plan_step_completed", p);
+                } catch (IOException e) {
+                    log.warn("Failed to send plan_step_completed notification: {}", e.getMessage());
+                }
+            }
+
+            @Override
+            public void onPlanCompleted(TaskPlan completedPlan, boolean success, long totalDurationMs) {
+                try {
+                    var p = objectMapper.createObjectNode();
+                    p.put("planId", completedPlan.planId());
+                    p.put("success", success);
+                    p.put("totalDurationMs", totalDurationMs);
+                    p.put("stepsCompleted", completedPlan.completedSteps());
+                    p.put("totalSteps", completedPlan.steps().size());
+                    cancelContext.sendNotification("stream.plan_completed", p);
+                } catch (IOException e) {
+                    log.warn("Failed to send plan_completed notification: {}", e.getMessage());
+                }
+            }
+        };
+
+        var executor = new SequentialPlanExecutor(listener);
+        var planResult = executor.execute(plan, permissionAwareLoop, conversationHistory,
+                eventHandler, cancellationToken);
+
+        // 4. Store messages in the session
+        session.addMessage(new AgentSession.ConversationMessage.User(prompt));
+        var responseSummary = buildPlanResponseSummary(planResult);
+        if (!responseSummary.isEmpty()) {
+            session.addMessage(new AgentSession.ConversationMessage.Assistant(responseSummary));
+        }
+
+        // 5. Log to journal
+        if (dailyJournal != null) {
+            dailyJournal.append("Planned task (" + planResult.plan().steps().size() + " steps, "
+                    + (planResult.success() ? "success" : "failed") + "): "
+                    + truncate(prompt, 100) + " | Tokens: " + planResult.totalTokensUsed());
+        }
+
+        // 6. Build result
+        var result = objectMapper.createObjectNode();
+        result.put("sessionId", sessionId);
+        result.put("response", responseSummary);
+        result.put("stopReason", "END_TURN");
+        result.put("planned", true);
+        result.put("planSuccess", planResult.success());
+        result.put("planSteps", planResult.plan().steps().size());
+        result.put("planStepsCompleted", planResult.plan().completedSteps());
+        if (cancellationToken.isCancelled()) {
+            result.put("cancelled", true);
+        }
+
+        var usageNode = objectMapper.createObjectNode();
+        usageNode.put("inputTokens", 0);
+        usageNode.put("outputTokens", 0);
+        usageNode.put("totalTokens", planResult.totalTokensUsed());
+        result.set("usage", usageNode);
+
+        log.info("Planned task complete: sessionId={}, success={}, steps={}/{}, tokens={}",
+                sessionId, planResult.success(), planResult.plan().completedSteps(),
+                planResult.plan().steps().size(), planResult.totalTokensUsed());
+
+        return result;
+    }
+
+    /**
+     * Builds the standard turn result object (shared between direct and fallback-from-plan paths).
+     */
+    private Object buildTurnResult(dev.aceclaw.core.agent.Turn turn, AgentSession session,
+                                    String sessionId, String prompt,
+                                    CancellationToken cancellationToken) {
+        // Handle compaction
+        if (turn.wasCompacted()) {
+            handleCompactionResult(session, turn.compactionResult());
+        }
+
+        // Store messages
+        session.addMessage(new AgentSession.ConversationMessage.User(prompt));
+        var responseText = turn.text();
+        if (!responseText.isEmpty()) {
+            session.addMessage(new AgentSession.ConversationMessage.Assistant(responseText));
+        }
+
+        // Journal
+        if (dailyJournal != null) {
+            logTurnToJournal(prompt, turn);
+        }
+
+        // Self-improvement
+        if (selfImprovementEngine != null) {
+            final var turnRef = turn;
+            final var historyRef = List.copyOf(session.messages());
+            final var sessionIdRef = sessionId;
+            final var projectPathRef = session.projectPath();
+            Thread.ofVirtual().name("self-improve-" + sessionId.substring(0, 8)).start(() -> {
+                try {
+                    var insights = selfImprovementEngine.analyze(turnRef, historyRef, Map.of());
+                    if (!insights.isEmpty()) {
+                        int persisted = selfImprovementEngine.persist(insights, sessionIdRef, projectPathRef);
+                        log.debug("Self-improvement: {} insights analyzed, {} persisted (session={})",
+                                insights.size(), persisted, sessionIdRef);
+                    }
+                } catch (Exception e) {
+                    log.warn("Self-improvement analysis failed: {}", e.getMessage());
+                }
+            });
+        }
+
+        // Build result
+        var result = objectMapper.createObjectNode();
+        result.put("sessionId", sessionId);
+        result.put("response", responseText);
+        result.put("stopReason", turn.finalStopReason().name());
+        if (cancellationToken.isCancelled()) {
+            result.put("cancelled", true);
+        }
+
+        var usageNode = objectMapper.createObjectNode();
+        usageNode.put("inputTokens", turn.totalUsage().inputTokens());
+        usageNode.put("outputTokens", turn.totalUsage().outputTokens());
+        usageNode.put("totalTokens", turn.totalUsage().totalTokens());
+        result.set("usage", usageNode);
+
+        if (turn.wasCompacted()) {
+            result.put("compacted", true);
+            result.put("compactionPhase", turn.compactionResult().phaseReached().name());
+        }
+
+        return result;
+    }
+
+    /**
+     * Builds a human-readable summary of a plan execution result.
+     */
+    private static String buildPlanResponseSummary(PlanExecutionResult planResult) {
+        var sb = new StringBuilder();
+        sb.append("Plan execution ").append(planResult.success() ? "completed" : "failed");
+        sb.append(" (").append(planResult.plan().completedSteps())
+                .append("/").append(planResult.plan().steps().size()).append(" steps).\n\n");
+
+        for (int i = 0; i < planResult.stepResults().size(); i++) {
+            var result = planResult.stepResults().get(i);
+            var step = planResult.plan().steps().get(i);
+            sb.append(result.success() ? "[OK]" : "[FAIL]")
+                    .append(" Step ").append(i + 1).append(": ").append(step.name());
+            if (result.output() != null && !result.output().isEmpty()) {
+                var summary = result.output().length() > 150
+                        ? result.output().substring(0, 150) + "..."
+                        : result.output();
+                sb.append(" - ").append(summary);
+            }
+            if (result.error() != null) {
+                sb.append(" - Error: ").append(result.error());
+            }
+            sb.append("\n");
+        }
+        return sb.toString();
+    }
+
+    /**
      * Translates an {@link dev.aceclaw.core.llm.LlmException} into a user-friendly message
      * without exposing stack traces or internal details.
      */
@@ -317,6 +575,8 @@ public final class StreamingAgentHandler {
     private Path workingDir;
     private SelfImprovementEngine selfImprovementEngine;
     private HookExecutor hookExecutor;
+    private boolean plannerEnabled = true;
+    private int plannerThreshold = 5;
 
     /**
      * Sets the LLM configuration for permission-aware agent loop creation.
@@ -370,6 +630,17 @@ public final class StreamingAgentHandler {
      */
     public void setHookExecutor(HookExecutor hookExecutor) {
         this.hookExecutor = hookExecutor;
+    }
+
+    /**
+     * Sets the planner configuration.
+     *
+     * @param enabled   whether the planner is enabled
+     * @param threshold complexity score threshold for triggering planning
+     */
+    public void setPlannerConfig(boolean enabled, int threshold) {
+        this.plannerEnabled = enabled;
+        this.plannerThreshold = threshold;
     }
 
     private dev.aceclaw.core.llm.LlmClient getLlmClient() {

@@ -90,11 +90,14 @@ Daemon (persistent JVM, separate process group)
   ├─ Request Router       → method dispatch
   ├─ Session Manager      → per-project sessions (isolated state)
   ├─ Streaming Agent Loop → ReAct loop (max 25 iterations)
+  ├─ Task Planner         → complexity estimation, LLM plan generation, sequential execution
   ├─ Permission Manager   → sealed 4-level gate (READ/WRITE/EXECUTE/DANGEROUS)
   ├─ Tool Registry        → 12 native tools + MCP (filtered per sub-agent)
   ├─ Memory System        → 8-tier hierarchy, HMAC-signed, hybrid search
   ├─ Self-Learning        → ErrorDetector, ToolMetrics, SessionEndExtractor
   ├─ Context Compactor    → 3-phase (prune → summarize → memory flush)
+  ├─ Scheduler            → persistent cron jobs, heartbeat runner
+  ├─ Hook System          → BOOT.md startup, command hooks
   └─ LLM Client Factory   → 7 providers, extended thinking, prompt caching
 ```
 
@@ -102,7 +105,7 @@ Daemon (persistent JVM, separate process group)
 
 | Module | Purpose |
 |--------|---------|
-| `aceclaw-core` | LLM abstractions, agent loop, tool interface, context compaction |
+| `aceclaw-core` | LLM abstractions, agent loop, tool interface, context compaction, task planner |
 | `aceclaw-llm` | Anthropic + OpenAI-compatible LLM clients |
 | `aceclaw-tools` | 12 built-in tools (file ops, bash, glob, grep, web, browser) |
 | `aceclaw-security` | Sealed permission model (AutoAllow / PromptOnce / AlwaysAsk / Deny) |
@@ -190,11 +193,13 @@ AceClaw's security posture is iterative. The following items are designed but no
 - [x] 8-tier memory hierarchy, hybrid search, daily journal, workspace isolation
 - [x] Markdown memory (MEMORY.md), path-based rules, memory consolidation
 - [x] Sub-agents: depth-1 delegation, filtered tool registries, task lifecycle
-- [x] Self-learning: insight hierarchy, error detection, tool metrics (#13-#14)
-- [ ] Self-learning: sequence/preference detectors, self-improvement engine (#15-#18)
+- [x] Self-learning: insight hierarchy, error/pattern detection, self-improvement engine (#13-#18)
+- [x] Self-learning gaps: charset auto-detect, recovery recipes, strategy injection, error classification (#25)
+- [x] Hook system: BOOT.md startup execution, command hooks (#32-#33)
+- [x] Scheduler: persistent cron jobs, heartbeat runner (#34-#35)
+- [x] Task planner: complexity estimation, LLM plan generation, sequential execution with fallback (#36)
 - [ ] Security hardening: content sandboxing, trust levels, encryption at rest
 - [ ] Agent teams: virtual thread teammates, shared tasks, inter-agent messaging
-- [ ] Hook system: PreToolUse/PostToolUse lifecycle events
 
 ## Tech Stack
 
