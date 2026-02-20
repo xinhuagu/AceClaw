@@ -49,6 +49,8 @@ public final class AceClawConfig {
     private static final String DEFAULT_LOG_LEVEL = "INFO";
     private static final boolean DEFAULT_BOOT_ENABLED = true;
     private static final int DEFAULT_BOOT_TIMEOUT_SECONDS = 120;
+    private static final boolean DEFAULT_SCHEDULER_ENABLED = true;
+    private static final int DEFAULT_SCHEDULER_TICK_SECONDS = 60;
 
     /** Claude CLI credentials directory. */
     private static final Path CLAUDE_CLI_DIR = Path.of(System.getProperty("user.home"), ".claude");
@@ -66,6 +68,8 @@ public final class AceClawConfig {
     private String permissionMode;
     private boolean bootEnabled;
     private int bootTimeoutSeconds;
+    private boolean schedulerEnabled;
+    private int schedulerTickSeconds;
     private String defaultProfile;
     private Map<String, ConfigFileFormat> profiles;
     private Map<String, String> providerModels;
@@ -81,6 +85,8 @@ public final class AceClawConfig {
         this.permissionMode = "normal";
         this.bootEnabled = DEFAULT_BOOT_ENABLED;
         this.bootTimeoutSeconds = DEFAULT_BOOT_TIMEOUT_SECONDS;
+        this.schedulerEnabled = DEFAULT_SCHEDULER_ENABLED;
+        this.schedulerTickSeconds = DEFAULT_SCHEDULER_TICK_SECONDS;
         this.providerModels = new java.util.HashMap<>();
     }
 
@@ -287,6 +293,22 @@ public final class AceClawConfig {
     }
 
     /**
+     * Returns whether the cron scheduler is enabled at daemon startup.
+     * Defaults to true.
+     */
+    public boolean schedulerEnabled() {
+        return schedulerEnabled;
+    }
+
+    /**
+     * Returns the cron scheduler tick interval in seconds.
+     * Defaults to 60.
+     */
+    public int schedulerTickSeconds() {
+        return schedulerTickSeconds;
+    }
+
+    /**
      * Returns the hooks configuration map (event name to list of hook matchers).
      * Returns null if no hooks are configured.
      */
@@ -459,6 +481,12 @@ public final class AceClawConfig {
         if (fileConfig.bootTimeoutSeconds > 0) {
             this.bootTimeoutSeconds = fileConfig.bootTimeoutSeconds;
         }
+        if (fileConfig.schedulerEnabled != null) {
+            this.schedulerEnabled = fileConfig.schedulerEnabled;
+        }
+        if (fileConfig.schedulerTickSeconds > 0) {
+            this.schedulerTickSeconds = fileConfig.schedulerTickSeconds;
+        }
     }
 
     /**
@@ -479,6 +507,8 @@ public final class AceClawConfig {
         public String permissionMode;
         public Boolean bootEnabled;
         public int bootTimeoutSeconds;
+        public Boolean schedulerEnabled;
+        public int schedulerTickSeconds;
         public String defaultProfile;
         public Map<String, ConfigFileFormat> profiles;
         public Map<String, String> providerModels;

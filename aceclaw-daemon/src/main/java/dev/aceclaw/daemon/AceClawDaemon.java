@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import dev.aceclaw.core.agent.*;
 import dev.aceclaw.core.llm.LlmClient;
+import dev.aceclaw.daemon.cron.CronScheduler;
+import dev.aceclaw.daemon.cron.JobStore;
 import dev.aceclaw.infra.event.EventBus;
 import dev.aceclaw.infra.health.*;
 import dev.aceclaw.llm.LlmClientFactory;
@@ -60,11 +62,12 @@ public final class AceClawDaemon {
     private final UdsListener udsListener;
     private final Instant startedAt;
 
-    // Set during wireAgentHandler(), used for boot execution
+    // Set during wireAgentHandler(), used for boot execution and cron scheduler
     private LlmClient bootLlmClient;
     private ToolRegistry bootToolRegistry;
     private String bootModel;
     private String bootSystemPrompt;
+    private CronScheduler cronScheduler;
 
     private volatile boolean running;
 
@@ -512,6 +515,29 @@ public final class AceClawDaemon {
         } catch (Exception e) {
             lock.release();
             throw new DaemonException("Failed to start UDS listener: " + e.getMessage(), e);
+        }
+
+        // 5. Start cron scheduler (after listener is ready, jobs run in background)
+        if (config.schedulerEnabled()) {
+            try {
+                var jobStore = new JobStore(homeDir);
+                cronScheduler = new CronScheduler(
+                        jobStore, bootLlmClient, bootToolRegistry,
+                        bootModel, bootSystemPrompt,
+                        config.maxTokens(), config.thinkingBudget(),
+                        eventBus, config.schedulerTickSeconds());
+                cronScheduler.start();
+
+                shutdownManager.register(new ShutdownManager.ShutdownParticipant() {
+                    @Override public String name() { return "Cron Scheduler"; }
+                    @Override public int priority() { return 88; }
+                    @Override public void onShutdown() { cronScheduler.stop(); }
+                });
+            } catch (Exception e) {
+                log.error("Cron scheduler startup failed (daemon will continue): {}", e.getMessage(), e);
+            }
+        } else {
+            log.debug("Cron scheduler disabled via config");
         }
 
         running = true;
