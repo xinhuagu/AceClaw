@@ -137,7 +137,19 @@ public final class SubAgentRunner {
     public SubAgentResult runWithTranscript(SubAgentConfig config, String prompt,
                                             StreamEventHandler handler,
                                             CancellationToken cancellationToken) throws LlmException {
-        String taskId = UUID.randomUUID().toString().substring(0, 8);
+        return runWithTranscript(config, prompt, handler, cancellationToken,
+                UUID.randomUUID().toString());
+    }
+
+    /**
+     * Internal: runs a sub-agent with a pre-assigned task ID.
+     * Used by {@link #runInBackground} to share the same ID across
+     * BackgroundTask, SubAgentResult, and transcript.
+     */
+    private SubAgentResult runWithTranscript(SubAgentConfig config, String prompt,
+                                             StreamEventHandler handler,
+                                             CancellationToken cancellationToken,
+                                             String taskId) throws LlmException {
         Instant startedAt = Instant.now();
 
         String resolvedModel = config.inheritsModel() ? parentModel : config.model();
@@ -213,16 +225,16 @@ public final class SubAgentRunner {
                                           CancellationToken cancellationToken) {
         cleanupCompletedTasks();
 
-        String taskId = UUID.randomUUID().toString().substring(0, 8);
+        String taskId = UUID.randomUUID().toString();
         Instant startedAt = Instant.now();
 
         var future = CompletableFuture.supplyAsync(() -> {
             try {
-                return runWithTranscript(config, prompt, null, cancellationToken);
+                return runWithTranscript(config, prompt, null, cancellationToken, taskId);
             } catch (Exception e) {
                 throw new java.util.concurrent.CompletionException(e);
             }
-        }, Thread.ofVirtual().name("bg-task-" + taskId).factory()::newThread);
+        }, Thread.ofVirtual().name("bg-task-" + taskId.substring(0, 8)).factory()::newThread);
 
         var task = new BackgroundTask(taskId, config.name(), prompt, future, startedAt);
         backgroundTasks.put(taskId, task);
@@ -272,13 +284,17 @@ public final class SubAgentRunner {
     }
 
     /**
-     * Removes completed background tasks older than {@link #BG_CLEANUP_AGE}.
+     * Removes completed background tasks that finished more than
+     * {@link #BG_CLEANUP_AGE} ago. Uses completion time (not start time)
+     * so long-running tasks are not cleaned up prematurely.
      */
     private void cleanupCompletedTasks() {
         Instant cutoff = Instant.now().minus(BG_CLEANUP_AGE);
         backgroundTasks.entrySet().removeIf(entry -> {
             var task = entry.getValue();
-            return task.future().isDone() && task.startedAt().isBefore(cutoff);
+            if (!task.future().isDone()) return false;
+            Instant completed = task.completedAt().get();
+            return completed != null && completed.isBefore(cutoff);
         });
     }
 
