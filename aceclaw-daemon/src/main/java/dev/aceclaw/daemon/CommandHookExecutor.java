@@ -110,15 +110,12 @@ public final class CommandHookExecutor implements HookExecutor {
 
             Process process = pb.start();
 
-            // Write JSON to stdin
-            try (OutputStream os = process.getOutputStream()) {
-                os.write(stdinJson.getBytes(StandardCharsets.UTF_8));
-                os.flush();
-            }
-
-            // Read stdout and stderr concurrently to prevent pipe deadlock.
-            // The process might block writing to stdout/stderr if the pipe buffer
-            // fills before we consume it — we must drain both streams while waiting.
+            // Start reading stdout and stderr FIRST on virtual threads.
+            // This must happen before writing stdin to avoid pipe deadlock:
+            // - The process may write stdout/stderr before reading stdin
+            // - We must drain both pipes concurrently with waitFor()
+            // - If the process exits quickly (not reading stdin), a broken pipe
+            //   on stdin write must NOT prevent us from reading stdout/stderr
             var stdoutHolder = new String[1];
             var stderrHolder = new String[1];
             var stdoutThread = Thread.ofVirtual().start(() -> {
@@ -137,6 +134,16 @@ public final class CommandHookExecutor implements HookExecutor {
                     stderrHolder[0] = "";
                 }
             });
+
+            // Write JSON to stdin. The hook script may or may not read stdin.
+            // If the process exits before we write (fast scripts that ignore stdin),
+            // the write may fail with broken pipe — this is expected and non-fatal.
+            try (OutputStream os = process.getOutputStream()) {
+                os.write(stdinJson.getBytes(StandardCharsets.UTF_8));
+                os.flush();
+            } catch (IOException e) {
+                log.debug("Stdin write failed (process may not read stdin): {}", e.getMessage());
+            }
 
             // Wait for completion with timeout
             boolean finished = process.waitFor(hookConfig.timeout(), TimeUnit.SECONDS);
