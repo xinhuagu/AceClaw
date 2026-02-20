@@ -12,6 +12,7 @@ import org.slf4j.LoggerFactory;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Orchestrates the self-learning pipeline: runs detectors, deduplicates insights,
@@ -57,6 +58,8 @@ public final class SelfImprovementEngine {
 
     private final AtomicInteger turnsSinceRefinement = new AtomicInteger();
     private final AtomicInteger persistedSinceLastRefinement = new AtomicInteger();
+    /** Serializes the check-refine-reset block so only one thread runs refine() at a time. */
+    private final ReentrantLock refinementLock = new ReentrantLock();
 
     /**
      * Creates a self-improvement engine without strategy refinement.
@@ -157,23 +160,35 @@ public final class SelfImprovementEngine {
             }
         }
 
-        // Accumulate persisted count across turns and trigger refinement when enough have built up
-        int totalPersisted = persistedSinceLastRefinement.addAndGet(persisted);
-        int turns = turnsSinceRefinement.get();
-        if (totalPersisted >= REFINE_MIN_PERSISTED && turns >= REFINE_DEBOUNCE_TURNS && strategyRefiner != null) {
+        // Accumulate persisted count across turns and trigger refinement when enough have built up.
+        // The lock serializes refinement so only one thread runs refine() at a time.
+        // Subtracting the snapshot (instead of zeroing) preserves increments from concurrent threads.
+        persistedSinceLastRefinement.addAndGet(persisted);
+        if (strategyRefiner != null
+                && persistedSinceLastRefinement.get() >= REFINE_MIN_PERSISTED
+                && turnsSinceRefinement.get() >= REFINE_DEBOUNCE_TURNS
+                && refinementLock.tryLock()) {
             try {
-                var result = strategyRefiner.refine(insights, projectPath);
-                if (result.hasChanges()) {
-                    log.info("Strategy refinement after {} turns ({} persisted): {} strategies, {} anti-patterns, {} preferences ({} consolidated)",
-                            turns, totalPersisted,
-                            result.strategiesCreated(),
-                            result.antiPatternsCreated(), result.preferencesStrengthened(),
-                            result.entriesConsolidated());
+                // Snapshot under lock — other threads can still increment atomically
+                int snapshotPersisted = persistedSinceLastRefinement.get();
+                int snapshotTurns = turnsSinceRefinement.get();
+                if (snapshotPersisted >= REFINE_MIN_PERSISTED && snapshotTurns >= REFINE_DEBOUNCE_TURNS) {
+                    var result = strategyRefiner.refine(insights, projectPath);
+                    if (result.hasChanges()) {
+                        log.info("Strategy refinement after {} turns ({} persisted): {} strategies, {} anti-patterns, {} preferences ({} consolidated)",
+                                snapshotTurns, snapshotPersisted,
+                                result.strategiesCreated(),
+                                result.antiPatternsCreated(), result.preferencesStrengthened(),
+                                result.entriesConsolidated());
+                    }
+                    // Subtract snapshot values to preserve concurrent increments
+                    turnsSinceRefinement.addAndGet(-snapshotTurns);
+                    persistedSinceLastRefinement.addAndGet(-snapshotPersisted);
                 }
-                turnsSinceRefinement.set(0);
-                persistedSinceLastRefinement.set(0);
             } catch (Exception e) {
                 log.warn("Strategy refinement failed: {}", e.getMessage());
+            } finally {
+                refinementLock.unlock();
             }
         }
 
