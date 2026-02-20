@@ -52,6 +52,7 @@ public final class SelfImprovementEngine {
     private final StrategyRefiner strategyRefiner;
 
     private int turnsSinceRefinement;
+    private int persistedSinceLastRefinement;
 
     /**
      * Creates a self-improvement engine without strategy refinement.
@@ -80,6 +81,7 @@ public final class SelfImprovementEngine {
         this.memoryStore = Objects.requireNonNull(memoryStore, "memoryStore");
         this.strategyRefiner = strategyRefiner;
         this.turnsSinceRefinement = 0;
+        this.persistedSinceLastRefinement = 0;
     }
 
     /**
@@ -153,17 +155,20 @@ public final class SelfImprovementEngine {
             }
         }
 
-        // Trigger strategy refinement if enough insights have accumulated and enough turns have passed
-        if (persisted >= 3 && turnsSinceRefinement >= REFINE_DEBOUNCE_TURNS && strategyRefiner != null) {
+        // Accumulate persisted count across turns and trigger refinement when enough have built up
+        persistedSinceLastRefinement += persisted;
+        if (persistedSinceLastRefinement >= 3 && turnsSinceRefinement >= REFINE_DEBOUNCE_TURNS && strategyRefiner != null) {
             try {
                 var result = strategyRefiner.refine(insights, projectPath);
                 if (result.hasChanges()) {
-                    log.info("Strategy refinement after {} turns: {} strategies, {} anti-patterns, {} preferences ({} consolidated)",
-                            turnsSinceRefinement, result.strategiesCreated(),
+                    log.info("Strategy refinement after {} turns ({} persisted): {} strategies, {} anti-patterns, {} preferences ({} consolidated)",
+                            turnsSinceRefinement, persistedSinceLastRefinement,
+                            result.strategiesCreated(),
                             result.antiPatternsCreated(), result.preferencesStrengthened(),
                             result.entriesConsolidated());
                 }
                 turnsSinceRefinement = 0;
+                persistedSinceLastRefinement = 0;
             } catch (Exception e) {
                 log.warn("Strategy refinement failed: {}", e.getMessage());
             }
