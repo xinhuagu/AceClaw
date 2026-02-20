@@ -53,6 +53,8 @@ public final class HeartbeatRunner {
     private ScheduledExecutorService executor;
     private long lastProjectModified;
     private long lastGlobalModified;
+    private boolean sawProjectFile;
+    private boolean sawGlobalFile;
 
     /**
      * Creates a HeartbeatRunner.
@@ -270,54 +272,71 @@ public final class HeartbeatRunner {
     }
 
     /**
-     * Checks if a HEARTBEAT.md file has been modified since last sync.
+     * Checks if a HEARTBEAT.md file has been modified or deleted since last sync.
      */
     private boolean filesModified() {
         var files = HeartbeatLoader.discoverFiles(homeDir, workingDir);
+
+        // Track which files are currently present
+        boolean currentProjectSeen = false;
+        boolean currentGlobalSeen = false;
+
         for (Path file : files) {
             try {
                 long modified = Files.getLastModifiedTime(file).toMillis();
-                String fileName = file.getFileName().toString();
-                Path parent = file.getParent();
-
-                // Check if this is the project file or global file
-                if (parent != null && parent.getFileName() != null
-                        && parent.getFileName().toString().equals(".aceclaw")) {
+                if (isProjectFile(file)) {
+                    currentProjectSeen = true;
                     if (modified != lastProjectModified) return true;
                 } else {
+                    currentGlobalSeen = true;
                     if (modified != lastGlobalModified) return true;
                 }
             } catch (IOException e) {
-                // File may have been deleted
+                // File may have been deleted between discover and stat
                 return true;
             }
         }
+
+        // Detect file deletion: previously seen but now absent
+        if (sawProjectFile && !currentProjectSeen) return true;
+        if (sawGlobalFile && !currentGlobalSeen) return true;
+
         return false;
     }
 
     /**
-     * Updates stored modification timestamps for discovered files.
+     * Updates stored modification timestamps and presence flags for discovered files.
      */
     private void updateModifiedTimestamps() {
         lastProjectModified = 0;
         lastGlobalModified = 0;
+        sawProjectFile = false;
+        sawGlobalFile = false;
 
         var files = HeartbeatLoader.discoverFiles(homeDir, workingDir);
         for (Path file : files) {
             try {
                 long modified = Files.getLastModifiedTime(file).toMillis();
-                Path parent = file.getParent();
-
-                if (parent != null && parent.getFileName() != null
-                        && parent.getFileName().toString().equals(".aceclaw")) {
+                if (isProjectFile(file)) {
                     lastProjectModified = modified;
+                    sawProjectFile = true;
                 } else {
                     lastGlobalModified = modified;
+                    sawGlobalFile = true;
                 }
             } catch (IOException e) {
                 // Ignore; will re-sync on next tick
             }
         }
+    }
+
+    /**
+     * Returns true if the file is a project-level HEARTBEAT.md (under .aceclaw/).
+     */
+    private static boolean isProjectFile(Path file) {
+        Path parent = file.getParent();
+        return parent != null && parent.getFileName() != null
+                && parent.getFileName().toString().equals(".aceclaw");
     }
 
     /**

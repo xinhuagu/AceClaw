@@ -510,8 +510,10 @@ public final class AceClawConfig {
         if (fileConfig.heartbeatEnabled != null) {
             this.heartbeatEnabled = fileConfig.heartbeatEnabled;
         }
-        if (fileConfig.heartbeatActiveHours != null && !fileConfig.heartbeatActiveHours.isBlank()) {
-            this.heartbeatActiveHours = fileConfig.heartbeatActiveHours;
+        if (fileConfig.heartbeatActiveHours != null) {
+            // Blank value explicitly clears inherited activeHours (= always active)
+            this.heartbeatActiveHours = fileConfig.heartbeatActiveHours.isBlank()
+                    ? null : fileConfig.heartbeatActiveHours;
         }
     }
 

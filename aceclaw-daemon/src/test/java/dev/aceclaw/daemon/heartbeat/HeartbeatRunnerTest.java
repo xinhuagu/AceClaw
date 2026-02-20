@@ -281,6 +281,28 @@ class HeartbeatRunnerTest {
         assertThat(updated.consecutiveFailures()).isZero();
     }
 
+    @Test
+    @Order(12)
+    void fileDeletion_removesHeartbeatJobs() throws IOException {
+        writeProjectHeartbeat("""
+                ## Deletable task
+                - schedule: 0 9 * * *
+
+                Task that will be deleted.
+                """);
+
+        var runner = new HeartbeatRunner(scheduler, homeDir, workDir, null, 60);
+        runner.syncFromFiles();
+        assertThat(jobStore.get("hb-deletable-task")).isPresent();
+
+        // Delete the HEARTBEAT.md file
+        Files.delete(workDir.resolve(".aceclaw").resolve("HEARTBEAT.md"));
+
+        // tick() should detect the deletion and re-sync, removing the stale job
+        runner.tick();
+        assertThat(jobStore.get("hb-deletable-task")).isEmpty();
+    }
+
     private void writeProjectHeartbeat(String content) throws IOException {
         Path projectDir = workDir.resolve(".aceclaw");
         Files.createDirectories(projectDir);

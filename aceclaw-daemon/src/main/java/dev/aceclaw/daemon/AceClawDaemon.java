@@ -560,7 +560,7 @@ public final class AceClawDaemon {
 
                 shutdownManager.register(new ShutdownManager.ShutdownParticipant() {
                     @Override public String name() { return "Heartbeat Runner"; }
-                    @Override public int priority() { return 87; }
+                    @Override public int priority() { return 89; }
                     @Override public void onShutdown() { heartbeatRunner.stop(); }
                 });
             } catch (Exception e) {
@@ -568,6 +568,8 @@ public final class AceClawDaemon {
             }
         } else if (!config.heartbeatEnabled()) {
             log.debug("Heartbeat runner disabled via config");
+        } else {
+            log.debug("Heartbeat runner enabled but cron scheduler is disabled; skipping startup");
         }
 
         running = true;
