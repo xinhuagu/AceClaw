@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Orchestrates the self-learning pipeline: runs detectors, deduplicates insights,
@@ -46,13 +47,16 @@ public final class SelfImprovementEngine {
     /** Number of turns between strategy refinement runs. */
     static final int REFINE_DEBOUNCE_TURNS = 10;
 
+    /** Minimum accumulated persisted insights before attempting refinement. */
+    static final int REFINE_MIN_PERSISTED = 3;
+
     private final ErrorDetector errorDetector;
     private final PatternDetector patternDetector;
     private final AutoMemoryStore memoryStore;
     private final StrategyRefiner strategyRefiner;
 
-    private int turnsSinceRefinement;
-    private int persistedSinceLastRefinement;
+    private final AtomicInteger turnsSinceRefinement = new AtomicInteger();
+    private final AtomicInteger persistedSinceLastRefinement = new AtomicInteger();
 
     /**
      * Creates a self-improvement engine without strategy refinement.
@@ -80,8 +84,6 @@ public final class SelfImprovementEngine {
         this.patternDetector = Objects.requireNonNull(patternDetector, "patternDetector");
         this.memoryStore = Objects.requireNonNull(memoryStore, "memoryStore");
         this.strategyRefiner = strategyRefiner;
-        this.turnsSinceRefinement = 0;
-        this.persistedSinceLastRefinement = 0;
     }
 
     /**
@@ -95,7 +97,7 @@ public final class SelfImprovementEngine {
     public List<Insight> analyze(Turn turn,
                                   List<AgentSession.ConversationMessage> sessionHistory,
                                   Map<String, ToolMetrics> toolMetrics) {
-        turnsSinceRefinement++;
+        turnsSinceRefinement.incrementAndGet();
 
         var insights = new ArrayList<Insight>();
 
@@ -156,19 +158,20 @@ public final class SelfImprovementEngine {
         }
 
         // Accumulate persisted count across turns and trigger refinement when enough have built up
-        persistedSinceLastRefinement += persisted;
-        if (persistedSinceLastRefinement >= 3 && turnsSinceRefinement >= REFINE_DEBOUNCE_TURNS && strategyRefiner != null) {
+        int totalPersisted = persistedSinceLastRefinement.addAndGet(persisted);
+        int turns = turnsSinceRefinement.get();
+        if (totalPersisted >= REFINE_MIN_PERSISTED && turns >= REFINE_DEBOUNCE_TURNS && strategyRefiner != null) {
             try {
                 var result = strategyRefiner.refine(insights, projectPath);
                 if (result.hasChanges()) {
                     log.info("Strategy refinement after {} turns ({} persisted): {} strategies, {} anti-patterns, {} preferences ({} consolidated)",
-                            turnsSinceRefinement, persistedSinceLastRefinement,
+                            turns, totalPersisted,
                             result.strategiesCreated(),
                             result.antiPatternsCreated(), result.preferencesStrengthened(),
                             result.entriesConsolidated());
                 }
-                turnsSinceRefinement = 0;
-                persistedSinceLastRefinement = 0;
+                turnsSinceRefinement.set(0);
+                persistedSinceLastRefinement.set(0);
             } catch (Exception e) {
                 log.warn("Strategy refinement failed: {}", e.getMessage());
             }
