@@ -81,8 +81,9 @@ public final class HeartbeatRunner {
      * thread that periodically re-syncs and manages active hours.
      */
     public void start() {
-        // Initial sync
+        // Initial sync + immediate active-hours gating before any cron tick can fire
         syncFromFiles();
+        toggleActiveHours();
 
         executor = Executors.newSingleThreadScheduledExecutor(r -> {
             var t = new Thread(r, "heartbeat-runner");
