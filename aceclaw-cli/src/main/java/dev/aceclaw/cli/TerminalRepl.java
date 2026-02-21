@@ -386,17 +386,29 @@ public final class TerminalRepl {
 
     private void notifyCompletedBackgroundTasks(PrintWriter out) {
         for (var handle : taskManager.list()) {
-            if (handle.isTerminal() && !handle.taskId().equals(taskManager.foregroundTaskId())) {
-                String stateLabel = switch (handle.state()) {
-                    case COMPLETED -> SUCCESS + "completed" + RESET;
-                    case FAILED -> ERROR + "failed" + RESET;
-                    case CANCELLED -> WARNING + "cancelled" + RESET;
-                    case RUNNING -> "";
-                };
-                if (!stateLabel.isEmpty()) {
-                    out.printf("%s[bg task #%s %s]%s%n", MUTED, handle.taskId(), stateLabel, RESET);
-                }
+            if (!handle.isTerminal()) continue;
+            if (handle.taskId().equals(taskManager.foregroundTaskId())) continue;
+            if (!handle.markNotified()) continue;  // already shown — skip
+
+            String stateLabel = switch (handle.state()) {
+                case COMPLETED -> SUCCESS + "completed" + RESET;
+                case FAILED -> ERROR + "failed" + RESET;
+                case CANCELLED -> WARNING + "cancelled" + RESET;
+                case RUNNING -> "";
+            };
+
+            out.println();
+            out.printf("%s--- bg task #%s %s ---%s%n", MUTED, handle.taskId(), stateLabel, RESET);
+
+            // Auto-replay buffered output from background tasks
+            var sink = handle.outputSink();
+            if (sink instanceof BackgroundOutputBuffer bgBuffer && bgBuffer.size() > 0) {
+                var replaySink = new ForegroundOutputSink(out, markdownRenderer);
+                bgBuffer.replay(replaySink);
             }
+
+            // Show completion summary (token usage, elapsed time)
+            renderTaskCompletion(out, handle);
         }
         out.flush();
     }

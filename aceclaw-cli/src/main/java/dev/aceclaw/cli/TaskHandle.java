@@ -37,6 +37,9 @@ public final class TaskHandle {
     /** Client-side cancellation flag. */
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
 
+    /** Whether background completion has been displayed to the user. */
+    private final AtomicBoolean completionNotified = new AtomicBoolean(false);
+
     /** When the task was submitted. */
     private final Instant startedAt;
 
@@ -81,6 +84,12 @@ public final class TaskHandle {
     public OutputSink swapOutputSink(OutputSink newSink) {
         return sinkRef.getAndSet(Objects.requireNonNull(newSink, "newSink"));
     }
+
+    /**
+     * Marks this task's completion as notified. Returns true if this is the first call
+     * (i.e., the notification hasn't been shown yet).
+     */
+    public boolean markNotified() { return completionNotified.compareAndSet(false, true); }
 
     public Thread streamThread() { return streamThread; }
     public void setStreamThread(Thread thread) { this.streamThread = thread; }
