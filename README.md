@@ -39,8 +39,15 @@ AceClaw learns from its own behavior — no LLM calls required. Every tool execu
 - **Cross-session accumulation** — Insights start at 0.4 confidence and gain +0.2 per recurrence. Only patterns reaching 0.7 confidence are persisted.
 - **Strategy evolution** — Errors become `ErrorInsight`s, recurring sequences become `SuccessInsight`s, unresolved errors become anti-patterns. A closed feedback loop: detect → persist → recall → avoid.
 - **Type-safe insight hierarchy** — `Insight` is a sealed interface (`ErrorInsight | SuccessInsight | PatternInsight`). The compiler enforces exhaustive handling.
+- **Baseline evaluation** — Continuous-learning KPIs and collection workflow are documented in `docs/continuous-learning-plan.md` with report templates and sample output.
 
 See [Self-Learning Pipeline](docs/self-learning.md) for the full architecture.
+
+Collect a local baseline snapshot:
+
+```bash
+./scripts/collect-continuous-learning-baseline.sh --run-tests
+```
 
 ## Long-Term Memory
 
