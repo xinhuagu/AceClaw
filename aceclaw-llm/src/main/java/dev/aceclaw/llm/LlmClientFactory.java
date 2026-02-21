@@ -6,6 +6,7 @@ import dev.aceclaw.llm.anthropic.AnthropicClient;
 import dev.aceclaw.llm.openai.CopilotRoutingClient;
 import dev.aceclaw.llm.openai.CopilotTokenProvider;
 import dev.aceclaw.llm.openai.OpenAICompatClient;
+import dev.aceclaw.llm.openai.OpenAIRoutingClient;
 import dev.aceclaw.llm.openai.OpenAIResponsesClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -90,7 +91,8 @@ public final class LlmClientFactory {
         return switch (provider) {
             case "anthropic" -> createAnthropicClient(apiKey, refreshToken, baseUrl);
             case "copilot" -> createCopilotClient(apiKey, baseUrl, model);
-            case "openai", "groq", "together", "mistral", "ollama" -> {
+            case "openai" -> createOpenAiClient(apiKey, baseUrl, model);
+            case "groq", "together", "mistral", "ollama" -> {
                 String resolvedBaseUrl = baseUrl != null ? baseUrl : DEFAULT_BASE_URLS.get(provider);
                 String resolvedModel = model != null ? model : DEFAULT_MODELS.getOrDefault(provider, "gpt-4o");
                 ProviderCapabilities caps = PROVIDER_CAPABILITIES.getOrDefault(
@@ -132,6 +134,20 @@ public final class LlmClientFactory {
                 COPILOT_API_HEADERS);
 
         return new CopilotRoutingClient(chatClient, responsesClient, resolvedModel);
+    }
+
+    private static LlmClient createOpenAiClient(String apiKey, String baseUrl, String model) {
+        String resolvedBaseUrl = baseUrl != null ? baseUrl : DEFAULT_BASE_URLS.get("openai");
+        String resolvedModel = model != null ? model : DEFAULT_MODELS.getOrDefault("openai", "gpt-4o");
+
+        var chatClient = new OpenAICompatClient(
+                () -> apiKey, resolvedBaseUrl, "/v1/chat/completions",
+                "openai", resolvedModel, ProviderCapabilities.OPENAI, Map.of());
+        var responsesClient = new OpenAIResponsesClient(
+                () -> apiKey, resolvedBaseUrl, "/v1/responses",
+                "openai", resolvedModel, ProviderCapabilities.CODEX, Map.of());
+
+        return new OpenAIRoutingClient(chatClient, responsesClient, resolvedModel);
     }
 
     private static LlmClient createAnthropicClient(String apiKey, String refreshToken, String baseUrl) {

@@ -1,6 +1,6 @@
 <h1 align="center">AceClaw</h1>
 
-<p align="center">Security-first autonomous task agent built on Java 21 — designed for enterprise environments</p>
+<p align="center">Security-first general-purpose AI agent built on Java 21 — designed for enterprise environments</p>
 
 <p align="center">
   <a href="https://github.com/xinhuagu/AceClaw/actions/workflows/ci.yml"><img src="https://github.com/xinhuagu/AceClaw/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/Gradle-8.14-02303A?logo=gradle&logoColor=white" alt="Gradle 8.14">
 </p>
 
-AceClaw is a security-first autonomous task agent built on **Java 21**, designed for **enterprise environments** where security, auditability, and JVM ecosystem integration matter. Inspired by [OpenClaw](https://github.com/openclaw) and [Claude Code](https://docs.anthropic.com/en/docs/claude-code), it takes the core ideas of agentic AI — daemon architecture, tool use, ReAct loops — and enhances them in three areas:
+AceClaw is a security-first **general-purpose AI agent** built on **Java 21**, designed for **enterprise environments** where security, auditability, and JVM ecosystem integration matter. Unlike coding-specific tools, AceClaw handles any task — code generation, research, analysis, DevOps automation, document processing, and more — through a persistent daemon with a ReAct loop, extensible tool system, and long-term memory. Inspired by [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [OpenClaw](https://github.com/openclaw), it enhances the core ideas of agentic AI in three areas:
 
 1. **Security** — Zero network surface, sealed permissions, content boundaries
 2. **Self-Learning** — Heuristic pattern detection, cross-session insight accumulation, strategy evolution
@@ -17,7 +17,18 @@ AceClaw is a security-first autonomous task agent built on **Java 21**, designed
 
 ### Why Java?
 
-Enterprise teams run on the JVM. AceClaw is a native Java application — no Python runtime, no Node.js, no polyglot toolchain. It leverages Java 21 features (sealed interfaces, virtual threads, pattern matching) for type-safe, high-performance agent execution, and integrates naturally into existing Java/Spring/Quarkus ecosystems. GraalVM Native Image support enables instant cold starts for CLI and daemon.
+Enterprise teams run on the JVM. AceClaw is a native Java application — no Python runtime, no Node.js, no polyglot toolchain. It leverages Java 21 features (sealed interfaces, virtual threads, pattern matching) for type-safe, high-performance agent execution, and integrates naturally into existing enterprise ecosystems. GraalVM Native Image support enables instant cold starts for CLI and daemon.
+
+### What Can AceClaw Do?
+
+AceClaw is a general-purpose autonomous agent — not limited to coding tasks:
+
+- **Software Engineering** — Read, write, edit code; run tests; debug errors; refactor across files
+- **Research & Analysis** — Web search, page fetching, document summarization, data extraction
+- **DevOps & Automation** — Shell commands, cron scheduling, multi-step workflows, health monitoring
+- **Knowledge Management** — Persistent memory across sessions, workspace-scoped notes, pattern recall
+- **Task Planning** — Automatic complexity estimation, multi-step plan generation, sequential execution
+- **Extensible via MCP** — Connect any external tool through the Model Context Protocol
 
 ## Security First
 
@@ -118,7 +129,7 @@ Daemon (persistent JVM, separate process group)
 |--------|---------|
 | `aceclaw-core` | LLM abstractions, agent loop, tool interface, context compaction, task planner |
 | `aceclaw-llm` | Anthropic + OpenAI-compatible LLM clients |
-| `aceclaw-tools` | 12 built-in tools (file ops, bash, glob, grep, web, browser) |
+| `aceclaw-tools` | 12 built-in tools (file ops, bash, glob, grep, web search, web fetch) |
 | `aceclaw-security` | Sealed permission model (AutoAllow / PromptOnce / AlwaysAsk / Deny) |
 | `aceclaw-memory` | [8-tier memory hierarchy](docs/memory-system-design.md), hybrid search, consolidation, HMAC integrity |
 | `aceclaw-mcp` | MCP client integration for external tools |
