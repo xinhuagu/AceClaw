@@ -3,6 +3,7 @@ package dev.aceclaw.core.planner;
 import dev.aceclaw.core.llm.ToolDefinition;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 /**
@@ -41,6 +42,7 @@ public final class PlanningPromptBuilder {
         }
         var tools = availableTools != null ? availableTools : List.<ToolDefinition>of();
         var toolNames = tools.stream()
+                .filter(Objects::nonNull)
                 .map(ToolDefinition::name)
                 .filter(name -> name != null && !name.isBlank())
                 .collect(Collectors.joining(", "));

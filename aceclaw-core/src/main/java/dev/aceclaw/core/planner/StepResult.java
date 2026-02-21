@@ -9,7 +9,6 @@ package dev.aceclaw.core.planner;
  * @param durationMs   wall-clock time spent on this step
  * @param inputTokens  input tokens consumed by this step
  * @param outputTokens output tokens consumed by this step
- * @param tokensUsed   total tokens consumed by this step (input + output)
  */
 public record StepResult(
         boolean success,
@@ -17,6 +16,13 @@ public record StepResult(
         String error,
         long durationMs,
         int inputTokens,
-        int outputTokens,
-        int tokensUsed
-) {}
+        int outputTokens
+) {
+
+    /**
+     * Total tokens consumed by this step (input + output).
+     */
+    public int tokensUsed() {
+        return inputTokens + outputTokens;
+    }
+}

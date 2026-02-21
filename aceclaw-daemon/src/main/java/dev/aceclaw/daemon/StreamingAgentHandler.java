@@ -179,79 +179,9 @@ public final class StreamingAgentHandler {
                     eventHandler, cancellationToken);
 
             // Send cancelled notification if the turn was cancelled
-            if (cancellationToken.isCancelled()) {
-                try {
-                    var cancelParams = objectMapper.createObjectNode();
-                    cancelParams.put("sessionId", sessionId);
-                    cancelContext.sendNotification("stream.cancelled", cancelParams);
-                } catch (IOException e) {
-                    log.warn("Failed to send stream.cancelled notification: {}", e.getMessage());
-                }
-            }
+            sendCancelledNotificationIfNeeded(cancellationToken, cancelContext, sessionId);
 
-            // Handle compaction: if compaction occurred, replace session history
-            // and persist extracted context items to auto-memory
-            if (turn.wasCompacted()) {
-                handleCompactionResult(session, turn.compactionResult());
-            }
-
-            // Store messages in the session
-            session.addMessage(new AgentSession.ConversationMessage.User(prompt));
-            var responseText = turn.text();
-            if (!responseText.isEmpty()) {
-                session.addMessage(new AgentSession.ConversationMessage.Assistant(responseText));
-            }
-
-            // Log activity to daily journal for cross-session memory
-            if (dailyJournal != null) {
-                logTurnToJournal(prompt, turn);
-            }
-
-            // Run self-improvement analysis asynchronously (fire-and-forget)
-            if (selfImprovementEngine != null) {
-                final var turnRef = turn;
-                final var historyRef = List.copyOf(session.messages());
-                final var sessionIdRef = sessionId;
-                final var projectPathRef = session.projectPath();
-                Thread.ofVirtual().name("self-improve-" + sessionId.substring(0, 8)).start(() -> {
-                    try {
-                        var insights = selfImprovementEngine.analyze(turnRef, historyRef, Map.of());
-                        if (!insights.isEmpty()) {
-                            int persisted = selfImprovementEngine.persist(insights, sessionIdRef, projectPathRef);
-                            log.debug("Self-improvement: {} insights analyzed, {} persisted (session={})",
-                                    insights.size(), persisted, sessionIdRef);
-                        }
-                    } catch (Exception e) {
-                        log.warn("Self-improvement analysis failed: {}", e.getMessage());
-                    }
-                });
-            }
-
-            // Build the final response
-            var result = objectMapper.createObjectNode();
-            result.put("sessionId", sessionId);
-            result.put("response", responseText);
-            result.put("stopReason", turn.finalStopReason().name());
-            if (cancellationToken.isCancelled()) {
-                result.put("cancelled", true);
-            }
-
-            var usageNode = objectMapper.createObjectNode();
-            usageNode.put("inputTokens", turn.totalUsage().inputTokens());
-            usageNode.put("outputTokens", turn.totalUsage().outputTokens());
-            usageNode.put("totalTokens", turn.totalUsage().totalTokens());
-            result.set("usage", usageNode);
-
-            if (turn.wasCompacted()) {
-                result.put("compacted", true);
-                result.put("compactionPhase", turn.compactionResult().phaseReached().name());
-            }
-
-            log.info("Streaming turn complete: sessionId={}, stopReason={}, tokens={}, cancelled={}, compacted={}",
-                    sessionId, turn.finalStopReason(), turn.totalUsage().totalTokens(),
-                    cancellationToken.isCancelled(), turn.wasCompacted());
-
-            return result;
+            return buildTurnResult(turn, session, sessionId, prompt, cancellationToken);
 
         } catch (dev.aceclaw.core.llm.LlmException e) {
             // Translate LLM errors to user-friendly messages
@@ -295,6 +225,7 @@ public final class StreamingAgentHandler {
             var conversationHistory = toMessages(session.messages());
             var turn = permissionAwareLoop.runTurn(prompt, conversationHistory,
                     eventHandler, cancellationToken);
+            sendCancelledNotificationIfNeeded(cancellationToken, cancelContext, sessionId);
             return buildTurnResult(turn, session, sessionId, prompt, cancellationToken);
         }
 
@@ -376,6 +307,9 @@ public final class StreamingAgentHandler {
         var executor = new SequentialPlanExecutor(listener);
         var planResult = executor.execute(plan, permissionAwareLoop, conversationHistory,
                 eventHandler, cancellationToken);
+
+        // Send cancelled notification if needed
+        sendCancelledNotificationIfNeeded(cancellationToken, cancelContext, sessionId);
 
         // 4. Store messages in the session
         session.addMessage(new AgentSession.ConversationMessage.User(prompt));
@@ -482,6 +416,10 @@ public final class StreamingAgentHandler {
             result.put("compactionPhase", turn.compactionResult().phaseReached().name());
         }
 
+        log.info("Streaming turn complete: sessionId={}, stopReason={}, tokens={}, cancelled={}, compacted={}",
+                sessionId, turn.finalStopReason(), turn.totalUsage().totalTokens(),
+                cancellationToken.isCancelled(), turn.wasCompacted());
+
         return result;
     }
 
@@ -511,6 +449,22 @@ public final class StreamingAgentHandler {
             sb.append("\n");
         }
         return sb.toString();
+    }
+
+    /**
+     * Sends a stream.cancelled notification to the client if the token is cancelled.
+     */
+    private void sendCancelledNotificationIfNeeded(CancellationToken token,
+                                                    StreamContext context, String sessionId) {
+        if (token != null && token.isCancelled()) {
+            try {
+                var params = objectMapper.createObjectNode();
+                params.put("sessionId", sessionId);
+                context.sendNotification("stream.cancelled", params);
+            } catch (IOException e) {
+                log.warn("Failed to send stream.cancelled notification: {}", e.getMessage());
+            }
+        }
     }
 
     /**
@@ -642,7 +596,7 @@ public final class StreamingAgentHandler {
      */
     public void setPlannerConfig(boolean enabled, int threshold) {
         this.plannerEnabled = enabled;
-        this.plannerThreshold = threshold;
+        this.plannerThreshold = Math.max(0, threshold);
     }
 
     private dev.aceclaw.core.llm.LlmClient getLlmClient() {

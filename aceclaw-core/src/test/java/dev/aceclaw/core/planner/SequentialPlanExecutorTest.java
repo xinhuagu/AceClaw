@@ -235,7 +235,7 @@ class SequentialPlanExecutorTest {
     void buildStepPrompt_includesPreviousResults() {
         var plan = createTestPlan(3);
         var previousResults = List.of(
-                new StepResult(true, "Found 5 auth files", null, 1000, 60, 40, 100));
+                new StepResult(true, "Found 5 auth files", null, 1000, 60, 40));
 
         var prompt = SequentialPlanExecutor.buildStepPrompt(
                 plan.steps().get(1), 1, plan, previousResults);
