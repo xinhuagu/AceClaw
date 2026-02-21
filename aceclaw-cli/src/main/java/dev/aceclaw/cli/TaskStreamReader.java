@@ -135,8 +135,20 @@ public final class TaskStreamReader implements Runnable {
             }
             case "stream.tool_use" -> {
                 if (params != null) {
+                    String toolId = params.path("id").asText("");
                     String toolName = params.path("name").asText("unknown");
-                    sink.onToolUse(toolName);
+                    String summary = params.path("summary").asText("");
+                    sink.onToolUse(toolId, toolName, summary);
+                }
+            }
+            case "stream.tool_completed" -> {
+                if (params != null) {
+                    String toolId = params.path("id").asText("");
+                    String toolName = params.path("name").asText("unknown");
+                    long durationMs = params.path("durationMs").asLong(0);
+                    boolean isError = params.path("isError").asBoolean(false);
+                    String error = params.path("error").asText("");
+                    sink.onToolCompleted(toolId, toolName, durationMs, isError, error);
                 }
             }
             case "permission.request" -> handlePermissionRequest(params);
@@ -146,6 +158,8 @@ public final class TaskStreamReader implements Runnable {
                 }
             }
             case "stream.cancelled" -> sink.onStreamCancelled();
+            case "stream.subagent.start" -> sink.onSubAgentStart(params);
+            case "stream.subagent.end" -> sink.onSubAgentEnd(params);
             case "stream.plan_created" -> sink.onPlanCreated(params);
             case "stream.plan_step_started" -> sink.onPlanStepStarted(params);
             case "stream.plan_step_completed" -> sink.onPlanStepCompleted(params);

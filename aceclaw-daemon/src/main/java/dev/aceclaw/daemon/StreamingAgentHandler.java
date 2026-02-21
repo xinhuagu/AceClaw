@@ -855,10 +855,32 @@ public final class StreamingAgentHandler {
                     var params = objectMapper.createObjectNode();
                     params.put("name", toolUse.name());
                     params.put("id", toolUse.id());
+                    String summary = summarizeToolInput(toolUse.name(), toolUse.inputJson(), objectMapper);
+                    if (!summary.isBlank()) {
+                        params.put("summary", summary);
+                    }
                     context.sendNotification("stream.tool_use", params);
                 } catch (IOException e) {
                     log.warn("Failed to send tool use notification: {}", e.getMessage());
                 }
+            }
+        }
+
+        @Override
+        public void onToolCompleted(String toolUseId, String toolName,
+                                    long durationMs, boolean isError, String error) {
+            try {
+                var params = objectMapper.createObjectNode();
+                params.put("id", toolUseId);
+                params.put("name", toolName);
+                params.put("durationMs", durationMs);
+                params.put("isError", isError);
+                if (error != null && !error.isBlank()) {
+                    params.put("error", truncate(error, 160));
+                }
+                context.sendNotification("stream.tool_completed", params);
+            } catch (IOException e) {
+                log.warn("Failed to send tool completed notification: {}", e.getMessage());
             }
         }
 
@@ -907,6 +929,47 @@ public final class StreamingAgentHandler {
             } catch (IOException e) {
                 log.warn("Failed to send subagent end notification: {}", e.getMessage());
             }
+        }
+
+        private static String summarizeToolInput(String toolName, String inputJson, ObjectMapper mapper) {
+            if (inputJson == null || inputJson.isBlank()) {
+                return "";
+            }
+            try {
+                var node = mapper.readTree(inputJson);
+                if (!node.isObject()) {
+                    return truncate(inputJson, 80);
+                }
+                String value = switch (toolName) {
+                    case "bash" -> firstNonBlank(node, "command", "cmd");
+                    case "read_file", "write_file", "edit_file" -> firstNonBlank(node, "file_path", "path");
+                    case "grep" -> firstNonBlank(node, "pattern", "query");
+                    case "glob" -> firstNonBlank(node, "pattern", "path");
+                    case "list_directory" -> firstNonBlank(node, "path");
+                    case "web_fetch" -> firstNonBlank(node, "url");
+                    case "web_search" -> firstNonBlank(node, "query");
+                    case "browser" -> firstNonBlank(node, "action", "url");
+                    case "task" -> firstNonBlank(node, "prompt", "description");
+                    case "skill" -> firstNonBlank(node, "name", "skill", "prompt");
+                    default -> firstNonBlank(node, "path", "file_path", "query", "url", "command");
+                };
+                if (value == null || value.isBlank()) {
+                    return "";
+                }
+                return truncate(value.replace('\n', ' '), 80);
+            } catch (Exception ignored) {
+                return "";
+            }
+        }
+
+        private static String firstNonBlank(com.fasterxml.jackson.databind.JsonNode node, String... fields) {
+            for (var field : fields) {
+                var value = node.path(field).asText("");
+                if (!value.isBlank()) {
+                    return value;
+                }
+            }
+            return "";
         }
     }
 

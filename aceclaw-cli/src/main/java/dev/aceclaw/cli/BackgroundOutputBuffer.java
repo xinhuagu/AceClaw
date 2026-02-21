@@ -34,6 +34,17 @@ public final class BackgroundOutputBuffer implements OutputSink {
     }
 
     @Override
+    public void onToolUse(String toolId, String toolName, String summary) {
+        events.add(new OutputEvent.ToolUseDetailed(toolId, toolName, summary));
+    }
+
+    @Override
+    public void onToolCompleted(String toolId, String toolName,
+                                long durationMs, boolean isError, String error) {
+        events.add(new OutputEvent.ToolCompleted(toolId, toolName, durationMs, isError, error));
+    }
+
+    @Override
     public void onStreamError(String error) {
         events.add(new OutputEvent.Error(error));
     }
@@ -53,6 +64,41 @@ public final class BackgroundOutputBuffer implements OutputSink {
         events.add(new OutputEvent.ConnectionClosed());
     }
 
+    @Override
+    public void onPlanCreated(JsonNode params) {
+        events.add(new OutputEvent.PlanCreated(params));
+    }
+
+    @Override
+    public void onPlanStepStarted(JsonNode params) {
+        events.add(new OutputEvent.PlanStepStarted(params));
+    }
+
+    @Override
+    public void onPlanStepCompleted(JsonNode params) {
+        events.add(new OutputEvent.PlanStepCompleted(params));
+    }
+
+    @Override
+    public void onPlanCompleted(JsonNode params) {
+        events.add(new OutputEvent.PlanCompleted(params));
+    }
+
+    @Override
+    public void onSubAgentStart(JsonNode params) {
+        events.add(new OutputEvent.SubAgentStart(params));
+    }
+
+    @Override
+    public void onSubAgentEnd(JsonNode params) {
+        events.add(new OutputEvent.SubAgentEnd(params));
+    }
+
+    @Override
+    public void onCompaction(JsonNode params) {
+        events.add(new OutputEvent.Compaction(params));
+    }
+
     /**
      * Replays all buffered events to a foreground sink.
      *
@@ -69,8 +115,18 @@ public final class BackgroundOutputBuffer implements OutputSink {
                 case OutputEvent.Thinking e -> sink.onThinkingDelta(e.delta());
                 case OutputEvent.Text e -> sink.onTextDelta(e.delta());
                 case OutputEvent.ToolUse e -> sink.onToolUse(e.toolName());
+                case OutputEvent.ToolUseDetailed e -> sink.onToolUse(e.toolId(), e.toolName(), e.summary());
+                case OutputEvent.ToolCompleted e -> sink.onToolCompleted(
+                        e.toolId(), e.toolName(), e.durationMs(), e.isError(), e.error());
                 case OutputEvent.Error e -> sink.onStreamError(e.error());
                 case OutputEvent.Cancelled _ -> sink.onStreamCancelled();
+                case OutputEvent.PlanCreated e -> sink.onPlanCreated(e.params());
+                case OutputEvent.PlanStepStarted e -> sink.onPlanStepStarted(e.params());
+                case OutputEvent.PlanStepCompleted e -> sink.onPlanStepCompleted(e.params());
+                case OutputEvent.PlanCompleted e -> sink.onPlanCompleted(e.params());
+                case OutputEvent.SubAgentStart e -> sink.onSubAgentStart(e.params());
+                case OutputEvent.SubAgentEnd e -> sink.onSubAgentEnd(e.params());
+                case OutputEvent.Compaction e -> sink.onCompaction(e.params());
                 case OutputEvent.Complete e -> sink.onTurnComplete(e.result(), e.hasError());
                 case OutputEvent.ConnectionClosed _ -> sink.onConnectionClosed();
             }
@@ -111,8 +167,18 @@ public final class BackgroundOutputBuffer implements OutputSink {
         record Thinking(String delta) implements OutputEvent {}
         record Text(String delta) implements OutputEvent {}
         record ToolUse(String toolName) implements OutputEvent {}
+        record ToolUseDetailed(String toolId, String toolName, String summary) implements OutputEvent {}
+        record ToolCompleted(String toolId, String toolName,
+                             long durationMs, boolean isError, String error) implements OutputEvent {}
         record Error(String error) implements OutputEvent {}
         record Cancelled() implements OutputEvent {}
+        record PlanCreated(JsonNode params) implements OutputEvent {}
+        record PlanStepStarted(JsonNode params) implements OutputEvent {}
+        record PlanStepCompleted(JsonNode params) implements OutputEvent {}
+        record PlanCompleted(JsonNode params) implements OutputEvent {}
+        record SubAgentStart(JsonNode params) implements OutputEvent {}
+        record SubAgentEnd(JsonNode params) implements OutputEvent {}
+        record Compaction(JsonNode params) implements OutputEvent {}
         record Complete(JsonNode result, boolean hasError) implements OutputEvent {}
         record ConnectionClosed() implements OutputEvent {}
     }

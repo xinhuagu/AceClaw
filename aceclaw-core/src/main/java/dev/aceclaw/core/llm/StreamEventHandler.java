@@ -49,4 +49,16 @@ public interface StreamEventHandler {
      * @param agentId identifier for the sub-agent
      */
     default void onSubAgentEnd(String agentId) {}
+
+    /**
+     * Called when a tool execution finishes.
+     *
+     * @param toolUseId  tool-use block id from the model response
+     * @param toolName   tool name
+     * @param durationMs execution duration in milliseconds
+     * @param isError    whether the tool result is an error
+     * @param error      optional error preview (null for success)
+     */
+    default void onToolCompleted(String toolUseId, String toolName,
+                                 long durationMs, boolean isError, String error) {}
 }

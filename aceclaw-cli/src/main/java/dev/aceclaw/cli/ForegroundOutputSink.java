@@ -3,6 +3,8 @@ package dev.aceclaw.cli;
 import com.fasterxml.jackson.databind.JsonNode;
 
 import java.io.PrintWriter;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 
 import static dev.aceclaw.cli.TerminalTheme.*;
@@ -10,13 +12,9 @@ import static dev.aceclaw.cli.TerminalTheme.*;
 /**
  * Renders streaming agent events directly to the terminal.
  *
- * <p>Extracted from the original {@code TerminalRepl.processInput()} inline switch/case.
- * All writes to {@code out} are synchronized to prevent interleaved output from
- * multiple task threads.
- *
- * <p>This sink manages markdown buffering and incremental rendering:
- * text deltas are buffered until a paragraph boundary ({@code \n\n}) is found,
- * then rendered via {@link TerminalMarkdownRenderer}.
+ * <p>All writes to {@code out} are synchronized to prevent interleaved output
+ * from multiple task threads. This sink also renders a compact multi-line
+ * status area under the active streaming line for tools, sub-agents, and plan steps.
  */
 public final class ForegroundOutputSink implements OutputSink {
 
@@ -31,9 +29,12 @@ public final class ForegroundOutputSink implements OutputSink {
     private int backtickRun = 0;  // tracks consecutive backticks across chunk boundaries
     private volatile TerminalSpinner spinner;
 
+    private final StreamStatusRenderer statusRenderer;
+
     public ForegroundOutputSink(PrintWriter out, TerminalMarkdownRenderer markdownRenderer) {
         this.out = Objects.requireNonNull(out, "out");
         this.markdownRenderer = Objects.requireNonNull(markdownRenderer, "markdownRenderer");
+        this.statusRenderer = new StreamStatusRenderer(out);
     }
 
     /**
@@ -50,9 +51,11 @@ public final class ForegroundOutputSink implements OutputSink {
     public void onThinkingDelta(String delta) {
         synchronized (lock) {
             stopSpinner();
+            statusRenderer.hide();
             out.print(THINKING + delta + RESET);
             out.flush();
             wasThinking = true;
+            statusRenderer.refresh();
         }
     }
 
@@ -60,6 +63,7 @@ public final class ForegroundOutputSink implements OutputSink {
     public void onTextDelta(String delta) {
         synchronized (lock) {
             stopSpinner();
+            statusRenderer.hide();
 
             if (wasThinking) {
                 out.println();
@@ -93,25 +97,39 @@ public final class ForegroundOutputSink implements OutputSink {
                     out.flush();
                 }
             }
+            statusRenderer.refresh();
         }
     }
 
     @Override
     public void onToolUse(String toolName) {
+        onToolUse("", toolName, "");
+    }
+
+    @Override
+    public void onToolUse(String toolId, String toolName, String summary) {
         synchronized (lock) {
             if (receivedTextOutput) {
+                statusRenderer.hide();
                 flushMarkdown();
                 inCodeFence = false;
                 receivedTextOutput = false;
             }
             if (wasThinking) {
+                statusRenderer.hide();
                 out.println();
                 wasThinking = false;
             }
             stopSpinner();
-            String verb = TerminalSpinner.verbForTool(toolName);
-            spinner = new TerminalSpinner(out);
-            spinner.start(verb + " " + toolName + "...");
+            statusRenderer.onToolStarted(toolId, toolName, summary);
+        }
+    }
+
+    @Override
+    public void onToolCompleted(String toolId, String toolName,
+                                long durationMs, boolean isError, String error) {
+        synchronized (lock) {
+            statusRenderer.onToolCompleted(toolId, toolName, durationMs, isError, error);
         }
     }
 
@@ -119,13 +137,16 @@ public final class ForegroundOutputSink implements OutputSink {
     public void onStreamError(String error) {
         synchronized (lock) {
             if (receivedTextOutput) {
+                statusRenderer.hide();
                 flushMarkdown();
                 inCodeFence = false;
                 receivedTextOutput = false;
             }
             stopSpinner();
+            statusRenderer.hide();
             out.printf("%s[stream error: %s]%s%n", ERROR, error, RESET);
             out.flush();
+            statusRenderer.refresh();
         }
     }
 
@@ -133,6 +154,7 @@ public final class ForegroundOutputSink implements OutputSink {
     public void onStreamCancelled() {
         synchronized (lock) {
             stopSpinner();
+            statusRenderer.onCancelled();
         }
     }
 
@@ -140,6 +162,7 @@ public final class ForegroundOutputSink implements OutputSink {
     public void onTurnComplete(JsonNode message, boolean hasError) {
         synchronized (lock) {
             stopSpinner();
+            statusRenderer.hide();
 
             if (receivedTextOutput) {
                 flushMarkdown();
@@ -168,6 +191,7 @@ public final class ForegroundOutputSink implements OutputSink {
                 }
             }
             out.flush();
+            statusRenderer.clearAll();
 
             // Reset state for next turn
             textBuffer.setLength(0);
@@ -182,17 +206,56 @@ public final class ForegroundOutputSink implements OutputSink {
     public void onConnectionClosed() {
         synchronized (lock) {
             stopSpinner();
+            statusRenderer.hide();
             flushMarkdown();
             out.println("\n[Connection closed]");
             out.flush();
+            statusRenderer.clearAll();
         }
     }
 
     @Override
     public void onCompaction(JsonNode params) {
         synchronized (lock) {
+            statusRenderer.hide();
             out.println(MUTED + "[context compacted]" + RESET);
             out.flush();
+            statusRenderer.refresh();
+        }
+    }
+
+    @Override
+    public void onPlanStepStarted(JsonNode params) {
+        synchronized (lock) {
+            statusRenderer.onPlanStepStarted(params);
+        }
+    }
+
+    @Override
+    public void onPlanStepCompleted(JsonNode params) {
+        synchronized (lock) {
+            statusRenderer.onPlanStepCompleted(params);
+        }
+    }
+
+    @Override
+    public void onPlanCompleted(JsonNode params) {
+        synchronized (lock) {
+            statusRenderer.onPlanCompleted(params);
+        }
+    }
+
+    @Override
+    public void onSubAgentStart(JsonNode params) {
+        synchronized (lock) {
+            statusRenderer.onSubAgentStart(params);
+        }
+    }
+
+    @Override
+    public void onSubAgentEnd(JsonNode params) {
+        synchronized (lock) {
+            statusRenderer.onSubAgentEnd(params);
         }
     }
 
@@ -215,5 +278,321 @@ public final class ForegroundOutputSink implements OutputSink {
         markdownRenderer.render(textBuffer.toString(), out);
         out.flush();
         textBuffer.setLength(0);
+    }
+
+    private static String truncate(String text, int maxLen) {
+        if (text == null) return "";
+        String normalized = text.replace('\n', ' ').trim();
+        if (normalized.length() <= maxLen) return normalized;
+        return normalized.substring(0, maxLen - 3) + "...";
+    }
+
+    /**
+     * Lightweight status renderer for tool/sub-agent/plan progress lines.
+     *
+     * <p>Uses save/restore cursor + line clear ANSI sequences so status lines
+     * stay below the streaming cursor and disappear cleanly.
+     */
+    private static final class StreamStatusRenderer {
+
+        private static final long RETAIN_DONE_MS = 2000L;
+
+        private enum Kind { TOOL, SUBAGENT, PLAN_STEP }
+        private enum State { ACTIVE, SUCCESS, ERROR, CANCELLED }
+
+        private static final class StatusEntry {
+            final String key;
+            final Kind kind;
+            String name;
+            String detail;
+            final long startedNanos;
+            State state;
+            long durationMs;
+            long expiresAtMs;
+            String parentKey;
+
+            StatusEntry(String key, Kind kind, String name, String detail, long startedNanos) {
+                this.key = key;
+                this.kind = kind;
+                this.name = name;
+                this.detail = detail;
+                this.startedNanos = startedNanos;
+                this.state = State.ACTIVE;
+            }
+        }
+
+        private final PrintWriter out;
+        private final LinkedHashMap<String, StatusEntry> entries = new LinkedHashMap<>();
+        private int renderedLines;
+        private long nextSyntheticId;
+
+        StreamStatusRenderer(PrintWriter out) {
+            this.out = out;
+        }
+
+        void onToolStarted(String toolId, String toolName, String summary) {
+            pruneExpired();
+            String key = (toolId != null && !toolId.isBlank())
+                    ? toolId : "tool-" + (++nextSyntheticId);
+            String parent = firstActiveKey(Kind.SUBAGENT);
+            var entry = new StatusEntry(key, Kind.TOOL, safe(toolName, "unknown"),
+                    truncate(summary, 60), System.nanoTime());
+            entry.parentKey = parent;
+            entries.put(key, entry);
+            redraw();
+        }
+
+        void onToolCompleted(String toolId, String toolName,
+                             long durationMs, boolean isError, String error) {
+            pruneExpired();
+            StatusEntry entry = null;
+            if (toolId != null && !toolId.isBlank()) {
+                entry = entries.get(toolId);
+            }
+            if (entry == null) {
+                entry = firstActiveTool(safe(toolName, "unknown"));
+            }
+            if (entry == null) {
+                String key = (toolId != null && !toolId.isBlank())
+                        ? toolId : "tool-" + (++nextSyntheticId);
+                entry = new StatusEntry(key, Kind.TOOL, safe(toolName, "unknown"),
+                        "", System.nanoTime());
+                entries.put(key, entry);
+            }
+            entry.state = isError ? State.ERROR : State.SUCCESS;
+            entry.durationMs = Math.max(0L, durationMs);
+            entry.expiresAtMs = System.currentTimeMillis() + RETAIN_DONE_MS;
+            if (isError && error != null && !error.isBlank()) {
+                entry.detail = truncate(error, 80);
+            }
+            redraw();
+        }
+
+        void onSubAgentStart(JsonNode params) {
+            pruneExpired();
+            String agentId = safe(params != null ? params.path("agentType").asText("") : "", "sub-agent");
+            String prompt = params != null ? params.path("prompt").asText("") : "";
+            String key = "subagent:" + agentId;
+            var entry = new StatusEntry(key, Kind.SUBAGENT, agentId,
+                    truncate(prompt, 60), System.nanoTime());
+            entries.put(key, entry);
+            redraw();
+        }
+
+        void onSubAgentEnd(JsonNode params) {
+            pruneExpired();
+            String agentId = safe(params != null ? params.path("agentType").asText("") : "", "sub-agent");
+            String key = "subagent:" + agentId;
+            var entry = entries.get(key);
+            if (entry == null) {
+                entry = new StatusEntry(key, Kind.SUBAGENT, agentId, "", System.nanoTime());
+                entries.put(key, entry);
+            }
+            entry.state = State.SUCCESS;
+            entry.durationMs = nanosToMs(System.nanoTime() - entry.startedNanos);
+            entry.expiresAtMs = System.currentTimeMillis() + RETAIN_DONE_MS;
+            redraw();
+        }
+
+        void onPlanStepStarted(JsonNode params) {
+            pruneExpired();
+            if (params == null) return;
+            String stepId = safe(params.path("stepId").asText(""), "step-" + (++nextSyntheticId));
+            int stepIndex = params.path("stepIndex").asInt(0);
+            int totalSteps = params.path("totalSteps").asInt(0);
+            String stepName = params.path("stepName").asText("step");
+            String detail = stepIndex > 0 && totalSteps > 0
+                    ? "step %d/%d - \"%s\"".formatted(stepIndex, totalSteps, truncate(stepName, 40))
+                    : truncate(stepName, 50);
+            String key = "plan:" + stepId;
+            entries.put(key, new StatusEntry(key, Kind.PLAN_STEP, "Plan", detail, System.nanoTime()));
+            redraw();
+        }
+
+        void onPlanStepCompleted(JsonNode params) {
+            pruneExpired();
+            if (params == null) return;
+            String stepId = safe(params.path("stepId").asText(""), "");
+            String key = "plan:" + stepId;
+            var entry = entries.get(key);
+            if (entry == null) {
+                String stepName = params.path("stepName").asText("step");
+                entry = new StatusEntry(key, Kind.PLAN_STEP, "Plan",
+                        truncate(stepName, 50), System.nanoTime());
+                entries.put(key, entry);
+            }
+            boolean success = params.path("success").asBoolean(true);
+            entry.state = success ? State.SUCCESS : State.ERROR;
+            entry.durationMs = Math.max(0L, params.path("durationMs").asLong(0L));
+            entry.expiresAtMs = System.currentTimeMillis() + RETAIN_DONE_MS;
+            redraw();
+        }
+
+        void onPlanCompleted(JsonNode params) {
+            pruneExpired();
+            if (params == null) return;
+            boolean success = params.path("success").asBoolean(true);
+            for (var entry : entries.values()) {
+                if (entry.kind == Kind.PLAN_STEP && entry.state == State.ACTIVE) {
+                    entry.state = success ? State.SUCCESS : State.ERROR;
+                    entry.durationMs = nanosToMs(System.nanoTime() - entry.startedNanos);
+                    entry.expiresAtMs = System.currentTimeMillis() + RETAIN_DONE_MS;
+                }
+            }
+            redraw();
+        }
+
+        void onCancelled() {
+            pruneExpired();
+            long expires = System.currentTimeMillis() + RETAIN_DONE_MS;
+            for (var entry : entries.values()) {
+                if (entry.state == State.ACTIVE) {
+                    entry.state = State.CANCELLED;
+                    entry.durationMs = nanosToMs(System.nanoTime() - entry.startedNanos);
+                    entry.expiresAtMs = expires;
+                }
+            }
+            redraw();
+        }
+
+        void hide() {
+            if (renderedLines == 0) return;
+            out.print("\0337");
+            for (int i = 0; i < renderedLines; i++) {
+                out.print("\n\r\033[K");
+            }
+            out.print("\033[" + renderedLines + "A\r");
+            out.print("\0338");
+            out.flush();
+            renderedLines = 0;
+        }
+
+        void refresh() {
+            pruneExpired();
+            redraw();
+        }
+
+        void clearAll() {
+            entries.clear();
+            hide();
+        }
+
+        private void pruneExpired() {
+            long now = System.currentTimeMillis();
+            entries.values().removeIf(e -> e.state != State.ACTIVE && e.expiresAtMs > 0 && now >= e.expiresAtMs);
+        }
+
+        private void redraw() {
+            var lines = new java.util.ArrayList<String>(entries.size());
+            for (var entry : entries.values()) {
+                lines.add(formatLine(entry));
+            }
+            int linesToClear = Math.max(renderedLines, lines.size());
+            if (linesToClear == 0) {
+                renderedLines = 0;
+                return;
+            }
+
+            out.print("\0337");
+            for (int i = 0; i < linesToClear; i++) {
+                out.print("\n\r\033[K");
+            }
+            out.print("\033[" + linesToClear + "A\r");
+            for (var line : lines) {
+                out.print("\n\r\033[K");
+                out.print(line);
+            }
+            out.print("\0338");
+            out.flush();
+            renderedLines = lines.size();
+        }
+
+        private String formatLine(StatusEntry entry) {
+            String icon = switch (entry.state) {
+                case ACTIVE -> "\u23F3";
+                case SUCCESS -> "\u2705";
+                case ERROR -> "\u274C";
+                case CANCELLED -> "\u26D4";
+            };
+            String color = switch (entry.state) {
+                case ACTIVE, CANCELLED -> WARNING;
+                case SUCCESS -> SUCCESS;
+                case ERROR -> ERROR;
+            };
+            String tail = switch (entry.state) {
+                case ACTIVE -> formatSeconds(nanosToMs(System.nanoTime() - entry.startedNanos));
+                case SUCCESS, ERROR -> formatSeconds(entry.durationMs);
+                case CANCELLED -> "cancelled";
+            };
+
+            var sb = new StringBuilder();
+            if (entry.kind == Kind.TOOL && entry.parentKey != null && isEntryVisible(entry.parentKey)) {
+                sb.append("   ").append(MUTED).append("\u2514\u2500 ").append(RESET).append("\uD83D\uDD27 ");
+            }
+            sb.append(color).append(icon).append(RESET).append(" ");
+
+            switch (entry.kind) {
+                case TOOL -> {
+                    sb.append(entry.name);
+                    if (entry.detail != null && !entry.detail.isBlank()) {
+                        sb.append(": ").append(entry.detail);
+                    }
+                }
+                case SUBAGENT -> {
+                    sb.append("\uD83E\uDD16 ").append("Sub-agent");
+                    String label = entry.detail != null && !entry.detail.isBlank() ? entry.detail : entry.name;
+                    if (!label.isBlank()) {
+                        sb.append(": ").append(label);
+                    }
+                }
+                case PLAN_STEP -> {
+                    sb.append("\uD83D\uDCCB ").append("Plan");
+                    if (entry.detail != null && !entry.detail.isBlank()) {
+                        sb.append(": ").append(entry.detail);
+                    }
+                }
+            }
+            sb.append("    ").append(MUTED).append(tail).append(RESET);
+            return sb.toString();
+        }
+
+        private StatusEntry firstActiveTool(String toolName) {
+            for (var entry : entries.values()) {
+                if (entry.kind == Kind.TOOL
+                        && entry.state == State.ACTIVE
+                        && toolName.equals(entry.name)) {
+                    return entry;
+                }
+            }
+            return null;
+        }
+
+        private String firstActiveKey(Kind kind) {
+            for (var entry : entries.values()) {
+                if (entry.kind == kind && entry.state == State.ACTIVE) {
+                    return entry.key;
+                }
+            }
+            return null;
+        }
+
+        private boolean isEntryVisible(String key) {
+            return key != null && entries.containsKey(key);
+        }
+
+        private static String safe(String value, String fallback) {
+            if (value == null || value.isBlank()) {
+                return fallback;
+            }
+            return value;
+        }
+
+        private static long nanosToMs(long nanos) {
+            return Math.max(0L, nanos / 1_000_000L);
+        }
+
+        private static String formatSeconds(long durationMs) {
+            return String.format("%.1fs", durationMs / 1000.0);
+        }
     }
 }
