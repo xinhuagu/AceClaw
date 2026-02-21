@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 
 import java.io.PrintWriter;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
@@ -282,6 +283,8 @@ public final class ForegroundOutputSink implements OutputSink {
 
     private static String truncate(String text, int maxLen) {
         if (text == null) return "";
+        if (maxLen <= 0) return "";
+        if (maxLen <= 3) return "...".substring(0, maxLen);
         String normalized = text.replace('\n', ' ').trim();
         if (normalized.length() <= maxLen) return normalized;
         return normalized.substring(0, maxLen - 3) + "...";
@@ -592,7 +595,7 @@ public final class ForegroundOutputSink implements OutputSink {
         }
 
         private static String formatSeconds(long durationMs) {
-            return String.format("%.1fs", durationMs / 1000.0);
+            return String.format(Locale.ROOT, "%.1fs", durationMs / 1000.0);
         }
     }
 }

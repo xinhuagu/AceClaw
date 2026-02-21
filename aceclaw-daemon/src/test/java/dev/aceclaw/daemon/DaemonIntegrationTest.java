@@ -372,6 +372,14 @@ class DaemonIntegrationTest {
             // Deny the permission
             var result = sendPromptAndHandlePermissions(channel, promptParams, 2, false);
 
+            // Denied tools should still emit stream.tool_completed so CLI clears running state
+            var toolCompleted = result.notifications().stream()
+                    .filter(n -> "stream.tool_completed".equals(n.get("method").asText()))
+                    .findFirst();
+            assertThat(toolCompleted).isPresent();
+            assertThat(toolCompleted.get().path("params").path("name").asText()).isEqualTo("bash");
+            assertThat(toolCompleted.get().path("params").path("isError").asBoolean()).isTrue();
+
             // The response should indicate the agent handled the denial
             assertThat(result.finalResponse().has("result")).isTrue();
             assertThat(result.finalResponse().get("result").get("response").asText())

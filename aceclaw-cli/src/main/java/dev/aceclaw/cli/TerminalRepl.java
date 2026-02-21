@@ -65,6 +65,7 @@ public final class TerminalRepl {
     private final PermissionBridge permissionBridge;
     private final Object uiRenderLock = new Object();
     private final AtomicBoolean permissionInterruptRequested = new AtomicBoolean(false);
+    private int previousStatusLineCount;
 
     /** Tracks the effective model, updated after successful model switches. */
     private volatile String effectiveModel;
@@ -153,6 +154,7 @@ public final class TerminalRepl {
             reader.getWidgets().put("aceclaw-clear-screen", () -> {
                 reader.callWidget(LineReader.CLEAR_SCREEN);
                 synchronized (uiRenderLock) {
+                    previousStatusLineCount = 0;
                     PrintWriter w = terminal.writer();
                     renderStatusPanel(w, true);
                     w.flush();
@@ -695,18 +697,23 @@ public final class TerminalRepl {
      */
     private void renderStatusPanel(PrintWriter out, boolean restoreCursorByUp) {
         var lines = buildStatusPanelLines();
-        if (lines.isEmpty()) return;
+        int currentLineCount = lines.size();
+        int renderLineCount = Math.max(currentLineCount, previousStatusLineCount);
+        if (renderLineCount == 0) return;
         int terminalWidth = activeTerminal != null ? activeTerminal.getWidth() : 120;
         int maxWidth = Math.max(20, terminalWidth - 1);
 
-        for (var line : lines) {
+        for (int i = 0; i < renderLineCount; i++) {
             out.print("\n\r\033[K");
-            out.print(clampStatusLine(line, maxWidth));
+            if (i < currentLineCount) {
+                out.print(clampStatusLine(lines.get(i), maxWidth));
+            }
         }
 
         if (restoreCursorByUp) {
-            out.print("\033[" + lines.size() + "A\r");
+            out.print("\033[" + renderLineCount + "A\r");
         }
+        previousStatusLineCount = currentLineCount;
     }
 
     /**

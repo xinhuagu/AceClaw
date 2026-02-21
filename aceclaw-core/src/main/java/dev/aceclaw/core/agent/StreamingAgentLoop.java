@@ -419,6 +419,8 @@ public final class StreamingAgentLoop {
 
     private ContentBlock.ToolResult executeSingleTool(
             ContentBlock.ToolUse toolUse, StreamEventHandler handler) {
+        long toolStart = System.currentTimeMillis();
+
         // Check permission before execution
         if (config.permissionChecker() != null) {
             try {
@@ -428,6 +430,9 @@ public final class StreamingAgentLoop {
                     log.info("Tool {} denied: {}", toolUse.name(), reason);
                     publishEvent(new ToolEvent.PermissionDenied(
                             config.sessionId(), toolUse.name(), reason, Instant.now()));
+                    long toolDuration = System.currentTimeMillis() - toolStart;
+                    handler.onToolCompleted(toolUse.id(), toolUse.name(), toolDuration, true,
+                            summarizeError("Permission denied: " + reason));
                     return new ContentBlock.ToolResult(
                             toolUse.id(), "Permission denied: " + toolUse.name(), true);
                 }
@@ -435,6 +440,9 @@ public final class StreamingAgentLoop {
                 log.error("Permission checker threw for tool {}: {}", toolUse.name(), e.getMessage(), e);
                 publishEvent(new ToolEvent.PermissionDenied(
                         config.sessionId(), toolUse.name(), "checker error: " + e.getMessage(), Instant.now()));
+                long toolDuration = System.currentTimeMillis() - toolStart;
+                handler.onToolCompleted(toolUse.id(), toolUse.name(), toolDuration, true,
+                        summarizeError("Permission denied: " + e.getMessage()));
                 return new ContentBlock.ToolResult(
                         toolUse.id(), "Permission denied: " + toolUse.name(), true);
             }
@@ -443,6 +451,9 @@ public final class StreamingAgentLoop {
         var toolOpt = toolRegistry.get(toolUse.name());
         if (toolOpt.isEmpty()) {
             log.warn("Unknown tool requested: {}", toolUse.name());
+            long toolDuration = System.currentTimeMillis() - toolStart;
+            handler.onToolCompleted(toolUse.id(), toolUse.name(), toolDuration, true,
+                    summarizeError("Unknown tool: " + toolUse.name()));
             return new ContentBlock.ToolResult(toolUse.id(), "Unknown tool: " + toolUse.name(), true);
         }
 
@@ -454,7 +465,6 @@ public final class StreamingAgentLoop {
         }
 
         publishEvent(new ToolEvent.Invoked(config.sessionId(), tool.name(), Instant.now()));
-        long toolStart = System.currentTimeMillis();
 
         try {
             log.debug("Executing tool: {} (id: {})", tool.name(), toolUse.id());
