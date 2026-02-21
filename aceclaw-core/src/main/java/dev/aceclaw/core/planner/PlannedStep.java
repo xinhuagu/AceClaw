@@ -23,6 +23,9 @@ public record PlannedStep(
 
     public PlannedStep {
         requiredTools = requiredTools != null ? List.copyOf(requiredTools) : List.of();
+        if (status == null) {
+            status = StepStatus.PENDING;
+        }
     }
 
     /**

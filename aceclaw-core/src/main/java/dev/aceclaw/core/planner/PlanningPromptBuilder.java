@@ -36,9 +36,13 @@ public final class PlanningPromptBuilder {
      * @return the formatted user prompt
      */
     public static String buildUserPrompt(String goal, List<ToolDefinition> availableTools) {
+        if (goal == null || goal.isBlank()) {
+            throw new IllegalArgumentException("goal must not be null or blank");
+        }
         var tools = availableTools != null ? availableTools : List.<ToolDefinition>of();
         var toolNames = tools.stream()
                 .map(ToolDefinition::name)
+                .filter(name -> name != null && !name.isBlank())
                 .collect(Collectors.joining(", "));
 
         return """

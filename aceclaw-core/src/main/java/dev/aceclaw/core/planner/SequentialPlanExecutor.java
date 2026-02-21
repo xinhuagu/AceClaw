@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -58,15 +59,18 @@ public final class SequentialPlanExecutor implements PlanExecutor {
             CancellationToken cancellationToken) throws LlmException {
 
         long planStart = System.currentTimeMillis();
-        var allMessages = new ArrayList<>(conversationHistory);
+        var allMessages = new ArrayList<>(
+                conversationHistory != null ? conversationHistory : Collections.<Message>emptyList());
         var stepResults = new ArrayList<StepResult>();
         var mutablePlan = plan.withStatus(new PlanStatus.Executing(0, plan.steps().size()));
         boolean allSuccess = true;
+        boolean wasCancelled = false;
 
         for (int i = 0; i < plan.steps().size(); i++) {
             // Check cancellation between steps
             if (cancellationToken != null && cancellationToken.isCancelled()) {
                 log.info("Plan execution cancelled before step {}/{}", i + 1, plan.steps().size());
+                wasCancelled = true;
                 break;
             }
 
@@ -84,12 +88,15 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                 var turn = agentLoop.runTurn(stepPrompt, allMessages, handler, cancellationToken);
                 allMessages.addAll(turn.newMessages());
 
+                var usage = turn.totalUsage();
                 var result = new StepResult(
                         true,
                         turn.text(),
                         null,
                         System.currentTimeMillis() - stepStart,
-                        turn.totalUsage().totalTokens());
+                        usage.inputTokens(),
+                        usage.outputTokens(),
+                        usage.totalTokens());
                 stepResults.add(result);
 
                 mutablePlan = mutablePlan.withStepStatus(step.stepId(), StepStatus.COMPLETED)
@@ -117,12 +124,15 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                                 fallbackPrompt, allMessages, handler, cancellationToken);
                         allMessages.addAll(fallbackTurn.newMessages());
 
+                        var fbUsage = fallbackTurn.totalUsage();
                         var fallbackResult = new StepResult(
                                 true,
                                 fallbackTurn.text(),
                                 null,
                                 System.currentTimeMillis() - stepStart,
-                                fallbackTurn.totalUsage().totalTokens());
+                                fbUsage.inputTokens(),
+                                fbUsage.outputTokens(),
+                                fbUsage.totalTokens());
                         stepResults.add(fallbackResult);
 
                         mutablePlan = mutablePlan.withStepStatus(step.stepId(), StepStatus.COMPLETED)
@@ -147,7 +157,7 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                         null,
                         e.getMessage(),
                         System.currentTimeMillis() - stepStart,
-                        0);
+                        0, 0, 0);
                 stepResults.add(failResult);
 
                 mutablePlan = mutablePlan.withStepStatus(step.stepId(), StepStatus.FAILED)
@@ -165,8 +175,11 @@ public final class SequentialPlanExecutor implements PlanExecutor {
         long totalDuration = System.currentTimeMillis() - planStart;
         int totalTokens = stepResults.stream().mapToInt(StepResult::tokensUsed).sum();
 
-        if (allSuccess && !stepResults.isEmpty()
-                && (cancellationToken == null || !cancellationToken.isCancelled())) {
+        if (wasCancelled) {
+            mutablePlan = mutablePlan.withStatus(
+                    new PlanStatus.Failed("Cancelled by user", null));
+            allSuccess = false;
+        } else if (allSuccess && !stepResults.isEmpty()) {
             mutablePlan = mutablePlan.withStatus(
                     new PlanStatus.Completed(Duration.ofMillis(totalDuration)));
         }
@@ -207,7 +220,8 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                             : (output != null ? output : "done");
                     sb.append(" - ").append(summary);
                 } else {
-                    sb.append(" - FAILED: ").append(prev.error());
+                    sb.append(" - FAILED: ").append(
+                            prev.error() != null ? prev.error() : "Unknown error");
                 }
                 sb.append("\n");
             }

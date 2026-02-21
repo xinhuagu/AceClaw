@@ -1,6 +1,7 @@
 package dev.aceclaw.core.planner;
 
 import java.util.List;
+import java.util.Objects;
 
 /**
  * The aggregated result of executing a complete task plan.
@@ -20,6 +21,7 @@ public record PlanExecutionResult(
 ) {
 
     public PlanExecutionResult {
+        Objects.requireNonNull(plan, "plan");
         stepResults = stepResults != null ? List.copyOf(stepResults) : List.of();
     }
 }

@@ -540,7 +540,7 @@ public final class AceClawConfig {
         if (fileConfig.plannerEnabled != null) {
             this.plannerEnabled = fileConfig.plannerEnabled;
         }
-        if (fileConfig.plannerThreshold > 0) {
+        if (fileConfig.plannerThreshold != null) {
             this.plannerThreshold = fileConfig.plannerThreshold;
         }
     }
@@ -568,7 +568,7 @@ public final class AceClawConfig {
         public Boolean heartbeatEnabled;
         public String heartbeatActiveHours;
         public Boolean plannerEnabled;
-        public int plannerThreshold;
+        public Integer plannerThreshold;
         public String defaultProfile;
         public Map<String, ConfigFileFormat> profiles;
         public Map<String, String> providerModels;

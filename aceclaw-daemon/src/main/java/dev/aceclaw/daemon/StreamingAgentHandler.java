@@ -404,9 +404,11 @@ public final class StreamingAgentHandler {
             result.put("cancelled", true);
         }
 
+        int totalInput = planResult.stepResults().stream().mapToInt(StepResult::inputTokens).sum();
+        int totalOutput = planResult.stepResults().stream().mapToInt(StepResult::outputTokens).sum();
         var usageNode = objectMapper.createObjectNode();
-        usageNode.put("inputTokens", 0);
-        usageNode.put("outputTokens", 0);
+        usageNode.put("inputTokens", totalInput);
+        usageNode.put("outputTokens", totalOutput);
         usageNode.put("totalTokens", planResult.totalTokensUsed());
         result.set("usage", usageNode);
 
