@@ -27,6 +27,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static dev.aceclaw.cli.TerminalTheme.*;
 
@@ -60,6 +61,7 @@ public final class TerminalRepl {
     private final TaskManager taskManager;
     private final PermissionBridge permissionBridge;
     private final Object uiRenderLock = new Object();
+    private final AtomicBoolean permissionInterruptRequested = new AtomicBoolean(false);
 
     /** Tracks the effective model, updated after successful model switches. */
     private volatile String effectiveModel;
@@ -69,6 +71,8 @@ public final class TerminalRepl {
 
     /** Terminal reference for raw mode during foreground wait. */
     private volatile Terminal activeTerminal;
+    /** True while the main REPL thread is blocked in {@code readLine}. */
+    private volatile boolean readingPrompt;
 
     /** Cumulative token counters across turns. */
     private long totalInputTokens = 0;
@@ -179,8 +183,20 @@ public final class TerminalRepl {
                         renderStatusPanel(out, true);
                         out.flush();
                     }
-                    line = reader.readLine(PROMPT_STR);
+                    readingPrompt = true;
+                    try {
+                        line = reader.readLine(PROMPT_STR);
+                    } finally {
+                        readingPrompt = false;
+                    }
                 } catch (UserInterruptException e) {
+                    // Permission requests can intentionally interrupt prompt input
+                    // so approval appears immediately as a popup flow.
+                    if (permissionInterruptRequested.getAndSet(false) || permissionBridge.hasPending()) {
+                        out.println();
+                        drainPermissions(out, reader);
+                        continue;
+                    }
                     // Ctrl+C at prompt: exit gracefully
                     out.println();
                     break;
@@ -467,6 +483,7 @@ public final class TerminalRepl {
 
         permissionBridge.submitAnswer(req.requestId(),
                 new PermissionBridge.PermissionAnswer(approved, remember));
+        permissionInterruptRequested.set(false);
         redrawStatusPanelBelowPrompt(reader);
     }
 
@@ -724,12 +741,31 @@ public final class TerminalRepl {
             String note = WARNING + "[Permission required] " + RESET
                     + "task #" + request.taskId() + " \u2192 "
                     + fitWidth(request.description(), 90)
-                    + MUTED + "  (press Enter to answer)" + RESET;
+                    + MUTED + "  (opening popup...)" + RESET;
             reader.printAbove(AttributedString.fromAnsi(note));
         } catch (Exception e) {
             log.debug("Failed to print permission notice: {}", e.getMessage());
         }
+        interruptPromptForPermissionPopup();
         redrawStatusPanelBelowPrompt(reader);
+    }
+
+    /**
+     * Interrupts blocking prompt input so permission approval can open immediately.
+     */
+    private void interruptPromptForPermissionPopup() {
+        if (!readingPrompt) return;
+        if (taskManager.hasForegroundTask()) return;
+        if (!permissionInterruptRequested.compareAndSet(false, true)) return;
+
+        var terminal = activeTerminal;
+        if (terminal == null) return;
+        try {
+            terminal.raise(Terminal.Signal.INT);
+        } catch (Exception e) {
+            permissionInterruptRequested.set(false);
+            log.debug("Failed to interrupt prompt for permission popup: {}", e.getMessage());
+        }
     }
 
     /**
