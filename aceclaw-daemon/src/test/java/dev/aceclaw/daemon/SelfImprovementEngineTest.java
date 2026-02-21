@@ -268,6 +268,76 @@ class SelfImprovementEngineTest {
         assertThat(persisted).isGreaterThanOrEqualTo(1);
     }
 
+    // -- ToolMetrics wiring tests --
+
+    @Test
+    void analyzeReceivesNonEmptyMetricsSnapshot() {
+        // Turn with a read_file error followed by success — ErrorDetector should detect it
+        var messages = List.<Message>of(
+                assistantWithToolUse("tu-1", "read_file"),
+                toolResult("tu-1", "File not found: /missing.txt", true),
+                assistantWithToolUse("tu-2", "read_file"),
+                toolResult("tu-2", "file contents", false)
+        );
+        var turn = new Turn(messages, StopReason.END_TURN, new Usage(0, 0));
+
+        // Simulate session metrics that ToolMetricsCollector would produce
+        var metrics = Map.of(
+                "read_file", new ToolMetrics("read_file", 2, 1, 1, 300L, java.time.Instant.now()));
+
+        var insights = engine.analyze(turn, List.of(), metrics);
+        assertThat(insights).isNotEmpty();
+    }
+
+    @Test
+    void metricsSnapshotInfluencesPatternConfidence() {
+        // Set up error history so PatternDetector triggers ERROR_CORRECTION
+        var turnMessages = List.<Message>of(
+                assistantWithToolUse("t1", "bash"),
+                toolResult("t1", "permission denied", true),
+                Message.assistant("Could not execute command")
+        );
+        var history = List.<AgentSession.ConversationMessage>of(
+                new AgentSession.ConversationMessage.Assistant("Tool error: bash permission denied"),
+                new AgentSession.ConversationMessage.User("try with sudo")
+        );
+        var turn = new Turn(turnMessages, StopReason.END_TURN, new Usage(0, 0));
+
+        // Without metrics — get baseline confidence
+        var withoutMetrics = engine.analyze(turn, history, Map.of());
+        double baseConfidence = withoutMetrics.stream()
+                .filter(i -> i instanceof PatternInsight pi
+                        && pi.patternType() == PatternType.ERROR_CORRECTION)
+                .map(i -> (PatternInsight) i)
+                .mapToDouble(PatternInsight::confidence)
+                .max()
+                .orElse(-1.0);
+        assertThat(baseConfidence).isGreaterThan(0);
+
+        // With metrics confirming high error rate — confidence should be higher
+        var metrics = Map.of("bash",
+                new ToolMetrics("bash", 4, 0, 4, 800L, java.time.Instant.now()));
+        var withMetrics = engine.analyze(turn, history, metrics);
+        double boostedConfidence = withMetrics.stream()
+                .filter(i -> i instanceof PatternInsight pi
+                        && pi.patternType() == PatternType.ERROR_CORRECTION)
+                .map(i -> (PatternInsight) i)
+                .mapToDouble(PatternInsight::confidence)
+                .max()
+                .orElse(-1.0);
+
+        assertThat(boostedConfidence).isGreaterThan(baseConfidence);
+    }
+
+    @Test
+    void emptyMetricsMapIsSafeAndNonFailing() {
+        // Engine should never crash when metrics map is empty
+        var messages = List.<Message>of(Message.assistant("hello"));
+        var turn = new Turn(messages, StopReason.END_TURN, new Usage(0, 0));
+
+        assertThat(engine.analyze(turn, List.of(), Map.of())).isNotNull();
+    }
+
     // -- helpers --
 
     private static Message assistantWithToolUse(String id, String toolName) {

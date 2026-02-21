@@ -300,6 +300,100 @@ class PatternDetectorTest {
         assertThat(seqInsights.getFirst().frequency()).isGreaterThanOrEqualTo(3);
     }
 
+    // -- metrics-aware confidence boost tests --
+
+    @Test
+    void metricsHighErrorRateBoostsConfidence() {
+        // Turn with a read_file error
+        var turnMessages = List.<Message>of(
+                assistantWithToolUse("t1", "read_file"),
+                toolResult("t1", "File not found", true),
+                Message.assistant("Could not read the file")
+        );
+        // Session history has another read_file error to meet frequency threshold
+        var history = List.<AgentSession.ConversationMessage>of(
+                new AgentSession.ConversationMessage.Assistant("Tool error: read_file /old.txt not found"),
+                new AgentSession.ConversationMessage.User("try again")
+        );
+        var turn = new Turn(turnMessages, StopReason.END_TURN, new Usage(0, 0));
+
+        // Without metrics: baseline confidence
+        var withoutMetrics = detector.analyze(turn, history, Map.of());
+        var baseInsight = withoutMetrics.stream()
+                .filter(i -> i instanceof PatternInsight pi
+                        && pi.patternType() == PatternType.ERROR_CORRECTION)
+                .map(i -> (PatternInsight) i)
+                .findFirst();
+        assertThat(baseInsight).isPresent();
+        double baseConfidence = baseInsight.get().confidence();
+
+        // With metrics confirming 2/2 errors (100% error rate)
+        var metrics = Map.of("read_file",
+                new ToolMetrics("read_file", 2, 0, 2, 500L, java.time.Instant.now()));
+        var withMetrics = detector.analyze(turn, history, metrics);
+        var boostedInsight = withMetrics.stream()
+                .filter(i -> i instanceof PatternInsight pi
+                        && pi.patternType() == PatternType.ERROR_CORRECTION)
+                .map(i -> (PatternInsight) i)
+                .findFirst();
+        assertThat(boostedInsight).isPresent();
+        assertThat(boostedInsight.get().confidence()).isGreaterThan(baseConfidence);
+    }
+
+    @Test
+    void metricsLowErrorRateDoesNotBoostConfidence() {
+        // Turn with a read_file error
+        var turnMessages = List.<Message>of(
+                assistantWithToolUse("t1", "read_file"),
+                toolResult("t1", "File not found", true),
+                Message.assistant("Could not read the file")
+        );
+        var history = List.<AgentSession.ConversationMessage>of(
+                new AgentSession.ConversationMessage.Assistant("Tool error: read_file /old.txt not found"),
+                new AgentSession.ConversationMessage.User("try again")
+        );
+        var turn = new Turn(turnMessages, StopReason.END_TURN, new Usage(0, 0));
+
+        double baseConfidence = detector.analyze(turn, history, Map.of()).stream()
+                .filter(i -> i instanceof PatternInsight pi
+                        && pi.patternType() == PatternType.ERROR_CORRECTION)
+                .map(i -> (PatternInsight) i)
+                .findFirst()
+                .map(PatternInsight::confidence)
+                .orElse(0.0);
+
+        // Low error rate (1/10 = 10%) — no boost
+        var metrics = Map.of("read_file",
+                new ToolMetrics("read_file", 10, 9, 1, 2000L, java.time.Instant.now()));
+        var withMetrics = detector.analyze(turn, history, metrics);
+        var insight = withMetrics.stream()
+                .filter(i -> i instanceof PatternInsight pi
+                        && pi.patternType() == PatternType.ERROR_CORRECTION)
+                .map(i -> (PatternInsight) i)
+                .findFirst();
+        assertThat(insight).isPresent();
+        assertThat(insight.get().confidence()).isEqualTo(baseConfidence);
+    }
+
+    @Test
+    void missingMetricsDoesNotBreakAnalysis() {
+        var turnMessages = List.<Message>of(
+                assistantWithToolUse("t1", "read_file"),
+                toolResult("t1", "File not found", true),
+                Message.assistant("Could not read the file")
+        );
+        var history = List.<AgentSession.ConversationMessage>of(
+                new AgentSession.ConversationMessage.Assistant("Tool error: read_file /old.txt not found"),
+                new AgentSession.ConversationMessage.User("try again")
+        );
+        var turn = new Turn(turnMessages, StopReason.END_TURN, new Usage(0, 0));
+
+        // Metrics exist for a different tool — should not throw
+        var metrics = Map.of("bash",
+                new ToolMetrics("bash", 5, 5, 0, 1000L, java.time.Instant.now()));
+        assertThat(detector.analyze(turn, history, metrics)).isNotEmpty();
+    }
+
     // -- helpers --
 
     private static Message assistantWithToolUse(String id, String toolName) {
