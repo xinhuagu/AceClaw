@@ -28,6 +28,7 @@ public final class ForegroundOutputSink implements OutputSink {
     private boolean receivedTextOutput = false;
     private boolean wasThinking = false;
     private boolean inCodeFence = false;
+    private int backtickRun = 0;  // tracks consecutive backticks across chunk boundaries
     private volatile TerminalSpinner spinner;
 
     public ForegroundOutputSink(PrintWriter out, TerminalMarkdownRenderer markdownRenderer) {
@@ -69,13 +70,16 @@ public final class ForegroundOutputSink implements OutputSink {
             textBuffer.append(delta);
             receivedTextOutput = true;
 
-            // Track code fence state
+            // Track code fence state across chunk boundaries
             for (int i = 0; i < delta.length(); i++) {
-                if (i + 2 < delta.length()
-                        && delta.charAt(i) == '`'
-                        && delta.charAt(i + 1) == '`'
-                        && delta.charAt(i + 2) == '`') {
-                    inCodeFence = !inCodeFence;
+                if (delta.charAt(i) == '`') {
+                    backtickRun++;
+                    if (backtickRun == 3) {
+                        inCodeFence = !inCodeFence;
+                        backtickRun = 0;
+                    }
+                } else {
+                    backtickRun = 0;
                 }
             }
 
@@ -144,8 +148,8 @@ public final class ForegroundOutputSink implements OutputSink {
             if (hasError) {
                 JsonNode error = message.get("error");
                 if (error != null) {
-                    int code = error.get("code").asInt();
-                    String errorMessage = error.get("message").asText();
+                    int code = error.path("code").asInt(-1);
+                    String errorMessage = error.path("message").asText("Unknown error");
                     if (code == -32601) {
                         out.println(ERROR + "[Agent not available. Is the daemon configured correctly?]" + RESET);
                     } else {
@@ -170,6 +174,7 @@ public final class ForegroundOutputSink implements OutputSink {
             receivedTextOutput = false;
             wasThinking = false;
             inCodeFence = false;
+            backtickRun = 0;
         }
     }
 
@@ -193,12 +198,15 @@ public final class ForegroundOutputSink implements OutputSink {
 
     /**
      * Stops the active spinner if one is running.
+     * Synchronized because this can be called from the signal handler thread (Ctrl+C).
      */
     public void stopSpinner() {
-        var s = spinner;
-        if (s != null && s.isSpinning()) {
-            s.clear();
-            spinner = null;
+        synchronized (lock) {
+            var s = spinner;
+            if (s != null && s.isSpinning()) {
+                s.clear();
+                spinner = null;
+            }
         }
     }
 

@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -46,7 +47,7 @@ public final class DaemonClient implements AutoCloseable {
      * @param socketPath path to the daemon Unix domain socket
      */
     public DaemonClient(Path socketPath) {
-        this.socketPath = socketPath;
+        this.socketPath = Objects.requireNonNull(socketPath, "socketPath");
         this.objectMapper = new ObjectMapper();
     }
 

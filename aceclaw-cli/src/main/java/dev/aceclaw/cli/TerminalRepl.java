@@ -387,7 +387,6 @@ public final class TerminalRepl {
     private void notifyCompletedBackgroundTasks(PrintWriter out) {
         for (var handle : taskManager.list()) {
             if (handle.isTerminal() && !handle.taskId().equals(taskManager.foregroundTaskId())) {
-                // Only notify once — check if this was a background task by comparing to fg
                 String stateLabel = switch (handle.state()) {
                     case COMPLETED -> SUCCESS + "completed" + RESET;
                     case FAILED -> ERROR + "failed" + RESET;
@@ -395,11 +394,11 @@ public final class TerminalRepl {
                     case RUNNING -> "";
                 };
                 if (!stateLabel.isEmpty()) {
-                    // We don't want to spam — this is a simple check, not perfect
-                    // The task list display in /tasks is the authoritative view
+                    out.printf("%s[bg task #%s %s]%s%n", MUTED, handle.taskId(), stateLabel, RESET);
                 }
             }
         }
+        out.flush();
     }
 
     // -- Banner rendering ----------------------------------------------------
@@ -604,12 +603,13 @@ public final class TerminalRepl {
             return;
         }
 
-        // Swap the sink to a background buffer
-        var bgBuffer = new BackgroundOutputBuffer();
-        // The TaskStreamReader holds the original sink reference, but since
-        // ForegroundOutputSink methods are synchronized, the swap is safe
-        // For a clean swap, we'd need a mutable sink wrapper. Since the stream
-        // reader already has the sink, we just clear foreground and let it continue.
+        // Atomically swap the output sink to a background buffer.
+        // The TaskStreamReader reads from handle.outputSink(), so subsequent
+        // events will be buffered silently instead of rendering to terminal.
+        var oldSink = fgHandle.swapOutputSink(new BackgroundOutputBuffer());
+        if (oldSink instanceof ForegroundOutputSink fgSink) {
+            fgSink.stopSpinner();
+        }
         taskManager.clearForeground();
         activeForegroundSink = null;
 
@@ -660,10 +660,16 @@ public final class TerminalRepl {
         out.printf("%sBringing task #%s to foreground...%s%n", MUTED, target.taskId(), RESET);
         out.flush();
 
-        // Set as foreground and wait
-        taskManager.setForeground(target.taskId());
+        // Create new foreground sink and swap it in atomically
         var fgSink = new ForegroundOutputSink(out, markdownRenderer);
+        var oldSink = target.swapOutputSink(fgSink);
         activeForegroundSink = fgSink;
+        taskManager.setForeground(target.taskId());
+
+        // Replay buffered events if the task was backgrounded
+        if (oldSink instanceof BackgroundOutputBuffer bgBuffer) {
+            bgBuffer.replay(fgSink);
+        }
 
         waitForForeground(out, reader);
         renderTaskCompletion(out, target);

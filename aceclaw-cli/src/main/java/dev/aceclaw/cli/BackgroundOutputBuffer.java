@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Buffers streaming events for background tasks.
@@ -58,6 +59,7 @@ public final class BackgroundOutputBuffer implements OutputSink {
      * @param sink the foreground sink to replay events to
      */
     public void replay(ForegroundOutputSink sink) {
+        Objects.requireNonNull(sink, "sink");
         List<OutputEvent> snapshot;
         synchronized (events) {
             snapshot = new ArrayList<>(events);

@@ -24,19 +24,17 @@ public final class TaskStreamReader implements Runnable {
     private final DaemonConnection connection;
     private final String sessionId;
     private final String fullPrompt;
-    private final OutputSink sink;
     private final PermissionBridge permissionBridge;
     private final Consumer<TaskHandle> onComplete;
 
     public TaskStreamReader(TaskHandle handle, DaemonConnection connection,
-                            String sessionId, String fullPrompt, OutputSink sink,
+                            String sessionId, String fullPrompt,
                             PermissionBridge permissionBridge,
                             Consumer<TaskHandle> onComplete) {
         this.handle = Objects.requireNonNull(handle, "handle");
         this.connection = Objects.requireNonNull(connection, "connection");
         this.sessionId = Objects.requireNonNull(sessionId, "sessionId");
         this.fullPrompt = Objects.requireNonNull(fullPrompt, "fullPrompt");
-        this.sink = Objects.requireNonNull(sink, "sink");
         this.permissionBridge = Objects.requireNonNull(permissionBridge, "permissionBridge");
         this.onComplete = onComplete;
     }
@@ -50,12 +48,12 @@ public final class TaskStreamReader implements Runnable {
             if (!handle.cancelled().get()) {
                 log.error("I/O error in task {}: {}", handle.taskId(), e.getMessage(), e);
                 handle.setState(TaskHandle.TaskState.FAILED);
-                sink.onStreamError("Connection error: " + e.getMessage());
+                handle.outputSink().onStreamError("Connection error: " + e.getMessage());
             }
         } catch (Exception e) {
             log.error("Unexpected error in task {}: {}", handle.taskId(), e.getMessage(), e);
             handle.setState(TaskHandle.TaskState.FAILED);
-            sink.onStreamError("Unexpected error: " + e.getMessage());
+            handle.outputSink().onStreamError("Unexpected error: " + e.getMessage());
         } finally {
             if (handle.isRunning()) {
                 handle.setState(TaskHandle.TaskState.FAILED);
@@ -84,7 +82,7 @@ public final class TaskStreamReader implements Runnable {
         while (!done) {
             String responseLine = connection.readLine();
             if (responseLine == null) {
-                sink.onConnectionClosed();
+                handle.outputSink().onConnectionClosed();
                 handle.setState(TaskHandle.TaskState.FAILED);
                 return;
             }
@@ -115,12 +113,14 @@ public final class TaskStreamReader implements Runnable {
             handle.setState(TaskHandle.TaskState.COMPLETED);
         }
 
-        sink.onTurnComplete(message, hasError);
+        handle.outputSink().onTurnComplete(message, hasError);
     }
 
     private void handleNotification(JsonNode message) {
         String method = message.get("method").asText();
         JsonNode params = message.get("params");
+        // Read sink once per notification for consistency within a single event
+        var sink = handle.outputSink();
 
         switch (method) {
             case "stream.thinking" -> {
@@ -161,6 +161,11 @@ public final class TaskStreamReader implements Runnable {
         String tool = params.path("tool").asText("unknown");
         String description = params.path("description").asText("");
         String requestId = params.path("requestId").asText("");
+
+        if (requestId.isEmpty()) {
+            log.warn("Task {}: permission.request missing requestId, skipping", handle.taskId());
+            return;
+        }
 
         var request = new PermissionBridge.PermissionRequest(
                 handle.taskId(), tool, description, requestId);

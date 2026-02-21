@@ -1,5 +1,8 @@
 package dev.aceclaw.cli;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.Objects;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
@@ -18,6 +21,8 @@ import java.util.concurrent.TimeUnit;
  * the user for a decision.
  */
 public final class PermissionBridge {
+
+    private static final Logger log = LoggerFactory.getLogger(PermissionBridge.class);
 
     private final BlockingQueue<PermissionRequest> pending = new LinkedBlockingQueue<>();
     private final ConcurrentHashMap<String, CompletableFuture<PermissionAnswer>> futures =
@@ -85,6 +90,8 @@ public final class PermissionBridge {
         var future = futures.get(requestId);
         if (future != null) {
             future.complete(answer);
+        } else {
+            log.warn("No pending permission future for requestId={}, answer dropped", requestId);
         }
     }
 

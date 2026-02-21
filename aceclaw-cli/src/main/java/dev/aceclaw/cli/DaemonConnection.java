@@ -162,15 +162,19 @@ public final class DaemonConnection implements AutoCloseable {
      * @throws IOException if I/O fails
      */
     public String readLine() throws IOException {
-        int newlineIdx = lineBuffer.indexOf("\n");
-        if (newlineIdx != -1) {
-            var line = lineBuffer.substring(0, newlineIdx).trim();
-            lineBuffer.delete(0, newlineIdx + 1);
-            return line.isEmpty() ? readLine() : line;
-        }
-
         var buffer = ByteBuffer.allocate(BUFFER_SIZE);
         while (true) {
+            // Check if we already have a complete line in the buffer
+            int newlineIdx = lineBuffer.indexOf("\n");
+            if (newlineIdx != -1) {
+                var line = lineBuffer.substring(0, newlineIdx).trim();
+                lineBuffer.delete(0, newlineIdx + 1);
+                if (!line.isEmpty()) {
+                    return line;
+                }
+                continue;  // skip empty lines without recursion
+            }
+
             buffer.clear();
             int bytesRead = channel.read(buffer);
             if (bytesRead == -1) {
@@ -181,15 +185,6 @@ public final class DaemonConnection implements AutoCloseable {
             buffer.flip();
             String chunk = StandardCharsets.UTF_8.decode(buffer).toString();
             lineBuffer.append(chunk);
-
-            newlineIdx = lineBuffer.indexOf("\n");
-            if (newlineIdx != -1) {
-                var line = lineBuffer.substring(0, newlineIdx).trim();
-                lineBuffer.delete(0, newlineIdx + 1);
-                if (!line.isEmpty()) {
-                    return line;
-                }
-            }
         }
     }
 
@@ -203,13 +198,18 @@ public final class DaemonConnection implements AutoCloseable {
     public String readLine(long timeoutMs) throws IOException {
         long deadline = System.currentTimeMillis() + timeoutMs;
 
-        int newlineIdx = lineBuffer.indexOf("\n");
-        if (newlineIdx != -1) {
-            var line = lineBuffer.substring(0, newlineIdx).trim();
-            lineBuffer.delete(0, newlineIdx + 1);
-            return line.isEmpty()
-                    ? readLine(Math.max(0, deadline - System.currentTimeMillis()))
-                    : line;
+        // Check buffer first — may already contain a complete line
+        while (true) {
+            int newlineIdx = lineBuffer.indexOf("\n");
+            if (newlineIdx != -1) {
+                var line = lineBuffer.substring(0, newlineIdx).trim();
+                lineBuffer.delete(0, newlineIdx + 1);
+                if (!line.isEmpty()) {
+                    return line;
+                }
+                continue;  // skip empty lines without recursion
+            }
+            break;
         }
 
         channel.configureBlocking(false);
@@ -230,13 +230,16 @@ public final class DaemonConnection implements AutoCloseable {
                 }
                 buffer.flip();
                 lineBuffer.append(StandardCharsets.UTF_8.decode(buffer));
-                newlineIdx = lineBuffer.indexOf("\n");
-                if (newlineIdx != -1) {
-                    var line = lineBuffer.substring(0, newlineIdx).trim();
-                    lineBuffer.delete(0, newlineIdx + 1);
-                    return line.isEmpty()
-                            ? readLine(Math.max(0, deadline - System.currentTimeMillis()))
-                            : line;
+
+                // Drain any complete lines (skip empty ones)
+                while (true) {
+                    int idx = lineBuffer.indexOf("\n");
+                    if (idx == -1) break;
+                    var line = lineBuffer.substring(0, idx).trim();
+                    lineBuffer.delete(0, idx + 1);
+                    if (!line.isEmpty()) {
+                        return line;
+                    }
                 }
             }
             return null;

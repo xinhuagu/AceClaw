@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.*;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -46,19 +47,25 @@ public final class TaskManager {
      * @param prompt           the user prompt
      * @param connection       dedicated connection for this task
      * @param sessionId        daemon session ID
-     * @param outputSink       where streaming output goes
+     * @param outputSink       where streaming output goes initially
      * @param permissionBridge bridge for permission requests
      * @return the created TaskHandle
      */
     public TaskHandle submit(String prompt, DaemonConnection connection, String sessionId,
                              OutputSink outputSink, PermissionBridge permissionBridge) {
+        Objects.requireNonNull(prompt, "prompt");
+        Objects.requireNonNull(connection, "connection");
+        Objects.requireNonNull(sessionId, "sessionId");
+        Objects.requireNonNull(outputSink, "outputSink");
+        Objects.requireNonNull(permissionBridge, "permissionBridge");
+
         String taskId = String.valueOf(taskSeq.getAndIncrement());
-        var handle = new TaskHandle(taskId, prompt, connection);
+        var handle = new TaskHandle(taskId, prompt, connection, outputSink);
         tasks.put(taskId, handle);
 
-        // Send agent.prompt request on the task connection
+        // TaskStreamReader reads sink from handle.outputSink() — supports /bg and /fg swaps
         var reader = new TaskStreamReader(handle, connection, sessionId,
-                prompt, outputSink, permissionBridge, this::handleTaskComplete);
+                prompt, permissionBridge, this::handleTaskComplete);
 
         Thread thread = Thread.ofVirtual()
                 .name("aceclaw-task-" + taskId)
