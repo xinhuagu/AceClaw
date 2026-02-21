@@ -59,6 +59,7 @@ public final class TerminalRepl {
     private final TerminalMarkdownRenderer markdownRenderer;
     private final TaskManager taskManager;
     private final PermissionBridge permissionBridge;
+    private final Object uiRenderLock = new Object();
 
     /** Tracks the effective model, updated after successful model switches. */
     private volatile String effectiveModel;
@@ -143,11 +144,13 @@ public final class TerminalRepl {
             // Override Ctrl+L: clear screen + redraw status bar below prompt
             reader.getWidgets().put("aceclaw-clear-screen", () -> {
                 reader.callWidget(LineReader.CLEAR_SCREEN);
-                PrintWriter w = terminal.writer();
-                w.print("\0337");
-                renderStatusPanel(w, false);
-                w.print("\0338");
-                w.flush();
+                synchronized (uiRenderLock) {
+                    PrintWriter w = terminal.writer();
+                    w.print("\0337");
+                    renderStatusPanel(w, false);
+                    w.print("\0338");
+                    w.flush();
+                }
                 return true;
             });
             reader.getKeyMaps().get(LineReader.MAIN)
@@ -171,8 +174,10 @@ public final class TerminalRepl {
                 String line;
                 try {
                     // Print status on the line below, then move cursor back up.
-                    renderStatusPanel(out, true);
-                    out.flush();
+                    synchronized (uiRenderLock) {
+                        renderStatusPanel(out, true);
+                        out.flush();
+                    }
                     line = reader.readLine(PROMPT_STR);
                 } catch (UserInterruptException e) {
                     // Ctrl+C at prompt: exit gracefully
@@ -545,6 +550,7 @@ public final class TerminalRepl {
             if (!output.isBlank()) {
                 // printAbove is thread-safe — displays above current prompt, redraws prompt
                 reader.printAbove(AttributedString.fromAnsi(output));
+                redrawStatusPanelBelowPrompt(reader);
             }
         } catch (Exception e) {
             log.debug("Failed to push background task output: {}", e.getMessage());
@@ -670,6 +676,28 @@ public final class TerminalRepl {
 
         if (restoreCursorByUp) {
             out.print("\033[" + lines.size() + "A\r");
+        }
+    }
+
+    /**
+     * Re-renders the prompt status panel after asynchronous printAbove output.
+     *
+     * <p>Without this, JLine redraws only the prompt line after printAbove, and
+     * our custom status panel (rendered below the prompt) disappears until the
+     * next explicit prompt redraw.
+     */
+    private void redrawStatusPanelBelowPrompt(LineReader reader) {
+        var terminal = activeTerminal;
+        if (terminal == null) return;
+        if (reader == null || reader != activeReader) return;
+        if (taskManager.hasForegroundTask()) return;
+
+        synchronized (uiRenderLock) {
+            PrintWriter out = terminal.writer();
+            out.print("\0337");
+            renderStatusPanel(out, false);
+            out.print("\0338");
+            out.flush();
         }
     }
 
