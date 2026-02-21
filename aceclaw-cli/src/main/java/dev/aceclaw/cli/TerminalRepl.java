@@ -8,6 +8,7 @@ import org.jline.reader.LineReaderBuilder;
 import org.jline.reader.Reference;
 import org.jline.reader.UserInterruptException;
 import org.jline.reader.impl.completer.FileNameCompleter;
+import org.jline.terminal.Attributes;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 import org.jline.utils.AttributedString;
@@ -62,6 +63,9 @@ public final class TerminalRepl {
 
     /** LineReader reference for use during permission prompts. */
     private volatile LineReader activeReader;
+
+    /** Terminal reference for raw mode during foreground wait. */
+    private volatile Terminal activeTerminal;
 
     /** Cumulative token counters across turns. */
     private long totalInputTokens = 0;
@@ -124,6 +128,7 @@ public final class TerminalRepl {
                     .build();
 
             activeReader = reader;
+            activeTerminal = terminal;
 
             PrintWriter out = terminal.writer();
 
@@ -213,8 +218,18 @@ public final class TerminalRepl {
     // -- Task submission and foreground wait ---------------------------------
 
     /**
-     * Submits a new agent task and blocks until it completes (synchronous UX).
-     * Permission requests are handled inline during the wait.
+     * Submits a new agent task.
+     *
+     * <p>Output streams to the terminal in real-time. While streaming, the terminal
+     * is in raw mode and user keypresses are detected: pressing any key auto-backgrounds
+     * the task and returns to the prompt so the user can type a new instruction.
+     *
+     * <p>If the task completes before the user types anything, the completion summary
+     * is rendered inline (synchronous UX, same as before).
+     *
+     * <p>If auto-backgrounded, the task continues silently in a
+     * {@link BackgroundOutputBuffer}. When it finishes, {@link #pushBackgroundCompletion}
+     * uses JLine's {@code printAbove()} to display the result above the prompt.
      */
     private void submitAndWait(PrintWriter out, LineReader reader, String input) {
         try {
@@ -230,20 +245,20 @@ public final class TerminalRepl {
             // Start thinking spinner
             fgSink.startThinkingSpinner();
 
-            // Block until foreground task completes, handling permissions inline
+            // Block until task completes OR user starts typing
             waitForForeground(out, reader);
 
-            // Render completion summary
-            renderTaskCompletion(out, handle);
-
-            // Mark as notified so notifyCompletedBackgroundTasks() won't re-show it
-            handle.markNotified();
+            // If the task completed (not auto-backgrounded), render inline
+            if (handle.isTerminal()) {
+                renderTaskCompletion(out, handle);
+                handle.markNotified();
+            }
+            // If auto-backgrounded, pushBackgroundCompletion() handles display later
 
             taskManager.clearForeground();
             activeForegroundSink = null;
 
-            // Close the task connection
-            conn.close();
+            // Connection is closed by TaskManager.handleTaskComplete() when the task ends
 
         } catch (IOException e) {
             out.println("Connection error: " + e.getMessage());
@@ -253,14 +268,79 @@ public final class TerminalRepl {
     }
 
     /**
-     * Polls foreground task completion and permission requests.
-     * Gives the same synchronous UX as the old single-channel model.
-     * The /bg command can break out of this wait.
+     * Polls foreground task completion, permission requests, and user keypresses.
+     *
+     * <p>The terminal is placed in raw mode so individual keypresses are detected
+     * without waiting for Enter. If the user presses any key (except Ctrl+C),
+     * the foreground task is automatically backgrounded and this method returns,
+     * allowing the main loop to enter {@code readLine()} where the character
+     * becomes the first character of the user's new input.
+     *
+     * <p>Ctrl+C cancels the foreground task. EOF (-1) breaks the wait.
      */
     private void waitForForeground(PrintWriter out, LineReader reader) {
+        var terminal = activeTerminal;
+        if (terminal == null) {
+            // Fallback: simple polling without keypress detection
+            simplePollForeground(out, reader);
+            return;
+        }
+
+        // Enter raw mode: ICANON off (char-at-a-time), ECHO off
+        Attributes savedAttrs = terminal.getAttributes();
+        Attributes rawAttrs = new Attributes(savedAttrs);
+        rawAttrs.setLocalFlag(Attributes.LocalFlag.ICANON, false);
+        rawAttrs.setLocalFlag(Attributes.LocalFlag.ECHO, false);
+        rawAttrs.setControlChar(Attributes.ControlChar.VMIN, 0);
+        rawAttrs.setControlChar(Attributes.ControlChar.VTIME, 1);
+        terminal.setAttributes(rawAttrs);
+
+        try {
+            while (taskManager.hasForegroundTask()) {
+                // 1. Handle permission requests
+                var permReq = permissionBridge.pollPending(10, TimeUnit.MILLISECONDS);
+                if (permReq != null) {
+                    // Restore terminal for interactive permission dialog
+                    terminal.setAttributes(savedAttrs);
+                    handlePermissionFromBridge(out, reader, permReq);
+                    terminal.setAttributes(rawAttrs);
+                    continue;
+                }
+
+                // 2. Check if user pressed a key (1ms peek — non-blocking)
+                int ch = terminal.reader().peek(1);
+                if (ch == -1) {
+                    // EOF
+                    break;
+                } else if (ch == 3) {
+                    // Ctrl+C — cancel foreground task, consume the character
+                    terminal.reader().read(1);
+                    cancelForegroundTask(out);
+                    break;
+                } else if (ch >= 0) {
+                    // User started typing — auto-background the task.
+                    // The character stays in NonBlockingReader's buffer
+                    // and will be picked up by readLine() in the main loop.
+                    autoBackground(out);
+                    break;
+                }
+                // ch == -2 (READ_EXPIRED): no input, continue polling
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (IOException e) {
+            log.debug("I/O error during foreground wait: {}", e.getMessage());
+        } finally {
+            terminal.setAttributes(savedAttrs);
+        }
+    }
+
+    /**
+     * Fallback polling without keypress detection (used when terminal is unavailable).
+     */
+    private void simplePollForeground(PrintWriter out, LineReader reader) {
         while (taskManager.hasForegroundTask()) {
             try {
-                // Check for pending permission requests (50ms poll)
                 var permReq = permissionBridge.pollPending(50, TimeUnit.MILLISECONDS);
                 if (permReq != null) {
                     handlePermissionFromBridge(out, reader, permReq);
@@ -270,6 +350,27 @@ public final class TerminalRepl {
                 break;
             }
         }
+    }
+
+    /**
+     * Automatically sends the foreground task to background when the user starts typing.
+     * Called from {@link #waitForForeground} when a keypress is detected.
+     */
+    private void autoBackground(PrintWriter out) {
+        var fgHandle = taskManager.foregroundTask();
+        if (fgHandle == null || !fgHandle.isRunning()) return;
+
+        var oldSink = fgHandle.swapOutputSink(new BackgroundOutputBuffer());
+        if (oldSink instanceof ForegroundOutputSink fgSink) {
+            fgSink.stopSpinner();
+        }
+        taskManager.clearForeground();
+        activeForegroundSink = null;
+
+        out.println();
+        out.printf("%sTask #%s auto-backgrounded. Result will appear when ready.%s%n",
+                MUTED, fgHandle.taskId(), RESET);
+        out.flush();
     }
 
     /**

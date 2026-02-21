@@ -181,6 +181,8 @@ public final class TaskManager {
 
     private void handleTaskComplete(TaskHandle handle) {
         log.debug("Task {} completed with state {}", handle.taskId(), handle.state());
+        // Close the task's dedicated connection (idempotent — safe if already closed)
+        handle.connection().close();
         var callback = onTaskComplete;
         if (callback != null) {
             callback.onTaskComplete(handle);
