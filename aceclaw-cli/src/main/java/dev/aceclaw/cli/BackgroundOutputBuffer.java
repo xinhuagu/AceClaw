@@ -78,6 +78,26 @@ public final class BackgroundOutputBuffer implements OutputSink {
     }
 
     /**
+     * Extracts just the text content from buffered events (no spinners, no thinking).
+     * Safe for rendering to a StringWriter without side effects.
+     *
+     * @return the concatenated text deltas and error messages
+     */
+    public String extractTextContent() {
+        var sb = new StringBuilder();
+        synchronized (events) {
+            for (var event : events) {
+                switch (event) {
+                    case OutputEvent.Text e -> sb.append(e.delta());
+                    case OutputEvent.Error e -> sb.append("[error: ").append(e.error()).append("]\n");
+                    default -> {} // skip thinking, tool use, lifecycle events
+                }
+            }
+        }
+        return sb.toString();
+    }
+
+    /**
      * Returns the number of buffered events.
      */
     public int size() {

@@ -10,11 +10,13 @@ import org.jline.reader.UserInterruptException;
 import org.jline.reader.impl.completer.FileNameCompleter;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
+import org.jline.utils.AttributedString;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -125,6 +127,9 @@ public final class TerminalRepl {
 
             PrintWriter out = terminal.writer();
 
+            // Register callback to auto-push background task output above prompt
+            taskManager.setOnTaskComplete(handle -> pushBackgroundCompletion(handle, reader));
+
             // Render startup banner
             renderBanner(out, terminal.getWidth());
 
@@ -230,6 +235,9 @@ public final class TerminalRepl {
 
             // Render completion summary
             renderTaskCompletion(out, handle);
+
+            // Mark as notified so notifyCompletedBackgroundTasks() won't re-show it
+            handle.markNotified();
 
             taskManager.clearForeground();
             activeForegroundSink = null;
@@ -382,7 +390,66 @@ public final class TerminalRepl {
         out.flush();
     }
 
-    // -- Background task notifications --------------------------------------
+    // -- Background task auto-push (via printAbove) -------------------------
+
+    /**
+     * Called from the task's virtual thread when it completes.
+     * Uses JLine's thread-safe {@code printAbove()} to display results
+     * above the current prompt without waiting for user input.
+     */
+    private void pushBackgroundCompletion(TaskHandle handle, LineReader reader) {
+        // Skip foreground tasks — they're handled by waitForForeground()
+        if (handle.taskId().equals(taskManager.foregroundTaskId())) return;
+        // Only auto-push once
+        if (!handle.markNotified()) return;
+
+        try {
+            var sb = new StringBuilder();
+
+            // Header
+            String stateColor = switch (handle.state()) {
+                case COMPLETED -> SUCCESS;
+                case FAILED -> ERROR;
+                case CANCELLED -> WARNING;
+                case RUNNING -> "";
+            };
+            sb.append(MUTED).append("--- bg task #").append(handle.taskId()).append(" ")
+              .append(stateColor).append(handle.state().name().toLowerCase()).append(RESET)
+              .append(MUTED).append(" ---").append(RESET).append("\n");
+
+            // Extract content: prefer buffered text, fall back to final result.response
+            var sink = handle.outputSink();
+            String textContent = null;
+            if (sink instanceof BackgroundOutputBuffer bgBuffer && bgBuffer.size() > 0) {
+                textContent = bgBuffer.extractTextContent();
+            }
+            if (textContent == null || textContent.isBlank()) {
+                var message = handle.result();
+                if (message != null) {
+                    textContent = message.path("result").path("response").asText("");
+                }
+            }
+
+            // Render through markdown
+            if (textContent != null && !textContent.isBlank()) {
+                var sw = new StringWriter();
+                var pw = new PrintWriter(sw);
+                new TerminalMarkdownRenderer().render(textContent, pw);
+                pw.flush();
+                sb.append(sw);
+            }
+
+            String output = sb.toString();
+            if (!output.isBlank()) {
+                // printAbove is thread-safe — displays above current prompt, redraws prompt
+                reader.printAbove(AttributedString.fromAnsi(output));
+            }
+        } catch (Exception e) {
+            log.debug("Failed to push background task output: {}", e.getMessage());
+        }
+    }
+
+    // -- Background task notifications (fallback at prompt) -------------------
 
     private void notifyCompletedBackgroundTasks(PrintWriter out) {
         for (var handle : taskManager.list()) {
@@ -400,11 +467,21 @@ public final class TerminalRepl {
             out.println();
             out.printf("%s--- bg task #%s %s ---%s%n", MUTED, handle.taskId(), stateLabel, RESET);
 
-            // Auto-replay buffered output from background tasks
+            // Render buffered text content (safe extraction — no spinner side effects)
             var sink = handle.outputSink();
+            String textContent = null;
             if (sink instanceof BackgroundOutputBuffer bgBuffer && bgBuffer.size() > 0) {
-                var replaySink = new ForegroundOutputSink(out, markdownRenderer);
-                bgBuffer.replay(replaySink);
+                textContent = bgBuffer.extractTextContent();
+            }
+            if (textContent == null || textContent.isBlank()) {
+                var message = handle.result();
+                if (message != null) {
+                    textContent = message.path("result").path("response").asText("");
+                }
+            }
+            if (textContent != null && !textContent.isBlank()) {
+                markdownRenderer.render(textContent, out);
+                out.flush();
             }
 
             // Show completion summary (token usage, elapsed time)
