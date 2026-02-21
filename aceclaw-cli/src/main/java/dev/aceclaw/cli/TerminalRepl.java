@@ -154,9 +154,7 @@ public final class TerminalRepl {
                 reader.callWidget(LineReader.CLEAR_SCREEN);
                 synchronized (uiRenderLock) {
                     PrintWriter w = terminal.writer();
-                    w.print("\0337");
-                    renderStatusPanel(w, false);
-                    w.print("\0338");
+                    renderStatusPanel(w, true);
                     w.flush();
                 }
                 return true;
@@ -726,9 +724,7 @@ public final class TerminalRepl {
 
         synchronized (uiRenderLock) {
             PrintWriter out = terminal.writer();
-            out.print("\0337");
-            renderStatusPanel(out, false);
-            out.print("\0338");
+            renderStatusPanel(out, true);
             out.flush();
         }
     }
