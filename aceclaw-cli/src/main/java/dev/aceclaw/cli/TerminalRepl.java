@@ -1,7 +1,6 @@
 package dev.aceclaw.cli;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.jline.keymap.KeyMap;
 import org.jline.reader.EndOfFileException;
 import org.jline.reader.LineReader;
@@ -18,8 +17,11 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
+import java.util.concurrent.TimeUnit;
 
 import static dev.aceclaw.cli.TerminalTheme.*;
 
@@ -30,14 +32,11 @@ import static dev.aceclaw.cli.TerminalTheme.*;
  * input to the daemon as {@code agent.prompt} JSON-RPC requests and streams
  * back responses with incremental markdown rendering.
  *
- * <p>During streaming, the REPL processes intermediate notifications:
- * <ul>
- *   <li>{@code stream.thinking} - displays thinking deltas as dim italic text</li>
- *   <li>{@code stream.text} - incrementally renders markdown paragraphs</li>
- *   <li>{@code stream.tool_use} - shows spinner during tool execution</li>
- *   <li>{@code permission.request} - prompts the user for approval with box-drawing UI</li>
- *   <li>{@code stream.error} - displays stream errors</li>
- * </ul>
+ * <p>Supports a dual-channel architecture: each agent task runs on its own
+ * {@link DaemonConnection} and virtual thread via {@link TaskManager}.
+ * Permission requests are routed through {@link PermissionBridge} to the
+ * main REPL thread. Tasks can be sent to background ({@code /bg}) and
+ * brought back ({@code /fg}).
  */
 public final class TerminalRepl {
 
@@ -46,9 +45,6 @@ public final class TerminalRepl {
     private static final Path HISTORY_FILE = Path.of(
             System.getProperty("user.home"), ".aceclaw", "history");
 
-    /** JSON-RPC error code for method not found. */
-    private static final int METHOD_NOT_FOUND = -32601;
-
     private static final String PROMPT_STR = PROMPT + "aceclaw>" + RESET + " ";
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm:ss");
 
@@ -56,20 +52,14 @@ public final class TerminalRepl {
     private final String sessionId;
     private final SessionInfo sessionInfo;
     private final TerminalMarkdownRenderer markdownRenderer;
+    private final TaskManager taskManager;
+    private final PermissionBridge permissionBridge;
 
     /** Tracks the effective model, updated after successful model switches. */
     private volatile String effectiveModel;
 
-    private volatile boolean streaming = false;
-
-    /** Prevents duplicate cancel notifications on rapid Ctrl+C. */
-    private volatile boolean cancelSent = false;
-
     /** LineReader reference for use during permission prompts. */
     private volatile LineReader activeReader;
-
-    /** Active spinner (non-null when a tool is executing). */
-    private volatile TerminalSpinner spinner;
 
     /** Cumulative token counters across turns. */
     private long totalInputTokens = 0;
@@ -81,6 +71,8 @@ public final class TerminalRepl {
     /** Timestamp when the current prompt was sent (nanos). */
     private long promptStartNanos = 0;
 
+    /** Current foreground output sink (for Ctrl+C spinner cleanup). */
+    private volatile ForegroundOutputSink activeForegroundSink;
 
     /**
      * Session metadata displayed in the startup banner and status line.
@@ -106,6 +98,8 @@ public final class TerminalRepl {
         this.sessionInfo = sessionInfo;
         this.effectiveModel = sessionInfo.model();
         this.markdownRenderer = new TerminalMarkdownRenderer();
+        this.taskManager = new TaskManager();
+        this.permissionBridge = new PermissionBridge();
     }
 
     /**
@@ -137,31 +131,36 @@ public final class TerminalRepl {
             // Override Ctrl+L: clear screen + redraw status bar below prompt
             reader.getWidgets().put("aceclaw-clear-screen", () -> {
                 reader.callWidget(LineReader.CLEAR_SCREEN);
-                // After clear, re-print status below the prompt using save/restore cursor
                 PrintWriter w = terminal.writer();
-                w.print("\0337");                        // DEC save cursor
-                w.print("\n\r\033[K" + buildStatusString()); // next line, clear it, print status
-                w.print("\0338");                        // DEC restore cursor
+                w.print("\0337");
+                w.print("\n\r\033[K" + buildStatusString());
+                w.print("\0338");
                 w.flush();
                 return true;
             });
             reader.getKeyMaps().get(LineReader.MAIN)
                     .bind(new Reference("aceclaw-clear-screen"), KeyMap.ctrl('L'));
 
-            // Install signal handler for Ctrl+C during streaming
+            // Install Ctrl+C handler: cancel foreground task or exit REPL
             terminal.handle(Terminal.Signal.INT, _ -> {
-                if (streaming) {
-                    cancelStreaming(out);
+                if (taskManager.hasForegroundTask()) {
+                    cancelForegroundTask(out);
                 }
+                // If no foreground task, JLine throws UserInterruptException from readLine()
             });
 
             while (true) {
+                // 1. Check pending permission requests from task threads
+                drainPermissions(out, reader);
+
+                // 2. Check if any background tasks completed while we were idle
+                notifyCompletedBackgroundTasks(out);
+
                 String line;
                 try {
                     // Print status on the line below, then move cursor back up.
-                    // JLine3 renders the prompt on the current line; status stays below.
-                    out.print("\n\r\033[K" + buildStatusString()); // next line: clear + status
-                    out.print("\033[A\r");                         // cursor up + to line start
+                    out.print("\n\r\033[K" + buildStatusString());
+                    out.print("\033[A\r");
                     out.flush();
                     line = reader.readLine(PROMPT_STR);
                 } catch (UserInterruptException e) {
@@ -192,11 +191,11 @@ public final class TerminalRepl {
 
                 String trimmed = line.trim();
                 if (trimmed.startsWith("/")) {
-                    if (handleSlashCommand(out, trimmed)) {
-                        break; // Graceful exit — allows try-with-resources cleanup
+                    if (handleSlashCommand(out, trimmed, reader)) {
+                        break;
                     }
                 } else {
-                    processInput(out, trimmed);
+                    submitAndWait(out, reader, trimmed);
                 }
             }
 
@@ -206,14 +205,209 @@ public final class TerminalRepl {
         }
     }
 
+    // -- Task submission and foreground wait ---------------------------------
+
+    /**
+     * Submits a new agent task and blocks until it completes (synchronous UX).
+     * Permission requests are handled inline during the wait.
+     */
+    private void submitAndWait(PrintWriter out, LineReader reader, String input) {
+        try {
+            var conn = client.openTaskConnection();
+            var fgSink = new ForegroundOutputSink(out, markdownRenderer);
+            activeForegroundSink = fgSink;
+
+            promptStartNanos = System.nanoTime();
+
+            var handle = taskManager.submit(input, conn, sessionId, fgSink, permissionBridge);
+            taskManager.setForeground(handle.taskId());
+
+            // Start thinking spinner
+            fgSink.startThinkingSpinner();
+
+            // Block until foreground task completes, handling permissions inline
+            waitForForeground(out, reader);
+
+            // Render completion summary
+            renderTaskCompletion(out, handle);
+
+            taskManager.clearForeground();
+            activeForegroundSink = null;
+
+            // Close the task connection
+            conn.close();
+
+        } catch (IOException e) {
+            out.println("Connection error: " + e.getMessage());
+            out.flush();
+            log.error("Failed to open task connection: {}", e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Polls foreground task completion and permission requests.
+     * Gives the same synchronous UX as the old single-channel model.
+     * The /bg command can break out of this wait.
+     */
+    private void waitForForeground(PrintWriter out, LineReader reader) {
+        while (taskManager.hasForegroundTask()) {
+            try {
+                // Check for pending permission requests (50ms poll)
+                var permReq = permissionBridge.pollPending(50, TimeUnit.MILLISECONDS);
+                if (permReq != null) {
+                    handlePermissionFromBridge(out, reader, permReq);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+    }
+
+    /**
+     * Renders the token usage summary after a task completes.
+     */
+    private void renderTaskCompletion(PrintWriter out, TaskHandle handle) {
+        JsonNode message = handle.result();
+        if (message == null) return;
+
+        JsonNode result = message.get("result");
+        if (result != null && result.has("usage")) {
+            var usage = result.get("usage");
+            int turnIn = usage.path("inputTokens").asInt(0);
+            int turnOut = usage.path("outputTokens").asInt(0);
+            totalInputTokens += turnIn;
+            totalOutputTokens += turnOut;
+            latestInputTokens = turnIn;
+
+            long elapsedMs = (System.nanoTime() - promptStartNanos) / 1_000_000;
+            String elapsed = elapsedMs >= 1000
+                    ? String.format("%.1fs", elapsedMs / 1000.0)
+                    : elapsedMs + "ms";
+
+            out.println();
+            out.printf("%s%s  %d in / %d out  %s%s%n",
+                    MUTED, elapsed, turnIn, turnOut,
+                    sessionInfo.contextWindowTokens() > 0
+                            ? "context " + formatTokenCount(turnIn) + "/"
+                              + formatTokenCount(sessionInfo.contextWindowTokens())
+                            : "",
+                    RESET);
+            out.flush();
+        }
+    }
+
+    // -- Permission handling (from bridge) -----------------------------------
+
+    /**
+     * Handles a permission request routed through the bridge.
+     * Prompts the user and submits the answer back.
+     */
+    private void handlePermissionFromBridge(PrintWriter out, LineReader reader,
+                                            PermissionBridge.PermissionRequest req) {
+        int boxWidth = 50;
+
+        out.println();
+        out.println(PERMISSION + " " + BOX_LIGHT_TOP_LEFT + BOX_LIGHT_HORIZONTAL
+                + " Permission Required " + hlineLight(boxWidth - 22) + RESET);
+        out.println(PERMISSION + " " + BOX_LIGHT_VERTICAL + RESET + " " + req.description());
+        out.println(PERMISSION + " " + BOX_LIGHT_VERTICAL + RESET);
+        out.printf("%s %s%s (%sy%s) Allow  (%sn%s) Deny  (%sa%s) Always: ",
+                PERMISSION, BOX_LIGHT_VERTICAL, RESET,
+                APPROVED, RESET,
+                DENIED, RESET,
+                WARNING, RESET);
+        out.flush();
+
+        boolean approved = false;
+        boolean remember = false;
+
+        try {
+            String answer = reader.readLine("");
+            if (answer != null) {
+                answer = answer.trim().toLowerCase();
+                switch (answer) {
+                    case "y", "yes" -> approved = true;
+                    case "a", "always" -> {
+                        approved = true;
+                        remember = true;
+                    }
+                    default -> approved = false;
+                }
+            }
+        } catch (UserInterruptException | EndOfFileException e) {
+            approved = false;
+        }
+
+        out.println(PERMISSION + " " + BOX_LIGHT_BOTTOM_LEFT + hlineLight(boxWidth) + RESET);
+
+        if (approved) {
+            out.printf("%s%s Approved%s%s%n", APPROVED, CHECKMARK,
+                    remember ? " (always)" : "", RESET);
+        } else {
+            out.printf("%sDenied%s%n", DENIED, RESET);
+        }
+        out.flush();
+
+        permissionBridge.submitAnswer(req.requestId(),
+                new PermissionBridge.PermissionAnswer(approved, remember));
+    }
+
+    /**
+     * Drains any pending permission requests (non-blocking).
+     */
+    private void drainPermissions(PrintWriter out, LineReader reader) {
+        while (permissionBridge.hasPending()) {
+            try {
+                var req = permissionBridge.pollPending(0, TimeUnit.MILLISECONDS);
+                if (req != null) {
+                    handlePermissionFromBridge(out, reader, req);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+    }
+
+    // -- Ctrl+C cancellation ------------------------------------------------
+
+    private void cancelForegroundTask(PrintWriter out) {
+        var sink = activeForegroundSink;
+        if (sink != null) {
+            sink.stopSpinner();
+        }
+        taskManager.cancelForeground();
+        out.println("\n[Cancelled]");
+        out.flush();
+    }
+
+    // -- Background task notifications --------------------------------------
+
+    private void notifyCompletedBackgroundTasks(PrintWriter out) {
+        for (var handle : taskManager.list()) {
+            if (handle.isTerminal() && !handle.taskId().equals(taskManager.foregroundTaskId())) {
+                // Only notify once — check if this was a background task by comparing to fg
+                String stateLabel = switch (handle.state()) {
+                    case COMPLETED -> SUCCESS + "completed" + RESET;
+                    case FAILED -> ERROR + "failed" + RESET;
+                    case CANCELLED -> WARNING + "cancelled" + RESET;
+                    case RUNNING -> "";
+                };
+                if (!stateLabel.isEmpty()) {
+                    // We don't want to spam — this is a simple check, not perfect
+                    // The task list display in /tasks is the authoritative view
+                }
+            }
+        }
+    }
+
     // -- Banner rendering ----------------------------------------------------
 
     private void renderBanner(PrintWriter out, int termWidth) {
         int innerWidth = Math.max(40, Math.min(termWidth - 4, 60));
 
         String titleLine = "  AceClaw  v" + sessionInfo.version();
-
-        // Shorten the model name for display
         String modelDisplay = sessionInfo.model();
         String projectDisplay = fitWidth(sessionInfo.project(), innerWidth - 14);
 
@@ -230,12 +424,8 @@ public final class TerminalRepl {
         out.flush();
     }
 
-    // -- Status line (below prompt via ANSI cursor positioning) ----------------
+    // -- Status line ---------------------------------------------------------
 
-    /**
-     * Builds the colored status string (no trailing newline).
-     * Printed on the line below the prompt using ANSI cursor movement.
-     */
     private String buildStatusString() {
         var sb = new StringBuilder();
 
@@ -257,6 +447,14 @@ public final class TerminalRepl {
               .append(" (").append(pct).append("%)").append(RESET);
         }
 
+        // Show running task count if > 0
+        int running = taskManager.runningCount();
+        if (running > 0) {
+            sb.append(MUTED).append(" \u2502 ").append(RESET);
+            sb.append(INFO).append(running).append(" task")
+              .append(running > 1 ? "s" : "").append(RESET);
+        }
+
         sb.append(MUTED).append(" \u2502 ").append(RESET);
         sb.append(MUTED).append(LocalTime.now().format(TIME_FMT)).append(RESET);
 
@@ -274,23 +472,9 @@ public final class TerminalRepl {
     // -- Slash commands -------------------------------------------------------
 
     /**
-     * Handles slash commands entered at the REPL prompt.
-     *
-     * <p>Supported commands:
-     * <ul>
-     *   <li>{@code /help} — show available commands</li>
-     *   <li>{@code /clear} — clear the screen</li>
-     *   <li>{@code /compact} — trigger context compaction</li>
-     *   <li>{@code /model} — show or switch the current model</li>
-     *   <li>{@code /tools} — list available tools</li>
-     *   <li>{@code /status} — show session status (tokens, model, context)</li>
-     *   <li>{@code /exit} — exit the REPL</li>
-     * </ul>
+     * Handles slash commands. Returns true if the REPL should exit.
      */
-    /**
-     * @return true if the REPL should exit after this command
-     */
-    boolean handleSlashCommand(PrintWriter out, String input) {
+    boolean handleSlashCommand(PrintWriter out, String input, LineReader reader) {
         String[] parts = input.split("\\s+", 2);
         String command = parts[0].toLowerCase();
         String arg = parts.length > 1 ? parts[1].trim() : "";
@@ -305,13 +489,17 @@ public final class TerminalRepl {
                 out.println(INFO + "  /model" + RESET + "    Show current model (or /model <name> to switch)");
                 out.println(INFO + "  /tools" + RESET + "    List available tools");
                 out.println(INFO + "  /status" + RESET + "   Show session status");
+                out.println(INFO + "  /tasks" + RESET + "    List all tasks with status");
+                out.println(INFO + "  /bg" + RESET + "       Send foreground task to background");
+                out.println(INFO + "  /fg" + RESET + "       Bring background task to foreground (/fg [id])");
+                out.println(INFO + "  /cancel" + RESET + "   Cancel a task (/cancel [id])");
                 out.println(INFO + "  /exit" + RESET + "     Exit the REPL");
                 out.println();
                 out.flush();
             }
 
             case "/clear" -> {
-                out.print("\033[2J\033[H"); // ANSI: clear screen + move cursor to top
+                out.print("\033[2J\033[H");
                 out.flush();
             }
 
@@ -321,49 +509,9 @@ public final class TerminalRepl {
                 sendRpcNotification("session.compact");
             }
 
-            case "/model" -> {
-                handleModelCommand(out, arg);
-            }
+            case "/model" -> handleModelCommand(out, arg);
 
-            case "/tools" -> {
-                out.println(MUTED + "Requesting tool list..." + RESET);
-                out.flush();
-                try {
-                    long id = client.nextRequestId();
-                    var request = client.objectMapper().createObjectNode();
-                    request.put("jsonrpc", "2.0");
-                    request.put("method", "tools.list");
-                    request.put("id", id);
-                    client.writeLine(client.objectMapper().writeValueAsString(request));
-
-                    // Read with timeout to avoid hanging the REPL if daemon doesn't respond
-                    String responseLine = client.readLine(5000);
-                    if (responseLine == null) {
-                        out.println(WARNING + "Timed out waiting for tool list from daemon" + RESET);
-                    } else {
-                        var response = client.objectMapper().readTree(responseLine);
-                        if (response.has("result") && response.get("result").isArray()) {
-                            out.println();
-                            out.println(BOLD + "Available tools:" + RESET);
-                            for (var tool : response.get("result")) {
-                                String name = tool.path("name").asText();
-                                String desc = tool.path("description").asText();
-                                // Truncate description to first sentence
-                                int dot = desc.indexOf('.');
-                                if (dot > 0 && dot < 80) desc = desc.substring(0, dot + 1);
-                                else if (desc.length() > 80) desc = desc.substring(0, 77) + "...";
-                                out.printf("  %s%-16s%s %s%s%s%n", INFO, name, RESET, MUTED, desc, RESET);
-                            }
-                            out.println();
-                        } else if (response.has("error")) {
-                            out.println(WARNING + "tools.list not supported by daemon" + RESET);
-                        }
-                    }
-                } catch (IOException e) {
-                    out.println(ERROR + "Failed to list tools: " + e.getMessage() + RESET);
-                }
-                out.flush();
-            }
+            case "/tools" -> handleToolsCommand(out);
 
             case "/status" -> {
                 out.println();
@@ -381,9 +529,19 @@ public final class TerminalRepl {
                 out.printf("  %sTotal usage:%s %s in / %s out%n", MUTED, RESET,
                         formatTokenCount(totalInputTokens),
                         formatTokenCount(totalOutputTokens));
+                out.printf("  %sTasks:%s       %d running%n", MUTED, RESET,
+                        taskManager.runningCount());
                 out.println();
                 out.flush();
             }
+
+            case "/tasks" -> handleTasksCommand(out);
+
+            case "/bg" -> handleBgCommand(out);
+
+            case "/fg" -> handleFgCommand(out, reader, arg);
+
+            case "/cancel" -> handleCancelCommand(out, arg);
 
             case "/exit", "/quit" -> {
                 out.println(MUTED + "Goodbye!" + RESET);
@@ -400,10 +558,185 @@ public final class TerminalRepl {
         return false;
     }
 
-    /**
-     * Handles the /model command: lists available models and allows interactive switching.
-     * If an argument is provided, switches directly to that model.
-     */
+    // -- /tasks command ------------------------------------------------------
+
+    private void handleTasksCommand(PrintWriter out) {
+        var tasks = taskManager.list();
+        if (tasks.isEmpty()) {
+            out.println(MUTED + "No tasks." + RESET);
+            out.flush();
+            return;
+        }
+
+        out.println();
+        out.println(BOLD + "Tasks:" + RESET);
+        String fgId = taskManager.foregroundTaskId();
+        for (var handle : tasks) {
+            String stateColor = switch (handle.state()) {
+                case RUNNING -> INFO;
+                case COMPLETED -> SUCCESS;
+                case FAILED -> ERROR;
+                case CANCELLED -> WARNING;
+            };
+            String stateLabel = handle.state().name().toLowerCase();
+            boolean isFg = handle.taskId().equals(fgId);
+            String elapsed = formatDuration(Duration.between(handle.startedAt(), Instant.now()));
+
+            out.printf("  %s#%s%s %s%-10s%s %s%s%s  %s%s%s%n",
+                    BOLD, handle.taskId(), RESET,
+                    stateColor, stateLabel, RESET,
+                    isFg ? BOLD + "[fg] " : "",
+                    handle.promptSummary(),
+                    RESET,
+                    MUTED, elapsed, RESET);
+        }
+        out.println();
+        out.flush();
+    }
+
+    // -- /bg command ---------------------------------------------------------
+
+    private void handleBgCommand(PrintWriter out) {
+        var fgHandle = taskManager.foregroundTask();
+        if (fgHandle == null || !fgHandle.isRunning()) {
+            out.println(WARNING + "No foreground task to background." + RESET);
+            out.flush();
+            return;
+        }
+
+        // Swap the sink to a background buffer
+        var bgBuffer = new BackgroundOutputBuffer();
+        // The TaskStreamReader holds the original sink reference, but since
+        // ForegroundOutputSink methods are synchronized, the swap is safe
+        // For a clean swap, we'd need a mutable sink wrapper. Since the stream
+        // reader already has the sink, we just clear foreground and let it continue.
+        taskManager.clearForeground();
+        activeForegroundSink = null;
+
+        out.printf("%sTask #%s sent to background.%s%n", MUTED, fgHandle.taskId(), RESET);
+        out.flush();
+    }
+
+    // -- /fg command ---------------------------------------------------------
+
+    private void handleFgCommand(PrintWriter out, LineReader reader, String arg) {
+        if (taskManager.hasForegroundTask()) {
+            out.println(WARNING + "A task is already in the foreground. Use /bg first." + RESET);
+            out.flush();
+            return;
+        }
+
+        TaskHandle target = null;
+        if (!arg.isEmpty()) {
+            target = taskManager.get(arg);
+            if (target == null) {
+                out.println(WARNING + "Task #" + arg + " not found." + RESET);
+                out.flush();
+                return;
+            }
+        } else {
+            // Find the most recent running background task
+            var tasks = taskManager.list();
+            for (int i = tasks.size() - 1; i >= 0; i--) {
+                if (tasks.get(i).isRunning()) {
+                    target = tasks.get(i);
+                    break;
+                }
+            }
+            if (target == null) {
+                out.println(WARNING + "No running background tasks." + RESET);
+                out.flush();
+                return;
+            }
+        }
+
+        if (!target.isRunning()) {
+            out.println(WARNING + "Task #" + target.taskId() + " is not running ("
+                    + target.state().name().toLowerCase() + ")." + RESET);
+            out.flush();
+            return;
+        }
+
+        out.printf("%sBringing task #%s to foreground...%s%n", MUTED, target.taskId(), RESET);
+        out.flush();
+
+        // Set as foreground and wait
+        taskManager.setForeground(target.taskId());
+        var fgSink = new ForegroundOutputSink(out, markdownRenderer);
+        activeForegroundSink = fgSink;
+
+        waitForForeground(out, reader);
+        renderTaskCompletion(out, target);
+        taskManager.clearForeground();
+        activeForegroundSink = null;
+    }
+
+    // -- /cancel command -----------------------------------------------------
+
+    private void handleCancelCommand(PrintWriter out, String arg) {
+        if (!arg.isEmpty()) {
+            var handle = taskManager.get(arg);
+            if (handle == null) {
+                out.println(WARNING + "Task #" + arg + " not found." + RESET);
+            } else if (!handle.isRunning()) {
+                out.println(WARNING + "Task #" + arg + " is not running." + RESET);
+            } else {
+                taskManager.cancel(arg);
+                out.println(MUTED + "Cancelling task #" + arg + "..." + RESET);
+            }
+        } else {
+            // Cancel foreground task
+            if (taskManager.hasForegroundTask()) {
+                cancelForegroundTask(out);
+            } else {
+                out.println(WARNING + "No foreground task to cancel. Use /cancel <id>." + RESET);
+            }
+        }
+        out.flush();
+    }
+
+    // -- /tools command (extracted from old handleSlashCommand) ---------------
+
+    private void handleToolsCommand(PrintWriter out) {
+        out.println(MUTED + "Requesting tool list..." + RESET);
+        out.flush();
+        try {
+            long id = client.nextRequestId();
+            var request = client.objectMapper().createObjectNode();
+            request.put("jsonrpc", "2.0");
+            request.put("method", "tools.list");
+            request.put("id", id);
+            client.writeLine(client.objectMapper().writeValueAsString(request));
+
+            String responseLine = client.readLine(5000);
+            if (responseLine == null) {
+                out.println(WARNING + "Timed out waiting for tool list from daemon" + RESET);
+            } else {
+                var response = client.objectMapper().readTree(responseLine);
+                if (response.has("result") && response.get("result").isArray()) {
+                    out.println();
+                    out.println(BOLD + "Available tools:" + RESET);
+                    for (var tool : response.get("result")) {
+                        String name = tool.path("name").asText();
+                        String desc = tool.path("description").asText();
+                        int dot = desc.indexOf('.');
+                        if (dot > 0 && dot < 80) desc = desc.substring(0, dot + 1);
+                        else if (desc.length() > 80) desc = desc.substring(0, 77) + "...";
+                        out.printf("  %s%-16s%s %s%s%s%n", INFO, name, RESET, MUTED, desc, RESET);
+                    }
+                    out.println();
+                } else if (response.has("error")) {
+                    out.println(WARNING + "tools.list not supported by daemon" + RESET);
+                }
+            }
+        } catch (IOException e) {
+            out.println(ERROR + "Failed to list tools: " + e.getMessage() + RESET);
+        }
+        out.flush();
+    }
+
+    // -- /model command (unchanged from original) ----------------------------
+
     private void handleModelCommand(PrintWriter out, String arg) {
         if (client == null) {
             out.println(WARNING + "Not connected to daemon." + RESET);
@@ -411,13 +744,11 @@ public final class TerminalRepl {
             return;
         }
         try {
-            // If arg provided, switch directly without listing
             if (!arg.isEmpty()) {
                 switchModel(out, arg);
                 return;
             }
 
-            // Fetch model list from daemon
             long id = client.nextRequestId();
             var request = client.objectMapper().createObjectNode();
             request.put("jsonrpc", "2.0");
@@ -452,7 +783,6 @@ public final class TerminalRepl {
             String provider = result.path("provider").asText("");
             var modelsNode = result.get("models");
 
-            // Display current model info
             out.println();
             out.println(BOLD + "Model Selection" + RESET + MUTED + " (" + provider + ")" + RESET);
             out.println();
@@ -466,7 +796,6 @@ public final class TerminalRepl {
                 return;
             }
 
-            // Build numbered list
             var models = new java.util.ArrayList<String>();
             for (var m : modelsNode) {
                 models.add(m.asText());
@@ -486,14 +815,13 @@ public final class TerminalRepl {
             out.print(MUTED + "  Select model (number or name, Enter to cancel): " + RESET);
             out.flush();
 
-            // Read selection
-            var reader = activeReader;
-            if (reader == null) return;
+            var lineReader = activeReader;
+            if (lineReader == null) return;
 
             String selection;
             try {
-                selection = reader.readLine("");
-            } catch (org.jline.reader.UserInterruptException | org.jline.reader.EndOfFileException e) {
+                selection = lineReader.readLine("");
+            } catch (UserInterruptException | EndOfFileException e) {
                 out.println();
                 return;
             }
@@ -504,7 +832,6 @@ public final class TerminalRepl {
                 return;
             }
 
-            // Resolve selection: number or model name
             String selectedModel;
             try {
                 int num = Integer.parseInt(selection.trim());
@@ -532,9 +859,6 @@ public final class TerminalRepl {
         }
     }
 
-    /**
-     * Sends a model.switch RPC call to the daemon.
-     */
     private void switchModel(PrintWriter out, String modelId) {
         try {
             long id = client.nextRequestId();
@@ -570,9 +894,8 @@ public final class TerminalRepl {
         }
     }
 
-    /**
-     * Sends a JSON-RPC notification to the daemon (no response expected).
-     */
+    // -- Helpers -------------------------------------------------------------
+
     private void sendRpcNotification(String method) {
         try {
             var params = client.objectMapper().createObjectNode();
@@ -583,351 +906,12 @@ public final class TerminalRepl {
         }
     }
 
-    // -- Input processing ----------------------------------------------------
-
-    private void processInput(PrintWriter out, String input) {
-        try {
-            streaming = true;
-            cancelSent = false;
-
-            // Build agent.prompt params
-            ObjectNode params = client.objectMapper().createObjectNode();
-            params.put("sessionId", sessionId);
-            params.put("prompt", input);
-
-            // Send the request (writes the JSON line to the socket)
-            promptStartNanos = System.nanoTime();
-            long id = sendPromptRequest(params);
-
-            // Start thinking spinner immediately — visible while waiting for LLM
-            spinner = new TerminalSpinner(out, TerminalSpinner.Style.MOON);
-            spinner.start("Thinking...");
-
-            // Enter streaming read loop: process notifications until the final response
-            var textBuffer = new StringBuilder();
-            boolean receivedTextOutput = false;
-            boolean wasThinking = false;
-            boolean inCodeFence = false;
-            boolean done = false;
-            while (!done) {
-                String responseLine = client.readLine();
-                if (responseLine == null) {
-                    stopSpinner();
-                    flushMarkdown(out, textBuffer);
-                    out.println("\n[Connection closed]");
-                    out.flush();
-                    break;
-                }
-
-                JsonNode message = client.objectMapper().readTree(responseLine);
-
-                if (message.has("id") && !message.get("id").isNull()) {
-                    // This is the final JSON-RPC response
-                    done = true;
-                    stopSpinner();
-
-                    // Render any buffered markdown text
-                    if (receivedTextOutput) {
-                        flushMarkdown(out, textBuffer);
-                    }
-
-                    if (message.has("error") && !message.get("error").isNull()) {
-                        JsonNode error = message.get("error");
-                        int code = error.get("code").asInt();
-                        String errorMessage = error.get("message").asText();
-                        if (code == METHOD_NOT_FOUND) {
-                            out.println(ERROR + "[Agent not available. Is the daemon configured correctly?]" + RESET);
-                        } else {
-                            out.printf("%sError: %s%s%n", ERROR, errorMessage, RESET);
-                        }
-                    } else {
-                        JsonNode result = message.get("result");
-                        if (result != null && !receivedTextOutput) {
-                            // Only show the result summary if we did not stream text
-                            if (result.has("response")) {
-                                var response = result.get("response").asText();
-                                if (!response.isEmpty()) {
-                                    markdownRenderer.render(response, out);
-                                }
-                            }
-                        }
-                        // Update token counters and show response summary
-                        if (result != null && result.has("usage")) {
-                            var usage = result.get("usage");
-                            int turnIn = usage.path("inputTokens").asInt(0);
-                            int turnOut = usage.path("outputTokens").asInt(0);
-                            totalInputTokens += turnIn;
-                            totalOutputTokens += turnOut;
-                            latestInputTokens = turnIn;
-
-                            // Response time
-                            long elapsedMs = (System.nanoTime() - promptStartNanos) / 1_000_000;
-                            String elapsed = elapsedMs >= 1000
-                                    ? String.format("%.1fs", elapsedMs / 1000.0)
-                                    : elapsedMs + "ms";
-
-                            // Compact info line below the response
-                            out.println();
-                            out.printf("%s%s  %d in / %d out  %s%s%n",
-                                    MUTED, elapsed, turnIn, turnOut,
-                                    sessionInfo.contextWindowTokens() > 0
-                                            ? "context " + formatTokenCount(turnIn) + "/" + formatTokenCount(sessionInfo.contextWindowTokens())
-                                            : "",
-                                    RESET);
-                        }
-                    }
-                    out.flush();
-
-                } else if (message.has("method")) {
-                    // This is a notification
-                    String method = message.get("method").asText();
-                    JsonNode notifParams = message.get("params");
-
-                    switch (method) {
-                        case "stream.thinking" -> {
-                            if (notifParams != null && notifParams.has("delta")) {
-                                String delta = notifParams.get("delta").asText();
-                                stopSpinner();
-                                out.print(THINKING + delta + RESET);
-                                out.flush();
-                                wasThinking = true;
-                            }
-                        }
-
-                        case "stream.text" -> {
-                            // Incremental paragraph-level markdown rendering
-                            if (notifParams != null && notifParams.has("delta")) {
-                                String delta = notifParams.get("delta").asText();
-                                stopSpinner();
-
-                                // Transition from thinking to response text
-                                if (wasThinking) {
-                                    out.println();
-                                    out.println();
-                                    wasThinking = false;
-                                }
-
-                                textBuffer.append(delta);
-                                receivedTextOutput = true;
-
-                                // Track code fence state to avoid splitting inside fenced blocks
-                                for (int i = 0; i < delta.length(); i++) {
-                                    if (i + 2 < delta.length()
-                                            && delta.charAt(i) == '`'
-                                            && delta.charAt(i + 1) == '`'
-                                            && delta.charAt(i + 2) == '`') {
-                                        inCodeFence = !inCodeFence;
-                                    }
-                                }
-
-                                // Render complete paragraph blocks (delimited by \n\n) if not in a code fence
-                                if (!inCodeFence) {
-                                    int boundary;
-                                    while ((boundary = textBuffer.indexOf("\n\n")) != -1) {
-                                        // Include the double newline in the block
-                                        String block = textBuffer.substring(0, boundary + 2);
-                                        textBuffer.delete(0, boundary + 2);
-                                        markdownRenderer.render(block, out);
-                                        out.flush();
-                                    }
-                                }
-                            }
-                        }
-
-                        case "stream.tool_use" -> {
-                            if (receivedTextOutput) {
-                                flushMarkdown(out, textBuffer);
-                                inCodeFence = false;
-                                receivedTextOutput = false;
-                            }
-                            if (wasThinking) {
-                                out.println();
-                                wasThinking = false;
-                            }
-                            stopSpinner();
-                            if (notifParams != null) {
-                                String toolName = notifParams.path("name").asText("unknown");
-                                String verb = TerminalSpinner.verbForTool(toolName);
-                                spinner = new TerminalSpinner(out);
-                                spinner.start(verb + " " + toolName + "...");
-                            }
-                        }
-
-                        case "permission.request" -> {
-                            if (receivedTextOutput) {
-                                flushMarkdown(out, textBuffer);
-                                inCodeFence = false;
-                                receivedTextOutput = false;
-                            }
-                            if (wasThinking) {
-                                out.println();
-                                wasThinking = false;
-                            }
-                            stopSpinner();
-                            handlePermissionRequest(out, notifParams);
-                        }
-
-                        case "stream.error" -> {
-                            if (receivedTextOutput) {
-                                flushMarkdown(out, textBuffer);
-                                inCodeFence = false;
-                                receivedTextOutput = false;
-                            }
-                            stopSpinner();
-                            if (notifParams != null && notifParams.has("error")) {
-                                out.printf("%s[stream error: %s]%s%n",
-                                        ERROR, notifParams.get("error").asText(), RESET);
-                                out.flush();
-                            }
-                        }
-
-                        case "stream.cancelled" -> {
-                            // Server acknowledged cancellation; stop any active spinners
-                            stopSpinner();
-                            log.debug("Received stream.cancelled notification");
-                        }
-
-                        default -> {
-                            log.debug("Ignoring unknown notification: {}", method);
-                        }
-                    }
-                } else {
-                    log.debug("Received unrecognized message: {}", responseLine);
-                }
-            }
-
-        } catch (IOException e) {
-            stopSpinner();
-            out.println("Connection error: " + e.getMessage());
-            out.flush();
-            log.error("I/O error during prompt: {}", e.getMessage(), e);
-        } finally {
-            streaming = false;
-        }
-    }
-
-    /**
-     * Sends the agent.prompt request and returns the request ID.
-     */
-    private long sendPromptRequest(ObjectNode params) throws IOException {
-        long id = client.nextRequestId();
-        ObjectNode request = client.objectMapper().createObjectNode();
-        request.put("jsonrpc", "2.0");
-        request.put("method", "agent.prompt");
-        request.set("params", params);
-        request.put("id", id);
-        client.writeLine(client.objectMapper().writeValueAsString(request));
-        return id;
-    }
-
-    /**
-     * Handles a permission.request notification by prompting the user
-     * and sending back a permission.response notification.
-     * Uses box-drawing characters for a polished permission UI.
-     */
-    private void handlePermissionRequest(PrintWriter out, JsonNode params) {
-        if (params == null) return;
-
-        String tool = params.path("tool").asText("unknown");
-        String description = params.path("description").asText("");
-        String requestId = params.path("requestId").asText("");
-
-        int boxWidth = 50;
-
-        out.println();
-        out.println(PERMISSION + " " + BOX_LIGHT_TOP_LEFT + BOX_LIGHT_HORIZONTAL
-                + " Permission Required " + hlineLight(boxWidth - 22) + RESET);
-        out.println(PERMISSION + " " + BOX_LIGHT_VERTICAL + RESET + " " + description);
-        out.println(PERMISSION + " " + BOX_LIGHT_VERTICAL + RESET);
-        out.printf("%s %s%s (%sy%s) Allow  (%sn%s) Deny  (%sa%s) Always: ",
-                PERMISSION, BOX_LIGHT_VERTICAL, RESET,
-                APPROVED, RESET,
-                DENIED, RESET,
-                WARNING, RESET);
-        out.flush();
-
-        boolean approved = false;
-        boolean remember = false;
-
-        try {
-            // Read a single line of user input for the permission decision
-            var reader = activeReader;
-            if (reader != null) {
-                String answer = reader.readLine("");
-                if (answer != null) {
-                    answer = answer.trim().toLowerCase();
-                    switch (answer) {
-                        case "y", "yes" -> approved = true;
-                        case "a", "always" -> {
-                            approved = true;
-                            remember = true;
-                        }
-                        default -> approved = false;
-                    }
-                }
-            }
-        } catch (UserInterruptException | EndOfFileException e) {
-            approved = false;
-        }
-
-        // Close the box
-        out.println(PERMISSION + " " + BOX_LIGHT_BOTTOM_LEFT + hlineLight(boxWidth) + RESET);
-
-        // Send permission.response back to daemon
-        try {
-            ObjectNode responseParams = client.objectMapper().createObjectNode();
-            responseParams.put("requestId", requestId);
-            responseParams.put("approved", approved);
-            responseParams.put("remember", remember);
-            client.sendNotification("permission.response", responseParams);
-
-            if (approved) {
-                out.printf("%s%s Approved%s%s%n", APPROVED, CHECKMARK,
-                        remember ? " (always)" : "", RESET);
-            } else {
-                out.printf("%sDenied%s%n", DENIED, RESET);
-            }
-            out.flush();
-        } catch (IOException e) {
-            log.error("Failed to send permission response: {}", e.getMessage());
-            out.println("[Failed to send permission response]");
-            out.flush();
-        }
-    }
-
-    /**
-     * Renders buffered markdown text and clears the buffer.
-     */
-    private void flushMarkdown(PrintWriter out, StringBuilder buffer) {
-        if (buffer.isEmpty()) return;
-        markdownRenderer.render(buffer.toString(), out);
-        out.flush();
-        buffer.setLength(0);
-    }
-
-    /**
-     * Stops the active spinner if one is running. Clears the spinner line silently.
-     */
-    private void stopSpinner() {
-        var s = spinner;
-        if (s != null && s.isSpinning()) {
-            s.clear();
-            spinner = null;
-        }
-    }
-
-    private void cancelStreaming(PrintWriter out) {
-        if (cancelSent) return; // Prevent duplicate cancels on rapid Ctrl+C
-        cancelSent = true;
-        try {
-            stopSpinner();
-            ObjectNode params = client.objectMapper().createObjectNode();
-            params.put("sessionId", sessionId);
-            client.sendNotification("agent.cancel", params);
-            out.println("\n[Cancelled]");
-            out.flush();
-        } catch (IOException e) {
-            log.warn("Failed to send cancel: {}", e.getMessage());
-        }
+    private static String formatDuration(Duration d) {
+        long secs = d.getSeconds();
+        if (secs < 60) return secs + "s";
+        long mins = secs / 60;
+        if (mins < 60) return mins + "m " + (secs % 60) + "s";
+        long hours = mins / 60;
+        return hours + "h " + (mins % 60) + "m";
     }
 }

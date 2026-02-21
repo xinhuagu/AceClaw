@@ -1,0 +1,185 @@
+package dev.aceclaw.cli;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.util.Objects;
+import java.util.function.Consumer;
+
+/**
+ * Reads the streaming response for a single agent task on a virtual thread.
+ *
+ * <p>Replaces the inline {@code while (!done)} loop that was previously in
+ * {@code TerminalRepl.processInput()}. Dispatches events to an {@link OutputSink}
+ * and routes permission requests through a {@link PermissionBridge}.
+ */
+public final class TaskStreamReader implements Runnable {
+
+    private static final Logger log = LoggerFactory.getLogger(TaskStreamReader.class);
+
+    private final TaskHandle handle;
+    private final DaemonConnection connection;
+    private final String sessionId;
+    private final String fullPrompt;
+    private final OutputSink sink;
+    private final PermissionBridge permissionBridge;
+    private final Consumer<TaskHandle> onComplete;
+
+    public TaskStreamReader(TaskHandle handle, DaemonConnection connection,
+                            String sessionId, String fullPrompt, OutputSink sink,
+                            PermissionBridge permissionBridge,
+                            Consumer<TaskHandle> onComplete) {
+        this.handle = Objects.requireNonNull(handle, "handle");
+        this.connection = Objects.requireNonNull(connection, "connection");
+        this.sessionId = Objects.requireNonNull(sessionId, "sessionId");
+        this.fullPrompt = Objects.requireNonNull(fullPrompt, "fullPrompt");
+        this.sink = Objects.requireNonNull(sink, "sink");
+        this.permissionBridge = Objects.requireNonNull(permissionBridge, "permissionBridge");
+        this.onComplete = onComplete;
+    }
+
+    @Override
+    public void run() {
+        try {
+            sendPromptRequest();
+            readStreamLoop();
+        } catch (IOException e) {
+            if (!handle.cancelled().get()) {
+                log.error("I/O error in task {}: {}", handle.taskId(), e.getMessage(), e);
+                handle.setState(TaskHandle.TaskState.FAILED);
+                sink.onStreamError("Connection error: " + e.getMessage());
+            }
+        } catch (Exception e) {
+            log.error("Unexpected error in task {}: {}", handle.taskId(), e.getMessage(), e);
+            handle.setState(TaskHandle.TaskState.FAILED);
+            sink.onStreamError("Unexpected error: " + e.getMessage());
+        } finally {
+            if (handle.isRunning()) {
+                handle.setState(TaskHandle.TaskState.FAILED);
+            }
+            if (onComplete != null) {
+                onComplete.accept(handle);
+            }
+        }
+    }
+
+    private void sendPromptRequest() throws IOException {
+        long id = connection.nextRequestId();
+        ObjectNode request = connection.objectMapper().createObjectNode();
+        request.put("jsonrpc", "2.0");
+        request.put("method", "agent.prompt");
+        ObjectNode params = connection.objectMapper().createObjectNode();
+        params.put("sessionId", sessionId);
+        params.put("prompt", fullPrompt);
+        request.set("params", params);
+        request.put("id", id);
+        connection.writeLine(connection.objectMapper().writeValueAsString(request));
+    }
+
+    private void readStreamLoop() throws IOException {
+        boolean done = false;
+        while (!done) {
+            String responseLine = connection.readLine();
+            if (responseLine == null) {
+                sink.onConnectionClosed();
+                handle.setState(TaskHandle.TaskState.FAILED);
+                return;
+            }
+
+            JsonNode message = connection.objectMapper().readTree(responseLine);
+
+            if (message.has("id") && !message.get("id").isNull()) {
+                // Final JSON-RPC response
+                done = true;
+                handleFinalResponse(message);
+            } else if (message.has("method")) {
+                handleNotification(message);
+            } else {
+                log.debug("Task {}: ignoring unrecognized message", handle.taskId());
+            }
+        }
+    }
+
+    private void handleFinalResponse(JsonNode message) {
+        boolean hasError = message.has("error") && !message.get("error").isNull();
+        handle.setResult(message);
+
+        if (handle.cancelled().get()) {
+            handle.setState(TaskHandle.TaskState.CANCELLED);
+        } else if (hasError) {
+            handle.setState(TaskHandle.TaskState.FAILED);
+        } else {
+            handle.setState(TaskHandle.TaskState.COMPLETED);
+        }
+
+        sink.onTurnComplete(message, hasError);
+    }
+
+    private void handleNotification(JsonNode message) {
+        String method = message.get("method").asText();
+        JsonNode params = message.get("params");
+
+        switch (method) {
+            case "stream.thinking" -> {
+                if (params != null && params.has("delta")) {
+                    sink.onThinkingDelta(params.get("delta").asText());
+                }
+            }
+            case "stream.text" -> {
+                if (params != null && params.has("delta")) {
+                    sink.onTextDelta(params.get("delta").asText());
+                }
+            }
+            case "stream.tool_use" -> {
+                if (params != null) {
+                    String toolName = params.path("name").asText("unknown");
+                    sink.onToolUse(toolName);
+                }
+            }
+            case "permission.request" -> handlePermissionRequest(params);
+            case "stream.error" -> {
+                if (params != null && params.has("error")) {
+                    sink.onStreamError(params.get("error").asText());
+                }
+            }
+            case "stream.cancelled" -> sink.onStreamCancelled();
+            case "stream.plan_created" -> sink.onPlanCreated(params);
+            case "stream.plan_step_started" -> sink.onPlanStepStarted(params);
+            case "stream.plan_step_completed" -> sink.onPlanStepCompleted(params);
+            case "stream.plan_completed" -> sink.onPlanCompleted(params);
+            case "stream.compaction" -> sink.onCompaction(params);
+            default -> log.debug("Task {}: ignoring notification: {}", handle.taskId(), method);
+        }
+    }
+
+    private void handlePermissionRequest(JsonNode params) {
+        if (params == null) return;
+
+        String tool = params.path("tool").asText("unknown");
+        String description = params.path("description").asText("");
+        String requestId = params.path("requestId").asText("");
+
+        var request = new PermissionBridge.PermissionRequest(
+                handle.taskId(), tool, description, requestId);
+
+        try {
+            var answer = permissionBridge.requestPermission(request);
+
+            // Send permission response back to daemon on this task's connection
+            ObjectNode responseParams = connection.objectMapper().createObjectNode();
+            responseParams.put("requestId", requestId);
+            responseParams.put("approved", answer.approved());
+            responseParams.put("remember", answer.remember());
+            connection.sendNotification("permission.response", responseParams);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.debug("Task {}: permission request interrupted", handle.taskId());
+        } catch (IOException e) {
+            log.error("Task {}: failed to send permission response: {}",
+                    handle.taskId(), e.getMessage());
+        }
+    }
+}

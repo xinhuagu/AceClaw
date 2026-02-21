@@ -2,26 +2,22 @@ package dev.aceclaw.cli;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.net.StandardProtocolFamily;
-import java.net.UnixDomainSocketAddress;
-import java.nio.ByteBuffer;
-import java.nio.channels.SocketChannel;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Client that connects to the AceClaw daemon via Unix Domain Socket.
  *
- * <p>Sends JSON-RPC 2.0 requests as newline-delimited JSON and reads responses
- * in the same format. Thread-safe: all I/O is guarded by a lock so the client
- * can be used from virtual threads.
+ * <p>Maintains a control connection for session management and health checks,
+ * and can open additional task connections for concurrent agent prompts.
+ * All connections share a single request ID counter for global uniqueness.
+ *
+ * <p>Thread-safe: each {@link DaemonConnection} guards its own writes,
+ * and the shared {@link AtomicLong} counter is inherently atomic.
  */
 public final class DaemonClient implements AutoCloseable {
 
@@ -29,21 +25,13 @@ public final class DaemonClient implements AutoCloseable {
 
     private static final Path DEFAULT_SOCKET = Path.of(
             System.getProperty("user.home"), ".aceclaw", "aceclaw.sock");
-    private static final int BUFFER_SIZE = 65536;
 
     private final Path socketPath;
     private final ObjectMapper objectMapper;
     private final AtomicLong requestIdCounter = new AtomicLong(1);
-    private final ReentrantLock ioLock = new ReentrantLock();
 
-    private volatile SocketChannel channel;
-
-    /**
-     * Persistent line buffer that preserves data across readLine() calls.
-     * This is important for streaming: the daemon may send multiple
-     * newline-delimited JSON messages in a single socket read.
-     */
-    private final StringBuilder lineBuffer = new StringBuilder();
+    /** The primary control connection used for session management and slash commands. */
+    private volatile DaemonConnection controlConnection;
 
     /**
      * Creates a client targeting the default daemon socket at {@code ~/.aceclaw/aceclaw.sock}.
@@ -59,52 +47,53 @@ public final class DaemonClient implements AutoCloseable {
      */
     public DaemonClient(Path socketPath) {
         this.socketPath = socketPath;
-        this.objectMapper = createObjectMapper();
+        this.objectMapper = new ObjectMapper();
     }
 
     /**
-     * Connects to the daemon socket.
+     * Connects the control connection to the daemon socket.
      *
      * @throws IOException if the connection cannot be established
      */
     public void connect() throws IOException {
-        ioLock.lock();
-        try {
-            if (channel != null && channel.isOpen()) {
-                log.debug("Already connected to daemon");
-                return;
-            }
-            var address = UnixDomainSocketAddress.of(socketPath);
-            channel = SocketChannel.open(StandardProtocolFamily.UNIX);
-            channel.connect(address);
-            log.debug("Connected to daemon at {}", socketPath);
-        } finally {
-            ioLock.unlock();
+        if (controlConnection != null && controlConnection.isOpen()) {
+            log.debug("Already connected to daemon");
+            return;
         }
+        controlConnection = DaemonConnection.connect(socketPath, objectMapper, requestIdCounter);
+        log.debug("Control connection established to {}", socketPath);
     }
 
     /**
-     * Disconnects from the daemon socket.
+     * Disconnects the control connection from the daemon socket.
      */
     public void disconnect() {
-        ioLock.lock();
-        try {
-            if (channel != null && channel.isOpen()) {
-                try {
-                    channel.close();
-                } catch (IOException e) {
-                    log.warn("Error closing daemon connection", e);
-                }
-            }
-            channel = null;
+        var conn = controlConnection;
+        if (conn != null) {
+            conn.close();
+            controlConnection = null;
             log.debug("Disconnected from daemon");
-        } finally {
-            ioLock.unlock();
         }
     }
 
     /**
-     * Sends a JSON-RPC request and waits for the response.
+     * Opens a new independent connection to the daemon for a task.
+     *
+     * <p>Each task connection has its own line buffer and write lock,
+     * enabling concurrent streaming without interference. Shares the
+     * same request ID counter as the control connection.
+     *
+     * @return a new DaemonConnection for task-specific I/O
+     * @throws IOException if the connection cannot be established
+     */
+    public DaemonConnection openTaskConnection() throws IOException {
+        return DaemonConnection.connect(socketPath, objectMapper, requestIdCounter);
+    }
+
+    // -- Delegated methods (backward-compatible with existing callers) ----
+
+    /**
+     * Sends a JSON-RPC request on the control connection and waits for the response.
      *
      * @param method the JSON-RPC method name
      * @param params the method parameters (may be null)
@@ -113,184 +102,53 @@ public final class DaemonClient implements AutoCloseable {
      * @throws DaemonClientException if the response contains a JSON-RPC error
      */
     public JsonNode sendRequest(String method, JsonNode params) throws IOException, DaemonClientException {
-        ioLock.lock();
-        try {
-            ensureConnected();
-
-            long id = requestIdCounter.getAndIncrement();
-            ObjectNode request = objectMapper.createObjectNode();
-            request.put("jsonrpc", "2.0");
-            request.put("method", method);
-            if (params != null) {
-                request.set("params", params);
-            }
-            request.put("id", id);
-
-            // Write request as newline-delimited JSON
-            String json = objectMapper.writeValueAsString(request) + "\n";
-            channel.write(ByteBuffer.wrap(json.getBytes(StandardCharsets.UTF_8)));
-            log.debug("Sent request: method={}, id={}", method, id);
-
-            // Read response
-            String responseLine = readLine();
-            if (responseLine == null) {
-                throw new DaemonClientException("Daemon closed connection before responding");
-            }
-
-            JsonNode responseNode = objectMapper.readTree(responseLine);
-
-            // Check for error
-            if (responseNode.has("error") && !responseNode.get("error").isNull()) {
-                JsonNode error = responseNode.get("error");
-                int code = error.get("code").asInt();
-                String message = error.get("message").asText();
-                throw new DaemonClientException(code, message);
-            }
-
-            return responseNode.get("result");
-        } finally {
-            ioLock.unlock();
-        }
+        return controlConn().sendRequest(method, params);
     }
 
     /**
-     * Sends a JSON-RPC notification (no response expected).
+     * Sends a JSON-RPC notification on the control connection (no response expected).
      *
      * @param method the JSON-RPC method name
      * @param params the method parameters (may be null)
      * @throws IOException if I/O fails
      */
     public void sendNotification(String method, JsonNode params) throws IOException {
-        ioLock.lock();
-        try {
-            ensureConnected();
-
-            ObjectNode notification = objectMapper.createObjectNode();
-            notification.put("jsonrpc", "2.0");
-            notification.put("method", method);
-            if (params != null) {
-                notification.set("params", params);
-            }
-            // No id field for notifications
-
-            String json = objectMapper.writeValueAsString(notification) + "\n";
-            channel.write(ByteBuffer.wrap(json.getBytes(StandardCharsets.UTF_8)));
-            log.debug("Sent notification: method={}", method);
-        } finally {
-            ioLock.unlock();
-        }
+        controlConn().sendNotification(method, params);
     }
 
     /**
-     * Reads the next line from the daemon connection (blocking).
-     *
-     * <p>Uses a persistent buffer so that data arriving after a newline
-     * is preserved for subsequent calls. This is essential for streaming
-     * where multiple JSON messages may arrive in a single socket read.
+     * Reads the next line from the control connection (blocking).
      *
      * @return the next line, or null if the connection was closed
      * @throws IOException if I/O fails
      */
     public String readLine() throws IOException {
-        // Check if a complete line is already in the buffer
-        int newlineIdx = lineBuffer.indexOf("\n");
-        if (newlineIdx != -1) {
-            var line = lineBuffer.substring(0, newlineIdx).trim();
-            lineBuffer.delete(0, newlineIdx + 1);
-            return line.isEmpty() ? readLine() : line;
-        }
-
-        var buffer = ByteBuffer.allocate(BUFFER_SIZE);
-
-        while (true) {
-            buffer.clear();
-            int bytesRead = channel.read(buffer);
-            if (bytesRead == -1) {
-                // Connection closed; return any partial content or null
-                return lineBuffer.isEmpty() ? null : lineBuffer.toString().trim();
-            }
-            if (bytesRead == 0) continue;
-
-            buffer.flip();
-            String chunk = StandardCharsets.UTF_8.decode(buffer).toString();
-            lineBuffer.append(chunk);
-
-            newlineIdx = lineBuffer.indexOf("\n");
-            if (newlineIdx != -1) {
-                var line = lineBuffer.substring(0, newlineIdx).trim();
-                lineBuffer.delete(0, newlineIdx + 1);
-                if (!line.isEmpty()) {
-                    return line;
-                }
-            }
-        }
+        return controlConn().readLine();
     }
 
     /**
-     * Reads the next newline-delimited line with a timeout.
+     * Reads the next line from the control connection with a timeout.
      *
      * @param timeoutMs maximum time to wait in milliseconds
      * @return the next line, or null if timed out or connection closed
      * @throws IOException if I/O fails
      */
     public String readLine(long timeoutMs) throws IOException {
-        long deadline = System.currentTimeMillis() + timeoutMs;
-        // Check buffer first
-        int newlineIdx = lineBuffer.indexOf("\n");
-        if (newlineIdx != -1) {
-            var line = lineBuffer.substring(0, newlineIdx).trim();
-            lineBuffer.delete(0, newlineIdx + 1);
-            return line.isEmpty() ? readLine(Math.max(0, deadline - System.currentTimeMillis())) : line;
-        }
-
-        channel.configureBlocking(false);
-        try {
-            var buffer = java.nio.ByteBuffer.allocate(BUFFER_SIZE);
-            while (System.currentTimeMillis() < deadline) {
-                buffer.clear();
-                int bytesRead = channel.read(buffer);
-                if (bytesRead == -1) {
-                    return lineBuffer.isEmpty() ? null : lineBuffer.toString().trim();
-                }
-                if (bytesRead == 0) {
-                    try { Thread.sleep(50); } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        return null;
-                    }
-                    continue;
-                }
-                buffer.flip();
-                lineBuffer.append(java.nio.charset.StandardCharsets.UTF_8.decode(buffer));
-                newlineIdx = lineBuffer.indexOf("\n");
-                if (newlineIdx != -1) {
-                    var line = lineBuffer.substring(0, newlineIdx).trim();
-                    lineBuffer.delete(0, newlineIdx + 1);
-                    return line.isEmpty() ? readLine(Math.max(0, deadline - System.currentTimeMillis())) : line;
-                }
-            }
-            return null; // timed out
-        } finally {
-            channel.configureBlocking(true);
-        }
+        return controlConn().readLine(timeoutMs);
     }
 
     /**
-     * Writes a raw line to the daemon socket (appending newline).
-     *
-     * <p>Used by the streaming REPL to send requests without holding the I/O lock
-     * for the entire request-response cycle.
+     * Writes a raw line to the control connection (guarded by write lock).
      *
      * @param line the line to write (without trailing newline)
      * @throws IOException if I/O fails
      */
     public void writeLine(String line) throws IOException {
-        ensureConnected();
-        var data = (line + "\n").getBytes(StandardCharsets.UTF_8);
-        channel.write(ByteBuffer.wrap(data));
+        controlConn().writeLine(line);
     }
 
     /**
-     * Returns the next request ID. Used by the REPL to construct its own request JSON.
+     * Returns the next request ID from the shared counter.
      *
      * @return the next unique request ID
      */
@@ -299,15 +157,15 @@ public final class DaemonClient implements AutoCloseable {
     }
 
     /**
-     * Returns whether the client is currently connected to the daemon.
+     * Returns whether the control connection is active.
      */
     public boolean isConnected() {
-        var ch = channel;
-        return ch != null && ch.isOpen() && ch.isConnected();
+        var conn = controlConnection;
+        return conn != null && conn.isOpen();
     }
 
     /**
-     * Returns the underlying ObjectMapper (for building params).
+     * Returns the shared ObjectMapper (for building params).
      */
     public ObjectMapper objectMapper() {
         return objectMapper;
@@ -320,14 +178,12 @@ public final class DaemonClient implements AutoCloseable {
 
     // -- internal --------------------------------------------------------
 
-    private void ensureConnected() throws IOException {
-        if (!isConnected()) {
+    private DaemonConnection controlConn() throws IOException {
+        var conn = controlConnection;
+        if (conn == null || !conn.isOpen()) {
             throw new IOException("Not connected to daemon; call connect() first");
         }
-    }
-
-    private static ObjectMapper createObjectMapper() {
-        return new ObjectMapper();
+        return conn;
     }
 
     /**
