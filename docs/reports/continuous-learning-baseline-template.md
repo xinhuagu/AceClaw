@@ -20,6 +20,7 @@
 | first_try_success_rate |  | 0.70 |  |  |
 | retry_count_per_task |  | 0.60 max |  |  |
 | tool_execution_success_rate |  | 0.95 |  |  |
+| tool_error_rate |  | 0.05 max |  |  |
 | permission_block_rate |  | 0.05 max |  |  |
 | timeout_rate |  | 0.03 max |  |  |
 | learning_hit_rate |  | 0.40 |  |  |
@@ -28,6 +29,14 @@
 | time_to_promote_p50_hours |  | 72h max |  |  |
 | regression_rate_after_learning |  | 0.10 max |  |  |
 | auto_rollback_rate |  | 0.10 max |  |  |
+
+## Offline Replay A/B Deltas (`learning=on` vs `learning=off`)
+| Metric | Value | Target | Status | Notes |
+|---|---:|---:|---|---|
+| replay_success_rate_delta |  | >= 0.00 |  |  |
+| replay_token_delta |  | <= 0 (or budget) |  |  |
+| replay_latency_delta_ms |  | <= 0 (or budget) |  |  |
+| replay_failure_distribution_delta |  | <= 0.15 |  |  |
 
 ## Delta vs Previous Baseline
 - Previous baseline reference:

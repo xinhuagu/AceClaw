@@ -32,6 +32,7 @@ The table below defines the canonical baseline metrics.
 | `first_try_success_rate` | Tasks that succeed without retries | `first_try_successes / completed_tasks` | Turn + retry tracking | 7 days | `>= 0.70` |
 | `retry_count_per_task` | Mean retries per completed task | `total_retries / completed_tasks` | Turn history | 7 days | `<= 0.60` |
 | `tool_execution_success_rate` | Successful tool calls ratio | `tool_success_count / total_tool_invocations` | `ToolMetricsCollector` | 7 days | `>= 0.95` |
+| `tool_error_rate` | Tool-call error ratio | `tool_error_count / total_tool_invocations` | `ToolMetricsCollector` | 7 days | `<= 0.05` |
 | `permission_block_rate` | Permission-related blocked actions ratio | `permission_blocks / action_attempts` | Permission manager events | 7 days | `<= 0.05` |
 | `timeout_rate` | Timeout ratio across tools/subagents/tasks | `timeouts / action_attempts` | Runtime failure events | 7 days | `<= 0.03` |
 | `learning_hit_rate` | Promoted learning entries that are relevant to turns | `relevant_learning_hits / learning_injections` | Prompt injection logs | 7 days | `>= 0.40` |
@@ -40,6 +41,20 @@ The table below defines the canonical baseline metrics.
 | `time_to_promote_p50_hours` | Median time from first seen to promoted | `p50(promoted_at - first_seen_at)` | Candidate store timestamps | 14 days | `<= 72h` |
 | `regression_rate_after_learning` | Regressions introduced by learning rollouts | `regressed_rollouts / total_rollouts` | Replay + runtime enforcement | 14 days | `<= 0.10` |
 | `auto_rollback_rate` | Rollouts that required automatic rollback | `auto_rollbacks / total_rollouts` | Auto-release enforcement events | 14 days | `<= 0.10` |
+
+## Offline Replay Metrics (A/B)
+The baseline requires direct `learning=off` vs `learning=on` comparison on the same replay dataset.
+
+| Metric | Definition | Formula | Target |
+|---|---|---|---|
+| `replay_success_rate_delta` | Success-rate impact of learning on replay | `success_rate_on - success_rate_off` | `>= 0.00` |
+| `replay_token_delta` | Token cost impact of learning | `avg_tokens_on - avg_tokens_off` | `<= 0` (or <= budget) |
+| `replay_latency_delta_ms` | Latency impact of learning | `avg_latency_ms_on - avg_latency_ms_off` | `<= 0` (or <= budget) |
+| `replay_failure_distribution_delta` | Change in failure-type distribution | `L1(failure_dist_on, failure_dist_off)` | `<= 0.15` |
+
+Notes:
+- `failure_dist_*` is computed over normalized failure buckets (permission, timeout, tool-error, other).
+- These metrics are schema-defined in baseline v1 and become fully measured when replay runner (`#63`) lands.
 
 ## Collection Output Schema
 Baseline output should be written to:

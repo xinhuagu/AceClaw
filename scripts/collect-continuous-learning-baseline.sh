@@ -64,6 +64,7 @@ target_for_key() {
     first_try_success_rate) echo "0.70" ;;
     retry_count_per_task) echo "0.60" ;;
     tool_execution_success_rate) echo "0.95" ;;
+    tool_error_rate) echo "0.05" ;;
     permission_block_rate) echo "0.05" ;;
     timeout_rate) echo "0.03" ;;
     learning_hit_rate) echo "0.40" ;;
@@ -72,6 +73,10 @@ target_for_key() {
     time_to_promote_p50_hours) echo "72.0" ;;
     regression_rate_after_learning) echo "0.10" ;;
     auto_rollback_rate) echo "0.10" ;;
+    replay_success_rate_delta) echo "0.00" ;;
+    replay_token_delta) echo "0.00" ;;
+    replay_latency_delta_ms) echo "0.00" ;;
+    replay_failure_distribution_delta) echo "0.15" ;;
     *)
       echo "Unknown metric key: $1" >&2
       exit 1
@@ -175,6 +180,7 @@ metric_keys=(
   first_try_success_rate
   retry_count_per_task
   tool_execution_success_rate
+  tool_error_rate
   permission_block_rate
   timeout_rate
   learning_hit_rate
@@ -183,6 +189,10 @@ metric_keys=(
   time_to_promote_p50_hours
   regression_rate_after_learning
   auto_rollback_rate
+  replay_success_rate_delta
+  replay_token_delta
+  replay_latency_delta_ms
+  replay_failure_distribution_delta
 )
 
 {

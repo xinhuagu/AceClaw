@@ -17,6 +17,7 @@
     "first_try_success_rate": {"value": 0.72, "target": 0.70, "status": "measured"},
     "retry_count_per_task": {"value": 0.49, "target": 0.60, "status": "measured"},
     "tool_execution_success_rate": {"value": 0.96, "target": 0.95, "status": "measured"},
+    "tool_error_rate": {"value": 0.04, "target": 0.05, "status": "measured"},
     "permission_block_rate": {"value": 0.03, "target": 0.05, "status": "measured"},
     "timeout_rate": {"value": 0.02, "target": 0.03, "status": "measured"},
     "learning_hit_rate": {"value": 0.41, "target": 0.40, "status": "measured"},
@@ -24,7 +25,11 @@
     "false_learning_rate": {"value": null, "target": 0.10, "status": "pending_instrumentation"},
     "time_to_promote_p50_hours": {"value": null, "target": 72.0, "status": "pending_instrumentation"},
     "regression_rate_after_learning": {"value": null, "target": 0.10, "status": "pending_instrumentation"},
-    "auto_rollback_rate": {"value": null, "target": 0.10, "status": "pending_instrumentation"}
+    "auto_rollback_rate": {"value": null, "target": 0.10, "status": "pending_instrumentation"},
+    "replay_success_rate_delta": {"value": null, "target": 0.00, "status": "pending_instrumentation"},
+    "replay_token_delta": {"value": null, "target": 0.00, "status": "pending_instrumentation"},
+    "replay_latency_delta_ms": {"value": null, "target": 0.00, "status": "pending_instrumentation"},
+    "replay_failure_distribution_delta": {"value": null, "target": 0.15, "status": "pending_instrumentation"}
   },
   "notes": [
     "Promotion and rollback metrics are placeholders until issues #60-#63 land.",
