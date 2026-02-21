@@ -24,6 +24,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static dev.aceclaw.cli.TerminalTheme.*;
@@ -143,7 +145,7 @@ public final class TerminalRepl {
                 reader.callWidget(LineReader.CLEAR_SCREEN);
                 PrintWriter w = terminal.writer();
                 w.print("\0337");
-                w.print("\n\r\033[K" + buildStatusString());
+                renderStatusPanel(w, false);
                 w.print("\0338");
                 w.flush();
                 return true;
@@ -169,8 +171,7 @@ public final class TerminalRepl {
                 String line;
                 try {
                     // Print status on the line below, then move cursor back up.
-                    out.print("\n\r\033[K" + buildStatusString());
-                    out.print("\033[A\r");
+                    renderStatusPanel(out, true);
                     out.flush();
                     line = reader.readLine(PROMPT_STR);
                 } catch (UserInterruptException e) {
@@ -648,6 +649,67 @@ public final class TerminalRepl {
         sb.append(MUTED).append(LocalTime.now().format(TIME_FMT)).append(RESET);
 
         return sb.toString();
+    }
+
+    /**
+     * Renders the prompt status panel below the current cursor.
+     *
+     * <p>The first line is the compact global status; following lines show
+     * currently running tasks so concurrent background activity is visible.
+     *
+     * @param restoreCursorByUp if true, moves cursor back up by rendered line count
+     */
+    private void renderStatusPanel(PrintWriter out, boolean restoreCursorByUp) {
+        var lines = buildStatusPanelLines();
+        if (lines.isEmpty()) return;
+
+        for (var line : lines) {
+            out.print("\n\r\033[K");
+            out.print(line);
+        }
+
+        if (restoreCursorByUp) {
+            out.print("\033[" + lines.size() + "A\r");
+        }
+    }
+
+    /**
+     * Builds the status panel lines shown below the prompt.
+     */
+    private List<String> buildStatusPanelLines() {
+        var lines = new ArrayList<String>();
+        lines.add(buildStatusString());
+
+        var runningTasks = taskManager.list().stream()
+                .filter(TaskHandle::isRunning)
+                .toList();
+        if (runningTasks.isEmpty()) {
+            return lines;
+        }
+
+        final int maxVisible = 4;
+        int from = Math.max(0, runningTasks.size() - maxVisible);
+        var visible = runningTasks.subList(from, runningTasks.size());
+
+        String fgId = taskManager.foregroundTaskId();
+        for (var task : visible) {
+            String elapsed = formatDuration(Duration.between(task.startedAt(), Instant.now()));
+            String prefix = task.taskId().equals(fgId) ? "[fg] " : "";
+            String summary = fitWidth(task.promptSummary(), 52);
+
+            lines.add(MUTED + "  \u2514 " + RESET
+                    + WARNING + "\u23F3" + RESET + " "
+                    + INFO + "#" + task.taskId() + RESET + " "
+                    + prefix + summary
+                    + MUTED + "  " + elapsed + RESET);
+        }
+
+        int hidden = runningTasks.size() - visible.size();
+        if (hidden > 0) {
+            lines.add(MUTED + "    ... +" + hidden + " more running task(s)" + RESET);
+        }
+
+        return lines;
     }
 
     private static String formatTokenCount(long tokens) {
