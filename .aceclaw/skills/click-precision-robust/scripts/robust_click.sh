@@ -16,6 +16,7 @@ EXPECT=""
 RETRIES=3
 BACKOFF_MS=200
 TINY_TARGET=false
+SKIP_DISPLAY_CHECK=false
 TELEMETRY_LOG="/tmp/aceclaw-click-precision.log"
 
 usage() {
@@ -23,6 +24,7 @@ usage() {
 Usage:
   robust_click.sh --app <AppName> [--window-hint <title>] [--locator <AX name>] [--role-hint <role>] \\
                   [--x <int> --y <int>] [--expect <predicate>] [--retries <n>] [--backoff-ms <ms>] \\
+                  [--skip-display-check true|false] \\
                   [--tiny-target true|false] [--telemetry-log <path>]
 USAGE
 }
@@ -172,6 +174,7 @@ while [[ $# -gt 0 ]]; do
     --expect) EXPECT="${2:-}"; shift 2 ;;
     --retries) RETRIES="${2:-}"; shift 2 ;;
     --backoff-ms) BACKOFF_MS="${2:-}"; shift 2 ;;
+    --skip-display-check) SKIP_DISPLAY_CHECK="${2:-false}"; shift 2 ;;
     --tiny-target) TINY_TARGET="${2:-false}"; shift 2 ;;
     --telemetry-log) TELEMETRY_LOG="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -228,7 +231,7 @@ for ((attempt=1; attempt<=RETRIES; attempt++)); do
 
   if [[ "$action_ok" != true ]]; then
     if [[ -n "$X" && -n "$Y" ]]; then
-      if ! point_in_any_display "$X" "$Y" "$DISPLAY_JSON"; then
+      if [[ "$SKIP_DISPLAY_CHECK" != "true" ]] && ! point_in_any_display "$X" "$Y" "$DISPLAY_JSON"; then
         LAST_REASON="transform_mismatch"
         telemetry "click" "$method" "$attempt" "verify_skipped" "$LAST_REASON" "$window_title" "$DISPLAY_JSON"
         sleep_backoff "$attempt"
