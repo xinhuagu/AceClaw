@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import math
 import sys
 from typing import Iterable, List, Optional, Tuple
 
@@ -51,11 +52,16 @@ def resize_with_mask(
 
 def best_match(shot, tpl, mask=None):
     method = cv2.TM_CCORR_NORMED
-    if mask is not None:
-        res = cv2.matchTemplate(shot, tpl, method, mask=mask)
-    else:
-        res = cv2.matchTemplate(shot, tpl, method)
-    _min_val, max_val, _min_loc, max_loc = cv2.minMaxLoc(res)
+    try:
+        if mask is not None:
+            res = cv2.matchTemplate(shot, tpl, method, mask=mask)
+        else:
+            res = cv2.matchTemplate(shot, tpl, method)
+        _min_val, max_val, _min_loc, max_loc = cv2.minMaxLoc(res)
+    except Exception:
+        return -1.0, (0, 0)
+    if not math.isfinite(float(max_val)):
+        return -1.0, (0, 0)
     return float(max_val), max_loc
 
 
@@ -87,6 +93,12 @@ def main() -> int:
     else:
         tpl_gray = cv2.cvtColor(tpl_rgba, cv2.COLOR_BGR2GRAY)
         tpl_mask = None
+
+    # If alpha mask is mostly empty/noisy, disable it to avoid unstable scores.
+    if tpl_mask is not None:
+        nz = int(cv2.countNonZero(tpl_mask))
+        if nz < 64:
+            tpl_mask = None
 
     scales = parse_scales(args.scales)
     shot_edge = cv2.Canny(shot, 80, 180)
