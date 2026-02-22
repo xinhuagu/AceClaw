@@ -1,0 +1,26 @@
+name: CodeRabbit Auto Merge
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable-auto-merge:
+    if: >
+      github.event.review.user.login == 'coderabbitai' &&
+      github.event.review.state == 'approved' &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.state == 'open' &&
+      github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable auto-merge (squash)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr merge "$PR_URL" --auto --squash --delete-branch
