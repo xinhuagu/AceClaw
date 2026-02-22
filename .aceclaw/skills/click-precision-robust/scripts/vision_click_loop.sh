@@ -95,9 +95,13 @@ for ((attempt=1; attempt<=RETRIES; attempt++)); do
 
   locate_json="$(python3 "$LOCATE_PY" --screenshot "$pre" --template "$TEMPLATE" --threshold "$THRESHOLD" || true)"
   found="$(echo "$locate_json" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("found", False))' 2>/dev/null || echo false)"
+  score_dbg="$(echo "$locate_json" | python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); print(d.get("score",""))' 2>/dev/null || true)"
+  scale_dbg="$(echo "$locate_json" | python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); print(d.get("scale",""))' 2>/dev/null || true)"
+  mode_dbg="$(echo "$locate_json" | python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); print(d.get("mode",""))' 2>/dev/null || true)"
 
   if [[ "$found" != "True" && "$found" != "true" ]]; then
     LAST_REASON="template_not_found"
+    echo "{\"attempt\":$attempt,\"found\":false,\"score\":\"$score_dbg\",\"scale\":\"$scale_dbg\",\"mode\":\"$mode_dbg\"}" >&2
     sleep_backoff "$attempt"
     continue
   fi
