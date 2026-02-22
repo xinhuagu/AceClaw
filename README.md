@@ -98,6 +98,8 @@ Multi-provider support — see [Provider Configuration](docs/provider-configurat
 # OpenAI Codex OAuth (reuse ~/.codex/auth.json)
 aceclaw models auth login --provider openai-codex
 ./dev.sh openai-codex
+# Note: in openai-codex mode, AceClaw follows Codex backend rules
+# (stream=true, store=false, no temperature/max_output_tokens).
 
 # Ollama (local, offline)
 ./dev.sh ollama

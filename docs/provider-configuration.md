@@ -118,6 +118,17 @@ aceclaw models auth login --provider openai-codex
 
 > `openai` and `openai-codex` are different modes. `openai` expects a standard OpenAI API key. `openai-codex` is for Codex OAuth credentials.
 
+### OpenAI Codex Request Notes
+
+`openai-codex` uses ChatGPT Codex backend semantics, not standard OpenAI Responses API semantics.
+
+- AceClaw always sends `stream=true`
+- AceClaw always sends `store=false`
+- AceClaw does not send `temperature`
+- AceClaw does not send `max_output_tokens`
+
+`maxTokens` and `temperature` can remain in your profile for cross-provider consistency, but they are ignored when `provider=openai-codex`.
+
 ---
 
 ## Anthropic Claude (Direct API)
