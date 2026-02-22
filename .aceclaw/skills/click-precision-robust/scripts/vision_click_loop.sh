@@ -84,6 +84,11 @@ if [[ "$RETRIES" -lt 1 ]]; then
   RETRIES=1
 fi
 
+if [[ ! -f "$TEMPLATE" ]]; then
+  echo "{\"ok\":false,\"failure_reason\":\"template_missing\",\"template\":\"$TEMPLATE\"}"
+  exit 2
+fi
+
 LAST_REASON=""
 for ((attempt=1; attempt<=RETRIES; attempt++)); do
   osascript -e "tell application \"$APP\" to activate" >/dev/null 2>&1 || true
@@ -91,7 +96,10 @@ for ((attempt=1; attempt<=RETRIES; attempt++)); do
 
   pre="$CAPTURE_DIR/aceclaw-vision-pre-${attempt}-$(date +%s)-$$.png"
   post="$CAPTURE_DIR/aceclaw-vision-post-${attempt}-$(date +%s)-$$.png"
-  screencapture -x "$pre" >/dev/null 2>&1 || true
+  if ! screencapture -x "$pre" >/dev/null 2>&1 || [[ ! -s "$pre" ]]; then
+    echo "{\"ok\":false,\"attempt\":$attempt,\"failure_reason\":\"capture_failed\",\"hint\":\"Grant Screen Recording permission to the terminal/agent process\"}"
+    exit 2
+  fi
 
   locate_json="$(python3 "$LOCATE_PY" --screenshot "$pre" --template "$TEMPLATE" --threshold "$THRESHOLD" || true)"
   found="$(echo "$locate_json" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("found", False))' 2>/dev/null || echo false)"
@@ -119,7 +127,10 @@ for ((attempt=1; attempt<=RETRIES; attempt++)); do
   cliclick "c:${x},${y}" >/dev/null 2>&1 || true
 
   sleep "$(LC_ALL=C awk -v ms="$POST_DELAY_MS" 'BEGIN { printf "%.3f", ms / 1000 }')"
-  screencapture -x "$post" >/dev/null 2>&1 || true
+  if ! screencapture -x "$post" >/dev/null 2>&1 || [[ ! -s "$post" ]]; then
+    echo "{\"ok\":false,\"attempt\":$attempt,\"failure_reason\":\"capture_failed_post\",\"hint\":\"Grant Screen Recording permission to the terminal/agent process\"}"
+    exit 2
+  fi
 
   verify="$(verify_state "$APP" "$EXPECT")"
   if [[ "$verify" == "ok" ]]; then
