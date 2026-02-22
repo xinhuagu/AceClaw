@@ -26,6 +26,8 @@ This skill is implemented by:
 - `.aceclaw/skills/click-precision-robust/scripts/ax_press.applescript`
 - `.aceclaw/skills/click-precision-robust/scripts/verify_state.applescript`
 - `.aceclaw/skills/click-precision-robust/scripts/display_context.jxa`
+- `.aceclaw/skills/click-precision-robust/scripts/vision_click_loop.sh`
+- `.aceclaw/skills/click-precision-robust/scripts/template_locate.py`
 
 ## Invocation
 
@@ -116,3 +118,28 @@ Pre-click screenshots are saved to:
 - macOS only.
 - Requires Accessibility permissions for Terminal/agent process.
 - Requires `cliclick` for coordinate fallback (`brew install cliclick`).
+- Visual template mode requires `opencv-python` (`pip3 install opencv-python`).
+
+## Visual Closed Loop Mode
+
+When absolute/relative coordinates are unstable, use template-based closed loop:
+
+```bash
+bash .aceclaw/skills/click-precision-robust/scripts/vision_click_loop.sh \
+  --app "Microsoft Teams" \
+  --template "/path/to/calendar_icon.png" \
+  --expect "frontmost_app=Microsoft Teams" \
+  --retries 4 \
+  --threshold 0.86
+```
+
+Then run again for the next button:
+
+```bash
+bash .aceclaw/skills/click-precision-robust/scripts/vision_click_loop.sh \
+  --app "Microsoft Teams" \
+  --template "/path/to/go_to_next_week_icon.png" \
+  --expect "window_title_contains=Mar" \
+  --retries 4 \
+  --threshold 0.86
+```
