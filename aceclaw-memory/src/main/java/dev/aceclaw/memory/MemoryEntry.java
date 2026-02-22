@@ -82,7 +82,9 @@ public record MemoryEntry(
         /** User feedback about agent behavior (positive or negative). */
         USER_FEEDBACK,
         /** A multi-step recovery procedure for a specific error type. */
-        RECOVERY_RECIPE
+        RECOVERY_RECIPE,
+        /** Normalized runtime failure signal captured for continuous learning. */
+        FAILURE_SIGNAL
     }
 
     /**

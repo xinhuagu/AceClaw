@@ -578,6 +578,7 @@ public final class AutoMemoryStore {
             case ANTI_PATTERN -> "Anti-Patterns";
             case USER_FEEDBACK -> "User Feedback";
             case RECOVERY_RECIPE -> "Recovery Recipes";
+            case FAILURE_SIGNAL -> "Failure Signals";
         };
     }
 }

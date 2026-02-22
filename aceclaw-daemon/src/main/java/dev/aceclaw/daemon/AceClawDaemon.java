@@ -341,9 +341,10 @@ public final class AceClawDaemon {
         if (memoryStore != null) {
             var errorDetector = new ErrorDetector(memoryStore);
             var patternDetector = new PatternDetector(memoryStore);
+            var failureSignalDetector = new FailureSignalDetector();
             var strategyRefiner = new StrategyRefiner(memoryStore);
             var selfImprovementEngine = new SelfImprovementEngine(
-                    errorDetector, patternDetector, memoryStore, strategyRefiner);
+                    errorDetector, patternDetector, failureSignalDetector, memoryStore, strategyRefiner);
             agentHandler.setSelfImprovementEngine(selfImprovementEngine);
             log.info("Self-improvement engine wired (with strategy refinement)");
         }

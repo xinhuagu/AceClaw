@@ -4,8 +4,10 @@ import dev.aceclaw.core.agent.ToolMetrics;
 import dev.aceclaw.core.agent.Turn;
 import dev.aceclaw.core.llm.*;
 import dev.aceclaw.memory.AutoMemoryStore;
+import dev.aceclaw.memory.FailureType;
 import dev.aceclaw.memory.Insight;
 import dev.aceclaw.memory.Insight.ErrorInsight;
+import dev.aceclaw.memory.Insight.FailureInsight;
 import dev.aceclaw.memory.Insight.PatternInsight;
 import dev.aceclaw.memory.MemoryEntry;
 import dev.aceclaw.memory.PatternType;
@@ -53,6 +55,20 @@ class SelfImprovementEngineTest {
 
         assertThat(insights).isNotEmpty();
         assertThat(insights).anyMatch(i -> i instanceof ErrorInsight);
+    }
+
+    @Test
+    void analyzeDetectsFailureSignal() {
+        var messages = List.<Message>of(
+                assistantWithToolUse("tu-1", "bash"),
+                toolResult("tu-1", "Permission pending timeout: no response from client within 120s", true)
+        );
+        var turn = new Turn(messages, StopReason.END_TURN, new Usage(0, 0));
+
+        var insights = engine.analyze(turn, List.of(), Map.of());
+
+        assertThat(insights).anyMatch(i -> i instanceof FailureInsight fi
+                && fi.type() == FailureType.PERMISSION_PENDING_TIMEOUT);
     }
 
     @Test
@@ -187,6 +203,26 @@ class SelfImprovementEngineTest {
 
         // Only 2 above threshold (0.9 and 0.8), edit_file one is 0.3
         assertThat(count).isEqualTo(2);
+    }
+
+    @Test
+    void persistStoresFailureSignals() {
+        var insights = List.<Insight>of(
+                new FailureInsight(
+                        FailureType.TIMEOUT,
+                        "tool",
+                        "bash",
+                        "Command timed out after 120 seconds",
+                        true,
+                        java.time.Instant.now(),
+                        0.9)
+        );
+
+        int count = engine.persist(insights, "test-session", tempDir);
+
+        assertThat(count).isEqualTo(1);
+        var stored = memoryStore.query(MemoryEntry.Category.FAILURE_SIGNAL, List.of(), 0);
+        assertThat(stored).hasSize(1);
     }
 
     // -- jaccardSimilarity tests --

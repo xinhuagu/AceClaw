@@ -36,6 +36,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
@@ -1029,6 +1030,7 @@ public final class StreamingAgentHandler {
 
         private static final int READ_BUFFER_SIZE = 65536;
         private static final long SELECT_TIMEOUT_MS = 100;
+        private static final long PERMISSION_RESPONSE_TIMEOUT_MS = 120_000;
 
         private final StreamContext delegate;
         private final CancellationToken cancellationToken;
@@ -1180,9 +1182,16 @@ public final class StreamingAgentHandler {
          */
         @Override
         public JsonNode readMessage() throws IOException {
+            long deadline = System.currentTimeMillis() + PERMISSION_RESPONSE_TIMEOUT_MS;
             while (!cancellationToken.isCancelled()) {
+                long now = System.currentTimeMillis();
+                long remaining = deadline - now;
+                if (remaining <= 0) {
+                    throw new SocketTimeoutException(
+                            "permission response timeout after " + PERMISSION_RESPONSE_TIMEOUT_MS + "ms");
+                }
                 try {
-                    JsonNode msg = permissionResponses.poll(500, TimeUnit.MILLISECONDS);
+                    JsonNode msg = permissionResponses.poll(Math.min(500, remaining), TimeUnit.MILLISECONDS);
                     if (msg != null) {
                         return msg;
                     }
@@ -1352,6 +1361,11 @@ public final class StreamingAgentHandler {
                                 delegate.name(), responseRequestId, remember);
                         return executeWithPostHooks(finalInputJson);
 
+                    } catch (SocketTimeoutException e) {
+                        log.info("Tool {} permission response timed out (requestId={})",
+                                delegate.name(), requestId);
+                        return new ToolResult(
+                                "Permission pending timeout: no response from client within 120s", true);
                     } catch (IOException e) {
                         log.error("Failed to communicate permission request for tool {}: {}",
                                 delegate.name(), e.getMessage());

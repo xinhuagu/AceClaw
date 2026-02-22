@@ -23,6 +23,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * Agent Turn
  *   ├── ErrorDetector  → ErrorInsights
  *   └── PatternDetector → PatternInsights
+ *   └── FailureSignalDetector → FailureInsights
  *         ↓
  *   SelfImprovementEngine (deduplicate + filter)
  *         ↓
@@ -53,6 +54,7 @@ public final class SelfImprovementEngine {
 
     private final ErrorDetector errorDetector;
     private final PatternDetector patternDetector;
+    private final FailureSignalDetector failureSignalDetector;
     private final AutoMemoryStore memoryStore;
     private final StrategyRefiner strategyRefiner;
 
@@ -68,7 +70,7 @@ public final class SelfImprovementEngine {
     public SelfImprovementEngine(ErrorDetector errorDetector,
                                   PatternDetector patternDetector,
                                   AutoMemoryStore memoryStore) {
-        this(errorDetector, patternDetector, memoryStore, null);
+        this(errorDetector, patternDetector, new FailureSignalDetector(), memoryStore, null);
     }
 
     /**
@@ -83,8 +85,20 @@ public final class SelfImprovementEngine {
                                   PatternDetector patternDetector,
                                   AutoMemoryStore memoryStore,
                                   StrategyRefiner strategyRefiner) {
+        this(errorDetector, patternDetector, new FailureSignalDetector(), memoryStore, strategyRefiner);
+    }
+
+    /**
+     * Creates a self-improvement engine with explicit detectors and optional strategy refinement.
+     */
+    public SelfImprovementEngine(ErrorDetector errorDetector,
+                                 PatternDetector patternDetector,
+                                 FailureSignalDetector failureSignalDetector,
+                                 AutoMemoryStore memoryStore,
+                                 StrategyRefiner strategyRefiner) {
         this.errorDetector = Objects.requireNonNull(errorDetector, "errorDetector");
         this.patternDetector = Objects.requireNonNull(patternDetector, "patternDetector");
+        this.failureSignalDetector = Objects.requireNonNull(failureSignalDetector, "failureSignalDetector");
         this.memoryStore = Objects.requireNonNull(memoryStore, "memoryStore");
         this.strategyRefiner = strategyRefiner;
     }
@@ -114,6 +128,12 @@ public final class SelfImprovementEngine {
             insights.addAll(patternDetector.analyze(turn, sessionHistory, toolMetrics));
         } catch (Exception e) {
             log.warn("PatternDetector failed: {}", e.getMessage());
+        }
+
+        try {
+            insights.addAll(failureSignalDetector.analyze(turn));
+        } catch (Exception e) {
+            log.warn("FailureSignalDetector failed: {}", e.getMessage());
         }
 
         return deduplicate(insights);

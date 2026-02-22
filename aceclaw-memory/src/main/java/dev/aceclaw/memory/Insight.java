@@ -10,15 +10,17 @@ import java.util.Objects;
  * and the input to the self-improvement engine. Each insight maps to a
  * {@link MemoryEntry.Category} for persistence in auto-memory.
  *
- * <p>Four variants:
+ * <p>Five variants:
  * <ul>
  *   <li>{@link ErrorInsight} — a tool error and its resolution</li>
  *   <li>{@link SuccessInsight} — a successful tool sequence for a task type</li>
  *   <li>{@link PatternInsight} — a recurring behavioral pattern</li>
  *   <li>{@link RecoveryRecipe} — a multi-step recovery procedure for a specific error type</li>
+ *   <li>{@link FailureInsight} — normalized runtime failure signal for continuous learning</li>
  * </ul>
  */
-public sealed interface Insight permits Insight.ErrorInsight, Insight.SuccessInsight, Insight.PatternInsight, Insight.RecoveryRecipe {
+public sealed interface Insight permits Insight.ErrorInsight, Insight.SuccessInsight,
+        Insight.PatternInsight, Insight.RecoveryRecipe, Insight.FailureInsight {
 
     /** Human-readable description of the insight. */
     String description();
@@ -237,6 +239,60 @@ public sealed interface Insight permits Insight.ErrorInsight, Insight.SuccessIns
         @Override
         public MemoryEntry.Category targetCategory() {
             return MemoryEntry.Category.RECOVERY_RECIPE;
+        }
+    }
+
+    /**
+     * A normalized runtime failure signal.
+     *
+     * @param type        normalized failure taxonomy
+     * @param source      where the signal came from (e.g. "permission-gate", "tool", "background-task")
+     * @param toolOrAgent tool or sub-agent name associated with the failure
+     * @param reason      human-readable reason
+     * @param retryable   whether retry is likely useful
+     * @param timestamp   event timestamp (ISO-8601 in persisted description)
+     * @param confidence  confidence score in [0.0, 1.0]
+     */
+    record FailureInsight(
+            FailureType type,
+            String source,
+            String toolOrAgent,
+            String reason,
+            boolean retryable,
+            java.time.Instant timestamp,
+            double confidence
+    ) implements Insight {
+
+        public FailureInsight {
+            Objects.requireNonNull(type, "type");
+            Objects.requireNonNull(source, "source");
+            Objects.requireNonNull(toolOrAgent, "toolOrAgent");
+            Objects.requireNonNull(reason, "reason");
+            Objects.requireNonNull(timestamp, "timestamp");
+            if (confidence < 0.0 || confidence > 1.0) {
+                throw new IllegalArgumentException("confidence must be in [0.0, 1.0], got: " + confidence);
+            }
+        }
+
+        @Override
+        public String description() {
+            return "type=%s source=%s tool_or_agent=%s retryable=%s reason=%s timestamp=%s".formatted(
+                    type.wireName(), source, toolOrAgent, retryable, reason, timestamp);
+        }
+
+        @Override
+        public List<String> tags() {
+            return List.of(
+                    "failure-signal",
+                    type.wireName(),
+                    source,
+                    toolOrAgent,
+                    retryable ? "retryable" : "non-retryable");
+        }
+
+        @Override
+        public MemoryEntry.Category targetCategory() {
+            return MemoryEntry.Category.FAILURE_SIGNAL;
         }
     }
 }

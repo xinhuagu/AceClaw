@@ -171,7 +171,8 @@ class AutoMemoryStoreTest {
                 MemoryEntry.Category.ERROR_RECOVERY,
                 MemoryEntry.Category.SUCCESSFUL_STRATEGY,
                 MemoryEntry.Category.ANTI_PATTERN,
-                MemoryEntry.Category.USER_FEEDBACK);
+                MemoryEntry.Category.USER_FEEDBACK,
+                MemoryEntry.Category.FAILURE_SIGNAL);
 
         for (var cat : selfLearningCats) {
             store.add(cat, "Entry for " + cat.name(), List.of("self-learning"), "test", true, null);

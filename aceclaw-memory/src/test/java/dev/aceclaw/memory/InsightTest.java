@@ -2,6 +2,7 @@ package dev.aceclaw.memory;
 
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -92,7 +93,10 @@ class InsightTest {
                 new Insight.SuccessInsight(List.of("grep"), "search", 0.6),
                 new Insight.PatternInsight(PatternType.WORKFLOW, "flow", 3, 0.7, List.of("e")),
                 new Insight.RecoveryRecipe("file not found", List.of(
-                        new Insight.RecoveryStep("check path", "glob", "*.java")), "read_file", 0.8)
+                        new Insight.RecoveryStep("check path", "glob", "*.java")), "read_file", 0.8),
+                new Insight.FailureInsight(
+                        FailureType.TIMEOUT, "tool", "bash", "command timed out",
+                        true, Instant.parse("2026-01-01T00:00:00Z"), 0.9)
         );
 
         for (Insight insight : insights) {
@@ -101,9 +105,26 @@ class InsightTest {
                 case Insight.SuccessInsight _ -> "success";
                 case Insight.PatternInsight _ -> "pattern";
                 case Insight.RecoveryRecipe _ -> "recipe";
+                case Insight.FailureInsight _ -> "failure";
             };
             assertThat(type).isNotEmpty();
         }
+    }
+
+    @Test
+    void failureInsightTargetCategoryAndTags() {
+        var insight = new Insight.FailureInsight(
+                FailureType.PERMISSION_PENDING_TIMEOUT,
+                "permission-gate",
+                "bash",
+                "Permission pending timeout",
+                true,
+                Instant.parse("2026-01-01T00:00:00Z"),
+                0.95);
+
+        assertThat(insight.targetCategory()).isEqualTo(MemoryEntry.Category.FAILURE_SIGNAL);
+        assertThat(insight.tags()).contains(
+                "failure-signal", "permission_pending_timeout", "permission-gate", "bash", "retryable");
     }
 
     @Test
