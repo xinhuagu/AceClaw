@@ -12,6 +12,8 @@ LOCATOR=""
 ROLE_HINT=""
 X=""
 Y=""
+RX=""
+RY=""
 EXPECT=""
 RETRIES=3
 BACKOFF_MS=200
@@ -23,7 +25,8 @@ usage() {
   cat <<USAGE
 Usage:
   robust_click.sh --app <AppName> [--window-hint <title>] [--locator <AX name>] [--role-hint <role>] \\
-                  [--x <int> --y <int>] [--expect <predicate>] [--retries <n>] [--backoff-ms <ms>] \\
+                  [--x <int> --y <int>] [--rx <0..1> --ry <0..1>] [--expect <predicate>] \\
+                  [--retries <n>] [--backoff-ms <ms>] \\
                   [--skip-display-check true|false] \\
                   [--tiny-target true|false] [--telemetry-log <path>]
 USAGE
@@ -108,6 +111,27 @@ verify_state() {
   osascript "$VERIFY_SCRIPT" "$app" "$expect" 2>/dev/null || echo "verify_failed:osascript_error"
 }
 
+window_bounds_csv() {
+  local app="$1"
+  osascript <<APPLESCRIPT
+on run
+	tell application "System Events"
+		if not (exists process "$app") then return ""
+		tell process "$app"
+			if not (exists window 1) then return ""
+			set p to position of window 1
+			set s to size of window 1
+			set wx to item 1 of p
+			set wy to item 2 of p
+			set ww to item 1 of s
+			set wh to item 2 of s
+			return (wx as text) & "," & (wy as text) & "," & (ww as text) & "," & (wh as text)
+		end tell
+	end tell
+end run
+APPLESCRIPT
+}
+
 point_in_any_display() {
   local x="$1"
   local y="$2"
@@ -176,6 +200,8 @@ while [[ $# -gt 0 ]]; do
     --role-hint) ROLE_HINT="${2:-}"; shift 2 ;;
     --x) X="${2:-}"; shift 2 ;;
     --y) Y="${2:-}"; shift 2 ;;
+    --rx) RX="${2:-}"; shift 2 ;;
+    --ry) RY="${2:-}"; shift 2 ;;
     --expect) EXPECT="${2:-}"; shift 2 ;;
     --retries) RETRIES="${2:-}"; shift 2 ;;
     --backoff-ms) BACKOFF_MS="${2:-}"; shift 2 ;;
@@ -192,8 +218,8 @@ if [[ -z "$APP" ]]; then
   usage
   exit 2
 fi
-if [[ -z "$LOCATOR" && ( -z "$X" || -z "$Y" ) ]]; then
-  echo "Either --locator or both --x/--y are required" >&2
+if [[ -z "$LOCATOR" && ( ( -z "$X" || -z "$Y" ) && ( -z "$RX" || -z "$RY" ) ) ]]; then
+  echo "Either --locator, --x/--y, or --rx/--ry are required" >&2
   exit 2
 fi
 if [[ "$RETRIES" -lt 1 ]]; then
@@ -219,6 +245,19 @@ for ((attempt=1; attempt<=RETRIES; attempt++)); do
     telemetry "click" "focus" "$attempt" "$verify" "$LAST_REASON" "$window_title" "$DISPLAY_JSON"
     sleep_backoff "$attempt"
     continue
+  fi
+
+  if [[ -n "$RX" || -n "$RY" ]]; then
+    bounds="$(window_bounds_csv "$APP" || true)"
+    if [[ -z "$bounds" ]]; then
+      LAST_REASON="focus_failed"
+      telemetry "click" "coordinate_fallback" "$attempt" "verify_skipped" "$LAST_REASON" "$window_title" "$DISPLAY_JSON"
+      sleep_backoff "$attempt"
+      continue
+    fi
+    IFS=',' read -r wx wy ww wh <<<"$bounds"
+    X="$(LC_ALL=C awk -v wx="$wx" -v ww="$ww" -v rx="$RX" 'BEGIN { printf "%d", wx + (ww * rx) }')"
+    Y="$(LC_ALL=C awk -v wy="$wy" -v wh="$wh" -v ry="$RY" 'BEGIN { printf "%d", wy + (wh * ry) }')"
   fi
 
   method="coordinate_fallback"
