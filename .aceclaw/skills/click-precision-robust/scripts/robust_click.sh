@@ -147,9 +147,16 @@ fallback_click() {
   local x="$1"
   local y="$2"
 
+  fallback_click_once "$x" "$y"
+}
+
+fallback_click_jitter() {
+  local x="$1"
+  local y="$2"
+
   if [[ "$TINY_TARGET" == "true" ]]; then
     local offsets=(
-      "0 0" "1 0" "-1 0" "0 1" "0 -1" "1 1" "-1 -1" "2 0" "0 2"
+      "1 0" "-1 0" "0 1" "0 -1" "1 1" "-1 -1" "2 0" "0 2"
     )
     for p in "${offsets[@]}"; do
       local dx dy
@@ -158,8 +165,6 @@ fallback_click() {
       fallback_click_once "$((x + dx))" "$((y + dy))"
       sleep 0.04
     done
-  else
-    fallback_click_once "$x" "$y"
   fi
 }
 
@@ -238,6 +243,10 @@ for ((attempt=1; attempt<=RETRIES; attempt++)); do
         continue
       fi
       fallback_click "$X" "$Y"
+      # Only use jitter fallback on retries to avoid accidental multi-click.
+      if [[ "$TINY_TARGET" == "true" && "$attempt" -gt 1 ]]; then
+        fallback_click_jitter "$X" "$Y"
+      fi
       method="coordinate_fallback"
       action_ok=true
     else
