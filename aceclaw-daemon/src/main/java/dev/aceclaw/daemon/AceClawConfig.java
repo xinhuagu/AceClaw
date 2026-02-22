@@ -120,7 +120,8 @@ public final class AceClawConfig {
         }
 
         // 3. Determine which profile to apply:
-        //    ACECLAW_PROFILE > ACECLAW_PROVIDER (if matching profile exists) > defaultProfile
+        //    ACECLAW_PROFILE > ACECLAW_PROVIDER (if matching profile exists)
+        //    > defaultProfile (only when ACECLAW_PROVIDER is not explicitly set)
         var envProfile = System.getenv("ACECLAW_PROFILE");
         var envProvider = System.getenv("ACECLAW_PROVIDER");
         if (envProfile != null && !envProfile.isBlank()) {
@@ -128,7 +129,8 @@ public final class AceClawConfig {
         } else if (envProvider != null && !envProvider.isBlank()
                 && config.profiles != null && config.profiles.containsKey(envProvider.toLowerCase())) {
             config.applyProfile(envProvider.toLowerCase());
-        } else if (config.defaultProfile != null && !config.defaultProfile.isBlank()) {
+        } else if ((envProvider == null || envProvider.isBlank())
+                && config.defaultProfile != null && !config.defaultProfile.isBlank()) {
             config.applyProfile(config.defaultProfile);
         }
 
