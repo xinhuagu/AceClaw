@@ -618,6 +618,73 @@ class DaemonIntegrationTest {
         }
     }
 
+    @Test
+    @Order(14)
+    void testPermissionStaleResponseIgnoredUntilMatchingRequestArrives() throws Exception {
+        try (var channel = connectToSocket()) {
+            String sessionId = createSession(channel, 1);
+
+            mockLlm.enqueueResponse(MockLlmClient.toolUseResponse(
+                    "Writing file.",
+                    "toolu_030", "write_file",
+                    "{\"file_path\":\"stale-check.txt\",\"content\":\"ok\"}"
+            ));
+            mockLlm.enqueueResponse(MockLlmClient.textResponse("Created stale-check.txt."));
+
+            var promptParams = objectMapper.createObjectNode();
+            promptParams.put("sessionId", sessionId);
+            promptParams.put("prompt", "Create stale-check.txt");
+            sendRequest(channel, "agent.prompt", promptParams, 2);
+
+            JsonNode finalResponse = null;
+            boolean sentStale = false;
+            boolean sentMatching = false;
+            long timeoutDeadline = System.currentTimeMillis() + 8_000;
+
+            while (System.currentTimeMillis() < timeoutDeadline) {
+                var msg = readMessage(channel);
+                if (msg == null) {
+                    throw new IOException("Connection closed while waiting for response");
+                }
+
+                if (msg.has("id") && !msg.get("id").isNull()) {
+                    finalResponse = msg;
+                    break;
+                }
+
+                if (msg.has("method") && "permission.request".equals(msg.get("method").asText())) {
+                    var permRequestId = msg.path("params").path("requestId").asText();
+
+                    // Send a stale approval first (wrong requestId).
+                    var staleParams = objectMapper.createObjectNode();
+                    staleParams.put("requestId", "perm-stale-0000");
+                    staleParams.put("approved", true);
+                    staleParams.put("remember", false);
+                    sendNotification(channel, "permission.response", staleParams);
+                    sentStale = true;
+
+                    // Then send the matching approval.
+                    var okParams = objectMapper.createObjectNode();
+                    okParams.put("requestId", permRequestId);
+                    okParams.put("approved", true);
+                    okParams.put("remember", false);
+                    sendNotification(channel, "permission.response", okParams);
+                    sentMatching = true;
+                }
+            }
+
+            assertThat(finalResponse).as("Should receive final response").isNotNull();
+            assertThat(sentStale).isTrue();
+            assertThat(sentMatching).isTrue();
+            assertThat(finalResponse.has("error")).isFalse();
+            assertThat(finalResponse.path("result").path("response").asText())
+                    .contains("Created stale-check.txt");
+            assertThat(Files.exists(workDir.resolve("stale-check.txt"))).isTrue();
+
+            destroySession(channel, sessionId, 3);
+        }
+    }
+
     // -- Helper methods --
 
     private SocketChannel connectToSocket() throws IOException {

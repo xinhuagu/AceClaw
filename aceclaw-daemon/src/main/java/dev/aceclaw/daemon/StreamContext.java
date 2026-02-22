@@ -32,4 +32,18 @@ public interface StreamContext {
      * @throws IOException if the read fails
      */
     JsonNode readMessage() throws IOException;
+
+    /**
+     * Reads the next JSON message from the client with a timeout budget in milliseconds.
+     *
+     * <p>Default implementation falls back to {@link #readMessage()} for contexts
+     * that don't provide timeout-aware reads.
+     *
+     * @param timeoutMs maximum wait time in milliseconds
+     * @return the parsed JSON message, or null if the connection was closed
+     * @throws IOException if the read fails
+     */
+    default JsonNode readMessage(long timeoutMs) throws IOException {
+        return readMessage();
+    }
 }
