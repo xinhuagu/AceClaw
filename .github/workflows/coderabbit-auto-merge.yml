@@ -18,7 +18,36 @@ jobs:
       github.event.pull_request.base.ref == 'main'
     runs-on: ubuntu-latest
     steps:
+      - name: Verify required checks are green
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          build_ok=$(
+            gh pr view "$PR_URL" --json statusCheckRollup --jq '
+              [.statusCheckRollup[]
+               | select(((.name // .context // "") | ascii_downcase) == "build")
+               | ((.conclusion // .state // "") | ascii_downcase == "success")
+              ] | any'
+          )
+          coderabbit_ok=$(
+            gh pr view "$PR_URL" --json statusCheckRollup --jq '
+              [.statusCheckRollup[]
+               | select(((.name // .context // "") | ascii_downcase) == "coderabbit")
+               | ((.conclusion // .state // "") | ascii_downcase == "success")
+              ] | any'
+          )
+
+          if [ "$build_ok" = "true" ] && [ "$coderabbit_ok" = "true" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Required checks are not green yet (build=$build_ok, coderabbit=$coderabbit_ok). Skipping auto-merge enable."
+          fi
+
       - name: Enable auto-merge (squash)
+        if: steps.gate.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
