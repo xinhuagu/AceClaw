@@ -69,11 +69,12 @@ public final class PatternDetector {
             List<AgentSession.ConversationMessage> sessionHistory,
             Map<String, ToolMetrics> toolMetrics) {
 
+        var safeMetrics = toolMetrics != null ? toolMetrics : Map.<String, ToolMetrics>of();
         var insights = new ArrayList<PatternInsight>();
 
         if (turn != null) {
             insights.addAll(detectRepeatedToolSequences(turn, sessionHistory));
-            insights.addAll(detectErrorCorrectionPatterns(turn, sessionHistory));
+            insights.addAll(detectErrorCorrectionPatterns(turn, sessionHistory, safeMetrics));
         }
 
         if (sessionHistory != null && !sessionHistory.isEmpty()) {
@@ -131,6 +132,12 @@ public final class PatternDetector {
 
     private List<PatternInsight> detectErrorCorrectionPatterns(
             Turn turn, List<AgentSession.ConversationMessage> sessionHistory) {
+        return detectErrorCorrectionPatterns(turn, sessionHistory, Map.of());
+    }
+
+    private List<PatternInsight> detectErrorCorrectionPatterns(
+            Turn turn, List<AgentSession.ConversationMessage> sessionHistory,
+            Map<String, ToolMetrics> toolMetrics) {
 
         // Collect error tool names from current turn
         var errorTools = new HashMap<String, List<String>>();
@@ -170,6 +177,18 @@ public final class PatternDetector {
                 }
 
                 double confidence = Math.min(1.0, 0.3 + frequency * 0.15);
+
+                // Boost confidence when session metrics confirm a high error rate for this tool
+                var metrics = toolMetrics.get(toolName);
+                if (metrics != null && metrics.totalInvocations() > 0) {
+                    double errorRate = (double) metrics.errorCount() / metrics.totalInvocations();
+                    if (errorRate >= 0.5) {
+                        confidence = Math.min(1.0, confidence + 0.15);
+                        evidence.add("metrics: error rate=" + String.format("%.0f%%", errorRate * 100)
+                                + " (" + metrics.errorCount() + "/" + metrics.totalInvocations() + ")");
+                    }
+                }
+
                 String description = "Tool '%s' repeatedly fails (%d times in session)"
                         .formatted(toolName, frequency);
 
