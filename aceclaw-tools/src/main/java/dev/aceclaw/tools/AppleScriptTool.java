@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -110,7 +111,8 @@ public final class AppleScriptTool implements Tool {
         if (!completed) {
             process.destroyForcibly();
             return new ToolResult(
-                    truncate(output) + "\n\n(AppleScript timed out after " + TIMEOUT_SECONDS + " seconds)",
+                    "AppleScript failed [reason=timeout]: "
+                            + truncate(output) + "\n\n(timed out after " + TIMEOUT_SECONDS + " seconds)",
                     true);
         }
 
@@ -118,7 +120,11 @@ public final class AppleScriptTool implements Tool {
         var truncated = truncate(output);
 
         if (exitCode != 0) {
-            return new ToolResult(truncated + "\n\n(exit code: " + exitCode + ")", true);
+            String reason = classifyFailureReason(truncated);
+            return new ToolResult(
+                    "AppleScript failed [reason=" + reason + "]: "
+                            + truncated + "\n\n(exit code: " + exitCode + ")",
+                    true);
         }
 
         return new ToolResult(truncated.isEmpty() ? "(no output)" : truncated, false);
@@ -128,5 +134,27 @@ public final class AppleScriptTool implements Tool {
         if (output.length() <= MAX_OUTPUT_CHARS) return output;
         return output.substring(0, MAX_OUTPUT_CHARS) +
                "\n... (output truncated, " + output.length() + " total characters)";
+    }
+
+    private static String classifyFailureReason(String output) {
+        String text = output == null ? "" : output.toLowerCase(Locale.ROOT);
+        if (text.contains("not allowed assistive access")
+                || text.contains("not authorized")
+                || text.contains("not permitted")) {
+            return "permission_blocked";
+        }
+        if (text.contains("variable") && text.contains("not defined")) {
+            return "script_logic_error";
+        }
+        if (text.contains("can't get")
+                || text.contains("cannot get")
+                || text.contains("doesn't understand")
+                || text.contains("invalid index")) {
+            return "element_not_found";
+        }
+        if (text.contains("timed out") || text.contains("timeout")) {
+            return "timeout";
+        }
+        return "execution_error";
     }
 }

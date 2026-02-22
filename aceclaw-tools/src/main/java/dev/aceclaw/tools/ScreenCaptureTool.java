@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.regex.Pattern;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -24,6 +25,8 @@ public final class ScreenCaptureTool implements Tool {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private static final int TIMEOUT_SECONDS = 30;
+    private static final Pattern REGION_PATTERN =
+            Pattern.compile("^(-?\\d+),(-?\\d+),(\\d+),(\\d+)$");
 
     private final Path workingDir;
 
@@ -80,8 +83,8 @@ public final class ScreenCaptureTool implements Tool {
         String region = null;
         if (input.has("region") && !input.get("region").isNull()
                 && !input.get("region").asText().isBlank()) {
-            region = input.get("region").asText();
-            if (!region.matches("\\d+,\\d+,\\d+,\\d+")) {
+            region = normalizeRegion(input.get("region").asText());
+            if (region == null) {
                 return new ToolResult(
                         "Invalid region format. Expected 'x,y,width,height' (e.g. '0,0,800,600')", true);
             }
@@ -164,6 +167,34 @@ public final class ScreenCaptureTool implements Tool {
         }
 
         return new ToolResult("OK", false);
+    }
+
+    /**
+     * Normalizes region input into screencapture-compatible format: x,y,width,height.
+     * Accepts light variations such as spaces, brackets, and semicolon separators.
+     */
+    static String normalizeRegion(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String normalized = raw.trim()
+                .replace(";", ",")
+                .replace("，", ",")
+                .replace("(", "")
+                .replace(")", "")
+                .replace("[", "")
+                .replace("]", "")
+                .replaceAll("\\s+", "");
+        var m = REGION_PATTERN.matcher(normalized);
+        if (!m.matches()) {
+            return null;
+        }
+        int width = Integer.parseInt(m.group(3));
+        int height = Integer.parseInt(m.group(4));
+        if (width <= 0 || height <= 0) {
+            return null;
+        }
+        return normalized;
     }
 
     /**

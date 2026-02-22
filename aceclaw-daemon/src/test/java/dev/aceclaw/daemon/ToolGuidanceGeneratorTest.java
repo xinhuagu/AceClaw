@@ -11,7 +11,7 @@ class ToolGuidanceGeneratorTest {
     @Test
     void fullToolSetMentionsAllWebTools() {
         var tools = Set.of("read_file", "write_file", "edit_file", "bash", "glob", "grep",
-                "list_directory", "web_fetch", "web_search", "browser", "screen_capture", "applescript");
+                "list_directory", "web_fetch", "web_search", "browser", "screen_capture", "applescript", "skill");
 
         var result = ToolGuidanceGenerator.generate(tools, true);
 
@@ -20,6 +20,7 @@ class ToolGuidanceGeneratorTest {
         assertThat(result).contains("browser");
         assertThat(result).contains("screen_capture");
         assertThat(result).contains("applescript");
+        assertThat(result).contains("click-precision-robust");
         assertThat(result).contains("list_directory");
         assertThat(result).contains("Brave Search API");
     }

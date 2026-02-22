@@ -95,9 +95,15 @@ public final class ToolGuidanceGenerator {
             sb.append("- **applescript**: macOS automation — controlling applications, system dialogs, ");
             sb.append("Finder operations. Only available on macOS.\n");
         }
+        if (registeredToolNames.contains("skill")) {
+            sb.append("- **skill**: For desktop UI clicking, always prefer `click-precision-robust` ");
+            sb.append("instead of ad-hoc AppleScript/cliclick loops. Require post-click verification and ");
+            sb.append("bounded retries with explicit failure reasons.\n");
+        }
         if (registeredToolNames.contains("screen_capture")) {
             sb.append("- **screen_capture**: ONLY for visual tasks (UI screenshots, visual debugging). ");
             sb.append("Never use to \"read\" information that can be fetched as text.\n");
+            sb.append("  Region must be `x,y,width,height`; normalize before calling.\n");
         }
 
         // Fallback chain — adapts based on available web tools

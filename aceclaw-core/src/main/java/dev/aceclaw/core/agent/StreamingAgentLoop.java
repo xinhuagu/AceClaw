@@ -37,6 +37,10 @@ public final class StreamingAgentLoop {
 
     /** Maximum characters allowed in a single tool result before truncation. */
     private static final int MAX_TOOL_RESULT_CHARS = 30_000;
+    /** Hard guardrail to prevent runaway tool loops in a single turn. */
+    private static final int MAX_TOOL_CALLS_PER_TURN = 24;
+    /** Abort if repeated tool errors indicate the agent is stuck. */
+    private static final int MAX_CONSECUTIVE_TOOL_ERRORS = 8;
 
     private final LlmClient llmClient;
     private final ToolRegistry toolRegistry;
@@ -136,6 +140,8 @@ public final class StreamingAgentLoop {
         int totalOutputTokens = 0;
         int totalCacheCreationTokens = 0;
         int totalCacheReadTokens = 0;
+        int toolCallsThisTurn = 0;
+        int consecutiveToolErrors = 0;
 
         // Track actual input tokens from API for accurate compaction decisions
         int lastInputTokens = -1;
@@ -252,10 +258,47 @@ public final class StreamingAgentLoop {
                                 .toList();
                         log.debug("Streaming tool use requested: {} tool(s)", toolUseBlocks.size());
 
+                        if (toolCallsThisTurn + toolUseBlocks.size() > MAX_TOOL_CALLS_PER_TURN) {
+                            var limitMessage = Message.assistant(
+                                    "Stopping due to tool safety limit: too many tool calls in one turn "
+                                            + "(limit=" + MAX_TOOL_CALLS_PER_TURN + "). "
+                                            + "Please retry with a narrower plan.");
+                            allMessages.add(limitMessage);
+                            newMessages.add(limitMessage);
+                            var totalUsage = new Usage(
+                                    totalInputTokens, totalOutputTokens,
+                                    totalCacheCreationTokens, totalCacheReadTokens);
+                            var turn = new Turn(newMessages, StopReason.ERROR, totalUsage, compactionResult);
+                            publishTurnCompleted(turnNumber, turnStart);
+                            return turn;
+                        }
+
                         var toolResults = executeTools(toolUseBlocks, eventHandler);
+                        toolCallsThisTurn += toolUseBlocks.size();
+                        int errorsInBatch = (int) toolResults.stream().filter(ContentBlock.ToolResult::isError).count();
+                        if (errorsInBatch == toolResults.size() && !toolResults.isEmpty()) {
+                            consecutiveToolErrors += errorsInBatch;
+                        } else {
+                            consecutiveToolErrors = 0;
+                        }
                         var toolResultMessage = Message.toolResults(toolResults);
                         allMessages.add(toolResultMessage);
                         newMessages.add(toolResultMessage);
+
+                        if (consecutiveToolErrors >= MAX_CONSECUTIVE_TOOL_ERRORS) {
+                            var stuckMessage = Message.assistant(
+                                    "Stopping because repeated tool errors suggest the workflow is stuck "
+                                            + "(consecutive errors=" + consecutiveToolErrors + "). "
+                                            + "Please adjust strategy or input.");
+                            allMessages.add(stuckMessage);
+                            newMessages.add(stuckMessage);
+                            var totalUsage = new Usage(
+                                    totalInputTokens, totalOutputTokens,
+                                    totalCacheCreationTokens, totalCacheReadTokens);
+                            var turn = new Turn(newMessages, StopReason.ERROR, totalUsage, compactionResult);
+                            publishTurnCompleted(turnNumber, turnStart);
+                            return turn;
+                        }
 
                         // Checkpoint 3: after tool execution
                         if (cancellationToken != null && cancellationToken.isCancelled()) {
