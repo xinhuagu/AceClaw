@@ -59,7 +59,12 @@ def best_match(shot, tpl, mask=None):
             res = cv2.matchTemplate(shot, tpl, method)
         _min_val, max_val, _min_loc, max_loc = cv2.minMaxLoc(res)
     except Exception:
-        return -1.0, (0, 0)
+        # Fallback: retry without mask when masked matching is unsupported/unstable.
+        try:
+            res = cv2.matchTemplate(shot, tpl, method)
+            _min_val, max_val, _min_loc, max_loc = cv2.minMaxLoc(res)
+        except Exception:
+            return -1.0, (0, 0)
     if not math.isfinite(float(max_val)):
         return -1.0, (0, 0)
     return float(max_val), max_loc
