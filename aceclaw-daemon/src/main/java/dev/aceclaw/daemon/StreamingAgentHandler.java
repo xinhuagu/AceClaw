@@ -1342,6 +1342,11 @@ public final class StreamingAgentHandler {
 
                         var responseRequestId = responseParams.has("requestId")
                                 ? responseParams.get("requestId").asText() : "";
+                        if (!requestId.equals(responseRequestId)) {
+                            log.warn("Tool {} permission response requestId mismatch: expected={}, got={}",
+                                    delegate.name(), requestId, responseRequestId);
+                            return new ToolResult("Permission denied: stale permission response", true);
+                        }
                         boolean approved = responseParams.has("approved")
                                 && responseParams.get("approved").asBoolean(false);
                         boolean remember = responseParams.has("remember")
@@ -1364,8 +1369,11 @@ public final class StreamingAgentHandler {
                     } catch (SocketTimeoutException e) {
                         log.info("Tool {} permission response timed out (requestId={})",
                                 delegate.name(), requestId);
+                        long timeoutSeconds = TimeUnit.MILLISECONDS.toSeconds(
+                                CancelAwareStreamContext.PERMISSION_RESPONSE_TIMEOUT_MS);
                         return new ToolResult(
-                                "Permission pending timeout: no response from client within 120s", true);
+                                "Permission pending timeout: no response from client within "
+                                        + timeoutSeconds + "s", true);
                     } catch (IOException e) {
                         log.error("Failed to communicate permission request for tool {}: {}",
                                 delegate.name(), e.getMessage());
