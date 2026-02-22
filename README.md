@@ -26,6 +26,7 @@ AceClaw is a general-purpose autonomous agent — not limited to coding tasks:
 - **Software Engineering** — Read, write, edit code; run tests; debug errors; refactor across files
 - **Research & Analysis** — Web search, page fetching, document summarization, data extraction
 - **DevOps & Automation** — Shell commands, cron scheduling, multi-step workflows, health monitoring
+- **Desktop Automation** — AppleScript-driven UI automation with robust click precision skill on macOS
 - **Knowledge Management** — Persistent memory across sessions, workspace-scoped notes, pattern recall
 - **Task Planning** — Automatic complexity estimation, multi-step plan generation, sequential execution
 - **Extensible via MCP** — Connect any external tool through the Model Context Protocol
@@ -53,6 +54,7 @@ AceClaw learns from its own behavior — no LLM calls required. Every tool execu
 - **Baseline evaluation** — Continuous-learning KPIs and collection workflow are documented in `docs/continuous-learning-plan.md` with report templates and sample output.
 
 See [Self-Learning Pipeline](docs/self-learning.md) for the full architecture.
+For the robust click precision MVP, see [Click Precision Robust](docs/click-precision-robust.md).
 
 Collect a local baseline snapshot:
 

@@ -1,0 +1,37 @@
+#!/usr/bin/osascript -l JavaScript
+ObjC.import('AppKit');
+
+function frameToObj(frame) {
+  return {
+    x: Number(frame.origin.x),
+    y: Number(frame.origin.y),
+    width: Number(frame.size.width),
+    height: Number(frame.size.height)
+  };
+}
+
+function run() {
+  const screens = $.NSScreen.screens.js;
+  const out = [];
+
+  for (let i = 0; i < screens.length; i++) {
+    const s = screens[i];
+    const frame = frameToObj(s.frame);
+    const visible = frameToObj(s.visibleFrame);
+    const scale = Number(s.backingScaleFactor);
+    const isMain = ObjC.unwrap(s.isEqual($.NSScreen.mainScreen));
+
+    out.push({
+      index: i,
+      is_main: Boolean(isMain),
+      scale: scale,
+      frame: frame,
+      visible_frame: visible
+    });
+  }
+
+  return JSON.stringify({
+    source: "NSScreen",
+    screens: out
+  });
+}
