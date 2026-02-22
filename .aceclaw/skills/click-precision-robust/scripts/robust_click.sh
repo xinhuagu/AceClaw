@@ -47,6 +47,15 @@ now_iso() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
 }
 
+sleep_backoff() {
+  local attempt="$1"
+  local total_ms
+  local seconds
+  total_ms=$((BACKOFF_MS * attempt))
+  seconds="$(LC_ALL=C awk -v ms="$total_ms" 'BEGIN { printf "%.3f", ms / 1000 }')"
+  sleep "$seconds"
+}
+
 display_context_json() {
   if [[ -x "$DISPLAY_SCRIPT" ]]; then
     osascript -l JavaScript "$DISPLAY_SCRIPT" 2>/dev/null || echo '{"source":"unknown","screens":[]}'
@@ -200,7 +209,7 @@ for ((attempt=1; attempt<=RETRIES; attempt++)); do
     LAST_REASON="focus_failed"
     verify="focus_failed"
     telemetry "click" "focus" "$attempt" "$verify" "$LAST_REASON" "$window_title" "$DISPLAY_JSON"
-    sleep "$(awk "BEGIN {print ($BACKOFF_MS * $attempt)/1000}")"
+    sleep_backoff "$attempt"
     continue
   fi
 
@@ -222,7 +231,7 @@ for ((attempt=1; attempt<=RETRIES; attempt++)); do
       if ! point_in_any_display "$X" "$Y" "$DISPLAY_JSON"; then
         LAST_REASON="transform_mismatch"
         telemetry "click" "$method" "$attempt" "verify_skipped" "$LAST_REASON" "$window_title" "$DISPLAY_JSON"
-        sleep "$(awk "BEGIN {print ($BACKOFF_MS * $attempt)/1000}")"
+        sleep_backoff "$attempt"
         continue
       fi
       fallback_click "$X" "$Y"
@@ -230,7 +239,7 @@ for ((attempt=1; attempt<=RETRIES; attempt++)); do
       action_ok=true
     else
       telemetry "click" "$method" "$attempt" "verify_skipped" "element_not_found" "$window_title" "$DISPLAY_JSON"
-      sleep "$(awk "BEGIN {print ($BACKOFF_MS * $attempt)/1000}")"
+      sleep_backoff "$attempt"
       continue
     fi
   fi
@@ -244,7 +253,7 @@ for ((attempt=1; attempt<=RETRIES; attempt++)); do
 
   LAST_REASON="verify_failed"
   telemetry "click" "$method" "$attempt" "$verify" "$LAST_REASON" "$window_title" "$DISPLAY_JSON"
-  sleep "$(awk "BEGIN {print ($BACKOFF_MS * $attempt)/1000}")"
+  sleep_backoff "$attempt"
 done
 
 echo "{\"ok\":false,\"method\":null,\"attempt\":$RETRIES,\"failure_reason\":\"retry_exhausted\",\"last_reason\":\"$LAST_REASON\"}"
