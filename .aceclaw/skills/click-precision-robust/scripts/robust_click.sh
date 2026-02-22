@@ -21,6 +21,7 @@ TINY_TARGET=false
 SKIP_DISPLAY_CHECK=false
 CAPTURE_BEFORE=true
 CAPTURE_DIR="/tmp"
+OSASCRIPT_TIMEOUT_SEC=6
 TELEMETRY_LOG="/tmp/aceclaw-click-precision.log"
 
 usage() {
@@ -29,6 +30,7 @@ Usage:
   robust_click.sh --app <AppName> [--window-hint <title>] [--locator <AX name>] [--role-hint <role>] \\
                   [--x <int> --y <int>] [--rx <0..1> --ry <0..1>] [--expect <predicate>] \\
                   [--retries <n>] [--backoff-ms <ms>] \\
+                  [--osascript-timeout-sec <n>] \\
                   [--capture-before true|false] [--capture-dir <path>] \\
                   [--skip-display-check true|false] \\
                   [--tiny-target true|false] [--telemetry-log <path>]
@@ -64,6 +66,34 @@ sleep_backoff() {
   sleep "$seconds"
 }
 
+osascript_safe() {
+  local timeout_sec="${OSASCRIPT_TIMEOUT_SEC:-6}"
+  local out_file err_file pid elapsed
+  out_file="$(mktemp)"
+  err_file="$(mktemp)"
+  /usr/bin/osascript "$@" >"$out_file" 2>"$err_file" &
+  pid=$!
+  elapsed=0
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 1
+    elapsed=$((elapsed + 1))
+    if [[ "$elapsed" -ge "$timeout_sec" ]]; then
+      kill -TERM "$pid" 2>/dev/null || true
+      sleep 1
+      kill -KILL "$pid" 2>/dev/null || true
+      rm -f "$out_file" "$err_file"
+      return 124
+    fi
+  done
+  wait "$pid"
+  local rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    cat "$out_file"
+  fi
+  rm -f "$out_file" "$err_file"
+  return "$rc"
+}
+
 display_context_json() {
   if [[ -x "$DISPLAY_SCRIPT" ]]; then
     osascript -l JavaScript "$DISPLAY_SCRIPT" 2>/dev/null || echo '{"source":"unknown","screens":[]}'
@@ -75,7 +105,8 @@ display_context_json() {
 focus_target_window() {
   local app="$1"
   local hint="$2"
-  osascript <<APPLESCRIPT
+  local out rc
+  out="$(osascript_safe <<APPLESCRIPT
 on run
 	try
 		tell application "$app" to activate
@@ -102,6 +133,17 @@ on run
 	return "ok"
 end run
 APPLESCRIPT
+)"
+  rc=$?
+  if [[ "$rc" -eq 124 ]]; then
+    echo "focus_failed:timeout"
+    return 0
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    echo "focus_failed:osascript_error"
+    return 0
+  fi
+  echo "$out"
 }
 
 verify_state() {
@@ -111,7 +153,18 @@ verify_state() {
     echo "ok"
     return 0
   fi
-  osascript "$VERIFY_SCRIPT" "$app" "$expect" 2>/dev/null || echo "verify_failed:osascript_error"
+  local out rc
+  out="$(osascript_safe "$VERIFY_SCRIPT" "$app" "$expect" 2>/dev/null || true)"
+  rc=$?
+  if [[ "$rc" -eq 124 ]]; then
+    echo "verify_failed:timeout"
+    return 0
+  fi
+  if [[ "$rc" -ne 0 ]]; then
+    echo "verify_failed:osascript_error"
+    return 0
+  fi
+  echo "$out"
 }
 
 capture_screen_preflight() {
@@ -129,7 +182,8 @@ capture_screen_preflight() {
 
 window_bounds_csv() {
   local app="$1"
-  osascript <<APPLESCRIPT
+  local out rc
+  out="$(osascript_safe <<APPLESCRIPT
 on run
 	tell application "System Events"
 		if not (exists process "$app") then return ""
@@ -146,6 +200,13 @@ on run
 	end tell
 end run
 APPLESCRIPT
+)"
+  rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    echo ""
+    return 0
+  fi
+  echo "$out"
 }
 
 point_in_any_display() {
@@ -221,6 +282,7 @@ while [[ $# -gt 0 ]]; do
     --expect) EXPECT="${2:-}"; shift 2 ;;
     --retries) RETRIES="${2:-}"; shift 2 ;;
     --backoff-ms) BACKOFF_MS="${2:-}"; shift 2 ;;
+    --osascript-timeout-sec) OSASCRIPT_TIMEOUT_SEC="${2:-6}"; shift 2 ;;
     --capture-before) CAPTURE_BEFORE="${2:-true}"; shift 2 ;;
     --capture-dir) CAPTURE_DIR="${2:-/tmp}"; shift 2 ;;
     --skip-display-check) SKIP_DISPLAY_CHECK="${2:-false}"; shift 2 ;;

@@ -96,9 +96,9 @@ public final class ToolGuidanceGenerator {
             sb.append("Finder operations. Only available on macOS.\n");
         }
         if (registeredToolNames.contains("skill")) {
-            sb.append("- **skill**: For desktop UI clicking, always prefer `click-precision-robust` ");
-            sb.append("instead of ad-hoc AppleScript/cliclick loops. Require post-click verification and ");
-            sb.append("bounded retries with explicit failure reasons.\n");
+            sb.append("- **skill**: `click-precision-robust` is optional for deterministic desktop flows ");
+            sb.append("when templates/coordinates are prepared. If skill execution is unstable or blocked, ");
+            sb.append("immediately fall back to direct applescript/cliclick actions.\n");
             sb.append("  For Microsoft Teams calendar tasks, do this sequence: ");
             sb.append("click `Calendar` first, verify `element_exists=Go to next week`, ");
             sb.append("then click `Go to next week`.\n");
