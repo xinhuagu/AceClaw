@@ -19,6 +19,8 @@ RETRIES=3
 BACKOFF_MS=200
 TINY_TARGET=false
 SKIP_DISPLAY_CHECK=false
+CAPTURE_BEFORE=true
+CAPTURE_DIR="/tmp"
 TELEMETRY_LOG="/tmp/aceclaw-click-precision.log"
 
 usage() {
@@ -27,6 +29,7 @@ Usage:
   robust_click.sh --app <AppName> [--window-hint <title>] [--locator <AX name>] [--role-hint <role>] \\
                   [--x <int> --y <int>] [--rx <0..1> --ry <0..1>] [--expect <predicate>] \\
                   [--retries <n>] [--backoff-ms <ms>] \\
+                  [--capture-before true|false] [--capture-dir <path>] \\
                   [--skip-display-check true|false] \\
                   [--tiny-target true|false] [--telemetry-log <path>]
 USAGE
@@ -109,6 +112,19 @@ verify_state() {
     return 0
   fi
   osascript "$VERIFY_SCRIPT" "$app" "$expect" 2>/dev/null || echo "verify_failed:osascript_error"
+}
+
+capture_screen_preflight() {
+  local out
+  if [[ "$CAPTURE_BEFORE" != "true" ]]; then
+    return 0
+  fi
+  if ! command -v screencapture >/dev/null 2>&1; then
+    return 0
+  fi
+  mkdir -p "$CAPTURE_DIR" 2>/dev/null || true
+  out="$CAPTURE_DIR/aceclaw-preclick-$(date +%Y%m%d-%H%M%S)-$$.png"
+  screencapture -x "$out" >/dev/null 2>&1 || true
 }
 
 window_bounds_csv() {
@@ -205,6 +221,8 @@ while [[ $# -gt 0 ]]; do
     --expect) EXPECT="${2:-}"; shift 2 ;;
     --retries) RETRIES="${2:-}"; shift 2 ;;
     --backoff-ms) BACKOFF_MS="${2:-}"; shift 2 ;;
+    --capture-before) CAPTURE_BEFORE="${2:-true}"; shift 2 ;;
+    --capture-dir) CAPTURE_DIR="${2:-/tmp}"; shift 2 ;;
     --skip-display-check) SKIP_DISPLAY_CHECK="${2:-false}"; shift 2 ;;
     --tiny-target) TINY_TARGET="${2:-false}"; shift 2 ;;
     --telemetry-log) TELEMETRY_LOG="${2:-}"; shift 2 ;;
@@ -236,6 +254,7 @@ LAST_REASON=""
 
 for ((attempt=1; attempt<=RETRIES; attempt++)); do
   window_title=""
+  capture_screen_preflight
   focus_result="$(focus_target_window "$APP" "$WINDOW_HINT" || true)"
   if [[ "$focus_result" == ok:* ]]; then
     window_title="${focus_result#ok:}"

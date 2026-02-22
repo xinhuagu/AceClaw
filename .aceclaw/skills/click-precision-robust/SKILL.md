@@ -16,6 +16,7 @@ Use this skill for desktop click actions where reliability matters (tiny control
 - Mandatory post-click verification before declaring success.
 - Bounded retries with explicit failure reason.
 - Structured telemetry for every attempt.
+- Pre-click screenshot capture by default (for calibration/debugging).
 
 ## Runtime
 
@@ -103,6 +104,12 @@ Fields include:
 - `display_context`
 - `verify_result`
 - `failure_reason`
+
+Pre-click screenshots are saved to:
+
+- default: `/tmp/aceclaw-preclick-*.png`
+- override: `--capture-dir <path>`
+- disable: `--capture-before false`
 
 ## Notes
 
