@@ -69,11 +69,12 @@ public final class PatternDetector {
             List<AgentSession.ConversationMessage> sessionHistory,
             Map<String, ToolMetrics> toolMetrics) {
 
+        var safeMetrics = toolMetrics != null ? toolMetrics : Map.<String, ToolMetrics>of();
         var insights = new ArrayList<PatternInsight>();
 
         if (turn != null) {
             insights.addAll(detectRepeatedToolSequences(turn, sessionHistory));
-            insights.addAll(detectErrorCorrectionPatterns(turn, sessionHistory, toolMetrics));
+            insights.addAll(detectErrorCorrectionPatterns(turn, sessionHistory, safeMetrics));
         }
 
         if (sessionHistory != null && !sessionHistory.isEmpty()) {

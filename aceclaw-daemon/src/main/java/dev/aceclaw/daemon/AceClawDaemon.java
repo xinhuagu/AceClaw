@@ -357,6 +357,7 @@ public final class AceClawDaemon {
         if (memoryStore != null) {
             final var extractionJournal = journal;
             final var archiveDir = markdownStore != null ? markdownStore.memoryDir() : null;
+            final var agentHandlerForCleanup = agentHandler;
             sessionManager.setSessionEndCallback(session -> {
                 var extracted = SessionEndExtractor.extract(session.messages());
                 for (var mem : extracted) {
@@ -371,8 +372,10 @@ public final class AceClawDaemon {
                     log.info("Extracted {} memories from session {} on destroy",
                             extracted.size(), session.id());
                 }
+                var shortId = session.id().length() > 8
+                        ? session.id().substring(0, 8) : session.id();
                 if (extractionJournal != null) {
-                    extractionJournal.append("Session " + session.id().substring(0, 8) +
+                    extractionJournal.append("Session " + shortId +
                             " ended: " + session.messages().size() + " messages, " +
                             extracted.size() + " memories extracted");
                 }
@@ -390,6 +393,10 @@ public final class AceClawDaemon {
                 } catch (Exception e) {
                     log.warn("Memory consolidation failed: {}", e.getMessage());
                 }
+
+                // Clean up session-scoped resources in the agent handler
+                agentHandlerForCleanup.clearSessionOverride(session.id());
+                agentHandlerForCleanup.clearSessionMetrics(session.id());
             });
         }
 

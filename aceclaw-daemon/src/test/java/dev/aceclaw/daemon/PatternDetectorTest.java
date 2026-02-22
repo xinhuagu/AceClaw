@@ -394,6 +394,23 @@ class PatternDetectorTest {
         assertThat(detector.analyze(turn, history, metrics)).isNotEmpty();
     }
 
+    @Test
+    void nullMetricsMapDoesNotBreakAnalysis() {
+        var turnMessages = List.<Message>of(
+                assistantWithToolUse("t1", "read_file"),
+                toolResult("t1", "File not found", true),
+                Message.assistant("Could not read the file")
+        );
+        var history = List.<AgentSession.ConversationMessage>of(
+                new AgentSession.ConversationMessage.Assistant("Tool error: read_file /old.txt not found"),
+                new AgentSession.ConversationMessage.User("try again")
+        );
+        var turn = new Turn(turnMessages, StopReason.END_TURN, new Usage(0, 0));
+
+        // Null metrics map — should not throw (null-guard in analyze())
+        assertThat(detector.analyze(turn, history, null)).isNotEmpty();
+    }
+
     // -- helpers --
 
     private static Message assistantWithToolUse(String id, String toolName) {

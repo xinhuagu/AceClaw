@@ -398,7 +398,8 @@ public final class StreamingAgentHandler {
             // Take an immutable snapshot of metrics before handing off to the virtual thread
             final var metricsSnapshot = metricsCollector != null
                     ? metricsCollector.allMetrics() : Map.<String, dev.aceclaw.core.agent.ToolMetrics>of();
-            Thread.ofVirtual().name("self-improve-" + sessionId.substring(0, 8)).start(() -> {
+            var shortId = sessionId.length() > 8 ? sessionId.substring(0, 8) : sessionId;
+            Thread.ofVirtual().name("self-improve-" + shortId).start(() -> {
                 try {
                     var insights = selfImprovementEngine.analyze(turnRef, historyRef, metricsSnapshot);
                     if (!insights.isEmpty()) {
@@ -677,6 +678,7 @@ public final class StreamingAgentHandler {
      * Clears the tool metrics collector for a session. Call on session close to free memory.
      */
     public void clearSessionMetrics(String sessionId) {
+        java.util.Objects.requireNonNull(sessionId, "sessionId");
         sessionMetrics.remove(sessionId);
     }
 
