@@ -27,7 +27,7 @@ public final class LlmClientFactory {
     /** Default base URLs for known providers (without trailing slash). */
     private static final Map<String, String> DEFAULT_BASE_URLS = Map.of(
             "openai", "https://api.openai.com",
-            "openai-codex", "https://api.openai.com",
+            "openai-codex", "https://chatgpt.com/backend-api/codex",
             "groq", "https://api.groq.com/openai",
             "together", "https://api.together.xyz",
             "mistral", "https://api.mistral.ai",

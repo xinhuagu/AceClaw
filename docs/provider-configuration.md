@@ -202,7 +202,7 @@ AceClaw works with any provider that implements the OpenAI Chat Completions API.
 | Provider | Config Name | Default Base URL |
 |----------|-------------|-----------------|
 | OpenAI | `openai` | `https://api.openai.com` |
-| OpenAI Codex OAuth | `openai-codex` | `https://api.openai.com` |
+| OpenAI Codex OAuth | `openai-codex` | `https://chatgpt.com/backend-api/codex` |
 | Groq | `groq` | `https://api.groq.com/openai` |
 | Together | `together` | `https://api.together.xyz` |
 | Mistral | `mistral` | `https://api.mistral.ai` |

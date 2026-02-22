@@ -57,6 +57,8 @@ public final class AceClawConfig {
 
     /** Claude CLI credentials directory. */
     private static final Path CLAUDE_CLI_DIR = Path.of(System.getProperty("user.home"), ".claude");
+    /** Codex CLI credentials file for OpenAI Codex OAuth. */
+    private static final Path CODEX_AUTH_FILE = Path.of(System.getProperty("user.home"), ".codex", "auth.json");
 
     private String provider;
     private String baseUrl;
@@ -171,7 +173,13 @@ public final class AceClawConfig {
             config.permissionMode = envPermMode.toLowerCase();
         }
 
-        // 5. If apiKey is an OAuth token and no refresh token configured,
+        // 5. Provider-specific credential discovery fallback
+        if ((config.apiKey == null || config.apiKey.isBlank())
+                && "openai-codex".equals(config.provider)) {
+            config.loadCodexAuthToken();
+        }
+
+        // 6. If apiKey is an OAuth token and no refresh token configured,
         //    try to load the refresh token from Claude CLI credentials
         if (config.apiKey != null && config.apiKey.startsWith("sk-ant-oat")
                 && config.refreshToken == null) {
@@ -438,6 +446,35 @@ public final class AceClawConfig {
                     log.debug("Could not read Claude CLI credentials from {}: {}", credFile, e.getMessage());
                 }
             }
+        }
+    }
+
+    /**
+     * Attempts to load OpenAI Codex access token from Codex CLI credential file.
+     * Supports both modern {@code tokens.access_token} and legacy {@code OPENAI_API_KEY}.
+     */
+    private void loadCodexAuthToken() {
+        if (!Files.isRegularFile(CODEX_AUTH_FILE)) {
+            return;
+        }
+        try {
+            var mapper = new ObjectMapper();
+            var tree = mapper.readTree(CODEX_AUTH_FILE.toFile());
+
+            String token = null;
+            var tokens = tree.path("tokens");
+            if (tokens.has("access_token")) {
+                token = tokens.get("access_token").asText(null);
+            }
+            if ((token == null || token.isBlank()) && tree.has("OPENAI_API_KEY")) {
+                token = tree.get("OPENAI_API_KEY").asText(null);
+            }
+            if (token != null && !token.isBlank()) {
+                this.apiKey = token;
+                log.info("Loaded OpenAI Codex access token from {}", CODEX_AUTH_FILE);
+            }
+        } catch (IOException e) {
+            log.debug("Could not read Codex auth file {}: {}", CODEX_AUTH_FILE, e.getMessage());
         }
     }
 
