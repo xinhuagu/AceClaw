@@ -4,10 +4,23 @@
 language: en
 reviews:
   profile: chill
-  request_changes_workflow: false
+  request_changes_workflow: true
   high_level_summary: true
   poem: false
   review_status: true
+  pre_merge_checks:
+    custom_checks:
+      - name: "Block major correctness and security risks"
+        mode: error
+        instructions: |
+          Fail this check when the PR introduces any major/high-risk issue, including:
+          - auth or permission bypass
+          - stale approval or request/response correlation bugs
+          - race conditions or concurrency bugs
+          - data loss/corruption risks
+          - unsafe error handling that can hide failures
+          - missing tests for high-risk behavioral changes
+          If no such issues exist, pass this check.
   auto_review:
     enabled: true
     drafts: false
