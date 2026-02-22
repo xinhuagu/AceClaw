@@ -21,6 +21,7 @@ class ToolGuidanceGeneratorTest {
         assertThat(result).contains("screen_capture");
         assertThat(result).contains("applescript");
         assertThat(result).contains("click-precision-robust");
+        assertThat(result).contains("click `Calendar` first");
         assertThat(result).contains("list_directory");
         assertThat(result).contains("Brave Search API");
     }

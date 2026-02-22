@@ -48,6 +48,26 @@ bash .aceclaw/skills/click-precision-robust/scripts/robust_click.sh \
   --expect "frontmost_app=AnyApp"
 ```
 
+Microsoft Teams weekly agenda usage (recommended sequence):
+
+```bash
+# Step 1: enter Calendar area first
+bash .aceclaw/skills/click-precision-robust/scripts/robust_click.sh \
+  --app "Microsoft Teams" \
+  --locator "Calendar" \
+  --expect "element_exists=Go to next week" \
+  --retries 2 \
+  --backoff-ms 300
+
+# Step 2: then move week
+bash .aceclaw/skills/click-precision-robust/scripts/robust_click.sh \
+  --app "Microsoft Teams" \
+  --locator "Go to next week" \
+  --expect "window_title_contains=Mar" \
+  --retries 3 \
+  --backoff-ms 400
+```
+
 ## Expectation Contract
 
 `--expect` supports:

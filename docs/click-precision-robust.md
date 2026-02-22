@@ -39,6 +39,26 @@ bash .aceclaw/skills/click-precision-robust/scripts/robust_click.sh \
   --backoff-ms 220
 ```
 
+For Microsoft Teams weekly meeting lookup, use a two-step sequence:
+
+```bash
+# 1) Enter Calendar first, then verify target control exists
+bash .aceclaw/skills/click-precision-robust/scripts/robust_click.sh \
+  --app "Microsoft Teams" \
+  --locator "Calendar" \
+  --expect "element_exists=Go to next week" \
+  --retries 2 \
+  --backoff-ms 300
+
+# 2) Move to next week
+bash .aceclaw/skills/click-precision-robust/scripts/robust_click.sh \
+  --app "Microsoft Teams" \
+  --locator "Go to next week" \
+  --expect "window_title_contains=Mar" \
+  --retries 3 \
+  --backoff-ms 400
+```
+
 ## Notes
 
 - macOS only.

@@ -99,6 +99,9 @@ public final class ToolGuidanceGenerator {
             sb.append("- **skill**: For desktop UI clicking, always prefer `click-precision-robust` ");
             sb.append("instead of ad-hoc AppleScript/cliclick loops. Require post-click verification and ");
             sb.append("bounded retries with explicit failure reasons.\n");
+            sb.append("  For Microsoft Teams calendar tasks, do this sequence: ");
+            sb.append("click `Calendar` first, verify `element_exists=Go to next week`, ");
+            sb.append("then click `Go to next week`.\n");
         }
         if (registeredToolNames.contains("screen_capture")) {
             sb.append("- **screen_capture**: ONLY for visual tasks (UI screenshots, visual debugging). ");
