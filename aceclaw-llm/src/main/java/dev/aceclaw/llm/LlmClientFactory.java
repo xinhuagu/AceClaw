@@ -161,10 +161,10 @@ public final class LlmClientFactory {
         String resolvedModel = model != null ? model : DEFAULT_MODELS.getOrDefault("openai-codex", "gpt-5-codex");
 
         var chatClient = new OpenAICompatClient(
-                tokenProvider, resolvedBaseUrl, "/v1/chat/completions",
+                tokenProvider, resolvedBaseUrl, "/chat/completions",
                 "openai-codex", resolvedModel, ProviderCapabilities.OPENAI, Map.of());
         var responsesClient = new OpenAIResponsesClient(
-                tokenProvider, resolvedBaseUrl, "/v1/responses",
+                tokenProvider, resolvedBaseUrl, "/responses",
                 "openai-codex", resolvedModel, ProviderCapabilities.CODEX, Map.of());
 
         return new OpenAIRoutingClient(chatClient, responsesClient, resolvedModel, "openai-codex");
