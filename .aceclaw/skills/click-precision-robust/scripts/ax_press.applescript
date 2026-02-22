@@ -28,8 +28,11 @@ on run argv
 					return "ok:button"
 				end try
 
-				-- Generic path: search by AX name
+				-- Generic path: search by AX name (exact first, then contains)
 				set candidates to (every UI element of (entire contents of targetWindow) whose name is locator)
+				if (count of candidates) is 0 then
+					set candidates to (every UI element of (entire contents of targetWindow) whose name contains locator)
+				end if
 				if (count of candidates) > 0 then
 					set hit to item 1 of candidates
 					if roleHint is not "" then

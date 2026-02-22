@@ -51,6 +51,9 @@ on run argv
 			tell process appName
 				if not (exists window 1) then return "verify_failed:no_window"
 				set matches to (every UI element of (entire contents of window 1) whose name is targetName)
+				if (count of matches) is 0 then
+					set matches to (every UI element of (entire contents of window 1) whose name contains targetName)
+				end if
 				if (count of matches) > 0 then return "ok"
 			end tell
 		end tell
