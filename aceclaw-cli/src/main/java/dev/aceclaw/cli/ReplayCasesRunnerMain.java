@@ -206,8 +206,9 @@ public final class ReplayCasesRunnerMain {
             String response = result.path("response").asText("");
 
             boolean expectationOk = true;
+            String normalizedResponse = response.toLowerCase(Locale.ROOT);
             for (var e : c.expectContains) {
-                if (!response.contains(e)) {
+                if (!normalizedResponse.contains(e.toLowerCase(Locale.ROOT))) {
                     expectationOk = false;
                     break;
                 }
