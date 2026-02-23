@@ -224,10 +224,9 @@ jq \
   def token_error_pairs:
     [
       .cases[] | .off, .on
-      | select((.estimated_tokens != null) and (.provider_tokens != null))
-      | select((.estimated_tokens | type) == "number" and (.provider_tokens | type) == "number")
-      | select(.estimated_tokens > 0 and .provider_tokens > 0)
-      | {estimated: .estimated_tokens, provider: .provider_tokens}
+      | {estimated: .estimated_tokens, provider: (.provider_tokens // .tokens)}
+      | select((.estimated | type) == "number" and (.provider | type) == "number")
+      | select(.estimated > 0 and .provider > 0)
     ];
 
   (.cases | length) as $n
