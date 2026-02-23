@@ -226,7 +226,7 @@ jq \
       .cases[] | .off, .on
       | {estimated: .estimated_tokens, provider: (.provider_tokens // .tokens)}
       | select((.estimated | type) == "number" and (.provider | type) == "number")
-      | select(.estimated > 0 and .provider > 0)
+      | select(.estimated >= 0 and .provider > 0)
     ];
 
   (.cases | length) as $n

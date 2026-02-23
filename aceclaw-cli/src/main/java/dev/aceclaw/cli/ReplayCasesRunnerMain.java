@@ -225,7 +225,7 @@ public final class ReplayCasesRunnerMain {
             } else if (providerTokensRaw > 0) {
                 providerTokens = providerTokensRaw;
             }
-            int estimatedTokens = ContextEstimator.estimateTokens(response);
+            int estimatedTokens = ContextEstimator.estimateTokens(c.prompt + "\n" + response);
             Double estimationErrorRatio = null;
             if (providerTokens != null && providerTokens > 0) {
                 estimationErrorRatio = Math.abs((estimatedTokens - providerTokens) / (double) providerTokens);
