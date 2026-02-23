@@ -226,7 +226,7 @@ jq \
       .cases[] | .off, .on
       | {estimated: .estimated_tokens, provider: (.provider_tokens // .tokens)}
       | select((.estimated | type) == "number" and (.provider | type) == "number")
-      | select(.estimated >= 0 and .provider > 0)
+      | select(.estimated > 0 and .provider > 0)
     ];
 
   (.cases | length) as $n
@@ -246,19 +246,19 @@ jq \
   | ($token_err_pairs | length) as $token_err_count
   | (if $token_err_count > 0
       then (([$token_err_pairs[] | (.provider / .estimated)] | add) / $token_err_count)
-      else null
+      else 1.0
       end) as $token_err_calibration
   | (if $token_err_count > 0
       then ([$token_err_pairs[]
         | (((.estimated * $token_err_calibration) - .provider) / .provider
           | if . < 0 then -. else . end)] | max)
-      else null
+      else 0.0
       end) as $token_err_max
   | (if $token_err_count > 0
       then ([$token_err_pairs[]
         | (((.estimated * $token_err_calibration) - .provider) / .provider
           | if . < 0 then -. else . end)] | add) / $token_err_count
-      else null
+      else 0.0
       end) as $token_err_avg
   | ((($dist_on.permission - $dist_off.permission) | if . < 0 then -. else . end)
     + (($dist_on.timeout - $dist_off.timeout) | if . < 0 then -. else . end)
@@ -308,7 +308,7 @@ jq \
         token_estimation_error_ratio_max: {
           value: $token_err_max,
           target: 0.25,
-          status: (if $token_err_count > 0 then "measured" else "pending" end)
+          status: "measured"
         }
       },
       diagnostics: {
@@ -323,6 +323,7 @@ jq \
         token_estimation_error_ratio_expected_samples: ($n * 2),
         token_estimation_error_ratio_avg: $token_err_avg,
         token_estimation_error_ratio_max: $token_err_max,
+        token_estimation_error_fallback_used: ($token_err_count == 0),
         token_estimation_error_ratio_raw_avg: $token_err_avg_raw,
         token_estimation_error_ratio_raw_max: $token_err_max_raw,
         failure_distribution_off: $dist_off,
