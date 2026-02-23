@@ -219,9 +219,12 @@ public final class ReplayCasesRunnerMain {
 
             int providerTokensRaw = result.path("usage").path("totalTokens").asInt(0);
             int providerOutputTokensRaw = result.path("usage").path("outputTokens").asInt(0);
-            Integer providerTokens = providerOutputTokensRaw > 0
-                    ? providerOutputTokensRaw
-                    : (providerTokensRaw > 0 ? providerTokensRaw : null);
+            Integer providerTokens = null;
+            if (providerOutputTokensRaw > 0) {
+                providerTokens = providerOutputTokensRaw;
+            } else if (providerTokensRaw > 0) {
+                providerTokens = providerTokensRaw;
+            }
             int estimatedTokens = ContextEstimator.estimateTokens(response);
             Double estimationErrorRatio = null;
             if (providerTokens != null && providerTokens > 0) {
