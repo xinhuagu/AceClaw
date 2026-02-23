@@ -25,6 +25,8 @@ import dev.aceclaw.core.planner.SequentialPlanExecutor;
 import dev.aceclaw.core.planner.StepResult;
 import dev.aceclaw.core.planner.TaskPlan;
 import dev.aceclaw.memory.AutoMemoryStore;
+import dev.aceclaw.memory.CandidatePromptAssembler;
+import dev.aceclaw.memory.CandidateStore;
 import dev.aceclaw.memory.DailyJournal;
 import dev.aceclaw.memory.MemoryEntry;
 import dev.aceclaw.security.PermissionDecision;
@@ -91,6 +93,8 @@ public final class StreamingAgentHandler {
     private final PermissionManager permissionManager;
     private final ObjectMapper objectMapper;
     private final java.util.concurrent.ConcurrentHashMap<String, ToolMetricsCollector> sessionMetrics =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.concurrent.ConcurrentHashMap<String, List<String>> sessionInjectedCandidateIds =
             new java.util.concurrent.ConcurrentHashMap<>();
 
     /**
@@ -161,7 +165,7 @@ public final class StreamingAgentHandler {
                 .build();
         var permissionAwareLoop = new StreamingAgentLoop(
                 getLlmClient(), permissionAwareRegistry,
-                getModelForSession(sessionId), getSystemPrompt(),
+                getModelForSession(sessionId), getSystemPrompt(sessionId),
                 maxTokens, thinkingBudget, compactor, agentConfig);
 
         // Wire stream event handler to SkillTool for sub-agent event forwarding
@@ -347,6 +351,7 @@ public final class StreamingAgentHandler {
         result.put("planSuccess", planResult.success());
         result.put("planSteps", planResult.plan().steps().size());
         result.put("planStepsCompleted", planResult.plan().completedSteps());
+        appendInjectedCandidateIds(result, sessionId);
         if (cancellationToken.isCancelled()) {
             result.put("cancelled", true);
         }
@@ -419,6 +424,7 @@ public final class StreamingAgentHandler {
         result.put("sessionId", sessionId);
         result.put("response", responseText);
         result.put("stopReason", turn.finalStopReason().name());
+        appendInjectedCandidateIds(result, sessionId);
         if (cancellationToken.isCancelled()) {
             result.put("cancelled", true);
         }
@@ -555,6 +561,10 @@ public final class StreamingAgentHandler {
     private Path workingDir;
     private SelfImprovementEngine selfImprovementEngine;
     private HookExecutor hookExecutor;
+    private CandidateStore candidateStore;
+    private volatile boolean candidateInjectionEnabled = true;
+    private int candidateInjectionMaxCount = 10;
+    private int candidateInjectionMaxTokens = 1200;
     private boolean plannerEnabled = true;
     private int plannerThreshold = 5;
 
@@ -610,6 +620,31 @@ public final class StreamingAgentHandler {
      */
     public void setHookExecutor(HookExecutor hookExecutor) {
         this.hookExecutor = hookExecutor;
+    }
+
+    /**
+     * Sets the candidate store for prompt injection of promoted candidates.
+     */
+    public void setCandidateStore(CandidateStore candidateStore) {
+        this.candidateStore = candidateStore;
+    }
+
+    /**
+     * Runtime kill-switch for candidate injection.
+     */
+    public void setCandidateInjectionEnabled(boolean enabled) {
+        this.candidateInjectionEnabled = enabled;
+    }
+
+    /**
+     * Sets the candidate injection configuration.
+     *
+     * @param maxCount max number of candidates to inject
+     * @param maxTokens max token budget for injection
+     */
+    public void setCandidateInjectionConfig(int maxCount, int maxTokens) {
+        this.candidateInjectionMaxCount = Math.max(0, maxCount);
+        this.candidateInjectionMaxTokens = Math.max(0, maxTokens);
     }
 
     /**
@@ -679,6 +714,7 @@ public final class StreamingAgentHandler {
      */
     public void clearSessionOverride(String sessionId) {
         sessionModelOverrides.remove(sessionId);
+        sessionInjectedCandidateIds.remove(sessionId);
     }
 
     /**
@@ -687,6 +723,7 @@ public final class StreamingAgentHandler {
     public void clearSessionMetrics(String sessionId) {
         java.util.Objects.requireNonNull(sessionId, "sessionId");
         sessionMetrics.remove(sessionId);
+        sessionInjectedCandidateIds.remove(sessionId);
     }
 
     /**
@@ -696,8 +733,32 @@ public final class StreamingAgentHandler {
         return model;
     }
 
-    private String getSystemPrompt() {
-        return systemPrompt;
+    private String getSystemPrompt(String sessionId) {
+        if (candidateStore == null || !candidateInjectionEnabled) {
+            sessionInjectedCandidateIds.remove(sessionId);
+            return systemPrompt;
+        }
+        // Dynamically append promoted candidates to the base system prompt
+        var config = new CandidatePromptAssembler.Config(
+                true, candidateInjectionMaxCount, candidateInjectionMaxTokens, java.util.Set.of());
+        var assembly = CandidatePromptAssembler.assembleWithMetadata(candidateStore, config);
+        if (assembly.section().isEmpty()) {
+            sessionInjectedCandidateIds.remove(sessionId);
+            return systemPrompt;
+        }
+        sessionInjectedCandidateIds.put(sessionId, assembly.candidateIds());
+        return systemPrompt + assembly.section();
+    }
+
+    private void appendInjectedCandidateIds(com.fasterxml.jackson.databind.node.ObjectNode result,
+                                            String sessionId) {
+        var candidateIds = sessionInjectedCandidateIds.getOrDefault(sessionId, List.of());
+        if (candidateIds.isEmpty()) {
+            return;
+        }
+        var array = objectMapper.createArrayNode();
+        candidateIds.forEach(array::add);
+        result.set("injectedCandidateIds", array);
     }
 
     /**

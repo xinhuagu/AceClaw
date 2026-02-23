@@ -6,5 +6,6 @@ package dev.aceclaw.memory;
 public enum CandidateState {
     SHADOW,
     PROMOTED,
+    DEMOTED,
     REJECTED
 }

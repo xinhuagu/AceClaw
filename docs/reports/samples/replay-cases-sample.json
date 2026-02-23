@@ -1,0 +1,29 @@
+{
+  "cases": [
+    {
+      "id": "timeout-retry-1",
+      "off": {"success": false, "tokens": 1450, "latency_ms": 2100, "failure_type": "timeout", "estimated_tokens": 1530, "provider_tokens": 1450, "estimation_error_ratio": 0.0552},
+      "on": {"success": false, "tokens": 1320, "latency_ms": 1800, "failure_type": "timeout", "estimated_tokens": 1380, "provider_tokens": 1320, "estimation_error_ratio": 0.0455}
+    },
+    {
+      "id": "permission-fallback-1",
+      "off": {"success": true, "tokens": 980, "latency_ms": 820, "failure_type": null, "estimated_tokens": 950, "provider_tokens": 980, "estimation_error_ratio": 0.0306},
+      "on": {"success": true, "tokens": 910, "latency_ms": 760, "failure_type": null, "estimated_tokens": 890, "provider_tokens": 910, "estimation_error_ratio": 0.0220}
+    },
+    {
+      "id": "tool-error-recovery-1",
+      "off": {"success": false, "tokens": 1240, "latency_ms": 1950, "failure_type": "tool-error", "estimated_tokens": 1300, "provider_tokens": 1240, "estimation_error_ratio": 0.0484},
+      "on": {"success": false, "tokens": 1180, "latency_ms": 1870, "failure_type": "tool-error", "estimated_tokens": 1225, "provider_tokens": 1180, "estimation_error_ratio": 0.0381}
+    },
+    {
+      "id": "complex-plan-1",
+      "off": {"success": true, "tokens": 2200, "latency_ms": 3200, "failure_type": null, "estimated_tokens": 2310, "provider_tokens": 2200, "estimation_error_ratio": 0.0500},
+      "on": {"success": true, "tokens": 2080, "latency_ms": 3010, "failure_type": null, "estimated_tokens": 2165, "provider_tokens": 2080, "estimation_error_ratio": 0.0409}
+    },
+    {
+      "id": "permission-timeout-mix-1",
+      "off": {"success": false, "tokens": 1360, "latency_ms": 2050, "failure_type": "permission", "estimated_tokens": 1415, "provider_tokens": 1360, "estimation_error_ratio": 0.0404},
+      "on": {"success": false, "tokens": 1300, "latency_ms": 1980, "failure_type": "permission", "estimated_tokens": 1350, "provider_tokens": 1300, "estimation_error_ratio": 0.0385}
+    }
+  ]
+}

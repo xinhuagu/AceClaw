@@ -28,9 +28,6 @@ public final class SkillRegistry {
     private static final String SKILLS_DIR = ".aceclaw/skills";
     private static final String SKILL_FILE = "SKILL.md";
 
-    private static final Path USER_SKILLS_DIR = Path.of(
-            System.getProperty("user.home"), SKILLS_DIR);
-
     private final Map<String, SkillConfig> registry;
 
     private SkillRegistry(Map<String, SkillConfig> registry) {
@@ -48,7 +45,7 @@ public final class SkillRegistry {
         var map = new LinkedHashMap<String, SkillConfig>();
 
         // 1. Load user-scoped skills first (lower priority)
-        loadSkillsFromDir(USER_SKILLS_DIR, map);
+        loadSkillsFromDir(userSkillsDir(), map);
 
         // 2. Load project-scoped skills (override user skills by name)
         Path projectSkillsDir = projectPath.resolve(SKILLS_DIR);
@@ -61,6 +58,10 @@ public final class SkillRegistry {
         }
 
         return new SkillRegistry(map);
+    }
+
+    private static Path userSkillsDir() {
+        return Path.of(System.getProperty("user.home"), SKILLS_DIR);
     }
 
     /**

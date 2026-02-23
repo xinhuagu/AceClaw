@@ -12,6 +12,8 @@ import dev.aceclaw.infra.event.EventBus;
 import dev.aceclaw.infra.health.*;
 import dev.aceclaw.llm.LlmClientFactory;
 import dev.aceclaw.memory.AutoMemoryStore;
+import dev.aceclaw.memory.CandidateStateMachine;
+import dev.aceclaw.memory.CandidateStore;
 import dev.aceclaw.memory.DailyJournal;
 import dev.aceclaw.memory.MarkdownMemoryStore;
 import dev.aceclaw.memory.MemoryConsolidator;
@@ -337,16 +339,49 @@ public final class AceClawDaemon {
                     (hookRegistry.hasHooksFor("PostToolUseFailure") ? 1 : 0));
         }
 
-        // 10. Self-improvement engine (post-turn learning analysis + strategy refinement)
+        // 10. Self-improvement engine (post-turn learning analysis + strategy refinement + candidate pipeline)
+        CandidateStore candidateStoreRef = null;
         if (memoryStore != null) {
             var errorDetector = new ErrorDetector(memoryStore);
             var patternDetector = new PatternDetector(memoryStore);
             var failureSignalDetector = new FailureSignalDetector();
             var strategyRefiner = new StrategyRefiner(memoryStore);
+
+            // Candidate store for learning pipeline (promotion/demotion state machine)
+            CandidateStore cs = null;
+            if (config.candidatePromotionEnabled() || config.candidateInjectionEnabled()) {
+                try {
+                    var smConfig = new CandidateStateMachine.Config(
+                            config.candidatePromotionMinEvidence(),
+                            config.candidatePromotionMinScore(),
+                            config.candidatePromotionMaxFailureRate(),
+                            3, java.util.Set.of());
+                    cs = new CandidateStore(homeDir, smConfig);
+                    cs.load();
+                    log.info("Candidate store loaded: {} candidates", cs.all().size());
+                } catch (java.io.IOException e) {
+                    log.warn("Failed to initialize candidate store: {}", e.getMessage());
+                    cs = null;
+                }
+            }
+
             var selfImprovementEngine = new SelfImprovementEngine(
-                    errorDetector, patternDetector, failureSignalDetector, memoryStore, strategyRefiner);
+                    errorDetector, patternDetector, failureSignalDetector, memoryStore, strategyRefiner, cs,
+                    config.candidatePromotionEnabled());
             agentHandler.setSelfImprovementEngine(selfImprovementEngine);
-            log.info("Self-improvement engine wired (with strategy refinement)");
+            candidateStoreRef = cs;
+
+            // Pass candidate store to agent handler for prompt injection
+            if (cs != null && config.candidateInjectionEnabled()) {
+                agentHandler.setCandidateStore(cs);
+                agentHandler.setCandidateInjectionEnabled(true);
+                agentHandler.setCandidateInjectionConfig(
+                        config.candidateInjectionMaxCount(), config.candidateInjectionMaxTokens());
+            } else {
+                agentHandler.setCandidateInjectionEnabled(false);
+            }
+
+            log.info("Self-improvement engine wired (with strategy refinement + candidate pipeline)");
         }
 
         agentHandler.register(router);
@@ -414,6 +449,58 @@ public final class AceClawDaemon {
         // Register model.list and model.switch via shared helper
         ModelRpcHelper.registerModelList(router, objectMapper, agentHandlerRef, llmClientRef, providerNameRef);
         ModelRpcHelper.registerModelSwitch(router, objectMapper, agentHandlerRef, llmClientRef);
+
+        // Runtime controls: candidate injection kill-switch and manual rollback.
+        final var candidateStoreForRpc = candidateStoreRef;
+        router.register("candidate.injection.set", params -> {
+            if (params == null || !params.has("enabled")) {
+                throw new IllegalArgumentException("Missing required parameter: enabled");
+            }
+            boolean enabled = params.get("enabled").asBoolean();
+            agentHandlerRef.setCandidateInjectionEnabled(enabled);
+            Integer maxTokens = params != null && params.has("maxTokens")
+                    ? Math.max(0, params.get("maxTokens").asInt()) : null;
+            if (maxTokens != null) {
+                agentHandlerRef.setCandidateInjectionConfig(config.candidateInjectionMaxCount(), maxTokens);
+            }
+            boolean persist = params != null && params.has("persist") && params.get("persist").asBoolean(false);
+            String scope = params != null && params.has("scope") ? params.get("scope").asText() : "project";
+            var result = objectMapper.createObjectNode();
+            result.put("enabled", enabled);
+            if (maxTokens != null) {
+                result.put("maxTokens", maxTokens);
+            }
+            result.put("persisted", false);
+            if (persist) {
+                var written = AceClawConfig.persistCandidateInjectionSettings(
+                        workingDir, enabled, maxTokens, scope);
+                result.put("persisted", true);
+                result.put("scope", scope);
+                result.put("configFile", written.toString());
+            }
+            return result;
+        });
+        router.register("candidate.rollback", params -> {
+            if (candidateStoreForRpc == null) {
+                throw new IllegalStateException("Candidate store is not initialized");
+            }
+            if (params == null || !params.has("candidateId")) {
+                throw new IllegalArgumentException("Missing required parameter: candidateId");
+            }
+            String candidateId = params.get("candidateId").asText();
+            String reason = params.has("reason") ? params.get("reason").asText() : "manual rollback";
+            var transition = candidateStoreForRpc.rollbackPromoted(candidateId, reason);
+            var result = objectMapper.createObjectNode();
+            result.put("applied", transition.isPresent());
+            transition.ifPresent(t -> {
+                result.put("candidateId", t.candidateId());
+                result.put("fromState", t.fromState().name());
+                result.put("toState", t.toState().name());
+                result.put("reasonCode", t.reasonCode());
+                result.put("timestamp", t.timestamp().toString());
+            });
+            return result;
+        });
 
         // Store references for boot execution
         this.bootLlmClient = llmClient;

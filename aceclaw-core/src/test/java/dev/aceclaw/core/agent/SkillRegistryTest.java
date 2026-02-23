@@ -1,6 +1,8 @@
 package dev.aceclaw.core.agent;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
@@ -18,6 +20,22 @@ class SkillRegistryTest {
 
     @TempDir
     Path tempDir;
+    private String originalUserHome;
+
+    @BeforeEach
+    void isolateUserHome() throws IOException {
+        originalUserHome = System.getProperty("user.home");
+        Path isolatedHome = tempDir.resolve("isolated-user-home");
+        Files.createDirectories(isolatedHome);
+        System.setProperty("user.home", isolatedHome.toString());
+    }
+
+    @AfterEach
+    void restoreUserHome() {
+        if (originalUserHome != null) {
+            System.setProperty("user.home", originalUserHome);
+        }
+    }
 
     @Test
     void parseSkillWithAllFrontmatter() throws IOException {

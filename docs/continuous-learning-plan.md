@@ -4,6 +4,7 @@
 This document defines the v1 measurement framework for AceClaw continuous learning. The goal is to establish reproducible baseline metrics before enabling aggressive autonomous promotion and rollback policies.
 
 This plan aligns with PRD success metrics and the continuous-learning implementation track (`#52`-`#65`).
+Operational controls and rollback procedures are documented in `docs/continuous-learning-operations.md`.
 
 ## Scope
 In scope for baseline v1:
@@ -48,13 +49,19 @@ The baseline requires direct `learning=off` vs `learning=on` comparison on the s
 | Metric | Definition | Formula | Target |
 |---|---|---|---|
 | `replay_success_rate_delta` | Success-rate impact of learning on replay | `success_rate_on - success_rate_off` | `>= 0.00` |
-| `replay_token_delta` | Token cost impact of learning | `avg_tokens_on - avg_tokens_off` | `<= 0` (or <= budget) |
-| `replay_latency_delta_ms` | Latency impact of learning | `avg_latency_ms_on - avg_latency_ms_off` | `<= 0` (or <= budget) |
+| `replay_token_delta` | Token cost impact of learning | `avg_tokens_on - avg_tokens_off` | `<= 200` (budget) |
+| `replay_latency_delta_ms` | Latency impact of learning | `avg_latency_ms_on - avg_latency_ms_off` | `<= 500` (budget) |
 | `replay_failure_distribution_delta` | Change in failure-type distribution | `L1(failure_dist_on, failure_dist_off)` | `<= 0.15` |
+| `token_estimation_error_ratio_max` | Worst calibrated estimator/provider deviation | `max(|estimated*calibration-provider|/provider)` | `<= 0.25` |
 
 Notes:
 - `failure_dist_*` is computed over normalized failure buckets (permission, timeout, tool-error, other).
-- These metrics are schema-defined in baseline v1 and become fully measured when replay runner (`#63`) lands.
+- Replay cases include dual-track token fields (`estimated_tokens`, `provider_tokens`=`usage.outputTokens`) and derived `estimation_error_ratio`.
+- `token_estimation_error_ratio_max` must be `measured` and pass threshold for pre-merge acceptance.
+- Replay metric aggregation is implemented via `scripts/generate-replay-report.sh`.
+- Replay case execution is available via `:aceclaw-cli:runReplayCases` / `./gradlew generateReplayCases`.
+- Replay suite schema + category coverage validation is enforced via `validateReplaySuite`.
+- CI-scale replay dataset growth and ownership governance (larger suite lifecycle) is still an ongoing integration track.
 
 ## Collection Output Schema
 Baseline output should be written to:
@@ -93,11 +100,19 @@ Useful flags:
 4. Fill `docs/reports/continuous-learning-baseline-template.md` with generated output.
 5. Attach the report to the relevant issue/PR.
 
+## CI Gate Workflow
+1. Generate replay report from A/B replay cases:
+   - `./gradlew generateReplayCases -PreplayPromptsInput=... -PreplayCasesOutput=...`
+   - `./gradlew generateReplayReport -PreplayCasesInput=... -PreplayReport=...`
+2. Run hard pre-merge gate:
+   - `./gradlew preMergeCheck -PreplayGateStrict=true -PreplayReport=...`
+3. Gate fails if replay report is missing, metrics are non-measured, source manifest verification fails, or thresholds are violated.
+
 ## Known Gaps (v1)
 - Some metrics are not fully instrumented yet and will be emitted as `pending_instrumentation`.
-- Replay-comparison fields are defined but require issue `#63` implementation.
+- Replay case/reports are automated; remaining work is stronger dataset governance at scale.
 - Automated promotion/rollback quality metrics require issues `#60`-`#62`.
 
 ## Versioning
 - Document version: `v1.0`
-- Last updated: `2026-02-21`
+- Last updated: `2026-02-23`

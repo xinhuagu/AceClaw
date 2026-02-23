@@ -1,0 +1,217 @@
+{
+  "cases": [
+    {
+      "id": "core-list-project-files",
+      "prompt": "List the top-level files in this repository and summarize what each module does in one line.",
+      "category": "core",
+      "owner": "platform-core",
+      "risk_level": "low",
+      "labels": [
+        "smoke",
+        "overview"
+      ],
+      "expect_contains": [
+        "module"
+      ]
+    },
+    {
+      "id": "core-build-entrypoints",
+      "prompt": "Find the main Gradle entry tasks in this repo and explain what each verification task does.",
+      "category": "core",
+      "owner": "platform-core",
+      "risk_level": "low",
+      "labels": [
+        "build",
+        "tasks"
+      ],
+      "expect_contains": [
+        "preMergeCheck"
+      ]
+    },
+    {
+      "id": "core-module-boundaries",
+      "prompt": "Summarize the responsibility boundaries among aceclaw-core, aceclaw-daemon, and aceclaw-cli.",
+      "category": "core",
+      "owner": "platform-core",
+      "risk_level": "medium",
+      "labels": [
+        "architecture",
+        "modules"
+      ],
+      "expect_contains": [
+        "aceclaw-core"
+      ]
+    },
+    {
+      "id": "tools-find-candidate-config",
+      "prompt": "Find where candidate injection is configured and show the key config names.",
+      "category": "tools",
+      "owner": "platform-core",
+      "risk_level": "medium",
+      "labels": [
+        "config",
+        "search"
+      ],
+      "expect_contains": [
+        "candidateInjection"
+      ]
+    },
+    {
+      "id": "tools-locate-gate-script",
+      "prompt": "Find the replay quality gate script and summarize all enforced metrics.",
+      "category": "tools",
+      "owner": "quality-team",
+      "risk_level": "medium",
+      "labels": [
+        "scripts",
+        "quality-gate"
+      ],
+      "expect_contains": [
+        "replay_success_rate_delta"
+      ]
+    },
+    {
+      "id": "tools-manifest-verification",
+      "prompt": "Locate where replay manifest checksum is verified and explain failure behavior.",
+      "category": "tools",
+      "owner": "quality-team",
+      "risk_level": "high",
+      "labels": [
+        "manifest",
+        "integrity"
+      ],
+      "expect_contains": [
+        "checksum"
+      ]
+    },
+    {
+      "id": "permissions-readonly-scan",
+      "prompt": "Scan the repository for files mentioning permission and summarize observed permission levels.",
+      "category": "permissions",
+      "owner": "security-team",
+      "risk_level": "high",
+      "labels": [
+        "permissions",
+        "policy"
+      ],
+      "expect_contains": [
+        "permission"
+      ]
+    },
+    {
+      "id": "permissions-no-write-plan",
+      "prompt": "Given a read-only constraint, provide a safe plan to inspect replay scripts without modifying files.",
+      "category": "permissions",
+      "owner": "security-team",
+      "risk_level": "medium",
+      "labels": [
+        "readonly",
+        "planning"
+      ],
+      "expect_contains": [
+        "read-only"
+      ]
+    },
+    {
+      "id": "permissions-ci-guardrails",
+      "prompt": "Summarize permission-related guardrails in CI and local pre-merge checks.",
+      "category": "permissions",
+      "owner": "security-team",
+      "risk_level": "medium",
+      "labels": [
+        "ci",
+        "guardrails"
+      ],
+      "expect_contains": [
+        "strict"
+      ]
+    },
+    {
+      "id": "timeouts-long-task",
+      "prompt": "Find large files and suggest a strategy to avoid timeout when scanning them.",
+      "category": "timeouts",
+      "owner": "runtime-team",
+      "risk_level": "medium",
+      "timeout_ms": 300000,
+      "labels": [
+        "timeouts",
+        "performance"
+      ],
+      "expect_contains": [
+        "timeout"
+      ]
+    },
+    {
+      "id": "timeouts-large-search",
+      "prompt": "Design a command sequence to search many files while reducing timeout risk and keeping accuracy.",
+      "category": "timeouts",
+      "owner": "runtime-team",
+      "risk_level": "medium",
+      "timeout_ms": 300000,
+      "labels": [
+        "search",
+        "scalability"
+      ],
+      "expect_contains": [
+        "timeout"
+      ]
+    },
+    {
+      "id": "timeouts-stepwise-strategy",
+      "prompt": "In 6 bullets, provide a timeout-safe chunking strategy for auditing a large codebase.",
+      "category": "timeouts",
+      "owner": "runtime-team",
+      "risk_level": "medium",
+      "timeout_ms": 300000,
+      "labels": [
+        "chunking",
+        "strategy"
+      ],
+      "expect_contains": [
+        "step"
+      ]
+    },
+    {
+      "id": "regression-candidate-gate",
+      "prompt": "Explain how replay quality gate blocks merge when replay metrics regress.",
+      "category": "regression",
+      "owner": "quality-team",
+      "risk_level": "high",
+      "labels": [
+        "gate",
+        "regression"
+      ],
+      "expect_contains": [
+        "replay"
+      ]
+    },
+    {
+      "id": "regression-success-rate-drop",
+      "prompt": "Describe what should happen when replay_success_rate_delta goes below zero in strict mode.",
+      "category": "regression",
+      "owner": "quality-team",
+      "risk_level": "high",
+      "labels": [
+        "threshold",
+        "blocking"
+      ],
+      "expect_contains": [
+        "failed"
+      ]
+    },
+    {
+      "id": "regression-failure-distribution",
+      "prompt": "Explain why a large replay_failure_distribution_delta indicates potential quality regression.",
+      "category": "regression",
+      "owner": "quality-team",
+      "risk_level": "high",
+      "labels": [
+        "distribution",
+        "quality"
+      ],
+      "expect_contains": [
+        "delta"
+      ]
+    }
+  ]
+}
