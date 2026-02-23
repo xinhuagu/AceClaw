@@ -45,7 +45,9 @@ public final class SkillRegistry {
         var map = new LinkedHashMap<String, SkillConfig>();
 
         // 1. Load user-scoped skills first (lower priority)
-        loadSkillsFromDir(userSkillsDir(), map);
+        userSkillsDir().ifPresentOrElse(
+                skillsDir -> loadSkillsFromDir(skillsDir, map),
+                () -> log.debug("Skipping user-scoped skills: system property 'user.home' is not set"));
 
         // 2. Load project-scoped skills (override user skills by name)
         Path projectSkillsDir = projectPath.resolve(SKILLS_DIR);
@@ -60,8 +62,12 @@ public final class SkillRegistry {
         return new SkillRegistry(map);
     }
 
-    private static Path userSkillsDir() {
-        return Path.of(System.getProperty("user.home"), SKILLS_DIR);
+    private static Optional<Path> userSkillsDir() {
+        String userHome = System.getProperty("user.home");
+        if (userHome == null || userHome.isBlank()) {
+            return Optional.empty();
+        }
+        return Optional.of(Path.of(userHome, SKILLS_DIR));
     }
 
     /**

@@ -46,16 +46,23 @@ public final class ReplayCasesRunnerMain {
             return;
         }
         var root = mapper.readTree(Files.readString(inputPath));
+        if (root == null || root.isNull()) {
+            throw new IllegalArgumentException("Replay input JSON is empty or invalid: " + inputPath);
+        }
         var cases = parseCases(root, cli.defaultProject, cli.timeoutMs);
 
-        Files.createDirectories(Path.of(cli.output).getParent());
+        var outputPath = Path.of(cli.output);
+        var outputParent = outputPath.getParent();
+        if (outputParent != null) {
+            Files.createDirectories(outputParent);
+        }
 
         try (DaemonClient client = DaemonStarter.ensureRunning()) {
             var output = mapper.createObjectNode();
             output.set("metadata", buildMetadata(mapper, inputPath, cli, cases.size()));
             output.set("cases", runAllCases(mapper, client, cases, cli));
             String serialized = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(output);
-            Files.writeString(Path.of(cli.output), serialized);
+            Files.writeString(outputPath, serialized);
             writeManifest(mapper, inputPath, cli, cases.size(), serialized);
             System.out.println("Replay cases written to: " + cli.output);
         }

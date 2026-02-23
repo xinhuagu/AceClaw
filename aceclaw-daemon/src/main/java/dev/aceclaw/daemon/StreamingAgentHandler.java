@@ -563,8 +563,8 @@ public final class StreamingAgentHandler {
     private HookExecutor hookExecutor;
     private CandidateStore candidateStore;
     private volatile boolean candidateInjectionEnabled = true;
-    private int candidateInjectionMaxCount = 10;
-    private int candidateInjectionMaxTokens = 1200;
+    private volatile int candidateInjectionMaxCount = 10;
+    private volatile int candidateInjectionMaxTokens = 1200;
     private boolean plannerEnabled = true;
     private int plannerThreshold = 5;
 
