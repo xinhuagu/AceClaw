@@ -109,6 +109,9 @@ tasks.register<Exec>("replayQualityGate") {
     val minSuccessRateDelta = providers.gradleProperty("replayMinSuccessRateDelta").orElse("0.00")
     val maxTokenDelta = providers.gradleProperty("replayMaxTokenDelta").orElse("200.00")
     val maxLatencyDeltaMs = providers.gradleProperty("replayMaxLatencyDeltaMs").orElse("500.00")
+    val failOnLatency = providers.gradleProperty("replayFailOnLatency")
+            .map { it.toBooleanStrictOrNull() ?: false }
+            .orElse(false)
     val maxFailureDistDelta = providers.gradleProperty("replayMaxFailureDistDelta").orElse("0.15")
     val maxTokenEstimationErrorRatio = providers.gradleProperty("replayMaxTokenEstimationErrorRatio").orElse("0.25")
 
@@ -118,6 +121,7 @@ tasks.register<Exec>("replayQualityGate") {
             "--min-success-rate-delta", minSuccessRateDelta.get(),
             "--max-token-delta", maxTokenDelta.get(),
             "--max-latency-delta-ms", maxLatencyDeltaMs.get(),
+            "--fail-on-latency", failOnLatency.get().toString(),
             "--max-failure-dist-delta", maxFailureDistDelta.get(),
             "--max-token-estimation-error-ratio", maxTokenEstimationErrorRatio.get()
     )

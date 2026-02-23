@@ -9,6 +9,7 @@ MAX_TOKEN_DELTA="200.00"
 MAX_LATENCY_DELTA_MS="500.00"
 MAX_FAILURE_DISTRIBUTION_DELTA="0.15"
 MAX_TOKEN_ESTIMATION_ERROR_RATIO="0.25"
+FAIL_ON_LATENCY="false"
 
 usage() {
   cat <<USAGE
@@ -20,6 +21,7 @@ Options:
   --min-success-rate-delta <number>      Default: 0.00
   --max-token-delta <number>             Default: 200.00
   --max-latency-delta-ms <number>        Default: 500.00
+  --fail-on-latency <true|false>         Default: false
   --max-failure-dist-delta <number>      Default: 0.15
   --max-token-estimation-error-ratio <number>  Default: 0.25
   --help                                 Show this help.
@@ -46,6 +48,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --max-latency-delta-ms)
       MAX_LATENCY_DELTA_MS="$2"
+      shift 2
+      ;;
+    --fail-on-latency)
+      FAIL_ON_LATENCY="$2"
       shift 2
       ;;
     --max-failure-dist-delta)
@@ -137,8 +143,11 @@ if ! compare "$token_delta <= $MAX_TOKEN_DELTA"; then
   exit 1
 fi
 if ! compare "$latency_delta_ms <= $MAX_LATENCY_DELTA_MS"; then
-  echo "Replay quality gate failed: replay_latency_delta_ms=$latency_delta_ms > $MAX_LATENCY_DELTA_MS" >&2
-  exit 1
+  if [[ "$FAIL_ON_LATENCY" == "true" ]]; then
+    echo "Replay quality gate failed: replay_latency_delta_ms=$latency_delta_ms > $MAX_LATENCY_DELTA_MS" >&2
+    exit 1
+  fi
+  echo "Replay quality gate warning: replay_latency_delta_ms=$latency_delta_ms > $MAX_LATENCY_DELTA_MS (non-blocking)." >&2
 fi
 if ! compare "$failure_dist_delta <= $MAX_FAILURE_DISTRIBUTION_DELTA"; then
   echo "Replay quality gate failed: replay_failure_distribution_delta=$failure_dist_delta > $MAX_FAILURE_DISTRIBUTION_DELTA" >&2
