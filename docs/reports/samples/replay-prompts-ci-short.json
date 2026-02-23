@@ -1,0 +1,49 @@
+{
+  "cases": [
+    {
+      "id": "core-short-overview",
+      "prompt": "List top-level modules and one-line responsibilities.",
+      "category": "core",
+      "owner": "platform-core",
+      "risk_level": "low",
+      "labels": ["ci", "short"],
+      "expect_contains": ["module"]
+    },
+    {
+      "id": "tools-short-gate",
+      "prompt": "Name the replay quality gate script and one blocked metric example.",
+      "category": "tools",
+      "owner": "quality-team",
+      "risk_level": "low",
+      "labels": ["ci", "short"],
+      "expect_contains": ["replay"]
+    },
+    {
+      "id": "permissions-short-policy",
+      "prompt": "Summarize permission guardrails in CI in 3 bullets.",
+      "category": "permissions",
+      "owner": "security-team",
+      "risk_level": "medium",
+      "labels": ["ci", "short"],
+      "expect_contains": ["permission"]
+    },
+    {
+      "id": "timeouts-short-strategy",
+      "prompt": "In one sentence, explain a timeout-safe strategy for repository scanning.",
+      "category": "timeouts",
+      "owner": "runtime-team",
+      "risk_level": "medium",
+      "labels": ["ci", "short"],
+      "expect_contains": ["timeout"]
+    },
+    {
+      "id": "regression-short-block",
+      "prompt": "When should replay regression block merge? Answer briefly.",
+      "category": "regression",
+      "owner": "quality-team",
+      "risk_level": "medium",
+      "labels": ["ci", "short"],
+      "expect_contains": ["merge"]
+    }
+  ]
+}

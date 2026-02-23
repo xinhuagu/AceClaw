@@ -2,12 +2,15 @@ package dev.aceclaw.daemon;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -54,6 +57,13 @@ public final class AceClawConfig {
     private static final boolean DEFAULT_HEARTBEAT_ENABLED = true;
     private static final boolean DEFAULT_PLANNER_ENABLED = true;
     private static final int DEFAULT_PLANNER_THRESHOLD = 5;
+    private static final boolean DEFAULT_CANDIDATE_INJECTION_ENABLED = true;
+    private static final boolean DEFAULT_CANDIDATE_PROMOTION_ENABLED = true;
+    private static final int DEFAULT_CANDIDATE_PROMOTION_MIN_EVIDENCE = 3;
+    private static final double DEFAULT_CANDIDATE_PROMOTION_MIN_SCORE = 0.75;
+    private static final double DEFAULT_CANDIDATE_PROMOTION_MAX_FAILURE_RATE = 0.2;
+    private static final int DEFAULT_CANDIDATE_INJECTION_MAX_COUNT = 10;
+    private static final int DEFAULT_CANDIDATE_INJECTION_MAX_TOKENS = 1200;
 
     /** Claude CLI credentials directory. */
     private static final Path CLAUDE_CLI_DIR = Path.of(System.getProperty("user.home"), ".claude");
@@ -82,6 +92,13 @@ public final class AceClawConfig {
     private Map<String, String> providerModels;
     private boolean plannerEnabled;
     private int plannerThreshold;
+    private boolean candidateInjectionEnabled;
+    private boolean candidatePromotionEnabled;
+    private int candidatePromotionMinEvidence;
+    private double candidatePromotionMinScore;
+    private double candidatePromotionMaxFailureRate;
+    private int candidateInjectionMaxCount;
+    private int candidateInjectionMaxTokens;
     private Map<String, List<HookMatcherFormat>> hooks;
 
     private AceClawConfig() {
@@ -99,6 +116,13 @@ public final class AceClawConfig {
         this.heartbeatEnabled = DEFAULT_HEARTBEAT_ENABLED;
         this.plannerEnabled = DEFAULT_PLANNER_ENABLED;
         this.plannerThreshold = DEFAULT_PLANNER_THRESHOLD;
+        this.candidateInjectionEnabled = DEFAULT_CANDIDATE_INJECTION_ENABLED;
+        this.candidatePromotionEnabled = DEFAULT_CANDIDATE_PROMOTION_ENABLED;
+        this.candidatePromotionMinEvidence = DEFAULT_CANDIDATE_PROMOTION_MIN_EVIDENCE;
+        this.candidatePromotionMinScore = DEFAULT_CANDIDATE_PROMOTION_MIN_SCORE;
+        this.candidatePromotionMaxFailureRate = DEFAULT_CANDIDATE_PROMOTION_MAX_FAILURE_RATE;
+        this.candidateInjectionMaxCount = DEFAULT_CANDIDATE_INJECTION_MAX_COUNT;
+        this.candidateInjectionMaxTokens = DEFAULT_CANDIDATE_INJECTION_MAX_TOKENS;
         this.providerModels = new java.util.HashMap<>();
     }
 
@@ -171,6 +195,22 @@ public final class AceClawConfig {
         var envPermMode = System.getenv("ACECLAW_PERMISSION_MODE");
         if (envPermMode != null && !envPermMode.isBlank()) {
             config.permissionMode = envPermMode.toLowerCase();
+        }
+        var envCandidateInjection = System.getenv("ACECLAW_CANDIDATE_INJECTION");
+        if (envCandidateInjection != null && !envCandidateInjection.isBlank()) {
+            config.candidateInjectionEnabled = Boolean.parseBoolean(envCandidateInjection);
+        }
+        var envCandidatePromotion = System.getenv("ACECLAW_CANDIDATE_PROMOTION");
+        if (envCandidatePromotion != null && !envCandidatePromotion.isBlank()) {
+            config.candidatePromotionEnabled = Boolean.parseBoolean(envCandidatePromotion);
+        }
+        var envCandidateInjectionMaxTokens = System.getenv("ACECLAW_CANDIDATE_INJECTION_MAX_TOKENS");
+        if (envCandidateInjectionMaxTokens != null && !envCandidateInjectionMaxTokens.isBlank()) {
+            try {
+                config.candidateInjectionMaxTokens = Math.max(0, Integer.parseInt(envCandidateInjectionMaxTokens));
+            } catch (NumberFormatException e) {
+                log.warn("Invalid ACECLAW_CANDIDATE_INJECTION_MAX_TOKENS: {}", envCandidateInjectionMaxTokens);
+            }
         }
 
         // 5. Provider-specific credential discovery fallback
@@ -297,6 +337,54 @@ public final class AceClawConfig {
     }
 
     /**
+     * Persists candidate injection settings to config.json.
+     *
+     * @param projectPath project root for project-scoped persistence (required when scope=project)
+     * @param enabled candidate injection enabled flag to persist
+     * @param maxTokens optional token budget to persist (nullable)
+     * @param scope "project" or "global" (defaults to project when null/blank)
+     * @return path to the config file written
+     */
+    public static Path persistCandidateInjectionSettings(Path projectPath,
+                                                         boolean enabled,
+                                                         Integer maxTokens,
+                                                         String scope) throws IOException {
+        String normalizedScope = (scope == null || scope.isBlank())
+                ? "project" : scope.toLowerCase();
+        Path configFile;
+        if ("global".equals(normalizedScope)) {
+            configFile = GLOBAL_CONFIG_DIR.resolve(CONFIG_FILE_NAME);
+        } else if ("project".equals(normalizedScope)) {
+            if (projectPath == null) {
+                throw new IllegalArgumentException("projectPath is required for project scope");
+            }
+            configFile = projectPath.resolve(".aceclaw").resolve(CONFIG_FILE_NAME);
+        } else {
+            throw new IllegalArgumentException("Unsupported scope: " + scope);
+        }
+
+        Files.createDirectories(configFile.getParent());
+        var mapper = new ObjectMapper();
+        ObjectNode root;
+        if (Files.isRegularFile(configFile)) {
+            var tree = mapper.readTree(configFile.toFile());
+            root = tree instanceof ObjectNode ? (ObjectNode) tree : mapper.createObjectNode();
+        } else {
+            root = mapper.createObjectNode();
+        }
+        root.put("candidateInjectionEnabled", enabled);
+        if (maxTokens != null) {
+            root.put("candidateInjectionMaxTokens", Math.max(0, maxTokens));
+        }
+
+        Path tmp = configFile.resolveSibling(configFile.getFileName() + ".tmp");
+        Files.writeString(tmp, mapper.writerWithDefaultPrettyPrinter().writeValueAsString(root) + "\n",
+                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+        Files.move(tmp, configFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        return configFile;
+    }
+
+    /**
      * Returns whether BOOT.md execution is enabled at daemon startup.
      * Defaults to true.
      */
@@ -358,6 +446,62 @@ public final class AceClawConfig {
      */
     public int plannerThreshold() {
         return plannerThreshold;
+    }
+
+    /**
+     * Returns whether candidate injection into the system prompt is enabled.
+     * Defaults to true.
+     */
+    public boolean candidateInjectionEnabled() {
+        return candidateInjectionEnabled;
+    }
+
+    /**
+     * Returns whether automatic candidate state transitions (promotion/demotion) are enabled.
+     * Defaults to true.
+     */
+    public boolean candidatePromotionEnabled() {
+        return candidatePromotionEnabled;
+    }
+
+    /**
+     * Returns the minimum evidence count for candidate promotion.
+     * Defaults to 3.
+     */
+    public int candidatePromotionMinEvidence() {
+        return candidatePromotionMinEvidence;
+    }
+
+    /**
+     * Returns the minimum score for candidate promotion.
+     * Defaults to 0.75.
+     */
+    public double candidatePromotionMinScore() {
+        return candidatePromotionMinScore;
+    }
+
+    /**
+     * Returns the maximum failure rate for candidate promotion.
+     * Defaults to 0.2.
+     */
+    public double candidatePromotionMaxFailureRate() {
+        return candidatePromotionMaxFailureRate;
+    }
+
+    /**
+     * Returns the maximum number of candidates to inject into the system prompt.
+     * Defaults to 10.
+     */
+    public int candidateInjectionMaxCount() {
+        return candidateInjectionMaxCount;
+    }
+
+    /**
+     * Returns the maximum token budget for candidate injection.
+     * Defaults to 1200.
+     */
+    public int candidateInjectionMaxTokens() {
+        return candidateInjectionMaxTokens;
     }
 
     /**
@@ -582,6 +726,30 @@ public final class AceClawConfig {
         if (fileConfig.plannerThreshold != null) {
             this.plannerThreshold = fileConfig.plannerThreshold;
         }
+        if (fileConfig.candidateInjectionEnabled != null) {
+            this.candidateInjectionEnabled = fileConfig.candidateInjectionEnabled;
+        }
+        if (fileConfig.candidatePromotionEnabled != null) {
+            this.candidatePromotionEnabled = fileConfig.candidatePromotionEnabled;
+        }
+        if (fileConfig.candidatePromotionMinEvidence != null && fileConfig.candidatePromotionMinEvidence > 0) {
+            this.candidatePromotionMinEvidence = fileConfig.candidatePromotionMinEvidence;
+        }
+        if (fileConfig.candidatePromotionMinScore != null && fileConfig.candidatePromotionMinScore >= 0) {
+            this.candidatePromotionMinScore = fileConfig.candidatePromotionMinScore;
+        }
+        if (fileConfig.candidatePromotionMaxFailureRate != null && fileConfig.candidatePromotionMaxFailureRate >= 0) {
+            this.candidatePromotionMaxFailureRate = fileConfig.candidatePromotionMaxFailureRate;
+        }
+        if (fileConfig.candidateInjectionMaxCount != null && fileConfig.candidateInjectionMaxCount >= 0) {
+            this.candidateInjectionMaxCount = fileConfig.candidateInjectionMaxCount;
+        }
+        if (fileConfig.candidateInjectionMaxTokens != null && fileConfig.candidateInjectionMaxTokens >= 0) {
+            this.candidateInjectionMaxTokens = fileConfig.candidateInjectionMaxTokens;
+        } else if (fileConfig.candidateInjectionMaxChars != null && fileConfig.candidateInjectionMaxChars >= 0) {
+            // Backward compatibility: old char-based setting converts to approximate token budget.
+            this.candidateInjectionMaxTokens = Math.max(0, fileConfig.candidateInjectionMaxChars / 4);
+        }
     }
 
     /**
@@ -608,6 +776,14 @@ public final class AceClawConfig {
         public String heartbeatActiveHours;
         public Boolean plannerEnabled;
         public Integer plannerThreshold;
+        public Boolean candidateInjectionEnabled;
+        public Boolean candidatePromotionEnabled;
+        public Integer candidatePromotionMinEvidence;
+        public Double candidatePromotionMinScore;
+        public Double candidatePromotionMaxFailureRate;
+        public Integer candidateInjectionMaxCount;
+        public Integer candidateInjectionMaxTokens;
+        public Integer candidateInjectionMaxChars;
         public String defaultProfile;
         public Map<String, ConfigFileFormat> profiles;
         public Map<String, String> providerModels;

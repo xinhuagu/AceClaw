@@ -15,8 +15,13 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  pre-merge-check:
     runs-on: ubuntu-latest
+    env:
+      REPLAY_FULL_MODE: ${{ vars.ACECLAW_REPLAY_FULL_MODE || 'false' }}
+      REPLAY_PROMPTS_PATH: ${{ vars.ACECLAW_REPLAY_PROMPTS_PATH || (vars.ACECLAW_REPLAY_FULL_MODE == 'true' && 'docs/reports/samples/replay-prompts-sample.json' || 'docs/reports/samples/replay-prompts-ci-short.json') }}
+      REPLAY_SUITE_MIN_PER_CATEGORY: ${{ vars.ACECLAW_REPLAY_SUITE_MIN_PER_CATEGORY || (vars.ACECLAW_REPLAY_FULL_MODE == 'true' && '5' || '1') }}
+      REPLAY_MAX_TOKEN_ESTIMATION_ERROR_RATIO: ${{ vars.ACECLAW_REPLAY_MAX_TOKEN_ESTIMATION_ERROR_RATIO || (vars.ACECLAW_REPLAY_FULL_MODE == 'true' && '0.25' || '0.65') }}
     steps:
       - uses: actions/checkout@v4
 
@@ -27,8 +32,32 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Build and test
-        run: ./gradlew build test --no-daemon
+      - name: Generate replay cases (learning off/on)
+        run: >
+          ./gradlew generateReplayCases
+          -PreplayPromptsInput=${{ env.REPLAY_PROMPTS_PATH }}
+          -PreplayCasesOutput=${{ vars.ACECLAW_REPLAY_INPUT_PATH || '.aceclaw/metrics/continuous-learning/replay-cases.json' }}
+          -PreplayCasesManifestOutput=${{ vars.ACECLAW_REPLAY_MANIFEST_PATH || '.aceclaw/metrics/continuous-learning/replay-cases.manifest.json' }}
+          -PreplaySuiteMinPerCategory=${{ env.REPLAY_SUITE_MIN_PER_CATEGORY }}
+          -PreplayTimeoutMs=${{ vars.ACECLAW_REPLAY_TIMEOUT_MS || '180000' }}
+          -PreplayAutoApprovePermissions=${{ vars.ACECLAW_REPLAY_AUTO_APPROVE_PERMISSIONS || 'true' }}
+          --no-daemon
+
+      - name: Generate replay report
+        run: >
+          ./gradlew generateReplayReport
+          -PreplayCasesInput=${{ vars.ACECLAW_REPLAY_INPUT_PATH || '.aceclaw/metrics/continuous-learning/replay-cases.json' }}
+          -PreplayCasesManifestInput=${{ vars.ACECLAW_REPLAY_MANIFEST_PATH || '.aceclaw/metrics/continuous-learning/replay-cases.manifest.json' }}
+          -PreplayReport=${{ vars.ACECLAW_REPLAY_REPORT_PATH || '.aceclaw/metrics/continuous-learning/replay-latest.json' }}
+          --no-daemon
+
+      - name: Pre-merge quality gate
+        run: >
+          ./gradlew preMergeCheck
+          -PreplayGateStrict=true
+          -PreplayReport=${{ vars.ACECLAW_REPLAY_REPORT_PATH || '.aceclaw/metrics/continuous-learning/replay-latest.json' }}
+          -PreplayMaxTokenEstimationErrorRatio=${{ env.REPLAY_MAX_TOKEN_ESTIMATION_ERROR_RATIO }}
+          --no-daemon
 
   # When main gets new commits, re-test all open PRs
   retrigger-prs:

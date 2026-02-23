@@ -3,6 +3,8 @@ package dev.aceclaw.daemon;
 import dev.aceclaw.core.agent.ToolMetrics;
 import dev.aceclaw.core.agent.Turn;
 import dev.aceclaw.memory.AutoMemoryStore;
+import dev.aceclaw.memory.CandidateKind;
+import dev.aceclaw.memory.CandidateStore;
 import dev.aceclaw.memory.Insight;
 import dev.aceclaw.memory.MemoryEntry;
 import dev.aceclaw.memory.StrategyRefiner;
@@ -57,6 +59,8 @@ public final class SelfImprovementEngine {
     private final FailureSignalDetector failureSignalDetector;
     private final AutoMemoryStore memoryStore;
     private final StrategyRefiner strategyRefiner;
+    private final CandidateStore candidateStore;
+    private final boolean candidateTransitionsEnabled;
 
     private final AtomicInteger turnsSinceRefinement = new AtomicInteger();
     private final AtomicInteger persistedSinceLastRefinement = new AtomicInteger();
@@ -70,7 +74,7 @@ public final class SelfImprovementEngine {
     public SelfImprovementEngine(ErrorDetector errorDetector,
                                   PatternDetector patternDetector,
                                   AutoMemoryStore memoryStore) {
-        this(errorDetector, patternDetector, new FailureSignalDetector(), memoryStore, null);
+        this(errorDetector, patternDetector, new FailureSignalDetector(), memoryStore, null, null);
     }
 
     /**
@@ -85,7 +89,7 @@ public final class SelfImprovementEngine {
                                   PatternDetector patternDetector,
                                   AutoMemoryStore memoryStore,
                                   StrategyRefiner strategyRefiner) {
-        this(errorDetector, patternDetector, new FailureSignalDetector(), memoryStore, strategyRefiner);
+        this(errorDetector, patternDetector, new FailureSignalDetector(), memoryStore, strategyRefiner, null);
     }
 
     /**
@@ -96,11 +100,46 @@ public final class SelfImprovementEngine {
                                  FailureSignalDetector failureSignalDetector,
                                  AutoMemoryStore memoryStore,
                                  StrategyRefiner strategyRefiner) {
+        this(errorDetector, patternDetector, failureSignalDetector, memoryStore, strategyRefiner, null);
+    }
+
+    /**
+     * Creates a self-improvement engine with all dependencies including candidate store.
+     *
+     * @param errorDetector          detects error-correction patterns
+     * @param patternDetector        detects recurring behavioral patterns
+     * @param failureSignalDetector  detects normalized failure signals
+     * @param memoryStore            persistent memory for insights
+     * @param strategyRefiner        optional refiner (nullable)
+     * @param candidateStore         optional candidate store for learning pipeline (nullable)
+     */
+    public SelfImprovementEngine(ErrorDetector errorDetector,
+                                 PatternDetector patternDetector,
+                                 FailureSignalDetector failureSignalDetector,
+                                 AutoMemoryStore memoryStore,
+                                 StrategyRefiner strategyRefiner,
+                                 CandidateStore candidateStore) {
+        this(errorDetector, patternDetector, failureSignalDetector, memoryStore,
+                strategyRefiner, candidateStore, true);
+    }
+
+    /**
+     * Creates a self-improvement engine with explicit control over candidate transitions.
+     */
+    public SelfImprovementEngine(ErrorDetector errorDetector,
+                                 PatternDetector patternDetector,
+                                 FailureSignalDetector failureSignalDetector,
+                                 AutoMemoryStore memoryStore,
+                                 StrategyRefiner strategyRefiner,
+                                 CandidateStore candidateStore,
+                                 boolean candidateTransitionsEnabled) {
         this.errorDetector = Objects.requireNonNull(errorDetector, "errorDetector");
         this.patternDetector = Objects.requireNonNull(patternDetector, "patternDetector");
         this.failureSignalDetector = Objects.requireNonNull(failureSignalDetector, "failureSignalDetector");
         this.memoryStore = Objects.requireNonNull(memoryStore, "memoryStore");
         this.strategyRefiner = strategyRefiner;
+        this.candidateStore = candidateStore;
+        this.candidateTransitionsEnabled = candidateTransitionsEnabled;
     }
 
     /**
@@ -177,6 +216,37 @@ public final class SelfImprovementEngine {
                         insight.targetCategory(), insight.confidence(), truncate(content));
             } catch (Exception e) {
                 log.warn("Failed to persist insight: {}", e.getMessage());
+            }
+        }
+
+        // Upsert insights as candidate observations and evaluate state transitions
+        if (candidateStore != null) {
+            try {
+                for (var insight : insights) {
+                    if (insight.confidence() < PERSISTENCE_THRESHOLD) continue;
+                    var kind = mapInsightToKind(insight);
+                    boolean isSuccess = !(insight instanceof Insight.ErrorInsight)
+                            && !(insight instanceof Insight.FailureInsight);
+                    boolean severeFailure = insight instanceof Insight.FailureInsight f
+                            && !f.retryable();
+                    boolean correctionConflict = insight instanceof Insight.PatternInsight p
+                            && p.patternType() == dev.aceclaw.memory.PatternType.USER_PREFERENCE;
+                    var observation = new CandidateStore.CandidateObservation(
+                            insight.targetCategory(), kind, truncate(insight.description(), MAX_CONTENT_LENGTH),
+                            extractToolTag(insight), insight.tags(), insight.confidence(),
+                            isSuccess ? 1 : 0, isSuccess ? 0 : 1,
+                            "self-improve:" + sessionId, null,
+                            severeFailure, correctionConflict, insight.description(), null);
+                    candidateStore.upsert(observation);
+                }
+                if (candidateTransitionsEnabled) {
+                    var transitions = candidateStore.evaluateAll();
+                    if (!transitions.isEmpty()) {
+                        log.info("Candidate pipeline: {} transitions applied after turn", transitions.size());
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("Candidate pipeline evaluation failed: {}", e.getMessage());
             }
         }
 
@@ -287,6 +357,29 @@ public final class SelfImprovementEngine {
             if (!token.isBlank()) tokens.add(token);
         }
         return tokens;
+    }
+
+    private static CandidateKind mapInsightToKind(Insight insight) {
+        return switch (insight) {
+            case Insight.ErrorInsight _ -> CandidateKind.ERROR_RECOVERY;
+            case Insight.RecoveryRecipe _ -> CandidateKind.ERROR_RECOVERY;
+            case Insight.FailureInsight _ -> CandidateKind.ERROR_RECOVERY;
+            case Insight.PatternInsight p -> switch (p.patternType()) {
+                case USER_PREFERENCE -> CandidateKind.PREFERENCE;
+                case WORKFLOW -> CandidateKind.WORKFLOW;
+                default -> CandidateKind.WORKFLOW;
+            };
+            case Insight.SuccessInsight _ -> CandidateKind.WORKFLOW;
+        };
+    }
+
+    private static String extractToolTag(Insight insight) {
+        return switch (insight) {
+            case Insight.ErrorInsight e -> e.toolName();
+            case Insight.RecoveryRecipe r -> r.toolName();
+            case Insight.FailureInsight f -> f.toolOrAgent();
+            default -> "general";
+        };
     }
 
     private static String truncate(String text) {
