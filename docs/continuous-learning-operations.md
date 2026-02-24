@@ -13,7 +13,7 @@ This runbook covers runtime controls, rollback, and configuration persistence fo
 - Governance closure (`#65`): process/safety/rollback baseline and status-event protocol
 
 Related document:
-- `docs/continuous-learning-governance.md`
+- [Continuous-Learning Governance Closure](docs/continuous-learning-governance.md)
 
 ## Configuration
 

@@ -31,6 +31,7 @@ class PermissionBridgeTest {
             assertThat(answer.approved()).isTrue();
             assertThat(answer.remember()).isFalse();
         } finally {
+            releasePendingRequests(bridge);
             pool.shutdownNow();
         }
     }
@@ -62,6 +63,7 @@ class PermissionBridgeTest {
             assertThat(f1.get(2, TimeUnit.SECONDS).approved()).isTrue();
             assertThat(f2.get(2, TimeUnit.SECONDS).approved()).isFalse();
         } finally {
+            releasePendingRequests(bridge);
             pool.shutdownNow();
         }
     }
@@ -101,7 +103,14 @@ class PermissionBridgeTest {
             assertThat(approved).isEqualTo(3);
             assertThat(rejected).isEqualTo(3);
         } finally {
+            releasePendingRequests(bridge);
             pool.shutdownNow();
+        }
+    }
+
+    private static void releasePendingRequests(PermissionBridge bridge) {
+        for (var req : bridge.pendingSnapshot()) {
+            bridge.submitAnswer(req.requestId(), new PermissionBridge.PermissionAnswer(false, false));
         }
     }
 }
