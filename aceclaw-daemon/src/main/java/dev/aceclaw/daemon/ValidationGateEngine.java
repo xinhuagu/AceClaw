@@ -74,11 +74,14 @@ public final class ValidationGateEngine {
         }
 
         var replay = evaluateReplay(projectRoot);
-        var draftFiles = Files.walk(draftsRoot)
-                .filter(Files::isRegularFile)
-                .filter(path -> path.getFileName().toString().equals("SKILL.md"))
-                .sorted(Comparator.comparing(path -> projectRoot.relativize(path).toString()))
-                .toList();
+        List<Path> draftFiles;
+        try (var paths = Files.walk(draftsRoot)) {
+            draftFiles = paths
+                    .filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().equals("SKILL.md"))
+                    .sorted(Comparator.comparing(path -> projectRoot.relativize(path).toString()))
+                    .toList();
+        }
 
         var decisions = new ArrayList<DraftDecision>();
         for (var draftFile : draftFiles) {
