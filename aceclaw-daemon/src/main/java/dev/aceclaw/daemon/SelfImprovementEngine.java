@@ -15,6 +15,7 @@ import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
 
 /**
  * Orchestrates the self-learning pipeline: runs detectors, deduplicates insights,
@@ -61,6 +62,7 @@ public final class SelfImprovementEngine {
     private final StrategyRefiner strategyRefiner;
     private final CandidateStore candidateStore;
     private final boolean candidateTransitionsEnabled;
+    private final Consumer<Path> draftReevaluationTrigger;
 
     private final AtomicInteger turnsSinceRefinement = new AtomicInteger();
     private final AtomicInteger persistedSinceLastRefinement = new AtomicInteger();
@@ -120,7 +122,7 @@ public final class SelfImprovementEngine {
                                  StrategyRefiner strategyRefiner,
                                  CandidateStore candidateStore) {
         this(errorDetector, patternDetector, failureSignalDetector, memoryStore,
-                strategyRefiner, candidateStore, true);
+                strategyRefiner, candidateStore, true, null);
     }
 
     /**
@@ -133,6 +135,21 @@ public final class SelfImprovementEngine {
                                  StrategyRefiner strategyRefiner,
                                  CandidateStore candidateStore,
                                  boolean candidateTransitionsEnabled) {
+        this(errorDetector, patternDetector, failureSignalDetector, memoryStore,
+                strategyRefiner, candidateStore, candidateTransitionsEnabled, null);
+    }
+
+    /**
+     * Creates a self-improvement engine with explicit candidate-transition and draft re-evaluation hooks.
+     */
+    public SelfImprovementEngine(ErrorDetector errorDetector,
+                                 PatternDetector patternDetector,
+                                 FailureSignalDetector failureSignalDetector,
+                                 AutoMemoryStore memoryStore,
+                                 StrategyRefiner strategyRefiner,
+                                 CandidateStore candidateStore,
+                                 boolean candidateTransitionsEnabled,
+                                 Consumer<Path> draftReevaluationTrigger) {
         this.errorDetector = Objects.requireNonNull(errorDetector, "errorDetector");
         this.patternDetector = Objects.requireNonNull(patternDetector, "patternDetector");
         this.failureSignalDetector = Objects.requireNonNull(failureSignalDetector, "failureSignalDetector");
@@ -140,6 +157,7 @@ public final class SelfImprovementEngine {
         this.strategyRefiner = strategyRefiner;
         this.candidateStore = candidateStore;
         this.candidateTransitionsEnabled = candidateTransitionsEnabled;
+        this.draftReevaluationTrigger = draftReevaluationTrigger;
     }
 
     /**
@@ -243,6 +261,13 @@ public final class SelfImprovementEngine {
                     var transitions = candidateStore.evaluateAll();
                     if (!transitions.isEmpty()) {
                         log.info("Candidate pipeline: {} transitions applied after turn", transitions.size());
+                    }
+                }
+                if (draftReevaluationTrigger != null) {
+                    try {
+                        draftReevaluationTrigger.accept(projectPath);
+                    } catch (Exception e) {
+                        log.warn("Draft validation re-evaluation failed: {}", e.getMessage());
                     }
                 }
             } catch (Exception e) {

@@ -64,6 +64,12 @@ public final class AceClawConfig {
     private static final double DEFAULT_CANDIDATE_PROMOTION_MAX_FAILURE_RATE = 0.2;
     private static final int DEFAULT_CANDIDATE_INJECTION_MAX_COUNT = 10;
     private static final int DEFAULT_CANDIDATE_INJECTION_MAX_TOKENS = 1200;
+    private static final boolean DEFAULT_SKILL_DRAFT_VALIDATION_ENABLED = true;
+    private static final boolean DEFAULT_SKILL_DRAFT_VALIDATION_STRICT_MODE = false;
+    private static final boolean DEFAULT_SKILL_DRAFT_VALIDATION_REPLAY_REQUIRED = true;
+    private static final String DEFAULT_SKILL_DRAFT_VALIDATION_REPLAY_REPORT =
+            ".aceclaw/metrics/continuous-learning/replay-latest.json";
+    private static final double DEFAULT_SKILL_DRAFT_VALIDATION_MAX_TOKEN_ESTIMATION_ERROR_RATIO = 0.65;
 
     /** Claude CLI credentials directory. */
     private static final Path CLAUDE_CLI_DIR = Path.of(System.getProperty("user.home"), ".claude");
@@ -99,6 +105,11 @@ public final class AceClawConfig {
     private double candidatePromotionMaxFailureRate;
     private int candidateInjectionMaxCount;
     private int candidateInjectionMaxTokens;
+    private boolean skillDraftValidationEnabled;
+    private boolean skillDraftValidationStrictMode;
+    private boolean skillDraftValidationReplayRequired;
+    private String skillDraftValidationReplayReport;
+    private double skillDraftValidationMaxTokenEstimationErrorRatio;
     private Map<String, List<HookMatcherFormat>> hooks;
 
     private AceClawConfig() {
@@ -123,6 +134,12 @@ public final class AceClawConfig {
         this.candidatePromotionMaxFailureRate = DEFAULT_CANDIDATE_PROMOTION_MAX_FAILURE_RATE;
         this.candidateInjectionMaxCount = DEFAULT_CANDIDATE_INJECTION_MAX_COUNT;
         this.candidateInjectionMaxTokens = DEFAULT_CANDIDATE_INJECTION_MAX_TOKENS;
+        this.skillDraftValidationEnabled = DEFAULT_SKILL_DRAFT_VALIDATION_ENABLED;
+        this.skillDraftValidationStrictMode = DEFAULT_SKILL_DRAFT_VALIDATION_STRICT_MODE;
+        this.skillDraftValidationReplayRequired = DEFAULT_SKILL_DRAFT_VALIDATION_REPLAY_REQUIRED;
+        this.skillDraftValidationReplayReport = DEFAULT_SKILL_DRAFT_VALIDATION_REPLAY_REPORT;
+        this.skillDraftValidationMaxTokenEstimationErrorRatio =
+                DEFAULT_SKILL_DRAFT_VALIDATION_MAX_TOKEN_ESTIMATION_ERROR_RATIO;
         this.providerModels = new java.util.HashMap<>();
     }
 
@@ -210,6 +227,34 @@ public final class AceClawConfig {
                 config.candidateInjectionMaxTokens = Math.max(0, Integer.parseInt(envCandidateInjectionMaxTokens));
             } catch (NumberFormatException e) {
                 log.warn("Invalid ACECLAW_CANDIDATE_INJECTION_MAX_TOKENS: {}", envCandidateInjectionMaxTokens);
+            }
+        }
+        var envSkillDraftValidation = System.getenv("ACECLAW_SKILL_DRAFT_VALIDATION");
+        if (envSkillDraftValidation != null && !envSkillDraftValidation.isBlank()) {
+            config.skillDraftValidationEnabled = Boolean.parseBoolean(envSkillDraftValidation);
+        }
+        var envSkillDraftValidationStrict = System.getenv("ACECLAW_SKILL_DRAFT_VALIDATION_STRICT_MODE");
+        if (envSkillDraftValidationStrict != null && !envSkillDraftValidationStrict.isBlank()) {
+            config.skillDraftValidationStrictMode = Boolean.parseBoolean(envSkillDraftValidationStrict);
+        }
+        var envSkillDraftValidationReplayRequired =
+                System.getenv("ACECLAW_SKILL_DRAFT_VALIDATION_REPLAY_REQUIRED");
+        if (envSkillDraftValidationReplayRequired != null && !envSkillDraftValidationReplayRequired.isBlank()) {
+            config.skillDraftValidationReplayRequired = Boolean.parseBoolean(envSkillDraftValidationReplayRequired);
+        }
+        var envReplayReportPath = System.getenv("ACECLAW_REPLAY_REPORT_PATH");
+        if (envReplayReportPath != null && !envReplayReportPath.isBlank()) {
+            config.skillDraftValidationReplayReport = envReplayReportPath;
+        }
+        var envSkillDraftValidationMaxTokenError =
+                System.getenv("ACECLAW_SKILL_DRAFT_VALIDATION_MAX_TOKEN_ESTIMATION_ERROR_RATIO");
+        if (envSkillDraftValidationMaxTokenError != null && !envSkillDraftValidationMaxTokenError.isBlank()) {
+            try {
+                config.skillDraftValidationMaxTokenEstimationErrorRatio =
+                        Double.parseDouble(envSkillDraftValidationMaxTokenError);
+            } catch (NumberFormatException e) {
+                log.warn("Invalid ACECLAW_SKILL_DRAFT_VALIDATION_MAX_TOKEN_ESTIMATION_ERROR_RATIO: {}",
+                        envSkillDraftValidationMaxTokenError);
             }
         }
 
@@ -505,6 +550,41 @@ public final class AceClawConfig {
     }
 
     /**
+     * Returns whether autonomous skill draft validation is enabled.
+     */
+    public boolean skillDraftValidationEnabled() {
+        return skillDraftValidationEnabled;
+    }
+
+    /**
+     * Returns whether validation gate strict mode is enabled.
+     */
+    public boolean skillDraftValidationStrictMode() {
+        return skillDraftValidationStrictMode;
+    }
+
+    /**
+     * Returns whether replay checks are required for draft validation.
+     */
+    public boolean skillDraftValidationReplayRequired() {
+        return skillDraftValidationReplayRequired;
+    }
+
+    /**
+     * Returns replay report path for draft validation.
+     */
+    public String skillDraftValidationReplayReport() {
+        return skillDraftValidationReplayReport;
+    }
+
+    /**
+     * Returns max token-estimation error ratio accepted by draft validation replay gate.
+     */
+    public double skillDraftValidationMaxTokenEstimationErrorRatio() {
+        return skillDraftValidationMaxTokenEstimationErrorRatio;
+    }
+
+    /**
      * Returns the hooks configuration map (event name to list of hook matchers).
      * Returns null if no hooks are configured.
      */
@@ -750,6 +830,24 @@ public final class AceClawConfig {
             // Backward compatibility: old char-based setting converts to approximate token budget.
             this.candidateInjectionMaxTokens = Math.max(0, fileConfig.candidateInjectionMaxChars / 4);
         }
+        if (fileConfig.skillDraftValidationEnabled != null) {
+            this.skillDraftValidationEnabled = fileConfig.skillDraftValidationEnabled;
+        }
+        if (fileConfig.skillDraftValidationStrictMode != null) {
+            this.skillDraftValidationStrictMode = fileConfig.skillDraftValidationStrictMode;
+        }
+        if (fileConfig.skillDraftValidationReplayRequired != null) {
+            this.skillDraftValidationReplayRequired = fileConfig.skillDraftValidationReplayRequired;
+        }
+        if (fileConfig.skillDraftValidationReplayReport != null
+                && !fileConfig.skillDraftValidationReplayReport.isBlank()) {
+            this.skillDraftValidationReplayReport = fileConfig.skillDraftValidationReplayReport;
+        }
+        if (fileConfig.skillDraftValidationMaxTokenEstimationErrorRatio != null
+                && fileConfig.skillDraftValidationMaxTokenEstimationErrorRatio >= 0) {
+            this.skillDraftValidationMaxTokenEstimationErrorRatio =
+                    fileConfig.skillDraftValidationMaxTokenEstimationErrorRatio;
+        }
     }
 
     /**
@@ -784,6 +882,11 @@ public final class AceClawConfig {
         public Integer candidateInjectionMaxCount;
         public Integer candidateInjectionMaxTokens;
         public Integer candidateInjectionMaxChars;
+        public Boolean skillDraftValidationEnabled;
+        public Boolean skillDraftValidationStrictMode;
+        public Boolean skillDraftValidationReplayRequired;
+        public String skillDraftValidationReplayReport;
+        public Double skillDraftValidationMaxTokenEstimationErrorRatio;
         public String defaultProfile;
         public Map<String, ConfigFileFormat> profiles;
         public Map<String, String> providerModels;

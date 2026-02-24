@@ -341,11 +341,19 @@ public final class AceClawDaemon {
 
         // 10. Self-improvement engine (post-turn learning analysis + strategy refinement + candidate pipeline)
         CandidateStore candidateStoreRef = null;
+        ValidationGateEngine validationGateEngine = null;
         if (memoryStore != null) {
             var errorDetector = new ErrorDetector(memoryStore);
             var patternDetector = new PatternDetector(memoryStore);
             var failureSignalDetector = new FailureSignalDetector();
             var strategyRefiner = new StrategyRefiner(memoryStore);
+            if (config.skillDraftValidationEnabled()) {
+                validationGateEngine = new ValidationGateEngine(
+                        config.skillDraftValidationStrictMode(),
+                        config.skillDraftValidationReplayRequired(),
+                        Path.of(config.skillDraftValidationReplayReport()),
+                        config.skillDraftValidationMaxTokenEstimationErrorRatio());
+            }
 
             // Candidate store for learning pipeline (promotion/demotion state machine)
             CandidateStore cs = null;
@@ -365,9 +373,17 @@ public final class AceClawDaemon {
                 }
             }
 
+            final var validationGateForAuto = validationGateEngine;
             var selfImprovementEngine = new SelfImprovementEngine(
                     errorDetector, patternDetector, failureSignalDetector, memoryStore, strategyRefiner, cs,
-                    config.candidatePromotionEnabled());
+                    config.candidatePromotionEnabled(),
+                    validationGateForAuto != null ? projectPath -> {
+                        try {
+                            validationGateForAuto.validateAll(projectPath, "evidence-update");
+                        } catch (Exception e) {
+                            log.warn("Draft auto-revalidation failed: {}", e.getMessage());
+                        }
+                    } : null);
             agentHandler.setSelfImprovementEngine(selfImprovementEngine);
             candidateStoreRef = cs;
 
@@ -452,6 +468,7 @@ public final class AceClawDaemon {
 
         // Runtime controls: candidate injection kill-switch and manual rollback.
         final var candidateStoreForRpc = candidateStoreRef;
+        final var validationGateForRpc = validationGateEngine;
         router.register("candidate.injection.set", params -> {
             if (params == null || !params.has("enabled")) {
                 throw new IllegalArgumentException("Missing required parameter: enabled");
@@ -515,7 +532,25 @@ public final class AceClawDaemon {
             summary.draftPaths().forEach(path -> paths.add(path.replace('\\', '/')));
             result.set("draftPaths", paths);
             result.put("auditFile", workingDir.relativize(summary.auditFile()).toString().replace('\\', '/'));
+            if (validationGateForRpc != null) {
+                var validation = validationGateForRpc.validateAll(workingDir, "draft-generated");
+                result.set("validation", toValidationJson(validation, workingDir));
+            }
             return result;
+        });
+        router.register("skill.draft.validate", params -> {
+            if (validationGateForRpc == null) {
+                throw new IllegalStateException("Skill draft validation is disabled");
+            }
+            String trigger = params != null && params.has("trigger")
+                    ? params.get("trigger").asText() : "manual";
+            if (params != null && params.has("draftPath")) {
+                Path draftPath = workingDir.resolve(params.get("draftPath").asText()).normalize();
+                var summary = validationGateForRpc.validateSingleDraft(workingDir, draftPath, trigger);
+                return toValidationJson(summary, workingDir);
+            }
+            var summary = validationGateForRpc.validateAll(workingDir, trigger);
+            return toValidationJson(summary, workingDir);
         });
 
         // Store references for boot execution
@@ -526,6 +561,37 @@ public final class AceClawDaemon {
 
         log.info("Agent handler wired: provider={}, model={}, tools={}",
                 config.provider(), model, toolRegistry.size());
+    }
+
+    private com.fasterxml.jackson.databind.node.ObjectNode toValidationJson(
+            ValidationGateEngine.ValidationSummary summary, Path workingDir) {
+        var node = objectMapper.createObjectNode();
+        node.put("totalDrafts", summary.totalDrafts());
+        node.put("passCount", summary.passCount());
+        node.put("holdCount", summary.holdCount());
+        node.put("blockCount", summary.blockCount());
+        node.put("auditFile", workingDir.relativize(summary.auditFile()).toString().replace('\\', '/'));
+        var decisions = objectMapper.createArrayNode();
+        for (var decision : summary.decisions()) {
+            var dn = objectMapper.createObjectNode();
+            dn.put("draftPath", decision.draftPath());
+            dn.put("verdict", decision.verdict().name().toLowerCase());
+            dn.put("evaluatedAt", decision.evaluatedAt().toString());
+            dn.put("trigger", decision.trigger());
+            var reasons = objectMapper.createArrayNode();
+            for (var reason : decision.reasons()) {
+                var rn = objectMapper.createObjectNode();
+                rn.put("gate", reason.gate());
+                rn.put("code", reason.code());
+                rn.put("outcome", reason.outcome().name().toLowerCase());
+                rn.put("message", reason.message());
+                reasons.add(rn);
+            }
+            dn.set("reasons", reasons);
+            decisions.add(dn);
+        }
+        node.set("decisions", decisions);
+        return node;
     }
 
     /**

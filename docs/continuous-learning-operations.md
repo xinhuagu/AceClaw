@@ -8,6 +8,7 @@ This runbook covers runtime controls, rollback, and configuration persistence fo
 - Prompt injection: promoted-only candidates
 - Runtime controls: kill-switch, token budget updates, manual rollback
 - Outcome enforcement closure (`#62`): injected candidate outcome writeback, deterministic gate timing, lifecycle maintenance
+- Autonomous draft validation (`#60`): deterministic `pass/hold/block` gate with machine-readable reason codes
 
 ## Configuration
 
@@ -20,12 +21,22 @@ Config keys in `.aceclaw/config.json`:
 - `candidatePromotionMaxFailureRate` (`double`)
 - `candidateInjectionMaxCount` (`int`)
 - `candidateInjectionMaxTokens` (`int`)
+- `skillDraftValidationEnabled` (`bool`, default `true`)
+- `skillDraftValidationStrictMode` (`bool`, default `false`)
+- `skillDraftValidationReplayRequired` (`bool`, default `true`)
+- `skillDraftValidationReplayReport` (`string`, default `.aceclaw/metrics/continuous-learning/replay-latest.json`)
+- `skillDraftValidationMaxTokenEstimationErrorRatio` (`double`, default `0.65`)
 
 Environment overrides:
 
 - `ACECLAW_CANDIDATE_INJECTION`
 - `ACECLAW_CANDIDATE_PROMOTION`
 - `ACECLAW_CANDIDATE_INJECTION_MAX_TOKENS`
+- `ACECLAW_SKILL_DRAFT_VALIDATION`
+- `ACECLAW_SKILL_DRAFT_VALIDATION_STRICT_MODE`
+- `ACECLAW_SKILL_DRAFT_VALIDATION_REPLAY_REQUIRED`
+- `ACECLAW_REPLAY_REPORT_PATH`
+- `ACECLAW_SKILL_DRAFT_VALIDATION_MAX_TOKEN_ESTIMATION_ERROR_RATIO`
 
 JVM/system properties:
 
@@ -124,6 +135,39 @@ Behavior:
 - Generated drafts always include `disable-model-invocation: true`.
 - Writes generation audit to:
   `.aceclaw/metrics/continuous-learning/skill-draft-audit.jsonl`.
+- If draft validation is enabled, generation also returns a validation summary.
+
+### 5) Validate draft skills (autonomous gate)
+
+```json
+{
+  "method": "skill.draft.validate",
+  "params": {
+    "trigger": "manual"
+  }
+}
+```
+
+Optional single-draft validation:
+
+```json
+{
+  "method": "skill.draft.validate",
+  "params": {
+    "draftPath": ".aceclaw/skills-drafts/retry-safe/SKILL.md",
+    "trigger": "manual-single"
+  }
+}
+```
+
+Gate behavior:
+- Verdicts: `pass`, `hold`, `block`
+- Policy packs: `static`, `dry-run`, `replay`, `safety`
+- Machine-readable reason payload: `{ gate, code, outcome, message }`
+- Validation audit log:
+  `.aceclaw/metrics/continuous-learning/skill-draft-validation-audit.jsonl`
+- Auto re-evaluation trigger:
+  candidate evidence/score updates trigger background re-validation (`trigger=evidence-update`).
 
 ## Incident Playbook
 
@@ -150,7 +194,8 @@ Smoke checks:
 1. `candidate.injection.set(enabled=false)` should remove injected section in next turn.
 2. `candidate.injection.set(enabled=true,maxTokens=...)` should apply within one turn.
 3. `candidate.rollback` should transition `PROMOTED -> DEMOTED` and append transition log.
-4. `skill.draft.generate` should create at least one `.aceclaw/skills-drafts/<skill-name>/SKILL.md` with `disable-model-invocation: true` and append one line to `.aceclaw/metrics/continuous-learning/skill-draft-audit.jsonl`.
+4. Ensure `skill.draft.generate` creates at least one `.aceclaw/skills-drafts/<skill-name>/SKILL.md` with `disable-model-invocation: true` and appends one line to `.aceclaw/metrics/continuous-learning/skill-draft-audit.jsonl`.
+5. When running `skill.draft.validate`, verify deterministic `pass/hold/block` verdicts and appended lines in `.aceclaw/metrics/continuous-learning/skill-draft-validation-audit.jsonl`.
 
 CI guardrail job:
 

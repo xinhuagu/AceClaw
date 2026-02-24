@@ -10,8 +10,10 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Set;
 
@@ -122,6 +124,43 @@ class SkillDraftGeneratorTest {
         assertThat(summary.createdDrafts()).isEqualTo(1);
         assertThat(summary.draftPaths()).singleElement()
                 .satisfies(path -> assertThat(path).contains(".aceclaw/skills-drafts"));
+    }
+
+    @Test
+    void generatedDraftCanFlowIntoValidationGate() throws Exception {
+        var project = tempDir.resolve("project-validate");
+        var store = newStore(project);
+        var t0 = Instant.parse("2026-02-24T00:00:00Z");
+
+        store.upsert(obs("Use read-first then write pattern for edits", "edit_file", t0));
+        store.evaluateAll();
+
+        var generator = new SkillDraftGenerator();
+        var generated = generator.generateFromPromoted(store, project);
+        assertThat(generated.createdDrafts()).isEqualTo(1);
+
+        Path replay = project.resolve(".aceclaw/metrics/continuous-learning/replay-latest.json");
+        Files.createDirectories(replay.getParent());
+        Files.writeString(replay, """
+                {
+                  "metrics": {
+                    "replay_success_rate_delta": {"value": 0.01, "status": "measured"},
+                    "replay_token_delta": {"value": 50, "status": "measured"},
+                    "replay_failure_distribution_delta": {"value": 0.02, "status": "measured"},
+                    "token_estimation_error_ratio_max": {"value": 0.12, "status": "measured"}
+                  }
+                }
+                """);
+
+        var validation = new ValidationGateEngine(
+                Clock.fixed(t0, ZoneOffset.UTC), false, true,
+                Path.of(".aceclaw/metrics/continuous-learning/replay-latest.json"), 0.65);
+        var summary = validation.validateAll(project, "test");
+
+        assertThat(summary.totalDrafts()).isEqualTo(1);
+        assertThat(summary.passCount()).isEqualTo(1);
+        assertThat(summary.holdCount()).isZero();
+        assertThat(summary.blockCount()).isZero();
     }
 
     private static CandidateStore newStore(Path projectRoot) throws Exception {
