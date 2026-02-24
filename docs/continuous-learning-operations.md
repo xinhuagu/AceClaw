@@ -254,6 +254,25 @@ Force promote:
 }
 ```
 
+## Observability Panel (`#64`)
+
+The interactive CLI prompt status panel includes a continuous-learning summary line
+when project-local learning artifacts are present.
+
+- Replay quality status:
+  - source: `.aceclaw/metrics/continuous-learning/replay-latest.json`
+  - display: `replay=<status>:<token_estimation_error_ratio_max>` (or `pending` / `read-error`)
+- Candidate pipeline status:
+  - source: `.aceclaw/memory/candidates.jsonl`
+  - display: total candidates and state counters (`PROMOTED`, `DEMOTED`)
+- Auto-release rollout status:
+  - source: `.aceclaw/metrics/continuous-learning/skill-release-state.json`
+  - display: stage counters (`SHADOW`, `CANARY`, `ACTIVE`)
+
+Notes:
+- This panel is read-only observability; it does not mutate runtime or config.
+- The summary is cached briefly and refreshed periodically to avoid per-keystroke IO.
+
 ## Incident Playbook
 
 ### Prompt regression suspected
