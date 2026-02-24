@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Automation-first release controller for validated skill drafts.
@@ -40,6 +41,7 @@ public final class AutoReleaseController {
     private final ObjectMapper mapper;
     private final Config config;
     private final ValidationGateEngine validationGateEngine;
+    private final ReentrantLock stateLock = new ReentrantLock();
 
     public AutoReleaseController(Config config, ValidationGateEngine validationGateEngine) {
         this(Clock.systemUTC(), config, validationGateEngine);
@@ -55,17 +57,19 @@ public final class AutoReleaseController {
     public EvaluationSummary evaluateAll(Path projectRoot, CandidateStore candidateStore, String trigger) throws IOException {
         Objects.requireNonNull(projectRoot, "projectRoot");
         Objects.requireNonNull(candidateStore, "candidateStore");
-        String normalizedTrigger = normalizeTrigger(trigger);
+        stateLock.lock();
+        try {
+            String normalizedTrigger = normalizeTrigger(trigger);
 
-        var validations = validationGateEngine.validateAll(projectRoot, "release-eval:" + normalizedTrigger);
-        var releaseState = loadState(projectRoot);
-        var decisionByPath = new LinkedHashMap<String, ValidationGateEngine.DraftDecision>();
-        for (var decision : validations.decisions()) {
-            decisionByPath.put(decision.draftPath(), decision);
-        }
+            var validations = validationGateEngine.validateAll(projectRoot, "release-eval:" + normalizedTrigger);
+            var releaseState = loadState(projectRoot);
+            var decisionByPath = new LinkedHashMap<String, ValidationGateEngine.DraftDecision>();
+            for (var decision : validations.decisions()) {
+                decisionByPath.put(decision.draftPath(), decision);
+            }
 
-        var transitionEvents = new ArrayList<ReleaseEvent>();
-        var releasesByName = indexBySkillName(releaseState.releases());
+            var transitionEvents = new ArrayList<ReleaseEvent>();
+            var releasesByName = indexBySkillName(releaseState.releases());
 
         for (var entry : decisionByPath.entrySet()) {
             String draftPath = entry.getKey();
@@ -129,54 +133,72 @@ public final class AutoReleaseController {
             }
         }
 
-        var nextState = new ReleaseState(List.copyOf(releasesByName.values()));
-        persistState(projectRoot, nextState);
-        appendAudit(projectRoot, transitionEvents);
-        return new EvaluationSummary(nextState.releases(), transitionEvents);
+            var nextState = new ReleaseState(List.copyOf(releasesByName.values()));
+            persistState(projectRoot, nextState);
+            appendAudit(projectRoot, transitionEvents);
+            return new EvaluationSummary(nextState.releases(), transitionEvents);
+        } finally {
+            stateLock.unlock();
+        }
     }
 
     public EvaluationSummary pause(Path projectRoot, String skillName, String reason, String trigger) throws IOException {
-        return mutateManual(projectRoot, skillName, "MANUAL_PAUSE", reason, trigger, release ->
-                release.withPaused(true, Instant.now(clock), "MANUAL_PAUSE", normalizeReason(reason)));
+        stateLock.lock();
+        try {
+            return mutateManual(projectRoot, skillName, "MANUAL_PAUSE", reason, trigger, release ->
+                    release.withPaused(true, Instant.now(clock), "MANUAL_PAUSE", normalizeReason(reason)));
+        } finally {
+            stateLock.unlock();
+        }
     }
 
     public EvaluationSummary forceRollback(Path projectRoot, String skillName, String reason, String trigger) throws IOException {
-        Objects.requireNonNull(skillName, "skillName");
-        var state = loadState(projectRoot);
-        var releases = new ArrayList<SkillRelease>(state.releases());
-        for (int i = 0; i < releases.size(); i++) {
-            var release = releases.get(i);
-            if (!release.skillName().equals(skillName)) continue;
-            var rolled = rollbackToShadow(projectRoot, release, "MANUAL_FORCE_ROLLBACK", reason, trigger);
-            releases.set(i, rolled.release());
-            persistState(projectRoot, new ReleaseState(List.copyOf(releases)));
-            appendAudit(projectRoot, List.of(rolled.event()));
-            return new EvaluationSummary(List.copyOf(releases), List.of(rolled.event()));
+        stateLock.lock();
+        try {
+            Objects.requireNonNull(skillName, "skillName");
+            var state = loadState(projectRoot);
+            var releases = new ArrayList<SkillRelease>(state.releases());
+            for (int i = 0; i < releases.size(); i++) {
+                var release = releases.get(i);
+                if (!release.skillName().equals(skillName)) continue;
+                var rolled = rollbackToShadow(projectRoot, release, "MANUAL_FORCE_ROLLBACK", reason, trigger);
+                releases.set(i, rolled.release());
+                persistState(projectRoot, new ReleaseState(List.copyOf(releases)));
+                appendAudit(projectRoot, List.of(rolled.event()));
+                return new EvaluationSummary(List.copyOf(releases), List.of(rolled.event()));
+            }
+            return new EvaluationSummary(state.releases(), List.of());
+        } finally {
+            stateLock.unlock();
         }
-        return new EvaluationSummary(state.releases(), List.of());
     }
 
     public EvaluationSummary forcePromote(Path projectRoot, String skillName, Stage targetStage,
                                           String reason, String trigger) throws IOException {
-        Objects.requireNonNull(skillName, "skillName");
-        Objects.requireNonNull(targetStage, "targetStage");
-        if (targetStage == Stage.SHADOW) {
-            throw new IllegalArgumentException("forcePromote targetStage must be CANARY or ACTIVE");
+        stateLock.lock();
+        try {
+            Objects.requireNonNull(skillName, "skillName");
+            Objects.requireNonNull(targetStage, "targetStage");
+            if (targetStage == Stage.SHADOW) {
+                throw new IllegalArgumentException("forcePromote targetStage must be CANARY or ACTIVE");
+            }
+            var state = loadState(projectRoot);
+            var releases = new ArrayList<SkillRelease>(state.releases());
+            for (int i = 0; i < releases.size(); i++) {
+                var release = releases.get(i);
+                if (!release.skillName().equals(skillName)) continue;
+                var transitioned = transition(projectRoot, release.withPaused(false, Instant.now(clock),
+                                "MANUAL_UNPAUSE", "manual force promote"), targetStage,
+                        "MANUAL_FORCE_PROMOTE", reason, trigger);
+                releases.set(i, transitioned.release());
+                persistState(projectRoot, new ReleaseState(List.copyOf(releases)));
+                appendAudit(projectRoot, List.of(transitioned.event()));
+                return new EvaluationSummary(List.copyOf(releases), List.of(transitioned.event()));
+            }
+            return new EvaluationSummary(state.releases(), List.of());
+        } finally {
+            stateLock.unlock();
         }
-        var state = loadState(projectRoot);
-        var releases = new ArrayList<SkillRelease>(state.releases());
-        for (int i = 0; i < releases.size(); i++) {
-            var release = releases.get(i);
-            if (!release.skillName().equals(skillName)) continue;
-            var transitioned = transition(projectRoot, release.withPaused(false, Instant.now(clock),
-                            "MANUAL_UNPAUSE", "manual force promote"), targetStage,
-                    "MANUAL_FORCE_PROMOTE", reason, trigger);
-            releases.set(i, transitioned.release());
-            persistState(projectRoot, new ReleaseState(List.copyOf(releases)));
-            appendAudit(projectRoot, List.of(transitioned.event()));
-            return new EvaluationSummary(List.copyOf(releases), List.of(transitioned.event()));
-        }
-        return new EvaluationSummary(state.releases(), List.of());
     }
 
     private EvaluationSummary mutateManual(Path projectRoot, String skillName, String reasonCode, String reason,
