@@ -10,8 +10,6 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.ZoneId;
-import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
@@ -238,6 +236,37 @@ class CandidateStoreTest {
     }
 
     @Test
+    void antiPatternCandidateBlocksPromotionForSameTool() throws Exception {
+        var t0 = Instant.parse("2026-02-22T00:00:00Z");
+        var smConfig = new CandidateStateMachine.Config(
+                2, 0.5, 1.0, 1,
+                Duration.ofDays(30), Duration.ofDays(7), 2, 0.6, 2, Duration.ZERO,
+                java.util.Set.of());
+        var testStore = new CandidateStore(tempDir.resolve("anti-pattern-gate"),
+                Duration.ofDays(30), 0.50, smConfig);
+        testStore.load();
+
+        testStore.upsert(new CandidateStore.CandidateObservation(
+                MemoryEntry.Category.ERROR_RECOVERY, CandidateKind.ERROR_RECOVERY,
+                "bash timeout recovery strategy", "bash", List.of("bash", "timeout"),
+                0.9, 1, 0, "src:a", t0));
+        testStore.upsert(new CandidateStore.CandidateObservation(
+                MemoryEntry.Category.ERROR_RECOVERY, CandidateKind.ERROR_RECOVERY,
+                "bash timeout recovery strategy updated", "bash", List.of("bash", "timeout"),
+                0.9, 1, 0, "src:b", t0.plusSeconds(60)));
+
+        testStore.upsert(new CandidateStore.CandidateObservation(
+                MemoryEntry.Category.ANTI_PATTERN, CandidateKind.ANTI_PATTERN,
+                "Avoid bash timeout retries", "bash", List.of("bash", "anti-pattern"),
+                0.95, 0, 1, "src:anti", t0.plusSeconds(120),
+                true, true, "anti-pattern-generated", null));
+
+        var transitions = testStore.evaluateAll();
+        assertThat(transitions).isEmpty();
+        assertThat(testStore.byState(CandidateState.PROMOTED)).isEmpty();
+    }
+
+    @Test
     void byStateFiltersCorrectly() {
         var t0 = Instant.parse("2026-02-22T00:00:00Z");
         store.upsert(observation("strategy alpha", "session:a", t0));
@@ -365,8 +394,7 @@ class CandidateStoreTest {
 
     @Test
     void maintenanceRemovesStaleCandidatesAndDecaysOldScores() throws Exception {
-        var clock = new MutableClock(Instant.parse("2026-02-24T00:00:00Z"));
-        var t0 = clock.instant();
+        var t0 = Instant.now();
         var smConfig = new CandidateStateMachine.Config(1, 0.1, 1.0, 3, Set.of());
         var maintenanceStore = new CandidateStore(
                 tempDir.resolve("maintenance"),
@@ -376,8 +404,8 @@ class CandidateStoreTest {
                 Duration.ofDays(30),     // retention
                 Duration.ofSeconds(1),   // decay half-life
                 Duration.ofHours(1),     // decay grace
-                Duration.ofMillis(1),    // run maintenance on each evaluateAll call after clock advance
-                clock);
+                Duration.ZERO,           // run maintenance every evaluateAll call
+                Clock.systemUTC());
         maintenanceStore.load();
 
         maintenanceStore.upsert(observation("stale strategy", "stale", t0.minus(Duration.ofDays(40))));
@@ -387,7 +415,7 @@ class CandidateStoreTest {
         var oldCandidate = before.stream().filter(c -> c.sourceRefs().contains("old")).findFirst().orElseThrow();
         var oldScoreBefore = oldCandidate.score();
 
-        clock.advance(Duration.ofMillis(1100));
+        Thread.sleep(1100);
         maintenanceStore.evaluateAll();
 
         var after = maintenanceStore.all();
@@ -463,38 +491,5 @@ class CandidateStoreTest {
                 source,
                 at
         );
-    }
-
-    private static final class MutableClock extends Clock {
-        private Instant now;
-        private final ZoneId zone;
-
-        private MutableClock(Instant now) {
-            this(now, ZoneOffset.UTC);
-        }
-
-        private MutableClock(Instant now, ZoneId zone) {
-            this.now = now;
-            this.zone = zone;
-        }
-
-        @Override
-        public ZoneId getZone() {
-            return zone;
-        }
-
-        @Override
-        public Clock withZone(ZoneId zone) {
-            return new MutableClock(now, zone);
-        }
-
-        @Override
-        public Instant instant() {
-            return now;
-        }
-
-        private void advance(Duration duration) {
-            now = now.plus(duration);
-        }
     }
 }

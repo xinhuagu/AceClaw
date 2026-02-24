@@ -124,6 +124,9 @@ public final class CandidateStateMachine {
     }
 
     private boolean passesPromotionGates(LearningCandidate candidate, WindowMetrics metrics) {
+        if (candidate.kind() == CandidateKind.ANTI_PATTERN) {
+            return false;
+        }
         if (candidate.cooldownUntil() != null && candidate.cooldownUntil().isAfter(now())) {
             return false;
         }
@@ -140,6 +143,9 @@ public final class CandidateStateMachine {
             return false;
         }
         if (hasRecentSevereFailure(candidate)) {
+            return false;
+        }
+        if (hasRecentAntiPatternSignal(candidate)) {
             return false;
         }
         if (config.allowedCategories != null && !config.allowedCategories.isEmpty()
@@ -166,6 +172,19 @@ public final class CandidateStateMachine {
         Instant cutoff = now().minus(config.severeFailureLookback);
         return candidate.evidence().stream()
                 .anyMatch(e -> e.severeFailure() && !e.observedAt().isBefore(cutoff));
+    }
+
+    private boolean hasRecentAntiPatternSignal(LearningCandidate candidate) {
+        if (candidate.evidence().isEmpty()) {
+            return false;
+        }
+        Instant cutoff = now().minus(config.rollingWindow);
+        return candidate.evidence().stream()
+                .filter(e -> !e.observedAt().isBefore(cutoff))
+                .map(LearningCandidate.EvidenceEvent::note)
+                .filter(Objects::nonNull)
+                .map(s -> s.toLowerCase(java.util.Locale.ROOT))
+                .anyMatch(s -> s.contains("anti-pattern") || s.contains("anti_pattern"));
     }
 
     private WindowMetrics collectWindowMetrics(LearningCandidate candidate, Duration window) {
