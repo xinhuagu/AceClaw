@@ -2,11 +2,20 @@ package dev.aceclaw.cli;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
  * Tests slash command handling in {@link TerminalRepl}.
@@ -16,6 +25,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code handleSlashCommand} method.
  */
 class TerminalReplTest {
+
+    @TempDir
+    Path tempDir;
 
     private TerminalRepl repl;
     private StringWriter outputBuffer;
@@ -127,5 +139,112 @@ class TerminalReplTest {
         boolean shouldExit = repl.handleSlashCommand(out, "/cancel", null);
         assertThat(shouldExit).isFalse();
         assertThat(outputBuffer.toString()).contains("No foreground task");
+    }
+
+    @Test
+    void replayStatusSummary_emptyFile_returnsPending() throws Exception {
+        var statusRepl = newReplForProject(tempDir);
+        Path replay = tempDir.resolve(".aceclaw/metrics/continuous-learning/replay-latest.json");
+        Files.createDirectories(replay.getParent());
+        Files.writeString(replay, "");
+
+        String summary = (String) invokePrivate(statusRepl, "replayStatusSummary",
+                new Class<?>[]{Path.class}, replay);
+        assertThat(summary).isEqualTo("pending");
+    }
+
+    @Test
+    void releaseStatusSummary_emptyFile_returnsNone() throws Exception {
+        var statusRepl = newReplForProject(tempDir);
+        Path state = tempDir.resolve(".aceclaw/metrics/continuous-learning/skill-release-state.json");
+        Files.createDirectories(state.getParent());
+        Files.writeString(state, "");
+
+        String summary = (String) invokePrivate(statusRepl, "releaseStatusSummary",
+                new Class<?>[]{Path.class}, state);
+        assertThat(summary).isEqualTo("none");
+    }
+
+    @Test
+    void candidateStatusSummary_malformedJson_returnsReadError() throws Exception {
+        var statusRepl = newReplForProject(tempDir);
+        Path candidates = tempDir.resolve(".aceclaw/memory/candidates.jsonl");
+        Files.createDirectories(candidates.getParent());
+        Files.writeString(candidates, "{bad json}\n");
+
+        String summary = (String) invokePrivate(statusRepl, "candidateStatusSummary",
+                new Class<?>[]{Path.class}, candidates);
+        assertThat(summary).isEqualTo("read-error");
+    }
+
+    @Test
+    void buildContinuousLearningStatusLine_concurrentAccess_isStable() throws Exception {
+        var statusRepl = newReplForProject(tempDir);
+        writeLearningArtifacts(tempDir);
+
+        var pool = Executors.newFixedThreadPool(8);
+        try {
+            List<Future<String>> futures = new ArrayList<>();
+            for (int i = 0; i < 32; i++) {
+                futures.add(pool.submit(() -> {
+                    try {
+                        return (String) invokePrivate(statusRepl, "buildContinuousLearningStatusLine",
+                                new Class<?>[]{});
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                }));
+            }
+            for (Future<String> future : futures) {
+                String line = future.get(5, TimeUnit.SECONDS);
+                assertThat(line).isNotBlank();
+                assertThat(line).contains("learning");
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    private static TerminalRepl newReplForProject(Path project) {
+        var sessionInfo = new TerminalRepl.SessionInfo(
+                "1.0.0", "claude-sonnet-4-5-20250929", project.toString(), 200_000, "main");
+        return new TerminalRepl(null, "test-session", sessionInfo);
+    }
+
+    private static Object invokePrivate(
+            TerminalRepl repl, String method, Class<?>[] types, Object... args) throws Exception {
+        var m = TerminalRepl.class.getDeclaredMethod(method, types);
+        m.setAccessible(true);
+        return m.invoke(repl, args);
+    }
+
+    private static void writeLearningArtifacts(Path root) throws Exception {
+        Path replay = root.resolve(".aceclaw/metrics/continuous-learning/replay-latest.json");
+        Path release = root.resolve(".aceclaw/metrics/continuous-learning/skill-release-state.json");
+        Path candidates = root.resolve(".aceclaw/memory/candidates.jsonl");
+        Files.createDirectories(replay.getParent());
+        Files.createDirectories(candidates.getParent());
+
+        Files.writeString(replay, """
+                {
+                  "metrics": {
+                    "token_estimation_error_ratio_max": {"value": 0.12, "status": "measured"}
+                  }
+                }
+                """);
+        Files.writeString(release, """
+                {
+                  "releases": [
+                    {"stage":"SHADOW"},
+                    {"stage":"CANARY"},
+                    {"stage":"ACTIVE"}
+                  ]
+                }
+                """);
+        Files.writeString(candidates, """
+                {"id":"1","state":"PROMOTED"}
+                {"id":"2","state":"DEMOTED"}
+                {"id":"3","state":"SHADOW"}
+                """);
     }
 }
