@@ -27,6 +27,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.Instant;
 
 /**
@@ -342,6 +343,7 @@ public final class AceClawDaemon {
         // 10. Self-improvement engine (post-turn learning analysis + strategy refinement + candidate pipeline)
         CandidateStore candidateStoreRef = null;
         ValidationGateEngine validationGateEngine = null;
+        AutoReleaseController autoReleaseController = null;
         if (memoryStore != null) {
             var errorDetector = new ErrorDetector(memoryStore);
             var patternDetector = new PatternDetector(memoryStore);
@@ -374,12 +376,34 @@ public final class AceClawDaemon {
             }
 
             final var validationGateForAuto = validationGateEngine;
+            final var candidateStoreForAuto = cs;
+            if (validationGateForAuto != null && cs != null && config.skillAutoReleaseEnabled()) {
+                autoReleaseController = new AutoReleaseController(
+                        new AutoReleaseController.Config(
+                                config.skillAutoReleaseMinCandidateScore(),
+                                config.skillAutoReleaseMinEvidence(),
+                                config.skillAutoReleaseCanaryMinAttempts(),
+                                config.skillAutoReleaseCanaryMaxFailureRate(),
+                                config.skillAutoReleaseCanaryMaxTimeoutRate(),
+                                config.skillAutoReleaseCanaryMaxPermissionBlockRate(),
+                                config.skillAutoReleaseRollbackMaxFailureRate(),
+                                config.skillAutoReleaseRollbackMaxTimeoutRate(),
+                                config.skillAutoReleaseRollbackMaxPermissionBlockRate(),
+                                Duration.ofHours(Math.max(1, config.skillAutoReleaseHealthLookbackHours()))
+                        ),
+                        validationGateForAuto
+                );
+            }
+            final var autoReleaseForAuto = autoReleaseController;
             var selfImprovementEngine = new SelfImprovementEngine(
                     errorDetector, patternDetector, failureSignalDetector, memoryStore, strategyRefiner, cs,
                     config.candidatePromotionEnabled(),
                     validationGateForAuto != null ? projectPath -> {
                         try {
                             validationGateForAuto.validateAll(projectPath, "evidence-update");
+                            if (autoReleaseForAuto != null && candidateStoreForAuto != null) {
+                                autoReleaseForAuto.evaluateAll(projectPath, candidateStoreForAuto, "evidence-update");
+                            }
                         } catch (Exception e) {
                             log.warn("Draft auto-revalidation failed: {}", e.getMessage());
                         }
@@ -469,6 +493,7 @@ public final class AceClawDaemon {
         // Runtime controls: candidate injection kill-switch and manual rollback.
         final var candidateStoreForRpc = candidateStoreRef;
         final var validationGateForRpc = validationGateEngine;
+        final var autoReleaseForRpc = autoReleaseController;
         router.register("candidate.injection.set", params -> {
             if (params == null || !params.has("enabled")) {
                 throw new IllegalArgumentException("Missing required parameter: enabled");
@@ -535,6 +560,10 @@ public final class AceClawDaemon {
             if (validationGateForRpc != null) {
                 var validation = validationGateForRpc.validateAll(workingDir, "draft-generated");
                 result.set("validation", toValidationJson(validation, workingDir));
+                if (autoReleaseForRpc != null && candidateStoreForRpc != null) {
+                    var release = autoReleaseForRpc.evaluateAll(workingDir, candidateStoreForRpc, "draft-generated");
+                    result.set("release", toReleaseJson(release));
+                }
             }
             return result;
         });
@@ -551,6 +580,59 @@ public final class AceClawDaemon {
             }
             var summary = validationGateForRpc.validateAll(workingDir, trigger);
             return toValidationJson(summary, workingDir);
+        });
+        router.register("skill.release.evaluate", params -> {
+            if (autoReleaseForRpc == null || candidateStoreForRpc == null) {
+                throw new IllegalStateException("Skill auto release is disabled");
+            }
+            String trigger = params != null && params.has("trigger")
+                    ? params.get("trigger").asText() : "manual";
+            var summary = autoReleaseForRpc.evaluateAll(workingDir, candidateStoreForRpc, trigger);
+            return toReleaseJson(summary);
+        });
+        router.register("skill.release.pause", params -> {
+            if (autoReleaseForRpc == null) {
+                throw new IllegalStateException("Skill auto release is disabled");
+            }
+            if (params == null || !params.has("skillName")) {
+                throw new IllegalArgumentException("Missing required parameter: skillName");
+            }
+            String skillName = params.get("skillName").asText();
+            String reason = params.has("reason") ? params.get("reason").asText() : "manual pause";
+            String trigger = params.has("trigger") ? params.get("trigger").asText() : "manual";
+            return toReleaseJson(autoReleaseForRpc.pause(workingDir, skillName, reason, trigger));
+        });
+        router.register("skill.release.forceRollback", params -> {
+            if (autoReleaseForRpc == null) {
+                throw new IllegalStateException("Skill auto release is disabled");
+            }
+            if (params == null || !params.has("skillName")) {
+                throw new IllegalArgumentException("Missing required parameter: skillName");
+            }
+            String skillName = params.get("skillName").asText();
+            String reason = params.has("reason") ? params.get("reason").asText() : "manual force rollback";
+            String trigger = params.has("trigger") ? params.get("trigger").asText() : "manual";
+            return toReleaseJson(autoReleaseForRpc.forceRollback(workingDir, skillName, reason, trigger));
+        });
+        router.register("skill.release.forcePromote", params -> {
+            if (autoReleaseForRpc == null) {
+                throw new IllegalStateException("Skill auto release is disabled");
+            }
+            if (params == null || !params.has("skillName")) {
+                throw new IllegalArgumentException("Missing required parameter: skillName");
+            }
+            String skillName = params.get("skillName").asText();
+            String stageRaw = params.has("targetStage") ? params.get("targetStage").asText() : "canary";
+            AutoReleaseController.Stage stage;
+            try {
+                stage = AutoReleaseController.Stage.valueOf(stageRaw.toUpperCase());
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException(
+                        "Invalid targetStage: " + stageRaw + " (allowed: canary, active)");
+            }
+            String reason = params.has("reason") ? params.get("reason").asText() : "manual force promote";
+            String trigger = params.has("trigger") ? params.get("trigger").asText() : "manual";
+            return toReleaseJson(autoReleaseForRpc.forcePromote(workingDir, skillName, stage, reason, trigger));
         });
 
         // Store references for boot execution
@@ -591,6 +673,41 @@ public final class AceClawDaemon {
             decisions.add(dn);
         }
         node.set("decisions", decisions);
+        return node;
+    }
+
+    private com.fasterxml.jackson.databind.node.ObjectNode toReleaseJson(
+            AutoReleaseController.EvaluationSummary summary) {
+        var node = objectMapper.createObjectNode();
+        var releases = objectMapper.createArrayNode();
+        for (var release : summary.releases()) {
+            var rn = objectMapper.createObjectNode();
+            rn.put("skillName", release.skillName());
+            rn.put("draftPath", release.draftPath());
+            rn.put("candidateId", release.candidateId());
+            rn.put("stage", release.stage().name().toLowerCase());
+            rn.put("paused", release.paused());
+            rn.put("updatedAt", release.updatedAt().toString());
+            rn.put("lastReasonCode", release.lastReasonCode());
+            rn.put("lastReason", release.lastReason());
+            releases.add(rn);
+        }
+        var events = objectMapper.createArrayNode();
+        for (var event : summary.events()) {
+            var en = objectMapper.createObjectNode();
+            en.put("timestamp", event.timestamp().toString());
+            en.put("trigger", event.trigger());
+            en.put("skillName", event.skillName());
+            en.put("fromStage", event.fromStage() == null ? "none" : event.fromStage().name().toLowerCase());
+            en.put("toStage", event.toStage().name().toLowerCase());
+            en.put("reasonCode", event.reasonCode());
+            en.put("reason", event.reason());
+            events.add(en);
+        }
+        node.put("totalReleases", summary.releases().size());
+        node.put("eventsCount", summary.events().size());
+        node.set("releases", releases);
+        node.set("events", events);
         return node;
     }
 
