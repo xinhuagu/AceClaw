@@ -81,6 +81,28 @@ class SkillDraftGeneratorTest {
     }
 
     @Test
+    void regeneratingExistingDraftIncrementsUpdatedCount() throws Exception {
+        var project = tempDir.resolve("project-regen");
+        var store = newStore(project);
+        var t0 = Instant.parse("2026-02-24T00:00:00Z");
+
+        store.upsert(obs("Prefer concise command output summaries", "bash", t0));
+        store.upsert(obs("Prefer concise command output summaries", "read_file", t0.plusSeconds(30)));
+        store.evaluateAll();
+        assertThat(store.byState(CandidateState.PROMOTED)).hasSize(2);
+
+        var generator = new SkillDraftGenerator();
+        var first = generator.generateFromPromoted(store, project);
+        var second = generator.generateFromPromoted(store, project);
+
+        assertThat(first.createdDrafts()).isEqualTo(2);
+        assertThat(first.updatedDrafts()).isZero();
+        assertThat(second.createdDrafts()).isZero();
+        assertThat(second.updatedDrafts()).isEqualTo(2);
+        assertThat(second.draftPaths()).containsExactlyElementsOf(first.draftPaths());
+    }
+
+    @Test
     void onlyPromotedCandidatesGenerateDrafts() throws Exception {
         var project = tempDir.resolve("project-c");
         var store = newStore(project);
@@ -91,18 +113,7 @@ class SkillDraftGeneratorTest {
         store.evaluateAll();
 
         // Shadow candidate (insufficient score/evidence) should not produce draft.
-        store.upsert(new CandidateStore.CandidateObservation(
-                MemoryEntry.Category.WORKFLOW,
-                CandidateKind.WORKFLOW,
-                "Experimental rough strategy",
-                "glob",
-                List.of("glob"),
-                0.01,
-                0,
-                1,
-                "src:shadow",
-                t0.plusSeconds(120)
-        ));
+        store.upsert(obsLow("Experimental rough strategy", "glob", t0.plusSeconds(120)));
 
         var generator = new SkillDraftGenerator();
         var summary = generator.generateFromPromoted(store, project);
@@ -135,6 +146,21 @@ class SkillDraftGeneratorTest {
                 1,
                 0,
                 "src:" + toolTag,
+                at
+        );
+    }
+
+    private static CandidateStore.CandidateObservation obsLow(String content, String toolTag, Instant at) {
+        return new CandidateStore.CandidateObservation(
+                MemoryEntry.Category.WORKFLOW,
+                CandidateKind.WORKFLOW,
+                content,
+                toolTag,
+                List.of(toolTag),
+                0.01,
+                0,
+                1,
+                "src:shadow",
                 at
         );
     }

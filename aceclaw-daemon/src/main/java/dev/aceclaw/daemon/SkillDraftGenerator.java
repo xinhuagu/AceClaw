@@ -5,8 +5,6 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import dev.aceclaw.memory.CandidateState;
 import dev.aceclaw.memory.CandidateStore;
 import dev.aceclaw.memory.LearningCandidate;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -29,9 +27,8 @@ import java.util.Objects;
  */
 public final class SkillDraftGenerator {
 
-    private static final Logger log = LoggerFactory.getLogger(SkillDraftGenerator.class);
-
     private static final int MAX_SKILL_NAME = 48;
+    private static final int MAX_SUFFIX_ATTEMPTS = 500;
     private static final int DEFAULT_MAX_TURNS = 8;
 
     private static final String DRAFTS_DIR = ".aceclaw/skills-drafts";
@@ -83,8 +80,10 @@ public final class SkillDraftGenerator {
             } else {
                 created++;
             }
-            draftPaths.add(projectRoot.relativize(skillFile).toString());
-            appendAudit(auditPath, candidate, resolvedName, projectRoot.relativize(skillFile), existed ? "updated" : "created");
+            Path relativePath = projectRoot.relativize(skillFile);
+            String normalizedPath = relativePath.toString().replace('\\', '/');
+            draftPaths.add(normalizedPath);
+            appendAudit(auditPath, candidate, resolvedName, relativePath, existed ? "updated" : "created");
         }
 
         return new GenerationSummary(promoted.size(), created, updated, List.copyOf(draftPaths), auditPath);
@@ -94,30 +93,27 @@ public final class SkillDraftGenerator {
                              LearningCandidate candidate,
                              String skillName,
                              Path relativeSkillPath,
-                             String action) {
-        try {
-            var node = mapper.createObjectNode();
-            node.put("timestamp", Instant.now(clock).toString());
-            node.put("action", action);
-            node.put("candidateId", candidate.id());
-            node.put("candidateKind", candidate.kind().name());
-            node.put("skillName", skillName);
-            node.put("path", relativeSkillPath.toString().replace('\\', '/'));
-            Files.writeString(
-                    auditPath,
-                    mapper.writeValueAsString(node) + "\n",
-                    StandardOpenOption.CREATE,
-                    StandardOpenOption.APPEND
-            );
-        } catch (Exception e) {
-            log.warn("Failed to append skill draft audit entry: {}", e.getMessage());
-        }
+                             String action) throws IOException {
+        var node = mapper.createObjectNode();
+        node.put("timestamp", Instant.now(clock).toString());
+        node.put("action", action);
+        node.put("candidateId", candidate.id());
+        node.put("candidateKind", candidate.kind().name());
+        node.put("skillName", skillName);
+        node.put("path", relativeSkillPath.toString().replace('\\', '/'));
+        Files.writeString(
+                auditPath,
+                mapper.writeValueAsString(node) + "\n",
+                StandardOpenOption.CREATE,
+                StandardOpenOption.APPEND
+        );
     }
 
     private static String resolveSkillName(Path draftsRoot, String baseName, String candidateId) throws IOException {
         String current = baseName;
         int suffix = 2;
-        while (true) {
+        int attempts = 0;
+        while (attempts < MAX_SUFFIX_ATTEMPTS) {
             Path skillFile = draftsRoot.resolve(current).resolve("SKILL.md");
             if (!Files.exists(skillFile)) {
                 return current;
@@ -129,7 +125,10 @@ public final class SkillDraftGenerator {
             }
             current = truncateName(baseName + "-" + suffix, MAX_SKILL_NAME);
             suffix++;
+            attempts++;
         }
+        throw new IOException("Failed to resolve unique skill draft name for base '" + baseName
+                + "' after " + MAX_SUFFIX_ATTEMPTS + " attempts");
     }
 
     private static String renderSkillMarkdown(String skillName, LearningCandidate candidate) {
@@ -209,7 +208,16 @@ public final class SkillDraftGenerator {
     }
 
     private static String quoted(String s) {
-        return "\"" + (s == null ? "" : s.replace("\"", "\\\"")) + "\"";
+        if (s == null) {
+            return "\"\"";
+        }
+        String escaped = s
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\r\n", "\n")
+                .replace("\r", "\n")
+                .replace("\n", "\\n");
+        return "\"" + escaped + "\"";
     }
 
     private static String truncate(String s, int max) {
@@ -224,5 +232,9 @@ public final class SkillDraftGenerator {
             int updatedDrafts,
             List<String> draftPaths,
             Path auditFile
-    ) {}
+    ) {
+        public GenerationSummary {
+            draftPaths = draftPaths != null ? List.copyOf(draftPaths) : List.of();
+        }
+    }
 }

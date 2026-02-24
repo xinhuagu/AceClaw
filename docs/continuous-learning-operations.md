@@ -113,8 +113,6 @@ Parameters:
 
 ```json
 {
-  "jsonrpc": "2.0",
-  "id": 5,
   "method": "skill.draft.generate",
   "params": {}
 }
@@ -152,6 +150,7 @@ Smoke checks:
 1. `candidate.injection.set(enabled=false)` should remove injected section in next turn.
 2. `candidate.injection.set(enabled=true,maxTokens=...)` should apply within one turn.
 3. `candidate.rollback` should transition `PROMOTED -> DEMOTED` and append transition log.
+4. `skill.draft.generate` should create at least one `.aceclaw/skills-drafts/<skill-name>/SKILL.md` with `disable-model-invocation: true` and append one line to `.aceclaw/metrics/continuous-learning/skill-draft-audit.jsonl`.
 
 CI guardrail job:
 

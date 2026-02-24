@@ -512,7 +512,7 @@ public final class AceClawDaemon {
             result.put("createdDrafts", summary.createdDrafts());
             result.put("updatedDrafts", summary.updatedDrafts());
             var paths = objectMapper.createArrayNode();
-            summary.draftPaths().forEach(paths::add);
+            summary.draftPaths().forEach(path -> paths.add(path.replace('\\', '/')));
             result.set("draftPaths", paths);
             result.put("auditFile", workingDir.relativize(summary.auditFile()).toString().replace('\\', '/'));
             return result;
