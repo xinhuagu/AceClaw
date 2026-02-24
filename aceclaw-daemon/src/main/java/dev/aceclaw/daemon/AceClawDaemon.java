@@ -501,6 +501,22 @@ public final class AceClawDaemon {
             });
             return result;
         });
+        router.register("skill.draft.generate", params -> {
+            if (candidateStoreForRpc == null) {
+                throw new IllegalStateException("Candidate store is not initialized");
+            }
+            var generator = new SkillDraftGenerator();
+            var summary = generator.generateFromPromoted(candidateStoreForRpc, workingDir);
+            var result = objectMapper.createObjectNode();
+            result.put("processedPromotedCandidates", summary.processedPromotedCandidates());
+            result.put("createdDrafts", summary.createdDrafts());
+            result.put("updatedDrafts", summary.updatedDrafts());
+            var paths = objectMapper.createArrayNode();
+            summary.draftPaths().forEach(path -> paths.add(path.replace('\\', '/')));
+            result.set("draftPaths", paths);
+            result.put("auditFile", workingDir.relativize(summary.auditFile()).toString().replace('\\', '/'));
+            return result;
+        });
 
         // Store references for boot execution
         this.bootLlmClient = llmClient;

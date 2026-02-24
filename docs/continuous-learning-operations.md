@@ -109,6 +109,22 @@ Parameters:
 }
 ```
 
+### 4) Generate skill drafts from promoted candidates
+
+```json
+{
+  "method": "skill.draft.generate",
+  "params": {}
+}
+```
+
+Behavior:
+- Reads `PROMOTED` candidates from candidate store.
+- Generates drafts at `.aceclaw/skills-drafts/<skill-name>/SKILL.md`.
+- Generated drafts always include `disable-model-invocation: true`.
+- Writes generation audit to:
+  `.aceclaw/metrics/continuous-learning/skill-draft-audit.jsonl`.
+
 ## Incident Playbook
 
 ### Prompt regression suspected
@@ -134,6 +150,7 @@ Smoke checks:
 1. `candidate.injection.set(enabled=false)` should remove injected section in next turn.
 2. `candidate.injection.set(enabled=true,maxTokens=...)` should apply within one turn.
 3. `candidate.rollback` should transition `PROMOTED -> DEMOTED` and append transition log.
+4. `skill.draft.generate` should create at least one `.aceclaw/skills-drafts/<skill-name>/SKILL.md` with `disable-model-invocation: true` and append one line to `.aceclaw/metrics/continuous-learning/skill-draft-audit.jsonl`.
 
 CI guardrail job:
 
