@@ -10,6 +10,7 @@ import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -115,9 +116,10 @@ class HealthMonitorTest {
 
         monitor.start();
         try {
-            // Wait for a few periodic checks (initial + periodic)
-            Thread.sleep(350);
-            // Should have been called at least 3 times (initial + ~3 periodic)
+            long deadlineNanos = System.nanoTime() + 2_000_000_000L;
+            while (System.nanoTime() < deadlineNanos && callCount.get() < 3) {
+                LockSupport.parkNanos(10_000_000L);
+            }
             assertThat(callCount.get()).isGreaterThanOrEqualTo(3);
         } finally {
             monitor.stop();

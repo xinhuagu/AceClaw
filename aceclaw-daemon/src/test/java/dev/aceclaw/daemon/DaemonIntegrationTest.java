@@ -93,16 +93,7 @@ class DaemonIntegrationTest {
         udsListener = new UdsListener(socketPath, connectionBridge);
         udsListener.start();
 
-        // Poll for socket readiness instead of blind sleep
-        long deadline = System.currentTimeMillis() + 5000;
-        while (!Files.exists(socketPath) && System.currentTimeMillis() < deadline) {
-            Thread.sleep(10);
-        }
-        if (!Files.exists(socketPath)) {
-            throw new IllegalStateException("UDS listener did not create socket within 5s");
-        }
-        // Brief pause for the listener to start accepting connections
-        Thread.sleep(50);
+        TestAwait.waitForSocketReady(socketPath, 5000);
     }
 
     @AfterAll
@@ -592,9 +583,9 @@ class DaemonIntegrationTest {
             promptParams.put("prompt", "Read cancel-test.txt");
             sendRequest(channel, "agent.prompt", promptParams, 2);
 
-            // Wait briefly for the tool execution to start/complete,
-            // then send cancel so it's caught at checkpoint 3
-            Thread.sleep(200);
+            // Wait until at least the first LLM call happened, then cancel.
+            TestAwait.waitUntil("first LLM request", 2000,
+                    () -> mockLlm.capturedRequests().size() >= 1);
             var cancelParams = objectMapper.createObjectNode();
             cancelParams.put("sessionId", sessionId);
             sendNotification(channel, "agent.cancel", cancelParams);

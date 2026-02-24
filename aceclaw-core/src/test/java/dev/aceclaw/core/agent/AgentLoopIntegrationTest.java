@@ -15,8 +15,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
+import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -56,8 +56,7 @@ class AgentLoopIntegrationTest {
 
         assertThat(turn.text()).isEqualTo("Hello");
 
-        // Give async event bus time to deliver
-        Thread.sleep(100);
+        awaitCondition(() -> capturedEvents.stream().filter(e -> e instanceof AgentEvent).count() >= 2);
 
         var agentEvents = capturedEvents.stream()
                 .filter(e -> e instanceof AgentEvent)
@@ -90,8 +89,7 @@ class AgentLoopIntegrationTest {
         assertThatThrownBy(() -> loop.runTurn("hi", List.of()))
                 .isInstanceOf(LlmException.class);
 
-        // Give async event bus time to deliver
-        try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+        awaitCondition(() -> capturedEvents.stream().anyMatch(e -> e instanceof AgentEvent.TurnError));
 
         var errorEvents = capturedEvents.stream()
                 .filter(e -> e instanceof AgentEvent.TurnError)
@@ -124,7 +122,7 @@ class AgentLoopIntegrationTest {
         var loop = new AgentLoop(llm, registry, "model", null, config);
         loop.runTurn("do something", List.of());
 
-        Thread.sleep(100);
+        awaitCondition(() -> capturedEvents.stream().filter(e -> e instanceof ToolEvent).count() >= 2);
 
         var toolEvents = capturedEvents.stream()
                 .filter(e -> e instanceof ToolEvent)
@@ -164,7 +162,7 @@ class AgentLoopIntegrationTest {
         var loop = new AgentLoop(llm, registry, "model", null, config);
         var turn = loop.runTurn("do dangerous thing", List.of());
 
-        Thread.sleep(100);
+        awaitCondition(() -> capturedEvents.stream().anyMatch(e -> e instanceof ToolEvent.PermissionDenied));
 
         // Should have permission denied event
         var denied = capturedEvents.stream()
@@ -198,7 +196,7 @@ class AgentLoopIntegrationTest {
         var loop = new AgentLoop(llm, registry, "model", null, config);
         loop.runTurn("do thing", List.of());
 
-        Thread.sleep(100);
+        awaitCondition(() -> capturedEvents.stream().filter(e -> e instanceof ToolEvent.Completed).count() >= 1);
 
         var invoked = capturedEvents.stream()
                 .filter(e -> e instanceof ToolEvent.Invoked)
@@ -276,5 +274,16 @@ class AgentLoopIntegrationTest {
         @Override public ToolResult execute(String inputJson) {
             return new ToolResult(output, false);
         }
+    }
+
+    private static void awaitCondition(BooleanSupplier condition) {
+        long deadlineNanos = System.nanoTime() + 2_000_000_000L;
+        while (System.nanoTime() < deadlineNanos) {
+            if (condition.getAsBoolean()) {
+                return;
+            }
+            LockSupport.parkNanos(10_000_000L);
+        }
+        assertThat(condition.getAsBoolean()).isTrue();
     }
 }

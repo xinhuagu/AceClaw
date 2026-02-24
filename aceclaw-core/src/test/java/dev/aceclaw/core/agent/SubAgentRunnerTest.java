@@ -157,7 +157,7 @@ class SubAgentRunnerTest {
                         // Signal that streaming has started
                         cancelledLatch.countDown();
                         // Simulate a long-running stream that checks cancellation
-                        try { Thread.sleep(5000); } catch (InterruptedException e) {
+                        try { new CountDownLatch(1).await(5, TimeUnit.SECONDS); } catch (InterruptedException e) {
                             cancelled.set(true);
                         }
                         handler.onContentBlockStop(new StreamEvent.ContentBlockStop(0));

@@ -26,6 +26,7 @@ import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -144,15 +145,7 @@ class HookIntegrationTest {
         udsListener = new UdsListener(socketPath, connectionBridge);
         udsListener.start();
 
-        // Wait for socket readiness
-        long deadline = System.currentTimeMillis() + 5000;
-        while (!Files.exists(socketPath) && System.currentTimeMillis() < deadline) {
-            Thread.sleep(10);
-        }
-        if (!Files.exists(socketPath)) {
-            throw new IllegalStateException("UDS listener did not create socket within 5s");
-        }
-        Thread.sleep(50);
+        TestAwait.waitForSocketReady(socketPath, 5000);
     }
 
     @AfterAll
@@ -356,7 +349,7 @@ class HookIntegrationTest {
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (System.currentTimeMillis() < deadline) {
             if (Files.exists(file)) return true;
-            Thread.sleep(50);
+            LockSupport.parkNanos(50_000_000L);
         }
         return Files.exists(file);
     }

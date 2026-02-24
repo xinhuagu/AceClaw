@@ -4,6 +4,7 @@ import dev.aceclaw.infra.event.HealthEvent;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.concurrent.locks.LockSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -61,7 +62,7 @@ class CircuitBreakerHealthCheckTest {
         }
 
         // Wait for timeout to transition to half-open
-        sleep(100);
+        waitUntilHalfOpen(cb, 500);
 
         var hc = new CircuitBreakerHealthCheck(cb);
         var result = hc.check();
@@ -76,7 +77,14 @@ class CircuitBreakerHealthCheckTest {
         assertThat(hc.name()).isEqualTo("circuit-breaker:test-cb");
     }
 
-    private static void sleep(long millis) {
-        try { Thread.sleep(millis); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    private static void waitUntilHalfOpen(CircuitBreaker cb, long timeoutMs) {
+        long deadlineNanos = System.nanoTime() + timeoutMs * 1_000_000L;
+        while (System.nanoTime() < deadlineNanos) {
+            if (cb.currentState() instanceof CircuitBreakerState.HalfOpen) {
+                return;
+            }
+            LockSupport.parkNanos(10_000_000L);
+        }
+        assertThat(cb.currentState()).isInstanceOf(CircuitBreakerState.HalfOpen.class);
     }
 }

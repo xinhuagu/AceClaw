@@ -96,14 +96,7 @@ class BackgroundTaskIntegrationTest {
         udsListener = new UdsListener(socketPath, connectionBridge);
         udsListener.start();
 
-        long deadline = System.currentTimeMillis() + 5000;
-        while (!Files.exists(socketPath) && System.currentTimeMillis() < deadline) {
-            Thread.sleep(10);
-        }
-        if (!Files.exists(socketPath)) {
-            throw new IllegalStateException("UDS listener did not create socket within 5s");
-        }
-        Thread.sleep(50);
+        TestAwait.waitForSocketReady(socketPath, 5000);
     }
 
     @AfterAll
@@ -171,8 +164,9 @@ class BackgroundTaskIntegrationTest {
                             && "task".equals(n.get("params").get("name").asText()));
             assertThat(hasTaskToolUse).as("Should have a task tool_use notification").isTrue();
 
-            // Wait for background thread to complete
-            Thread.sleep(500);
+            // Wait for the background sub-agent call to be observed.
+            TestAwait.waitUntil("background sub-agent LLM call", 5000,
+                    () -> mockLlm.capturedRequests().size() >= 3);
 
             destroySession(channel, sessionId, 3);
         }
