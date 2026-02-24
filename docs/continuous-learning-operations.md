@@ -9,6 +9,7 @@ This runbook covers runtime controls, rollback, and configuration persistence fo
 - Runtime controls: kill-switch, token budget updates, manual rollback
 - Outcome enforcement closure (`#62`): injected candidate outcome writeback, deterministic gate timing, lifecycle maintenance
 - Autonomous draft validation (`#60`): deterministic `pass/hold/block` gate with machine-readable reason codes
+- Automated skill release (`#61`): `shadow -> canary -> active` rollout with guardrail-based auto-rollback
 
 ## Configuration
 
@@ -26,6 +27,15 @@ Config keys in `.aceclaw/config.json`:
 - `skillDraftValidationReplayRequired` (`bool`, default `true`)
 - `skillDraftValidationReplayReport` (`string`, default `.aceclaw/metrics/continuous-learning/replay-latest.json`)
 - `skillDraftValidationMaxTokenEstimationErrorRatio` (`double`, default `0.65`)
+- `skillAutoReleaseEnabled` (`bool`, default `true`)
+- `skillAutoReleaseMinCandidateScore` (`double`, default `0.80`)
+- `skillAutoReleaseMinEvidence` (`int`, default `3`)
+- `skillAutoReleaseCanaryMinAttempts` (`int`, default `5`)
+- `skillAutoReleaseCanaryMaxFailureRate` (`double`, default `0.35`)
+- `skillAutoReleaseCanaryMaxTimeoutRate` (`double`, default `0.20`)
+- `skillAutoReleaseCanaryMaxPermissionBlockRate` (`double`, default `0.20`)
+- `skillAutoReleaseActiveMaxFailureRate` (`double`, default `0.45`)
+- `skillAutoReleaseHealthLookbackHours` (`int`, default `168`)
 
 Environment overrides:
 
@@ -37,6 +47,15 @@ Environment overrides:
 - `ACECLAW_SKILL_DRAFT_VALIDATION_REPLAY_REQUIRED`
 - `ACECLAW_REPLAY_REPORT_PATH`
 - `ACECLAW_SKILL_DRAFT_VALIDATION_MAX_TOKEN_ESTIMATION_ERROR_RATIO`
+- `ACECLAW_SKILL_AUTO_RELEASE`
+- `ACECLAW_SKILL_AUTO_RELEASE_MIN_SCORE`
+- `ACECLAW_SKILL_AUTO_RELEASE_MIN_EVIDENCE`
+- `ACECLAW_SKILL_AUTO_RELEASE_CANARY_MIN_ATTEMPTS`
+- `ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_FAILURE_RATE`
+- `ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_TIMEOUT_RATE`
+- `ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_PERMISSION_BLOCK_RATE`
+- `ACECLAW_SKILL_AUTO_RELEASE_ACTIVE_MAX_FAILURE_RATE`
+- `ACECLAW_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS`
 
 JVM/system properties:
 
@@ -169,6 +188,66 @@ Gate behavior:
 - Auto re-evaluation trigger:
   candidate evidence/score updates trigger background re-validation (`trigger=evidence-update`).
 
+### 6) Evaluate automated release controller
+
+```json
+{
+  "method": "skill.release.evaluate",
+  "params": {
+    "trigger": "manual"
+  }
+}
+```
+
+Rollout policy:
+- Stage order: `shadow -> canary -> active`
+- `canary` publishes skill with `disable-model-invocation: true` (limited traffic)
+- `active` publishes skill with `disable-model-invocation: false`
+- Auto-rollback to `shadow` on validation failure or guardrail breach
+
+Release audit/state:
+- State snapshot: `.aceclaw/metrics/continuous-learning/skill-release-state.json`
+- Transition audit: `.aceclaw/metrics/continuous-learning/skill-release-audit.jsonl`
+
+### 7) Emergency override commands
+
+Pause automatic progression:
+
+```json
+{
+  "method": "skill.release.pause",
+  "params": {
+    "skillName": "retry-skill",
+    "reason": "investigating regression"
+  }
+}
+```
+
+Force rollback:
+
+```json
+{
+  "method": "skill.release.forceRollback",
+  "params": {
+    "skillName": "retry-skill",
+    "reason": "manual containment"
+  }
+}
+```
+
+Force promote:
+
+```json
+{
+  "method": "skill.release.forcePromote",
+  "params": {
+    "skillName": "retry-skill",
+    "targetStage": "active",
+    "reason": "manual release approval"
+  }
+}
+```
+
 ## Incident Playbook
 
 ### Prompt regression suspected
@@ -196,6 +275,7 @@ Smoke checks:
 3. `candidate.rollback` should transition `PROMOTED -> DEMOTED` and append transition log.
 4. Ensure `skill.draft.generate` creates at least one `.aceclaw/skills-drafts/<skill-name>/SKILL.md` with `disable-model-invocation: true` and appends one line to `.aceclaw/metrics/continuous-learning/skill-draft-audit.jsonl`.
 5. When running `skill.draft.validate`, verify deterministic `pass/hold/block` verdicts and appended lines in `.aceclaw/metrics/continuous-learning/skill-draft-validation-audit.jsonl`.
+6. `skill.release.evaluate` should emit stage transitions and persist release state/audit files.
 
 CI guardrail job:
 

@@ -70,6 +70,15 @@ public final class AceClawConfig {
     private static final String DEFAULT_SKILL_DRAFT_VALIDATION_REPLAY_REPORT =
             ".aceclaw/metrics/continuous-learning/replay-latest.json";
     private static final double DEFAULT_SKILL_DRAFT_VALIDATION_MAX_TOKEN_ESTIMATION_ERROR_RATIO = 0.65;
+    private static final boolean DEFAULT_SKILL_AUTO_RELEASE_ENABLED = true;
+    private static final double DEFAULT_SKILL_AUTO_RELEASE_MIN_CANDIDATE_SCORE = 0.80;
+    private static final int DEFAULT_SKILL_AUTO_RELEASE_MIN_EVIDENCE = 3;
+    private static final int DEFAULT_SKILL_AUTO_RELEASE_CANARY_MIN_ATTEMPTS = 5;
+    private static final double DEFAULT_SKILL_AUTO_RELEASE_CANARY_MAX_FAILURE_RATE = 0.35;
+    private static final double DEFAULT_SKILL_AUTO_RELEASE_CANARY_MAX_TIMEOUT_RATE = 0.20;
+    private static final double DEFAULT_SKILL_AUTO_RELEASE_CANARY_MAX_PERMISSION_BLOCK_RATE = 0.20;
+    private static final double DEFAULT_SKILL_AUTO_RELEASE_ACTIVE_MAX_FAILURE_RATE = 0.45;
+    private static final int DEFAULT_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS = 168;
 
     /** Claude CLI credentials directory. */
     private static final Path CLAUDE_CLI_DIR = Path.of(System.getProperty("user.home"), ".claude");
@@ -110,6 +119,15 @@ public final class AceClawConfig {
     private boolean skillDraftValidationReplayRequired;
     private String skillDraftValidationReplayReport;
     private double skillDraftValidationMaxTokenEstimationErrorRatio;
+    private boolean skillAutoReleaseEnabled;
+    private double skillAutoReleaseMinCandidateScore;
+    private int skillAutoReleaseMinEvidence;
+    private int skillAutoReleaseCanaryMinAttempts;
+    private double skillAutoReleaseCanaryMaxFailureRate;
+    private double skillAutoReleaseCanaryMaxTimeoutRate;
+    private double skillAutoReleaseCanaryMaxPermissionBlockRate;
+    private double skillAutoReleaseActiveMaxFailureRate;
+    private int skillAutoReleaseHealthLookbackHours;
     private Map<String, List<HookMatcherFormat>> hooks;
 
     private AceClawConfig() {
@@ -140,6 +158,15 @@ public final class AceClawConfig {
         this.skillDraftValidationReplayReport = DEFAULT_SKILL_DRAFT_VALIDATION_REPLAY_REPORT;
         this.skillDraftValidationMaxTokenEstimationErrorRatio =
                 DEFAULT_SKILL_DRAFT_VALIDATION_MAX_TOKEN_ESTIMATION_ERROR_RATIO;
+        this.skillAutoReleaseEnabled = DEFAULT_SKILL_AUTO_RELEASE_ENABLED;
+        this.skillAutoReleaseMinCandidateScore = DEFAULT_SKILL_AUTO_RELEASE_MIN_CANDIDATE_SCORE;
+        this.skillAutoReleaseMinEvidence = DEFAULT_SKILL_AUTO_RELEASE_MIN_EVIDENCE;
+        this.skillAutoReleaseCanaryMinAttempts = DEFAULT_SKILL_AUTO_RELEASE_CANARY_MIN_ATTEMPTS;
+        this.skillAutoReleaseCanaryMaxFailureRate = DEFAULT_SKILL_AUTO_RELEASE_CANARY_MAX_FAILURE_RATE;
+        this.skillAutoReleaseCanaryMaxTimeoutRate = DEFAULT_SKILL_AUTO_RELEASE_CANARY_MAX_TIMEOUT_RATE;
+        this.skillAutoReleaseCanaryMaxPermissionBlockRate = DEFAULT_SKILL_AUTO_RELEASE_CANARY_MAX_PERMISSION_BLOCK_RATE;
+        this.skillAutoReleaseActiveMaxFailureRate = DEFAULT_SKILL_AUTO_RELEASE_ACTIVE_MAX_FAILURE_RATE;
+        this.skillAutoReleaseHealthLookbackHours = DEFAULT_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS;
         this.providerModels = new java.util.HashMap<>();
     }
 
@@ -255,6 +282,91 @@ public final class AceClawConfig {
             } catch (NumberFormatException e) {
                 log.warn("Invalid ACECLAW_SKILL_DRAFT_VALIDATION_MAX_TOKEN_ESTIMATION_ERROR_RATIO: {}",
                         envSkillDraftValidationMaxTokenError);
+            }
+        }
+        var envSkillAutoReleaseEnabled = System.getenv("ACECLAW_SKILL_AUTO_RELEASE");
+        if (envSkillAutoReleaseEnabled != null && !envSkillAutoReleaseEnabled.isBlank()) {
+            config.skillAutoReleaseEnabled = Boolean.parseBoolean(envSkillAutoReleaseEnabled);
+        }
+        var envSkillAutoReleaseMinScore = System.getenv("ACECLAW_SKILL_AUTO_RELEASE_MIN_SCORE");
+        if (envSkillAutoReleaseMinScore != null && !envSkillAutoReleaseMinScore.isBlank()) {
+            try {
+                config.skillAutoReleaseMinCandidateScore = Double.parseDouble(envSkillAutoReleaseMinScore);
+            } catch (NumberFormatException e) {
+                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_MIN_SCORE: {}", envSkillAutoReleaseMinScore);
+            }
+        }
+        var envSkillAutoReleaseMinEvidence = System.getenv("ACECLAW_SKILL_AUTO_RELEASE_MIN_EVIDENCE");
+        if (envSkillAutoReleaseMinEvidence != null && !envSkillAutoReleaseMinEvidence.isBlank()) {
+            try {
+                config.skillAutoReleaseMinEvidence = Integer.parseInt(envSkillAutoReleaseMinEvidence);
+            } catch (NumberFormatException e) {
+                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_MIN_EVIDENCE: {}", envSkillAutoReleaseMinEvidence);
+            }
+        }
+        var envSkillAutoReleaseCanaryMinAttempts =
+                System.getenv("ACECLAW_SKILL_AUTO_RELEASE_CANARY_MIN_ATTEMPTS");
+        if (envSkillAutoReleaseCanaryMinAttempts != null && !envSkillAutoReleaseCanaryMinAttempts.isBlank()) {
+            try {
+                config.skillAutoReleaseCanaryMinAttempts =
+                        Integer.parseInt(envSkillAutoReleaseCanaryMinAttempts);
+            } catch (NumberFormatException e) {
+                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_CANARY_MIN_ATTEMPTS: {}",
+                        envSkillAutoReleaseCanaryMinAttempts);
+            }
+        }
+        var envSkillAutoReleaseCanaryMaxFailureRate =
+                System.getenv("ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_FAILURE_RATE");
+        if (envSkillAutoReleaseCanaryMaxFailureRate != null && !envSkillAutoReleaseCanaryMaxFailureRate.isBlank()) {
+            try {
+                config.skillAutoReleaseCanaryMaxFailureRate =
+                        Double.parseDouble(envSkillAutoReleaseCanaryMaxFailureRate);
+            } catch (NumberFormatException e) {
+                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_FAILURE_RATE: {}",
+                        envSkillAutoReleaseCanaryMaxFailureRate);
+            }
+        }
+        var envSkillAutoReleaseCanaryMaxTimeoutRate =
+                System.getenv("ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_TIMEOUT_RATE");
+        if (envSkillAutoReleaseCanaryMaxTimeoutRate != null && !envSkillAutoReleaseCanaryMaxTimeoutRate.isBlank()) {
+            try {
+                config.skillAutoReleaseCanaryMaxTimeoutRate =
+                        Double.parseDouble(envSkillAutoReleaseCanaryMaxTimeoutRate);
+            } catch (NumberFormatException e) {
+                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_TIMEOUT_RATE: {}",
+                        envSkillAutoReleaseCanaryMaxTimeoutRate);
+            }
+        }
+        var envSkillAutoReleaseCanaryMaxPermissionRate =
+                System.getenv("ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_PERMISSION_BLOCK_RATE");
+        if (envSkillAutoReleaseCanaryMaxPermissionRate != null
+                && !envSkillAutoReleaseCanaryMaxPermissionRate.isBlank()) {
+            try {
+                config.skillAutoReleaseCanaryMaxPermissionBlockRate =
+                        Double.parseDouble(envSkillAutoReleaseCanaryMaxPermissionRate);
+            } catch (NumberFormatException e) {
+                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_PERMISSION_BLOCK_RATE: {}",
+                        envSkillAutoReleaseCanaryMaxPermissionRate);
+            }
+        }
+        var envSkillAutoReleaseActiveMaxFailureRate =
+                System.getenv("ACECLAW_SKILL_AUTO_RELEASE_ACTIVE_MAX_FAILURE_RATE");
+        if (envSkillAutoReleaseActiveMaxFailureRate != null && !envSkillAutoReleaseActiveMaxFailureRate.isBlank()) {
+            try {
+                config.skillAutoReleaseActiveMaxFailureRate =
+                        Double.parseDouble(envSkillAutoReleaseActiveMaxFailureRate);
+            } catch (NumberFormatException e) {
+                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_ACTIVE_MAX_FAILURE_RATE: {}",
+                        envSkillAutoReleaseActiveMaxFailureRate);
+            }
+        }
+        var envSkillAutoReleaseLookbackHours = System.getenv("ACECLAW_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS");
+        if (envSkillAutoReleaseLookbackHours != null && !envSkillAutoReleaseLookbackHours.isBlank()) {
+            try {
+                config.skillAutoReleaseHealthLookbackHours = Integer.parseInt(envSkillAutoReleaseLookbackHours);
+            } catch (NumberFormatException e) {
+                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS: {}",
+                        envSkillAutoReleaseLookbackHours);
             }
         }
 
@@ -584,6 +696,42 @@ public final class AceClawConfig {
         return skillDraftValidationMaxTokenEstimationErrorRatio;
     }
 
+    public boolean skillAutoReleaseEnabled() {
+        return skillAutoReleaseEnabled;
+    }
+
+    public double skillAutoReleaseMinCandidateScore() {
+        return skillAutoReleaseMinCandidateScore;
+    }
+
+    public int skillAutoReleaseMinEvidence() {
+        return skillAutoReleaseMinEvidence;
+    }
+
+    public int skillAutoReleaseCanaryMinAttempts() {
+        return skillAutoReleaseCanaryMinAttempts;
+    }
+
+    public double skillAutoReleaseCanaryMaxFailureRate() {
+        return skillAutoReleaseCanaryMaxFailureRate;
+    }
+
+    public double skillAutoReleaseCanaryMaxTimeoutRate() {
+        return skillAutoReleaseCanaryMaxTimeoutRate;
+    }
+
+    public double skillAutoReleaseCanaryMaxPermissionBlockRate() {
+        return skillAutoReleaseCanaryMaxPermissionBlockRate;
+    }
+
+    public double skillAutoReleaseActiveMaxFailureRate() {
+        return skillAutoReleaseActiveMaxFailureRate;
+    }
+
+    public int skillAutoReleaseHealthLookbackHours() {
+        return skillAutoReleaseHealthLookbackHours;
+    }
+
     /**
      * Returns the hooks configuration map (event name to list of hook matchers).
      * Returns null if no hooks are configured.
@@ -848,6 +996,41 @@ public final class AceClawConfig {
             this.skillDraftValidationMaxTokenEstimationErrorRatio =
                     fileConfig.skillDraftValidationMaxTokenEstimationErrorRatio;
         }
+        if (fileConfig.skillAutoReleaseEnabled != null) {
+            this.skillAutoReleaseEnabled = fileConfig.skillAutoReleaseEnabled;
+        }
+        if (fileConfig.skillAutoReleaseMinCandidateScore != null
+                && fileConfig.skillAutoReleaseMinCandidateScore >= 0) {
+            this.skillAutoReleaseMinCandidateScore = fileConfig.skillAutoReleaseMinCandidateScore;
+        }
+        if (fileConfig.skillAutoReleaseMinEvidence != null && fileConfig.skillAutoReleaseMinEvidence >= 0) {
+            this.skillAutoReleaseMinEvidence = fileConfig.skillAutoReleaseMinEvidence;
+        }
+        if (fileConfig.skillAutoReleaseCanaryMinAttempts != null
+                && fileConfig.skillAutoReleaseCanaryMinAttempts >= 0) {
+            this.skillAutoReleaseCanaryMinAttempts = fileConfig.skillAutoReleaseCanaryMinAttempts;
+        }
+        if (fileConfig.skillAutoReleaseCanaryMaxFailureRate != null
+                && fileConfig.skillAutoReleaseCanaryMaxFailureRate >= 0) {
+            this.skillAutoReleaseCanaryMaxFailureRate = fileConfig.skillAutoReleaseCanaryMaxFailureRate;
+        }
+        if (fileConfig.skillAutoReleaseCanaryMaxTimeoutRate != null
+                && fileConfig.skillAutoReleaseCanaryMaxTimeoutRate >= 0) {
+            this.skillAutoReleaseCanaryMaxTimeoutRate = fileConfig.skillAutoReleaseCanaryMaxTimeoutRate;
+        }
+        if (fileConfig.skillAutoReleaseCanaryMaxPermissionBlockRate != null
+                && fileConfig.skillAutoReleaseCanaryMaxPermissionBlockRate >= 0) {
+            this.skillAutoReleaseCanaryMaxPermissionBlockRate =
+                    fileConfig.skillAutoReleaseCanaryMaxPermissionBlockRate;
+        }
+        if (fileConfig.skillAutoReleaseActiveMaxFailureRate != null
+                && fileConfig.skillAutoReleaseActiveMaxFailureRate >= 0) {
+            this.skillAutoReleaseActiveMaxFailureRate = fileConfig.skillAutoReleaseActiveMaxFailureRate;
+        }
+        if (fileConfig.skillAutoReleaseHealthLookbackHours != null
+                && fileConfig.skillAutoReleaseHealthLookbackHours > 0) {
+            this.skillAutoReleaseHealthLookbackHours = fileConfig.skillAutoReleaseHealthLookbackHours;
+        }
     }
 
     /**
@@ -887,6 +1070,15 @@ public final class AceClawConfig {
         public Boolean skillDraftValidationReplayRequired;
         public String skillDraftValidationReplayReport;
         public Double skillDraftValidationMaxTokenEstimationErrorRatio;
+        public Boolean skillAutoReleaseEnabled;
+        public Double skillAutoReleaseMinCandidateScore;
+        public Integer skillAutoReleaseMinEvidence;
+        public Integer skillAutoReleaseCanaryMinAttempts;
+        public Double skillAutoReleaseCanaryMaxFailureRate;
+        public Double skillAutoReleaseCanaryMaxTimeoutRate;
+        public Double skillAutoReleaseCanaryMaxPermissionBlockRate;
+        public Double skillAutoReleaseActiveMaxFailureRate;
+        public Integer skillAutoReleaseHealthLookbackHours;
         public String defaultProfile;
         public Map<String, ConfigFileFormat> profiles;
         public Map<String, String> providerModels;
