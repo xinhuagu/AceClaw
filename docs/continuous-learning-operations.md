@@ -10,6 +10,10 @@ This runbook covers runtime controls, rollback, and configuration persistence fo
 - Outcome enforcement closure (`#62`): injected candidate outcome writeback, deterministic gate timing, lifecycle maintenance
 - Autonomous draft validation (`#60`): deterministic `pass/hold/block` gate with machine-readable reason codes
 - Automated skill release (`#61`): `shadow -> canary -> active` rollout with guardrail-based auto-rollback
+- Governance closure (`#65`): process/safety/rollback baseline and status-event protocol
+
+Related document:
+- [Continuous-Learning Governance Closure](docs/continuous-learning-governance.md)
 
 ## Configuration
 
