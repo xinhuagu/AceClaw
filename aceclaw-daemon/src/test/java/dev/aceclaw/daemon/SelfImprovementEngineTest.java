@@ -327,7 +327,7 @@ class SelfImprovementEngineTest {
 
     @Test
     void metricsSnapshotInfluencesPatternConfidence() {
-        // Set up error history so PatternDetector triggers ERROR_CORRECTION
+        // Metrics drive cross-turn error frequency detection.
         var turnMessages = List.<Message>of(
                 assistantWithToolUse("t1", "bash"),
                 toolResult("t1", "permission denied", true),
@@ -339,8 +339,9 @@ class SelfImprovementEngineTest {
         );
         var turn = new Turn(turnMessages, StopReason.END_TURN, new Usage(0, 0));
 
-        // Without metrics — get baseline confidence
-        var withoutMetrics = engine.analyze(turn, history, Map.of());
+        // With baseline metrics.
+        var withoutMetrics = engine.analyze(turn, history, Map.of(
+                "bash", new ToolMetrics("bash", 4, 2, 2, 800L, java.time.Instant.now())));
         double baseConfidence = withoutMetrics.stream()
                 .filter(i -> i instanceof PatternInsight pi
                         && pi.patternType() == PatternType.ERROR_CORRECTION)

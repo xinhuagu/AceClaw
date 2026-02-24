@@ -114,6 +114,25 @@ class SessionEndExtractorTest {
     }
 
     @Test
+    void extractsModifiedFilesSummaryWithRelativePaths() {
+        var messages = new ArrayList<AgentSession.ConversationMessage>();
+        messages.add(new AgentSession.ConversationMessage.Assistant(
+                "File edited at ./src/main/java/Foo.java"));
+        messages.add(new AgentSession.ConversationMessage.Assistant(
+                "File written to ../shared/src/main/java/Bar.java"));
+        messages.add(new AgentSession.ConversationMessage.Assistant(
+                "Used write_file for src/test/java/FooTest.java"));
+
+        var extracted = SessionEndExtractor.extract(messages);
+
+        var codebaseInsights = extracted.stream()
+                .filter(m -> m.category() == MemoryEntry.Category.CODEBASE_INSIGHT)
+                .toList();
+        assertThat(codebaseInsights).hasSize(1);
+        assertThat(codebaseInsights.getFirst().content()).contains("3 files");
+    }
+
+    @Test
     void truncatesLongMessages() {
         String longMessage = "always " + "x".repeat(300);
         var messages = List.<AgentSession.ConversationMessage>of(

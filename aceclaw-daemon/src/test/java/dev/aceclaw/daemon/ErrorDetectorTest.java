@@ -239,8 +239,8 @@ class ErrorDetectorTest {
         var turn = new Turn(messages, StopReason.END_TURN, new Usage(0, 0));
         var insights = detector.analyze(turn);
 
-        // Should produce both an ErrorInsight (Phase 1: simple correction) and a RecoveryRecipe (Phase 2: multi-step)
-        assertThat(insights).anyMatch(i -> i instanceof ErrorInsight);
+        // Multi-step path should emit only a RecoveryRecipe (no duplicate ErrorInsight).
+        assertThat(insights).noneMatch(i -> i instanceof ErrorInsight);
         assertThat(insights).anyMatch(i -> i instanceof RecoveryRecipe);
         var recipe = insights.stream()
                 .filter(RecoveryRecipe.class::isInstance)
@@ -286,8 +286,8 @@ class ErrorDetectorTest {
         var turn = new Turn(messages, StopReason.END_TURN, new Usage(0, 0));
         var insights = detector.analyze(turn);
 
-        // Should have both ErrorInsight and RecoveryRecipe
-        assertThat(insights).anyMatch(i -> i instanceof ErrorInsight);
+        // Multi-step path should emit only a RecoveryRecipe.
+        assertThat(insights).noneMatch(i -> i instanceof ErrorInsight);
         var recipes = insights.stream()
                 .filter(RecoveryRecipe.class::isInstance)
                 .map(RecoveryRecipe.class::cast)

@@ -154,32 +154,31 @@ public final class PatternDetector {
             }
         }
 
-        if (errorTools.isEmpty() || sessionHistory == null) {
+        if (errorTools.isEmpty()) {
             return List.of();
         }
 
-        // Check session history for same tool errors
-        var historyErrors = extractErrorsFromHistory(sessionHistory);
         var insights = new ArrayList<PatternInsight>();
 
         for (var entry : errorTools.entrySet()) {
             String toolName = entry.getKey();
             if (toolName == null) continue;
 
-            var priorErrors = historyErrors.getOrDefault(toolName, List.of());
-            int frequency = entry.getValue().size() + priorErrors.size();
+            int currentErrorCount = entry.getValue().size();
+            int frequency = currentErrorCount;
+            var metrics = toolMetrics.get(toolName);
+            if (metrics != null) {
+                // Prefer structured metrics over text heuristics from assistant history.
+                frequency = Math.max(frequency, metrics.errorCount());
+            }
 
             if (frequency >= 2) {
                 var evidence = new ArrayList<String>();
-                evidence.add("current turn: " + toolName + " errors=" + entry.getValue().size());
-                if (!priorErrors.isEmpty()) {
-                    evidence.add("session history: " + toolName + " prior errors=" + priorErrors.size());
-                }
+                evidence.add("current turn: " + toolName + " errors=" + currentErrorCount);
 
                 double confidence = Math.min(1.0, 0.3 + frequency * 0.15);
 
                 // Boost confidence when session metrics confirm a high error rate for this tool
-                var metrics = toolMetrics.get(toolName);
                 if (metrics != null && metrics.totalInvocations() > 0) {
                     double errorRate = (double) metrics.errorCount() / metrics.totalInvocations();
                     if (errorRate >= 0.5) {
@@ -187,6 +186,7 @@ public final class PatternDetector {
                         evidence.add("metrics: error rate=" + String.format("%.0f%%", errorRate * 100)
                                 + " (" + metrics.errorCount() + "/" + metrics.totalInvocations() + ")");
                     }
+                    evidence.add("metrics: session errors=" + metrics.errorCount());
                 }
 
                 String description = "Tool '%s' repeatedly fails (%d times in session)"
@@ -362,26 +362,6 @@ public final class PatternDetector {
         return Arrays.stream(text.toLowerCase().split("\\W+"))
                 .filter(t -> !t.isBlank())
                 .collect(Collectors.toSet());
-    }
-
-    private static Map<String, List<String>> extractErrorsFromHistory(
-            List<AgentSession.ConversationMessage> history) {
-        var errors = new HashMap<String, List<String>>();
-        for (var msg : history) {
-            if (msg instanceof AgentSession.ConversationMessage.Assistant assistant) {
-                var text = assistant.content();
-                if (text != null && text.contains("Tool error:")) {
-                    // Heuristic: extract tool name from "Tool error: <toolName>"
-                    int idx = text.indexOf("Tool error:");
-                    String after = text.substring(idx + 11).trim();
-                    String toolName = after.split("[\\s:,]")[0];
-                    if (!toolName.isBlank()) {
-                        errors.computeIfAbsent(toolName, _ -> new ArrayList<>()).add(after);
-                    }
-                }
-            }
-        }
-        return errors;
     }
 
     private static String findToolName(List<Message> messages, String toolUseId) {

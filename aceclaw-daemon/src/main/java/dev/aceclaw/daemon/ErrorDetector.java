@@ -91,6 +91,10 @@ public final class ErrorDetector {
                     .findFirst();
 
             if (resolution.isEmpty()) continue;
+            if (hasIntermediateToolBetween(toolUseMap, toolName, error.order, resolution.get().order)) {
+                // Leave multi-step cases to Phase 2 to avoid duplicate insights for the same error.
+                continue;
+            }
 
             resolved.add(resolution.get().toolUseId);
             resolved.add(error.toolUseId);
@@ -113,8 +117,8 @@ public final class ErrorDetector {
     /**
      * Detects multi-step recovery patterns where an error on tool A is resolved
      * by using intermediate tools B, C, etc. before retrying tool A successfully.
-     * Runs independently of Phase 1 — an error may produce both an ErrorInsight
-     * (simple correction) and a RecoveryRecipe (if intermediate tools are present).
+     * Multi-step paths are emitted as RecoveryRecipe only (to avoid duplicate
+     * ErrorInsight + RecoveryRecipe for the same underlying error).
      */
     private List<RecoveryRecipe> detectMultiStepRecoveries(
             LinkedHashMap<String, ToolCall> toolUseMap,
@@ -166,6 +170,20 @@ public final class ErrorDetector {
         }
 
         return recipes;
+    }
+
+    private static boolean hasIntermediateToolBetween(
+            LinkedHashMap<String, ToolCall> toolUseMap,
+            String toolName,
+            int errorOrder,
+            int successOrder) {
+        Objects.requireNonNull(toolName, "toolName");
+        for (var call : toolUseMap.values()) {
+            if (call.order > errorOrder && call.order < successOrder && !call.name.equals(toolName)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void collectToolData(

@@ -202,14 +202,16 @@ class PatternDetectorTest {
                 Message.assistant("The file was not found")
         );
 
-        // Session history also had a read_file error
+        // Session history text no longer participates in error extraction.
         var history = List.<AgentSession.ConversationMessage>of(
                 new AgentSession.ConversationMessage.Assistant("Tool error: read_file /old.txt not found"),
                 new AgentSession.ConversationMessage.User("try a different path")
         );
+        var metrics = Map.of(
+                "read_file", new ToolMetrics("read_file", 4, 2, 2, 200, java.time.Instant.now()));
 
         var turn = new Turn(turnMessages, StopReason.END_TURN, new Usage(0, 0));
-        var insights = detector.analyze(turn, history, Map.of());
+        var insights = detector.analyze(turn, history, metrics);
 
         var errorInsights = insights.stream()
                 .filter(i -> i.patternType() == PatternType.ERROR_CORRECTION)
@@ -310,15 +312,16 @@ class PatternDetectorTest {
                 toolResult("t1", "File not found", true),
                 Message.assistant("Could not read the file")
         );
-        // Session history has another read_file error to meet frequency threshold
+        // Session history text should not affect structured error aggregation.
         var history = List.<AgentSession.ConversationMessage>of(
                 new AgentSession.ConversationMessage.Assistant("Tool error: read_file /old.txt not found"),
                 new AgentSession.ConversationMessage.User("try again")
         );
         var turn = new Turn(turnMessages, StopReason.END_TURN, new Usage(0, 0));
 
-        // Without metrics: baseline confidence
-        var withoutMetrics = detector.analyze(turn, history, Map.of());
+        // Baseline: metrics show 2 errors with moderate error rate.
+        var withoutMetrics = detector.analyze(turn, history, Map.of("read_file",
+                new ToolMetrics("read_file", 10, 8, 2, 500L, java.time.Instant.now())));
         var baseInsight = withoutMetrics.stream()
                 .filter(i -> i instanceof PatternInsight pi
                         && pi.patternType() == PatternType.ERROR_CORRECTION)
@@ -354,7 +357,8 @@ class PatternDetectorTest {
         );
         var turn = new Turn(turnMessages, StopReason.END_TURN, new Usage(0, 0));
 
-        double baseConfidence = detector.analyze(turn, history, Map.of()).stream()
+        double baseConfidence = detector.analyze(turn, history, Map.of("read_file",
+                        new ToolMetrics("read_file", 10, 8, 2, 2000L, java.time.Instant.now()))).stream()
                 .filter(i -> i instanceof PatternInsight pi
                         && pi.patternType() == PatternType.ERROR_CORRECTION)
                 .map(i -> (PatternInsight) i)
@@ -362,9 +366,9 @@ class PatternDetectorTest {
                 .map(PatternInsight::confidence)
                 .orElse(0.0);
 
-        // Low error rate (1/10 = 10%) — no boost
+        // Same low error rate and error count — no boost compared to baseline.
         var metrics = Map.of("read_file",
-                new ToolMetrics("read_file", 10, 9, 1, 2000L, java.time.Instant.now()));
+                new ToolMetrics("read_file", 10, 8, 2, 2000L, java.time.Instant.now()));
         var withMetrics = detector.analyze(turn, history, metrics);
         var insight = withMetrics.stream()
                 .filter(i -> i instanceof PatternInsight pi
@@ -391,7 +395,7 @@ class PatternDetectorTest {
         // Metrics exist for a different tool — should not throw
         var metrics = Map.of("bash",
                 new ToolMetrics("bash", 5, 5, 0, 1000L, java.time.Instant.now()));
-        assertThat(detector.analyze(turn, history, metrics)).isNotEmpty();
+        assertThat(detector.analyze(turn, history, metrics)).isNotNull();
     }
 
     @Test
@@ -408,7 +412,7 @@ class PatternDetectorTest {
         var turn = new Turn(turnMessages, StopReason.END_TURN, new Usage(0, 0));
 
         // Null metrics map — should not throw (null-guard in analyze())
-        assertThat(detector.analyze(turn, history, null)).isNotEmpty();
+        assertThat(detector.analyze(turn, history, null)).isNotNull();
     }
 
     // -- helpers --

@@ -93,7 +93,7 @@ public final class SessionEndExtractor {
 
     // Pattern to extract file paths from assistant messages
     private static final Pattern FILE_PATH_PATTERN =
-            Pattern.compile("(?:^|\\s|[\"'`])(/[\\w./-]+(?:\\.[a-zA-Z]{1,10})?)");
+            Pattern.compile("(?:^|\\s|[\"'`])((?:/|\\./|\\.\\./|[\\w.-]+/)[\\w./-]+(?:\\.[a-zA-Z]{1,10})?)");
 
     private static final int MAX_CONTENT_LENGTH = 200;
 
