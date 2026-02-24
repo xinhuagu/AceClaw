@@ -15,6 +15,7 @@ import dev.aceclaw.core.agent.ToolMetricsCollector;
 import dev.aceclaw.core.agent.ToolRegistry;
 import dev.aceclaw.core.llm.ContentBlock;
 import dev.aceclaw.core.llm.Message;
+import dev.aceclaw.core.llm.StopReason;
 import dev.aceclaw.core.llm.StreamEvent;
 import dev.aceclaw.core.llm.StreamEventHandler;
 import dev.aceclaw.core.planner.ComplexityEstimator;
@@ -342,6 +343,10 @@ public final class StreamingAgentHandler {
                     + truncate(prompt, 100) + " | Tokens: " + planResult.totalTokensUsed());
         }
 
+        var plannedStopReason = planResult.success() ? StopReason.END_TURN : StopReason.ERROR;
+        recordInjectedCandidateOutcomes(
+                sessionId, planResult.success(), cancellationToken.isCancelled(), plannedStopReason);
+
         // 6. Build result
         var result = objectMapper.createObjectNode();
         result.put("sessionId", sessionId);
@@ -418,6 +423,10 @@ public final class StreamingAgentHandler {
                 }
             });
         }
+
+        recordInjectedCandidateOutcomes(
+                sessionId, turn.finalStopReason() != StopReason.ERROR, cancellationToken.isCancelled(),
+                turn.finalStopReason());
 
         // Build result
         var result = objectMapper.createObjectNode();
@@ -759,6 +768,75 @@ public final class StreamingAgentHandler {
         var array = objectMapper.createArrayNode();
         candidateIds.forEach(array::add);
         result.set("injectedCandidateIds", array);
+    }
+
+    private void recordInjectedCandidateOutcomes(String sessionId,
+                                                 boolean success,
+                                                 boolean cancelled,
+                                                 StopReason stopReason) {
+        java.util.Objects.requireNonNull(sessionId, "sessionId");
+        java.util.Objects.requireNonNull(stopReason, "stopReason");
+        if (candidateStore == null) {
+            return;
+        }
+        var candidateIds = sessionInjectedCandidateIds.getOrDefault(sessionId, List.of());
+        if (candidateIds.isEmpty()) {
+            return;
+        }
+        boolean effectiveSuccess = success && !cancelled;
+        boolean severeFailure = !effectiveSuccess && stopReason == StopReason.ERROR;
+        var outcome = new CandidateStore.CandidateOutcome(
+                effectiveSuccess,
+                severeFailure,
+                false,
+                "runtime:" + sessionId,
+                buildOutcomeNote(cancelled, stopReason),
+                null,
+                null
+        );
+
+        int updated = 0;
+        for (var candidateId : candidateIds) {
+            try {
+                if (candidateStore.recordOutcome(candidateId, outcome).isPresent()) {
+                    updated++;
+                }
+            } catch (Exception e) {
+                log.warn("Candidate outcome writeback failed: candidateId={}, reason={}",
+                        candidateId, e.getMessage());
+            }
+        }
+        if (updated == 0) {
+            return;
+        }
+        try {
+            var transitions = candidateStore.evaluateAll();
+            if (!transitions.isEmpty()) {
+                log.info("Candidate outcome enforcement: {} transitions after turn (session={})",
+                        transitions.size(), sessionId);
+            }
+        } catch (Exception e) {
+            log.warn("Candidate outcome enforcement evaluation failed: {}", e.getMessage());
+        }
+    }
+
+    private static String buildOutcomeNote(boolean cancelled, StopReason stopReason) {
+        java.util.Objects.requireNonNull(stopReason, "stopReason");
+        if (cancelled) {
+            return "runtime-outcome:cancelled";
+        }
+        return "runtime-outcome:" + stopReason.name().toLowerCase(java.util.Locale.ROOT);
+    }
+
+    String getSystemPromptForTest(String sessionId) {
+        return getSystemPrompt(sessionId);
+    }
+
+    void recordInjectedCandidateOutcomesForTest(String sessionId,
+                                                boolean success,
+                                                boolean cancelled,
+                                                StopReason stopReason) {
+        recordInjectedCandidateOutcomes(sessionId, success, cancelled, stopReason);
     }
 
     /**

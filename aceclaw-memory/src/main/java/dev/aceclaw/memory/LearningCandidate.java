@@ -149,6 +149,13 @@ public record LearningCandidate(
                 firstSeenAt, lastSeenAt, newCooldownUntil, version, evidence, sourceRefs, null);
     }
 
+    public LearningCandidate withScore(double newScore) {
+        return new LearningCandidate(
+                id, category, kind, state, content, toolTag, tags,
+                newScore, evidenceCount, successCount, failureCount,
+                firstSeenAt, lastSeenAt, cooldownUntil, version, evidence, sourceRefs, null);
+    }
+
     public LearningCandidate mergeWith(LearningCandidate incoming) {
         int mergedEvidenceCount = evidenceCount + incoming.evidenceCount;
         double mergedScore = ((score * evidenceCount) + (incoming.score * incoming.evidenceCount))

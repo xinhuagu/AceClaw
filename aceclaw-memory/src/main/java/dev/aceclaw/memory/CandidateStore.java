@@ -12,6 +12,7 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.security.SecureRandom;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -37,6 +38,10 @@ public final class CandidateStore {
     private static final int KEY_SIZE_BYTES = 32;
     private static final Duration DEFAULT_RECENT_WINDOW = Duration.ofDays(30);
     private static final double DEFAULT_MERGE_THRESHOLD = 0.50;
+    private static final Duration DEFAULT_RETENTION = Duration.ofDays(90);
+    private static final Duration DEFAULT_DECAY_HALF_LIFE = Duration.ofDays(30);
+    private static final Duration DEFAULT_DECAY_GRACE = Duration.ofDays(7);
+    private static final Duration DEFAULT_MAINTENANCE_INTERVAL = Duration.ofHours(24);
 
     private final Path memoryDir;
     private final Path candidatesFile;
@@ -48,6 +53,12 @@ public final class CandidateStore {
     private final Duration recentWindow;
     private final double mergeThreshold;
     private final CandidateStateMachine stateMachine;
+    private final Duration retention;
+    private final Duration decayHalfLife;
+    private final Duration decayGrace;
+    private final Duration maintenanceInterval;
+    private final Clock clock;
+    private Instant lastMaintenanceAt;
 
     public CandidateStore(Path aceclawHome) throws IOException {
         this(aceclawHome, DEFAULT_RECENT_WINDOW, DEFAULT_MERGE_THRESHOLD);
@@ -63,18 +74,49 @@ public final class CandidateStore {
 
     CandidateStore(Path aceclawHome, Duration recentWindow, double mergeThreshold,
                    CandidateStateMachine.Config smConfig) throws IOException {
+        this(aceclawHome, recentWindow, mergeThreshold, smConfig,
+                DEFAULT_RETENTION, DEFAULT_DECAY_HALF_LIFE, DEFAULT_DECAY_GRACE,
+                DEFAULT_MAINTENANCE_INTERVAL, Clock.systemUTC());
+    }
+
+    CandidateStore(Path aceclawHome, Duration recentWindow, double mergeThreshold,
+                   CandidateStateMachine.Config smConfig, Duration retention,
+                   Duration decayHalfLife, Duration decayGrace, Duration maintenanceInterval,
+                   Clock clock) throws IOException {
+        Objects.requireNonNull(smConfig, "smConfig");
         this.memoryDir = aceclawHome.resolve(MEMORY_DIR);
         this.candidatesFile = memoryDir.resolve(CANDIDATES_FILE);
         this.transitionsFile = memoryDir.resolve(TRANSITIONS_FILE);
         this.recentWindow = Objects.requireNonNull(recentWindow, "recentWindow");
         this.mergeThreshold = mergeThreshold;
+        this.retention = Objects.requireNonNull(retention, "retention");
+        this.decayHalfLife = Objects.requireNonNull(decayHalfLife, "decayHalfLife");
+        this.decayGrace = Objects.requireNonNull(decayGrace, "decayGrace");
+        this.maintenanceInterval = Objects.requireNonNull(maintenanceInterval, "maintenanceInterval");
+        this.clock = Objects.requireNonNull(clock, "clock");
+        if (this.recentWindow.isZero() || this.recentWindow.isNegative()) {
+            throw new IllegalArgumentException("recentWindow must be positive");
+        }
+        if (this.retention.isZero() || this.retention.isNegative()) {
+            throw new IllegalArgumentException("retention must be positive");
+        }
+        if (this.decayHalfLife.compareTo(Duration.ofSeconds(1)) < 0) {
+            throw new IllegalArgumentException("decayHalfLife must be >= PT1S");
+        }
+        if (this.decayGrace.isNegative()) {
+            throw new IllegalArgumentException("decayGrace must be non-negative");
+        }
+        if (this.maintenanceInterval.isZero() || this.maintenanceInterval.isNegative()) {
+            throw new IllegalArgumentException("maintenanceInterval must be positive");
+        }
         Files.createDirectories(memoryDir);
 
         this.mapper = new ObjectMapper();
         this.mapper.registerModule(new JavaTimeModule());
         this.signer = new MemorySigner(loadOrCreateKey());
         this.candidates = new CopyOnWriteArrayList<>();
-        this.stateMachine = new CandidateStateMachine(smConfig);
+        this.stateMachine = new CandidateStateMachine(smConfig, clock);
+        this.lastMaintenanceAt = now();
     }
 
     public void load() {
@@ -82,10 +124,18 @@ public final class CandidateStore {
         try {
             candidates.clear();
             boolean migrated = loadFile();
-            if (migrated) {
+            var maintenance = runMaintenanceLocked(true);
+            boolean needsRewrite = migrated || maintenance.hadChanges();
+            if (needsRewrite) {
                 rewriteFile();
+            }
+            if (migrated) {
                 log.info("Candidate store migration complete: persisted v{} schema",
                         LearningCandidate.CURRENT_VERSION);
+            }
+            if (maintenance.hadChanges()) {
+                log.info("Candidate store maintenance applied: removed={}, decayed={}",
+                        maintenance.removedCount(), maintenance.decayedCount());
             }
         } finally {
             fileLock.unlock();
@@ -200,7 +250,7 @@ public final class CandidateStore {
                     candidate.id(), candidate.state(), targetState,
                     reason == null || reason.isBlank() ? "manual-force-transition" : reason,
                     reasonCode == null || reasonCode.isBlank() ? "MANUAL_FORCE" : reasonCode,
-                    "manual", 0, 0.0, 0, null, Instant.now());
+                    "manual", 0, 0.0, 0, null, now());
             var updated = applyTransition(candidate, transition);
             candidates.set(idx, updated);
             rewriteFile();
@@ -219,6 +269,29 @@ public final class CandidateStore {
     }
 
     /**
+     * Writes back a runtime outcome to a specific candidate ID.
+     */
+    public Optional<LearningCandidate> recordOutcome(String candidateId, CandidateOutcome outcome) {
+        Objects.requireNonNull(candidateId, "candidateId");
+        Objects.requireNonNull(outcome, "outcome");
+        fileLock.lock();
+        try {
+            int idx = findIndexById(candidateId);
+            if (idx < 0) {
+                return Optional.empty();
+            }
+            var candidate = candidates.get(idx);
+            var delta = createOutcomeDelta(candidate, outcome);
+            var merged = sign(candidate.mergeWith(delta));
+            candidates.set(idx, merged);
+            rewriteFile();
+            return Optional.of(merged);
+        } finally {
+            fileLock.unlock();
+        }
+    }
+
+    /**
      * Evaluates all candidates for automatic promotion/demotion.
      * SHADOW candidates are checked for promotion; PROMOTED candidates are checked for demotion.
      *
@@ -227,6 +300,7 @@ public final class CandidateStore {
     public List<CandidateTransition> evaluateAll() {
         fileLock.lock();
         try {
+            var maintenance = runMaintenanceLocked(false);
             var transitions = new ArrayList<CandidateTransition>();
             var promotedThisPass = new java.util.HashSet<String>();
 
@@ -263,12 +337,18 @@ public final class CandidateStore {
                 }
             }
 
-            if (!transitions.isEmpty()) {
+            if (!transitions.isEmpty() || maintenance.hadChanges()) {
                 rewriteFile();
+            }
+            if (!transitions.isEmpty()) {
                 for (var t : transitions) {
                     appendTransition(t);
                 }
                 log.info("evaluateAll: {} transitions applied", transitions.size());
+            }
+            if (maintenance.hadChanges()) {
+                log.info("evaluateAll maintenance applied: removed={}, decayed={}",
+                        maintenance.removedCount(), maintenance.decayedCount());
             }
 
             return List.copyOf(transitions);
@@ -328,7 +408,7 @@ public final class CandidateStore {
     }
 
     private LearningCandidate createUnsignedCandidate(CandidateObservation observation) {
-        var now = observation.occurredAt() == null ? Instant.now() : observation.occurredAt();
+        var now = observation.occurredAt() == null ? now() : observation.occurredAt();
         var sourceRef = observation.sourceRef() == null || observation.sourceRef().isBlank()
                 ? ""
                 : observation.sourceRef();
@@ -361,6 +441,94 @@ public final class CandidateStore {
                 sourceRef.isBlank() ? List.of() : List.of(sourceRef),
                 null
         );
+    }
+
+    private LearningCandidate createOutcomeDelta(LearningCandidate candidate, CandidateOutcome outcome) {
+        var observedAt = outcome.occurredAt() == null ? now() : outcome.occurredAt();
+        int successDelta = outcome.success() ? 1 : 0;
+        int failureDelta = outcome.success() ? 0 : 1;
+        double adjustedScore = applyOutcomeScoreDelta(candidate.score(), outcome.success());
+        var sourceRef = outcome.sourceRef() == null ? "" : outcome.sourceRef();
+        var note = outcome.note() == null ? "" : outcome.note();
+        var event = new LearningCandidate.EvidenceEvent(
+                sourceRef,
+                observedAt,
+                successDelta,
+                failureDelta,
+                outcome.severeFailure(),
+                outcome.correctionConflict(),
+                note
+        );
+        return new LearningCandidate(
+                candidate.id(),
+                candidate.category(),
+                candidate.kind(),
+                candidate.state(),
+                candidate.content(),
+                candidate.toolTag(),
+                candidate.tags(),
+                adjustedScore,
+                1,
+                successDelta,
+                failureDelta,
+                observedAt,
+                observedAt,
+                outcome.cooldownUntil(),
+                LearningCandidate.CURRENT_VERSION,
+                List.of(event),
+                sourceRef.isBlank() ? List.of() : List.of(sourceRef),
+                null
+        );
+    }
+
+    private MaintenanceResult runMaintenanceLocked(boolean force) {
+        var now = now();
+        if (!force) {
+            var elapsed = Duration.between(lastMaintenanceAt, now);
+            if (!elapsed.isNegative() && elapsed.compareTo(maintenanceInterval) < 0) {
+                return MaintenanceResult.NO_CHANGES;
+            }
+        }
+        int removed = 0;
+        int decayed = 0;
+        long elapsedSeconds = Math.max(0L, Duration.between(lastMaintenanceAt, now).toSeconds());
+        var staleCutoff = now.minus(retention);
+        var next = new ArrayList<LearningCandidate>(candidates.size());
+        for (var candidate : candidates) {
+            if (candidate.lastSeenAt().isBefore(staleCutoff)) {
+                removed++;
+                continue;
+            }
+            var age = Duration.between(candidate.lastSeenAt(), now);
+            if (age.compareTo(decayGrace) < 0 || elapsedSeconds == 0) {
+                next.add(candidate);
+                continue;
+            }
+            double decayFactor = Math.exp(-Math.log(2.0) * (elapsedSeconds / (double) decayHalfLife.toSeconds()));
+            double decayedScore = clampScore(candidate.score() * decayFactor);
+            if (Math.abs(decayedScore - candidate.score()) > 1e-9) {
+                next.add(sign(candidate.withScore(decayedScore)));
+                decayed++;
+            } else {
+                next.add(candidate);
+            }
+        }
+        if (removed > 0 || decayed > 0) {
+            candidates.clear();
+            candidates.addAll(next);
+        }
+        lastMaintenanceAt = now;
+        return new MaintenanceResult(removed, decayed);
+    }
+
+    private static double applyOutcomeScoreDelta(double score, boolean success) {
+        return clampScore(success ? score + 0.02 : score - 0.05);
+    }
+
+    private static double clampScore(double score) {
+        if (score < 0.0) return 0.0;
+        if (score > 1.0) return 1.0;
+        return score;
     }
 
     private LearningCandidate sign(LearningCandidate candidate) {
@@ -493,6 +661,28 @@ public final class CandidateStore {
             return "general";
         }
         return toolTag.toLowerCase();
+    }
+
+    private Instant now() {
+        return Instant.now(clock);
+    }
+
+    public record CandidateOutcome(
+            boolean success,
+            boolean severeFailure,
+            boolean correctionConflict,
+            String sourceRef,
+            String note,
+            Instant occurredAt,
+            Instant cooldownUntil
+    ) {}
+
+    private record MaintenanceResult(int removedCount, int decayedCount) {
+        static final MaintenanceResult NO_CHANGES = new MaintenanceResult(0, 0);
+
+        boolean hadChanges() {
+            return removedCount > 0 || decayedCount > 0;
+        }
     }
 
     public record CandidateObservation(

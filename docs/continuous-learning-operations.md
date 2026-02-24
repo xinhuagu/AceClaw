@@ -7,6 +7,7 @@ This runbook covers runtime controls, rollback, and configuration persistence fo
 - Candidate lifecycle: `shadow -> promoted -> demoted/rejected`
 - Prompt injection: promoted-only candidates
 - Runtime controls: kill-switch, token budget updates, manual rollback
+- Outcome enforcement closure (`#62`): injected candidate outcome writeback, deterministic gate timing, lifecycle maintenance
 
 ## Configuration
 
@@ -45,7 +46,20 @@ Tokenizer hard constraint:
   - In strict mode, manifest verification (`source_manifest.verified=true`) is also mandatory.
   - Replay performance budgets:
     - `replay_token_delta <= 200`
-    - `replay_latency_delta_ms <= 500`
+    - `replay_latency_delta_ms <= 500` (warning-only by default; blocking when `replayFailOnLatency=true`)
+
+## Outcome Enforcement (`#62`)
+
+- Runtime turn completion now writes back outcomes for `injectedCandidateIds` into candidate evidence.
+- Writeback includes success/failure and severity signals, then triggers `evaluateAll()` for automatic promotion/demotion checks.
+- Candidate state-machine gates use injected `Clock` for deterministic cooldown/lookback behavior in tests.
+- Candidate maintenance now includes:
+  - stale candidate cleanup (retention policy)
+  - score decay for inactive candidates (half-life policy)
+- Candidate pipeline now has dedicated concurrency tests for parallel upsert/outcome/evaluate flows.
+
+Operational note:
+- Maintenance defaults are intentionally conservative (`retention=90d`, `decayHalfLife=30d`, `decayGrace=7d`, maintenance interval `24h`).
 
 ## Runtime RPC Controls
 

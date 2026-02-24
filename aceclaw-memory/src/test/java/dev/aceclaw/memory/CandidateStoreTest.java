@@ -7,9 +7,17 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -326,6 +334,122 @@ class CandidateStoreTest {
         assertThat(store.byId(candidate.id()).get().state()).isEqualTo(CandidateState.DEMOTED);
     }
 
+    @Test
+    void recordOutcomeWritesBackAndCanTriggerDemotion() throws Exception {
+        var t0 = Instant.parse("2026-02-22T00:00:00Z");
+        var smConfig = new CandidateStateMachine.Config(
+                1, 0.1, 1.0, 1,
+                Duration.ofDays(14), Duration.ofDays(7), 1, 0.2, 1, Duration.ZERO,
+                Set.of());
+        var testStore = new CandidateStore(tempDir.resolve("outcome-writeback"),
+                Duration.ofDays(30), 0.50, smConfig);
+        testStore.load();
+        testStore.upsert(observation("outcome strategy", "src:a", t0));
+        testStore.evaluateAll();
+
+        var promoted = testStore.byState(CandidateState.PROMOTED);
+        assertThat(promoted).hasSize(1);
+        var candidateId = promoted.getFirst().id();
+
+        var updated = testStore.recordOutcome(candidateId, new CandidateStore.CandidateOutcome(
+                false, true, false, "runtime:s1", "runtime-outcome:error",
+                t0.plusSeconds(30), null));
+        assertThat(updated).isPresent();
+        assertThat(updated.get().failureCount()).isGreaterThanOrEqualTo(1);
+        assertThat(updated.get().evidenceCount()).isGreaterThanOrEqualTo(2);
+
+        testStore.evaluateAll();
+        assertThat(testStore.byId(candidateId)).isPresent();
+        assertThat(testStore.byId(candidateId).get().state()).isEqualTo(CandidateState.DEMOTED);
+    }
+
+    @Test
+    void maintenanceRemovesStaleCandidatesAndDecaysOldScores() throws Exception {
+        var clock = new MutableClock(Instant.parse("2026-02-24T00:00:00Z"));
+        var t0 = clock.instant();
+        var smConfig = new CandidateStateMachine.Config(1, 0.1, 1.0, 3, Set.of());
+        var maintenanceStore = new CandidateStore(
+                tempDir.resolve("maintenance"),
+                Duration.ofDays(30),
+                0.50,
+                smConfig,
+                Duration.ofDays(30),     // retention
+                Duration.ofSeconds(1),   // decay half-life
+                Duration.ofHours(1),     // decay grace
+                Duration.ofMillis(1),    // run maintenance on each evaluateAll call after clock advance
+                clock);
+        maintenanceStore.load();
+
+        maintenanceStore.upsert(observation("stale strategy", "stale", t0.minus(Duration.ofDays(40))));
+        maintenanceStore.upsert(observation("old strategy", "old", t0.minus(Duration.ofDays(2))));
+        var before = maintenanceStore.all();
+        assertThat(before).hasSize(2);
+        var oldCandidate = before.stream().filter(c -> c.sourceRefs().contains("old")).findFirst().orElseThrow();
+        var oldScoreBefore = oldCandidate.score();
+
+        clock.advance(Duration.ofMillis(1100));
+        maintenanceStore.evaluateAll();
+
+        var after = maintenanceStore.all();
+        assertThat(after).hasSize(1);
+        assertThat(after.getFirst().sourceRefs()).contains("old");
+        assertThat(after.getFirst().score()).isLessThan(oldScoreBefore);
+    }
+
+    @Test
+    void concurrentUpsertOutcomeAndEvaluateRemainConsistent() throws Exception {
+        var t0 = Instant.parse("2026-02-22T00:00:00Z");
+        var testStore = new CandidateStore(tempDir.resolve("concurrent"));
+        testStore.load();
+        testStore.upsert(observation("concurrent strategy", "seed", t0));
+        var candidateId = testStore.all().getFirst().id();
+
+        int threads = 8;
+        int iterations = 40;
+        var errors = new AtomicInteger();
+        var latch = new CountDownLatch(1);
+
+        try (var executor = Executors.newFixedThreadPool(threads)) {
+            for (int t = 0; t < threads; t++) {
+                final int threadId = t;
+                executor.submit(() -> {
+                    try {
+                        latch.await();
+                        for (int i = 0; i < iterations; i++) {
+                            if ((i + threadId) % 3 == 0) {
+                                testStore.upsert(observation(
+                                        "concurrent strategy " + threadId + "-" + i,
+                                        "src:" + threadId + ":" + i,
+                                        t0.plusSeconds(i)));
+                            } else {
+                                testStore.recordOutcome(candidateId, new CandidateStore.CandidateOutcome(
+                                        i % 2 == 0,
+                                        i % 7 == 0,
+                                        false,
+                                        "runtime:t" + threadId,
+                                        "concurrent",
+                                        t0.plusSeconds(i),
+                                        null));
+                            }
+                            if (i % 10 == 0) {
+                                testStore.evaluateAll();
+                            }
+                        }
+                    } catch (Exception e) {
+                        errors.incrementAndGet();
+                    }
+                });
+            }
+            latch.countDown();
+            executor.shutdown();
+            assertThat(executor.awaitTermination(20, TimeUnit.SECONDS)).isTrue();
+        }
+
+        assertThat(errors.get()).isZero();
+        assertThat(testStore.all()).isNotEmpty();
+        assertThat(testStore.byId(candidateId)).isPresent();
+    }
+
     private static CandidateStore.CandidateObservation observation(String content, String source, Instant at) {
         return new CandidateStore.CandidateObservation(
                 MemoryEntry.Category.ERROR_RECOVERY,
@@ -339,5 +463,38 @@ class CandidateStoreTest {
                 source,
                 at
         );
+    }
+
+    private static final class MutableClock extends Clock {
+        private Instant now;
+        private final ZoneId zone;
+
+        private MutableClock(Instant now) {
+            this(now, ZoneOffset.UTC);
+        }
+
+        private MutableClock(Instant now, ZoneId zone) {
+            this.now = now;
+            this.zone = zone;
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return zone;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return new MutableClock(now, zone);
+        }
+
+        @Override
+        public Instant instant() {
+            return now;
+        }
+
+        private void advance(Duration duration) {
+            now = now.plus(duration);
+        }
     }
 }

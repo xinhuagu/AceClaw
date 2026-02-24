@@ -1,6 +1,6 @@
 <h1 align="center">AceClaw</h1>
 
-<p align="center">Security-first general-purpose AI agent built on Java 21 — designed for enterprise environments</p>
+<p align="center">Autonomous AI agent for enterprise deployment, powered by Java 21</p>
 
 <p align="center">
   <a href="https://github.com/xinhuagu/AceClaw/actions/workflows/ci.yml"><img src="https://github.com/xinhuagu/AceClaw/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -9,26 +9,11 @@
   <img src="https://img.shields.io/badge/Gradle-8.14-02303A?logo=gradle&logoColor=white" alt="Gradle 8.14">
 </p>
 
-AceClaw is a security-first **general-purpose AI agent** built on **Java 21**, designed for **enterprise environments** where security, auditability, and JVM ecosystem integration matter. Unlike coding-specific tools, AceClaw handles any task — code generation, research, analysis, DevOps automation, document processing, and more — through a persistent daemon with a ReAct loop, extensible tool system, and long-term memory. Inspired by [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [OpenClaw](https://github.com/openclaw), it enhances the core ideas of agentic AI in three areas:
+An enterprise-grade **autonomous AI agent** — pure Java 21, daemon-first architecture, zero network attack surface. Inspired by [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) and [OpenClaw](https://github.com/openclaw), built from scratch with three key enhancements:
 
-1. **Security** — Zero network surface, sealed permissions, content boundaries
+1. **Security** — UDS-only communication, sealed 4-level permissions, HMAC-signed memory
 2. **Self-Learning** — Heuristic pattern detection, cross-session insight accumulation, strategy evolution
-3. **Long-Term Memory** — 8-tier hierarchy, HMAC-SHA256 signed entries, hybrid search, automated consolidation
-
-### Why Java?
-
-Enterprise teams run on the JVM. AceClaw is a native Java application — no Python runtime, no Node.js, no polyglot toolchain. It leverages Java 21 features (sealed interfaces, virtual threads, pattern matching) for type-safe, high-performance agent execution, and integrates naturally into existing enterprise ecosystems. GraalVM Native Image support enables instant cold starts for CLI and daemon.
-
-### What Can AceClaw Do?
-
-AceClaw is a general-purpose autonomous agent — not limited to coding tasks:
-
-- **Software Engineering** — Read, write, edit code; run tests; debug errors; refactor across files
-- **Research & Analysis** — Web search, page fetching, document summarization, data extraction
-- **DevOps & Automation** — Shell commands, cron scheduling, multi-step workflows, health monitoring
-- **Knowledge Management** — Persistent memory across sessions, workspace-scoped notes, pattern recall
-- **Task Planning** — Automatic complexity estimation, multi-step plan generation, sequential execution
-- **Extensible via MCP** — Connect any external tool through the Model Context Protocol
+3. **Long-Term Memory** — 8-tier hierarchy, hybrid search, automated consolidation
 
 ## Security First
 
@@ -53,12 +38,6 @@ AceClaw learns from its own behavior — no LLM calls required. Every tool execu
 - **Baseline evaluation** — Continuous-learning KPIs and collection workflow are documented in `docs/continuous-learning-plan.md` with report templates and sample output.
 
 See [Self-Learning Pipeline](docs/self-learning.md) for the full architecture.
-
-Collect a local baseline snapshot:
-
-```bash
-./scripts/collect-continuous-learning-baseline.sh --run-tests
-```
 
 ## Long-Term Memory
 
@@ -198,6 +177,7 @@ DANGEROUS   → always prompt, never remembered
 - [x] 8-tier memory hierarchy, hybrid search, daily journal, workspace isolation
 - [x] Sub-agents: depth-1 delegation, filtered tool registries, task lifecycle
 - [x] Self-learning: insight hierarchy, error/pattern detection, self-improvement engine
+- [x] Candidate pipeline: injected-candidate outcome writeback, clock-injected gates, stale cleanup, score decay
 - [x] Hook system: BOOT.md startup execution, command hooks, persistent cron, heartbeat runner
 - [x] Task planner: complexity estimation, LLM plan generation, sequential execution
 - [ ] Security hardening: content sandboxing, trust levels, encryption at rest

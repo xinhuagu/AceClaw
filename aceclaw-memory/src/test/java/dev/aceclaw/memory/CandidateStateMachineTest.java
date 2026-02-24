@@ -2,7 +2,10 @@ package dev.aceclaw.memory;
 
 import org.junit.jupiter.api.Test;
 
+import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Set;
 
@@ -198,6 +201,55 @@ class CandidateStateMachineTest {
         assertThat(result).isPresent();
         assertThat(result.get().reasonCode()).isEqualTo("DEMOTION_REGRESSION");
         assertThat(result.get().cooldownUntil()).isNotNull();
+    }
+
+    @Test
+    void promotionCooldownBoundaryIsDeterministicWithInjectedClock() {
+        var fixedNow = Instant.parse("2026-02-23T00:00:00Z");
+        var config = new CandidateStateMachine.Config(
+                1, 0.5, 0.5, 3,
+                Duration.ofDays(14), Duration.ofDays(7), 2, 0.6, 2, Duration.ofDays(3),
+                Set.of());
+        var smAtNow = new CandidateStateMachine(config, Clock.fixed(fixedNow, ZoneOffset.UTC));
+        var smAfterCooldown = new CandidateStateMachine(
+                config, Clock.fixed(fixedNow.plusSeconds(121), ZoneOffset.UTC));
+
+        var candidate = new LearningCandidate(
+                "test-id", MemoryEntry.Category.ERROR_RECOVERY, CandidateKind.ERROR_RECOVERY,
+                CandidateState.DEMOTED, "test content", "bash", List.of("test"),
+                0.9, 5, 4, 1, fixedNow.minusSeconds(10), fixedNow.minusSeconds(10),
+                fixedNow.plusSeconds(120), LearningCandidate.CURRENT_VERSION,
+                List.of(new LearningCandidate.EvidenceEvent("src", fixedNow.minusSeconds(10),
+                        1, 0, false, false, "ok")),
+                List.of("src"), null);
+
+        assertThat(smAtNow.evaluateForPromotion(candidate)).isEmpty();
+        assertThat(smAfterCooldown.evaluateForPromotion(candidate)).isPresent();
+    }
+
+    @Test
+    void severeFailureLookbackUsesInjectedClockWindow() {
+        var fixedNow = Instant.parse("2026-02-23T00:00:00Z");
+        var config = new CandidateStateMachine.Config(
+                1, 0.5, 0.5, 3,
+                Duration.ofDays(14), Duration.ofDays(1), 2, 0.6, 2, Duration.ofDays(3),
+                Set.of());
+        var sm = new CandidateStateMachine(config, Clock.fixed(fixedNow, ZoneOffset.UTC));
+
+        var candidate = new LearningCandidate(
+                "test-id", MemoryEntry.Category.ERROR_RECOVERY, CandidateKind.ERROR_RECOVERY,
+                CandidateState.SHADOW, "test content", "bash", List.of("test"),
+                0.9, 5, 4, 1, fixedNow.minus(Duration.ofDays(3)), fixedNow.minus(Duration.ofDays(2)),
+                null, LearningCandidate.CURRENT_VERSION,
+                List.of(
+                        new LearningCandidate.EvidenceEvent(
+                                "src-old", fixedNow.minus(Duration.ofDays(2)), 0, 1, true, false, "old severe"),
+                        new LearningCandidate.EvidenceEvent(
+                                "src-recent", fixedNow.minus(Duration.ofHours(1)), 1, 0, false, false, "recent ok")
+                ),
+                List.of("src"), null);
+
+        assertThat(sm.evaluateForPromotion(candidate)).isPresent();
     }
 
     private static LearningCandidate candidateWith(CandidateState state, double score,

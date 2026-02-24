@@ -111,8 +111,10 @@ Useful flags:
 ## Known Gaps (v1)
 - Some metrics are not fully instrumented yet and will be emitted as `pending_instrumentation`.
 - Replay case/reports are automated; remaining work is stronger dataset governance at scale.
-- Automated promotion/rollback quality metrics require issues `#60`-`#62`.
+- Outcome enforcement closure (`#62`) is now implemented for candidate-level outcome writeback,
+  deterministic time-gating (`Clock`), lifecycle cleanup/decay, and concurrency hardening.
+- Automated release-controller and policy-pack layers still require issues `#60`-`#61`.
 
 ## Versioning
 - Document version: `v1.0`
-- Last updated: `2026-02-23`
+- Last updated: `2026-02-24`

@@ -2,6 +2,7 @@ package dev.aceclaw.memory;
 
 import java.time.Instant;
 import java.time.Duration;
+import java.time.Clock;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -32,13 +33,19 @@ public final class CandidateStateMachine {
     );
 
     private final Config config;
+    private final Clock clock;
 
     public CandidateStateMachine() {
-        this(Config.defaults());
+        this(Config.defaults(), Clock.systemUTC());
     }
 
     public CandidateStateMachine(Config config) {
+        this(config, Clock.systemUTC());
+    }
+
+    public CandidateStateMachine(Config config, Clock clock) {
         this.config = Objects.requireNonNull(config, "config");
+        this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     /**
@@ -70,7 +77,7 @@ public final class CandidateStateMachine {
                     candidate.id(), candidate.state(), targetState, reason,
                     "PROMOTION_GATE_PASS", "auto",
                     metrics.attempts, metrics.failureRate, metrics.correctionConflicts,
-                    null, Instant.now()));
+                    null, now()));
         }
 
         // Gate checks for demotion (PROMOTED->DEMOTED)
@@ -83,12 +90,12 @@ public final class CandidateStateMachine {
                     candidate.id(), candidate.state(), targetState, reason,
                     "DEMOTION_REGRESSION", "auto",
                     metrics.attempts, metrics.failureRate, metrics.correctionConflicts,
-                    Instant.now().plus(config.demotionCooldown), Instant.now()));
+                    now().plus(config.demotionCooldown), now()));
         }
 
         return Optional.of(new CandidateTransition(
                 candidate.id(), candidate.state(), targetState, reason,
-                "MANUAL_TRANSITION", "manual", 0, 0.0, 0, null, Instant.now()));
+                "MANUAL_TRANSITION", "manual", 0, 0.0, 0, null, now()));
     }
 
     /**
@@ -117,7 +124,7 @@ public final class CandidateStateMachine {
     }
 
     private boolean passesPromotionGates(LearningCandidate candidate, WindowMetrics metrics) {
-        if (candidate.cooldownUntil() != null && candidate.cooldownUntil().isAfter(Instant.now())) {
+        if (candidate.cooldownUntil() != null && candidate.cooldownUntil().isAfter(now())) {
             return false;
         }
         if (candidate.evidenceCount() < config.minEvidenceCount) {
@@ -156,18 +163,18 @@ public final class CandidateStateMachine {
         if (candidate.evidence().isEmpty()) {
             return false;
         }
-        Instant cutoff = Instant.now().minus(config.severeFailureLookback);
+        Instant cutoff = now().minus(config.severeFailureLookback);
         return candidate.evidence().stream()
                 .anyMatch(e -> e.severeFailure() && !e.observedAt().isBefore(cutoff));
     }
 
-    private static WindowMetrics collectWindowMetrics(LearningCandidate candidate, Duration window) {
+    private WindowMetrics collectWindowMetrics(LearningCandidate candidate, Duration window) {
         if (candidate.evidence().isEmpty()) {
             int total = candidate.successCount() + candidate.failureCount();
             double failureRate = total == 0 ? 0.0 : (double) candidate.failureCount() / total;
             return new WindowMetrics(total, failureRate, 0);
         }
-        Instant cutoff = Instant.now().minus(window);
+        Instant cutoff = now().minus(window);
         int success = 0;
         int failure = 0;
         int conflicts = 0;
@@ -182,6 +189,10 @@ public final class CandidateStateMachine {
         int total = success + failure;
         double failureRate = total == 0 ? 0.0 : (double) failure / total;
         return new WindowMetrics(total, failureRate, conflicts);
+    }
+
+    private Instant now() {
+        return Instant.now(clock);
     }
 
     /**
