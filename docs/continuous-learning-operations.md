@@ -109,6 +109,24 @@ Parameters:
 }
 ```
 
+### 4) Generate skill drafts from promoted candidates
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "skill.draft.generate",
+  "params": {}
+}
+```
+
+Behavior:
+- Reads `PROMOTED` candidates from candidate store.
+- Generates drafts at `.aceclaw/skills-drafts/<skill-name>/SKILL.md`.
+- Generated drafts always include `disable-model-invocation: true`.
+- Writes generation audit to:
+  `.aceclaw/metrics/continuous-learning/skill-draft-audit.jsonl`.
+
 ## Incident Playbook
 
 ### Prompt regression suspected
