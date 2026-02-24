@@ -177,6 +177,7 @@ public final class ErrorDetector {
             String toolName,
             int errorOrder,
             int successOrder) {
+        Objects.requireNonNull(toolName, "toolName");
         for (var call : toolUseMap.values()) {
             if (call.order > errorOrder && call.order < successOrder && !call.name.equals(toolName)) {
                 return true;
