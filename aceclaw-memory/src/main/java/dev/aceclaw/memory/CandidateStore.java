@@ -83,6 +83,7 @@ public final class CandidateStore {
                    CandidateStateMachine.Config smConfig, Duration retention,
                    Duration decayHalfLife, Duration decayGrace, Duration maintenanceInterval,
                    Clock clock) throws IOException {
+        Objects.requireNonNull(smConfig, "smConfig");
         this.memoryDir = aceclawHome.resolve(MEMORY_DIR);
         this.candidatesFile = memoryDir.resolve(CANDIDATES_FILE);
         this.transitionsFile = memoryDir.resolve(TRANSITIONS_FILE);
@@ -284,7 +285,7 @@ public final class CandidateStore {
     public List<CandidateTransition> evaluateAll() {
         fileLock.lock();
         try {
-            runMaintenanceLocked(false);
+            var maintenance = runMaintenanceLocked(false);
             var transitions = new ArrayList<CandidateTransition>();
             var promotedThisPass = new java.util.HashSet<String>();
 
@@ -324,12 +325,18 @@ public final class CandidateStore {
                 }
             }
 
-            if (!transitions.isEmpty()) {
+            if (!transitions.isEmpty() || maintenance.hadChanges()) {
                 rewriteFile();
+            }
+            if (!transitions.isEmpty()) {
                 for (var t : transitions) {
                     appendTransition(t);
                 }
                 log.info("evaluateAll: {} transitions applied", transitions.size());
+            }
+            if (maintenance.hadChanges()) {
+                log.info("evaluateAll maintenance applied: removed={}, decayed={}",
+                        maintenance.removedCount(), maintenance.decayedCount());
             }
 
             return List.copyOf(transitions);
@@ -363,9 +370,7 @@ public final class CandidateStore {
             if (candidate.lastSeenAt().isBefore(cutoff)) {
                 continue;
             }
-            if (candidate.score() >= 0.7 || candidate.evidenceCount() >= 1) {
-                return true;
-            }
+            return true;
         }
         return false;
     }

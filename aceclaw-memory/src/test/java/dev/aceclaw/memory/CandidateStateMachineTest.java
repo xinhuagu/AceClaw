@@ -257,9 +257,9 @@ class CandidateStateMachineTest {
         var sm = new CandidateStateMachine();
         var candidate = new LearningCandidate(
                 "anti-1", MemoryEntry.Category.ANTI_PATTERN, CandidateKind.ANTI_PATTERN,
-                CandidateState.SHADOW, "avoid risky command", "bash", List.of("bash", "anti-pattern"),
-                0.95, 5, 0, 5, NOW, NOW, null, LearningCandidate.CURRENT_VERSION,
-                List.of(new LearningCandidate.EvidenceEvent("src", NOW, 0, 1, true, true, "anti-pattern-generated")),
+                CandidateState.SHADOW, "avoid risky command", "bash", List.of("bash"),
+                0.95, 5, 4, 1, NOW, NOW, null, LearningCandidate.CURRENT_VERSION,
+                List.of(new LearningCandidate.EvidenceEvent("src", NOW, 1, 0, false, false, "ok")),
                 List.of("src"), null);
 
         assertThat(sm.evaluateForPromotion(candidate)).isEmpty();
