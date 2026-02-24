@@ -194,8 +194,8 @@ Smoke checks:
 1. `candidate.injection.set(enabled=false)` should remove injected section in next turn.
 2. `candidate.injection.set(enabled=true,maxTokens=...)` should apply within one turn.
 3. `candidate.rollback` should transition `PROMOTED -> DEMOTED` and append transition log.
-4. `skill.draft.generate` should create at least one `.aceclaw/skills-drafts/<skill-name>/SKILL.md` with `disable-model-invocation: true` and append one line to `.aceclaw/metrics/continuous-learning/skill-draft-audit.jsonl`.
-5. `skill.draft.validate` should return deterministic `pass/hold/block` verdicts and append lines to `.aceclaw/metrics/continuous-learning/skill-draft-validation-audit.jsonl`.
+4. Ensure `skill.draft.generate` creates at least one `.aceclaw/skills-drafts/<skill-name>/SKILL.md` with `disable-model-invocation: true` and appends one line to `.aceclaw/metrics/continuous-learning/skill-draft-audit.jsonl`.
+5. When running `skill.draft.validate`, verify deterministic `pass/hold/block` verdicts and appended lines in `.aceclaw/metrics/continuous-learning/skill-draft-validation-audit.jsonl`.
 
 CI guardrail job:
 

@@ -60,7 +60,7 @@ public final class ValidationGateEngine {
         this.strictMode = strictMode;
         this.replayRequired = replayRequired;
         this.replayReportPath = replayReportPath != null ? replayReportPath : Path.of(DEFAULT_REPLAY_REPORT);
-        this.maxTokenEstimationErrorRatio = maxTokenEstimationErrorRatio > 0 ? maxTokenEstimationErrorRatio : 0.65;
+        this.maxTokenEstimationErrorRatio = maxTokenEstimationErrorRatio >= 0 ? maxTokenEstimationErrorRatio : 0.65;
     }
 
     public ValidationSummary validateAll(Path projectRoot, String trigger) throws IOException {
@@ -131,6 +131,7 @@ public final class ValidationGateEngine {
         if (!isUnderDraftsDir(projectRoot, draftFile)) {
             reasons.add(new ReasonCode("safety", "SAFETY_DRAFT_PATH_ESCAPE", Verdict.BLOCK,
                     "Draft path escapes .aceclaw/skills-drafts"));
+            return buildDecision(projectRoot, draftFile, trigger, now, reasons);
         }
 
         String raw = Files.readString(draftFile);
@@ -191,6 +192,9 @@ public final class ValidationGateEngine {
         }
         try {
             JsonNode root = mapper.readTree(report.toFile());
+            if (root == null) {
+                return ReplayGateResult.invalid("Replay report empty or unreadable");
+            }
             var metrics = root.path("metrics");
             if (metrics.isMissingNode() || !metrics.isObject()) {
                 return ReplayGateResult.invalid("Replay metrics object missing");
