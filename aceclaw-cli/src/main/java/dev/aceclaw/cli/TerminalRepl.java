@@ -27,6 +27,7 @@ import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
@@ -973,6 +974,7 @@ public final class TerminalRepl {
     }
 
     private String replayStatusSummary(Path replayPath) {
+        Objects.requireNonNull(replayPath, "replayPath");
         if (!Files.isRegularFile(replayPath)) return null;
         try {
             JsonNode root = statusMapper.readTree(replayPath.toFile());
@@ -992,6 +994,7 @@ public final class TerminalRepl {
     }
 
     private String candidateStatusSummary(Path candidatesPath) {
+        Objects.requireNonNull(candidatesPath, "candidatesPath");
         if (!Files.isRegularFile(candidatesPath)) return null;
         int total = 0;
         int promoted = 0;
@@ -1016,6 +1019,7 @@ public final class TerminalRepl {
     }
 
     private String releaseStatusSummary(Path releaseStatePath) {
+        Objects.requireNonNull(releaseStatePath, "releaseStatePath");
         if (!Files.isRegularFile(releaseStatePath)) return null;
         int shadow = 0;
         int canary = 0;
