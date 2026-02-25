@@ -7,6 +7,8 @@ public enum FailureType {
     PERMISSION_DENIED("permission_denied"),
     PERMISSION_PENDING_TIMEOUT("permission_pending_timeout"),
     TIMEOUT("timeout"),
+    DEPENDENCY_MISSING("dependency_missing"),
+    CAPABILITY_MISMATCH("capability_mismatch"),
     BROKEN("broken"),
     CANCELLED("cancelled");
 
@@ -23,4 +25,3 @@ public enum FailureType {
         return wireName;
     }
 }
-

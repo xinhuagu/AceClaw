@@ -55,6 +55,30 @@ class FailureSignalDetectorTest {
     }
 
     @Test
+    void mapsDependencyMissing() {
+        var turn = turnWithResult("t1", "bash",
+                "Traceback: ModuleNotFoundError: No module named 'docx'", true);
+
+        var insights = detector.analyze(turn);
+
+        assertThat(insights).hasSize(1);
+        assertThat(insights.getFirst().type()).isEqualTo(FailureType.DEPENDENCY_MISSING);
+        assertThat(insights.getFirst().retryable()).isTrue();
+    }
+
+    @Test
+    void mapsCapabilityMismatch() {
+        var turn = turnWithResult("t1", "bash",
+                "File is encrypted / unsupported OLE format and cannot parse", true);
+
+        var insights = detector.analyze(turn);
+
+        assertThat(insights).hasSize(1);
+        assertThat(insights.getFirst().type()).isEqualTo(FailureType.CAPABILITY_MISMATCH);
+        assertThat(insights.getFirst().retryable()).isTrue();
+    }
+
+    @Test
     void mapsBackgroundTaskBroken() {
         var turn = turnWithResult("t1", "task_output",
                 "Status: FAILED\nTask ID: abc\nError: worker crashed", true);

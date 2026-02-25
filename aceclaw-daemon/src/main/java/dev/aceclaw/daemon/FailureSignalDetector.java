@@ -94,6 +94,27 @@ public final class FailureSignalDetector {
         if (normalizedReason.contains("permission denied")) {
             return FailureType.PERMISSION_DENIED;
         }
+        if (containsAny(normalizedReason,
+                "no module named",
+                "module not found",
+                "cannot import",
+                "command not found",
+                "not installed")) {
+            return FailureType.DEPENDENCY_MISSING;
+        }
+        if (containsAny(normalizedReason,
+                "unsupported",
+                "not supported",
+                "invalid format",
+                "unknown format",
+                "not a zip file",
+                "ole",
+                "encrypted",
+                "irm",
+                "cannot parse",
+                "parse error")) {
+            return FailureType.CAPABILITY_MISMATCH;
+        }
         if (normalizedReason.contains("timed out") || normalizedReason.contains("timeout")) {
             return FailureType.TIMEOUT;
         }
@@ -124,15 +145,25 @@ public final class FailureSignalDetector {
     private static boolean retryable(FailureType type) {
         return switch (type) {
             case PERMISSION_DENIED -> false;
-            case PERMISSION_PENDING_TIMEOUT, TIMEOUT, BROKEN, CANCELLED -> true;
+            case PERMISSION_PENDING_TIMEOUT, TIMEOUT, DEPENDENCY_MISSING, CAPABILITY_MISMATCH, BROKEN, CANCELLED -> true;
         };
     }
 
     private static double confidence(FailureType type) {
         return switch (type) {
             case PERMISSION_DENIED, PERMISSION_PENDING_TIMEOUT -> 0.95;
+            case DEPENDENCY_MISSING, CAPABILITY_MISMATCH -> 0.9;
             case TIMEOUT, BROKEN, CANCELLED -> 0.85;
         };
+    }
+
+    private static boolean containsAny(String text, String... needles) {
+        for (var needle : needles) {
+            if (text.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String sanitizeReason(String content) {

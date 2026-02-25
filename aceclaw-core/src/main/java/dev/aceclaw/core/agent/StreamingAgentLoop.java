@@ -142,6 +142,8 @@ public final class StreamingAgentLoop {
 
         // Track compaction result across iterations
         CompactionResult compactionResult = null;
+        // Tracks repeated tool failures within this turn to emit generic fallback guidance.
+        var toolFailureAdvisor = new ToolFailureAdvisor();
 
         try {
             for (int iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
@@ -252,7 +254,7 @@ public final class StreamingAgentLoop {
                                 .toList();
                         log.debug("Streaming tool use requested: {} tool(s)", toolUseBlocks.size());
 
-                        var toolResults = executeTools(toolUseBlocks, eventHandler);
+                        var toolResults = executeTools(toolUseBlocks, eventHandler, toolFailureAdvisor);
                         var toolResultMessage = Message.toolResults(toolResults);
                         allMessages.add(toolResultMessage);
                         newMessages.add(toolResultMessage);
@@ -393,14 +395,16 @@ public final class StreamingAgentLoop {
      * Executes tool calls, using virtual threads for parallel execution.
      */
     private List<ContentBlock.ToolResult> executeTools(
-            List<ContentBlock.ToolUse> toolUseBlocks, StreamEventHandler handler) {
+            List<ContentBlock.ToolUse> toolUseBlocks,
+            StreamEventHandler handler,
+            ToolFailureAdvisor failureAdvisor) {
         if (toolUseBlocks.size() == 1) {
-            return List.of(executeSingleTool(toolUseBlocks.getFirst(), handler));
+            return List.of(executeSingleTool(toolUseBlocks.getFirst(), handler, failureAdvisor));
         }
 
         try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
             var subtasks = toolUseBlocks.stream()
-                    .map(toolUse -> scope.fork(() -> executeSingleTool(toolUse, handler)))
+                    .map(toolUse -> scope.fork(() -> executeSingleTool(toolUse, handler, failureAdvisor)))
                     .toList();
 
             scope.join();
@@ -418,7 +422,9 @@ public final class StreamingAgentLoop {
     }
 
     private ContentBlock.ToolResult executeSingleTool(
-            ContentBlock.ToolUse toolUse, StreamEventHandler handler) {
+            ContentBlock.ToolUse toolUse,
+            StreamEventHandler handler,
+            ToolFailureAdvisor failureAdvisor) {
         long toolStart = System.currentTimeMillis();
 
         // Check permission before execution
@@ -479,17 +485,30 @@ public final class StreamingAgentLoop {
             publishEvent(new ToolEvent.Completed(
                     config.sessionId(), tool.name(), toolDuration, result.isError(), Instant.now()));
             recordMetrics(tool.name(), !result.isError(), toolDuration);
-            String errorPreview = result.isError() ? summarizeError(output) : null;
+            String finalOutput = output;
+            String errorPreview = null;
+            if (result.isError()) {
+                String advice = failureAdvisor.maybeAdvice(tool.name(), output);
+                if (advice != null && !advice.isBlank()) {
+                    finalOutput = output + "\n\n[auto-fallback-advice] " + advice;
+                }
+                errorPreview = summarizeError(finalOutput);
+            }
             handler.onToolCompleted(toolUse.id(), tool.name(), toolDuration, result.isError(), errorPreview);
-            return new ContentBlock.ToolResult(toolUse.id(), output, result.isError());
+            return new ContentBlock.ToolResult(toolUse.id(), finalOutput, result.isError());
         } catch (Exception e) {
             long toolDuration = System.currentTimeMillis() - toolStart;
             log.error("Tool {} threw exception: {}", tool.name(), e.getMessage(), e);
             publishEvent(new ToolEvent.Completed(
                     config.sessionId(), tool.name(), toolDuration, true, Instant.now()));
             recordMetrics(tool.name(), false, toolDuration);
-            handler.onToolCompleted(toolUse.id(), tool.name(), toolDuration, true, summarizeError(e.getMessage()));
-            return new ContentBlock.ToolResult(toolUse.id(), "Tool error: " + e.getMessage(), true);
+            String base = "Tool error: " + e.getMessage();
+            String advice = failureAdvisor.maybeAdvice(tool.name(), base);
+            String finalOutput = (advice == null || advice.isBlank())
+                    ? base
+                    : base + "\n\n[auto-fallback-advice] " + advice;
+            handler.onToolCompleted(toolUse.id(), tool.name(), toolDuration, true, summarizeError(finalOutput));
+            return new ContentBlock.ToolResult(toolUse.id(), finalOutput, true);
         }
     }
 
