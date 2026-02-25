@@ -21,8 +21,8 @@ class ForegroundOutputSinkTest {
         sink.onToolCompleted("toolu_1", "bash", 820, false, "");
 
         String output = buffer.toString();
-        assertThat(output).contains("bash: git diff --stat");
-        assertThat(output).contains("\u2705");
+        assertThat(output).contains("[tool:start] bash - git diff --stat");
+        assertThat(output).contains("[tool:done] bash (0.8s)");
     }
 
     @Test
@@ -50,7 +50,7 @@ class ForegroundOutputSinkTest {
     }
 
     @Test
-    void repeatedSameTool_reusesSingleStatusEntry() throws Exception {
+    void repeatedSameTool_traceModeDoesNotCreatePanelEntries() throws Exception {
         var buffer = new StringWriter();
         var sink = new ForegroundOutputSink(new PrintWriter(buffer), new TerminalMarkdownRenderer());
 
@@ -67,6 +67,6 @@ class ForegroundOutputSinkTest {
 
         @SuppressWarnings("unchecked")
         Map<String, Object> entries = (Map<String, Object>) entriesField.get(renderer);
-        assertThat(entries).hasSize(1);
+        assertThat(entries).isEmpty();
     }
 }
