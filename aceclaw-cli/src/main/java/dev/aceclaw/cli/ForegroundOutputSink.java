@@ -122,6 +122,7 @@ public final class ForegroundOutputSink implements OutputSink {
                 wasThinking = false;
             }
             stopSpinner();
+            emitToolTraceStart(toolName, summary);
             statusRenderer.onToolStarted(toolId, toolName, summary);
         }
     }
@@ -130,6 +131,7 @@ public final class ForegroundOutputSink implements OutputSink {
     public void onToolCompleted(String toolId, String toolName,
                                 long durationMs, boolean isError, String error) {
         synchronized (lock) {
+            emitToolTraceCompleted(toolName, durationMs, isError, error);
             statusRenderer.onToolCompleted(toolId, toolName, durationMs, isError, error);
         }
     }
@@ -290,6 +292,40 @@ public final class ForegroundOutputSink implements OutputSink {
         return normalized.substring(0, maxLen - 3) + "...";
     }
 
+    private void emitToolTraceStart(String toolName, String summary) {
+        statusRenderer.hide();
+        String label = safeName(toolName);
+        String detail = truncate(summary, 90);
+        if (detail.isBlank()) {
+            out.println(MUTED + "[tool:start] " + label + RESET);
+        } else {
+            out.println(MUTED + "[tool:start] " + label + " - " + detail + RESET);
+        }
+        out.flush();
+    }
+
+    private void emitToolTraceCompleted(String toolName, long durationMs, boolean isError, String error) {
+        statusRenderer.hide();
+        String label = safeName(toolName);
+        String elapsed = String.format(Locale.ROOT, "%.1fs", Math.max(0L, durationMs) / 1000.0);
+        if (isError) {
+            String reason = truncate(error, 90);
+            if (reason.isBlank()) {
+                out.println(MUTED + "[tool:error] " + label + " (" + elapsed + ")" + RESET);
+            } else {
+                out.println(MUTED + "[tool:error] " + label + " (" + elapsed + ") - " + reason + RESET);
+            }
+        } else {
+            out.println(MUTED + "[tool:done] " + label + " (" + elapsed + ")" + RESET);
+        }
+        out.flush();
+    }
+
+    private static String safeName(String toolName) {
+        if (toolName == null || toolName.isBlank()) return "unknown";
+        return toolName;
+    }
+
     /**
      * Lightweight status renderer for tool/sub-agent/plan progress lines.
      *
@@ -335,13 +371,31 @@ public final class ForegroundOutputSink implements OutputSink {
 
         void onToolStarted(String toolId, String toolName, String summary) {
             pruneExpired();
-            String key = (toolId != null && !toolId.isBlank())
-                    ? toolId : "tool-" + (++nextSyntheticId);
             String parent = firstActiveKey(Kind.SUBAGENT);
-            var entry = new StatusEntry(key, Kind.TOOL, safe(toolName, "unknown"),
-                    truncate(summary, 60), System.nanoTime());
+            String normalizedToolName = safe(toolName, "unknown");
+
+            StatusEntry entry = null;
+            if (toolId != null && !toolId.isBlank()) {
+                entry = entries.get(toolId);
+            }
+            if (entry == null) {
+                entry = firstReusableTool(normalizedToolName);
+            }
+
+            if (entry == null) {
+                String key = (toolId != null && !toolId.isBlank())
+                        ? toolId : "tool-" + (++nextSyntheticId);
+                entry = new StatusEntry(key, Kind.TOOL, normalizedToolName,
+                        truncate(summary, 60), System.nanoTime());
+                entries.put(key, entry);
+            } else {
+                entry.name = normalizedToolName;
+                entry.detail = truncate(summary, 60);
+                entry.state = State.ACTIVE;
+                entry.durationMs = 0L;
+                entry.expiresAtMs = 0L;
+            }
             entry.parentKey = parent;
-            entries.put(key, entry);
             redraw();
         }
 
@@ -564,6 +618,17 @@ public final class ForegroundOutputSink implements OutputSink {
                 if (entry.kind == Kind.TOOL
                         && entry.state == State.ACTIVE
                         && toolName.equals(entry.name)) {
+                    return entry;
+                }
+            }
+            return null;
+        }
+
+        private StatusEntry firstReusableTool(String toolName) {
+            StatusEntry active = firstActiveTool(toolName);
+            if (active != null) return active;
+            for (var entry : entries.values()) {
+                if (entry.kind == Kind.TOOL && toolName.equals(entry.name)) {
                     return entry;
                 }
             }

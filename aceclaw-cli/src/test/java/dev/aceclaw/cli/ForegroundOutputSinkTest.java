@@ -5,6 +5,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.lang.reflect.Field;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -45,5 +47,26 @@ class ForegroundOutputSinkTest {
         assertThat(output).contains("Sub-agent");
         assertThat(output).contains("step 2/4");
         assertThat(output).contains("Run tests");
+    }
+
+    @Test
+    void repeatedSameTool_reusesSingleStatusEntry() throws Exception {
+        var buffer = new StringWriter();
+        var sink = new ForegroundOutputSink(new PrintWriter(buffer), new TerminalMarkdownRenderer());
+
+        sink.onToolUse("toolu_1", "web_search", "q1");
+        sink.onToolCompleted("toolu_1", "web_search", 900, false, "");
+        sink.onToolUse("toolu_2", "web_search", "q2");
+        sink.onToolCompleted("toolu_2", "web_search", 1000, false, "");
+
+        Field rendererField = ForegroundOutputSink.class.getDeclaredField("statusRenderer");
+        rendererField.setAccessible(true);
+        Object renderer = rendererField.get(sink);
+        Field entriesField = renderer.getClass().getDeclaredField("entries");
+        entriesField.setAccessible(true);
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> entries = (Map<String, Object>) entriesField.get(renderer);
+        assertThat(entries).hasSize(1);
     }
 }
