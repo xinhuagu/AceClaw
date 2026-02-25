@@ -65,6 +65,8 @@ public final class TerminalRepl {
     private static final String CL_REPLAY_REPORT = "replay-latest.json";
     private static final String CL_RELEASE_STATE = "skill-release-state.json";
     private static final String CL_CANDIDATES = ".aceclaw/memory/candidates.jsonl";
+    private static final Path HOME_CANDIDATES_PATH = Path.of(
+            System.getProperty("user.home"), ".aceclaw", "memory", "candidates.jsonl");
 
     private final DaemonClient client;
     private final String sessionId;
@@ -946,7 +948,7 @@ public final class TerminalRepl {
 
         Path replayPath = projectRoot.resolve(CL_METRICS_DIR).resolve(CL_REPLAY_REPORT);
         Path releaseStatePath = projectRoot.resolve(CL_METRICS_DIR).resolve(CL_RELEASE_STATE);
-        Path candidatesPath = projectRoot.resolve(CL_CANDIDATES);
+        Path candidatesPath = resolveCandidatesPath(projectRoot);
 
         String replaySummary = replayStatusSummary(replayPath);
         String candidateSummary = candidateStatusSummary(candidatesPath);
@@ -971,6 +973,14 @@ public final class TerminalRepl {
                     .append(MUTED).append("release=").append(releaseSummary).append(RESET);
         }
         return sb.toString();
+    }
+
+    private Path resolveCandidatesPath(Path projectRoot) {
+        Path projectCandidates = projectRoot.resolve(CL_CANDIDATES);
+        if (Files.isRegularFile(projectCandidates)) {
+            return projectCandidates;
+        }
+        return HOME_CANDIDATES_PATH;
     }
 
     private String replayStatusSummary(Path replayPath) {
