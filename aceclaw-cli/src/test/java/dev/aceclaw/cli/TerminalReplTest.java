@@ -178,6 +178,22 @@ class TerminalReplTest {
     }
 
     @Test
+    void candidateStatusSummary_includesShadowCount() throws Exception {
+        var statusRepl = newReplForProject(tempDir);
+        Path candidates = tempDir.resolve(".aceclaw/memory/candidates.jsonl");
+        Files.createDirectories(candidates.getParent());
+        Files.writeString(candidates, """
+                {"id":"1","state":"PROMOTED"}
+                {"id":"2","state":"DEMOTED"}
+                {"id":"3","state":"SHADOW"}
+                """);
+
+        String summary = (String) invokePrivate(statusRepl, "candidateStatusSummary",
+                new Class<?>[]{Path.class}, candidates);
+        assertThat(summary).isEqualTo("3(p:1,s:1,d:1)");
+    }
+
+    @Test
     void buildContinuousLearningStatusLine_concurrentAccess_isStable() throws Exception {
         var statusRepl = newReplForProject(tempDir);
         writeLearningArtifacts(tempDir);

@@ -18,6 +18,12 @@ import static dev.aceclaw.cli.TerminalTheme.*;
  * status area under the active streaming line for tools, sub-agents, and plan steps.
  */
 public final class ForegroundOutputSink implements OutputSink {
+    /**
+     * Tool panel lines (⏳/✅) are noisy on some terminals because cursor restore behavior
+     * differs across environments. Keep it opt-in; default to trace-only tool logs.
+     */
+    private static final boolean TOOL_STATUS_PANEL_ENABLED =
+            Boolean.parseBoolean(System.getenv().getOrDefault("ACECLAW_TOOL_STATUS_PANEL", "false"));
 
     private final PrintWriter out;
     private final TerminalMarkdownRenderer markdownRenderer;
@@ -123,7 +129,9 @@ public final class ForegroundOutputSink implements OutputSink {
             }
             stopSpinner();
             emitToolTraceStart(toolName, summary);
-            statusRenderer.onToolStarted(toolId, toolName, summary);
+            if (TOOL_STATUS_PANEL_ENABLED) {
+                statusRenderer.onToolStarted(toolId, toolName, summary);
+            }
         }
     }
 
@@ -132,7 +140,9 @@ public final class ForegroundOutputSink implements OutputSink {
                                 long durationMs, boolean isError, String error) {
         synchronized (lock) {
             emitToolTraceCompleted(toolName, durationMs, isError, error);
-            statusRenderer.onToolCompleted(toolId, toolName, durationMs, isError, error);
+            if (TOOL_STATUS_PANEL_ENABLED) {
+                statusRenderer.onToolCompleted(toolId, toolName, durationMs, isError, error);
+            }
         }
     }
 

@@ -1008,6 +1008,7 @@ public final class TerminalRepl {
         if (!Files.isRegularFile(candidatesPath)) return null;
         int total = 0;
         int promoted = 0;
+        int shadow = 0;
         int demoted = 0;
         try (var lines = Files.lines(candidatesPath)) {
             var it = lines.iterator();
@@ -1019,13 +1020,14 @@ public final class TerminalRepl {
                 if (node == null) continue;
                 String state = node.path("state").asText("");
                 if ("PROMOTED".equals(state)) promoted++;
+                if ("SHADOW".equals(state)) shadow++;
                 if ("DEMOTED".equals(state)) demoted++;
             }
         } catch (Exception e) {
             log.debug("Failed to parse candidates.jsonl: {}", e.getMessage());
             return "read-error";
         }
-        return total + "(p:" + promoted + ",d:" + demoted + ")";
+        return total + "(p:" + promoted + ",s:" + shadow + ",d:" + demoted + ")";
     }
 
     private String releaseStatusSummary(Path releaseStatePath) {
