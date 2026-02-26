@@ -263,7 +263,7 @@ class CommandHookExecutorTest {
         var result = executor.execute(event);
         assertThat(result).isInstanceOf(HookResult.Proceed.class);
         var proceed = (HookResult.Proceed) result;
-        assertThat(proceed.stdout()).isEqualTo(eventDir.toAbsolutePath().normalize().toString());
+        assertThat(Path.of(proceed.stdout()).toRealPath()).isEqualTo(eventDir.toRealPath());
     }
 
     // -- Helpers --

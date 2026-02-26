@@ -178,7 +178,10 @@ public final class CommandHookExecutor implements HookExecutor {
     private Path resolveExecutionDir(HookEvent event) {
         if (event != null && event.cwd() != null && !event.cwd().isBlank()) {
             try {
-                return Paths.get(event.cwd()).toAbsolutePath().normalize();
+                var candidate = Paths.get(event.cwd()).toAbsolutePath().normalize();
+                if (Files.isDirectory(candidate)) {
+                    return candidate;
+                }
             } catch (Exception ignored) {
                 // fall through to fallback dir
             }

@@ -329,6 +329,63 @@ class DaemonIntegrationTest {
     }
 
     @Test
+    @Order(99)
+    void testSessionScopedRelativePathExecutionAcrossProjects() throws Exception {
+        Path projectA = workDir.resolve("project-a");
+        Path projectB = workDir.resolve("project-b");
+        Files.createDirectories(projectA);
+        Files.createDirectories(projectB);
+
+        try (var channel = connectToSocket()) {
+            String sessionA = createSession(channel, 1, projectA);
+            String sessionB = createSession(channel, 2, projectB);
+
+            // Session A: run relative-path bash command.
+            mockLlm.enqueueResponse(MockLlmClient.toolUseResponse(
+                    "Running in project A.",
+                    "toolu_proj_a_001", "bash",
+                    "{\"command\":\"pwd > marker-a.txt && echo ok-a\"}"
+            ));
+            mockLlm.enqueueResponse(MockLlmClient.textResponse("done-a"));
+
+            var promptA = objectMapper.createObjectNode();
+            promptA.put("sessionId", sessionA);
+            promptA.put("prompt", "Create marker-a.txt via bash");
+            var resultA = sendPromptAndHandlePermissions(channel, promptA, 3, true);
+            assertThat(resultA.finalResponse().has("error")).isFalse();
+
+            // Session B: run relative-path bash command.
+            mockLlm.enqueueResponse(MockLlmClient.toolUseResponse(
+                    "Running in project B.",
+                    "toolu_proj_b_001", "bash",
+                    "{\"command\":\"pwd > marker-b.txt && echo ok-b\"}"
+            ));
+            mockLlm.enqueueResponse(MockLlmClient.textResponse("done-b"));
+
+            var promptB = objectMapper.createObjectNode();
+            promptB.put("sessionId", sessionB);
+            promptB.put("prompt", "Create marker-b.txt via bash");
+            var resultB = sendPromptAndHandlePermissions(channel, promptB, 4, true);
+            assertThat(resultB.finalResponse().has("error")).isFalse();
+
+            Path markerA = projectA.resolve("marker-a.txt");
+            Path markerB = projectB.resolve("marker-b.txt");
+            assertThat(Files.exists(markerA)).isTrue();
+            assertThat(Files.exists(markerB)).isTrue();
+
+            String markerAContent = Files.readString(markerA).trim();
+            String markerBContent = Files.readString(markerB).trim();
+            Path markerAPath = Path.of(markerAContent).toRealPath();
+            Path markerBPath = Path.of(markerBContent).toRealPath();
+            assertThat(markerAPath).isEqualTo(projectA.toRealPath());
+            assertThat(markerBPath).isEqualTo(projectB.toRealPath());
+
+            destroySession(channel, sessionA, 5);
+            destroySession(channel, sessionB, 6);
+        }
+    }
+
+    @Test
     @Order(4)
     void testAgentPromptWithInvalidSession() throws Exception {
         try (var channel = connectToSocket()) {
@@ -921,7 +978,11 @@ class DaemonIntegrationTest {
     }
 
     private String createSession(SocketChannel channel, int requestId) throws Exception {
-        var params = objectMapper.createObjectNode().put("project", workDir.toString());
+        return createSession(channel, requestId, workDir);
+    }
+
+    private String createSession(SocketChannel channel, int requestId, Path projectPath) throws Exception {
+        var params = objectMapper.createObjectNode().put("project", projectPath.toString());
         var response = sendAndReceive(channel, "session.create", params, requestId);
         return response.get("result").get("sessionId").asText();
     }
