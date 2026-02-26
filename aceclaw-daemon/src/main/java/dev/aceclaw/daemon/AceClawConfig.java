@@ -59,12 +59,12 @@ public final class AceClawConfig {
     private static final int DEFAULT_PLANNER_THRESHOLD = 5;
     private static final boolean DEFAULT_CANDIDATE_INJECTION_ENABLED = true;
     private static final boolean DEFAULT_CANDIDATE_PROMOTION_ENABLED = true;
-    private static final int DEFAULT_CANDIDATE_PROMOTION_MIN_EVIDENCE = 3;
+    private static final int DEFAULT_CANDIDATE_PROMOTION_MIN_EVIDENCE = 2;
     private static final double DEFAULT_CANDIDATE_PROMOTION_MIN_SCORE = 0.75;
     private static final double DEFAULT_CANDIDATE_PROMOTION_MAX_FAILURE_RATE = 0.2;
     private static final int DEFAULT_CANDIDATE_INJECTION_MAX_COUNT = 10;
     private static final int DEFAULT_CANDIDATE_INJECTION_MAX_TOKENS = 1200;
-    private static final int DEFAULT_ANTI_PATTERN_GATE_MIN_BLOCKED_BEFORE_ROLLBACK = 3;
+    private static final int DEFAULT_ANTI_PATTERN_GATE_MIN_BLOCKED_BEFORE_ROLLBACK = 2;
     private static final double DEFAULT_ANTI_PATTERN_GATE_MAX_FALSE_POSITIVE_RATE = 0.50;
     private static final boolean DEFAULT_SKILL_DRAFT_VALIDATION_ENABLED = true;
     private static final boolean DEFAULT_SKILL_DRAFT_VALIDATION_STRICT_MODE = false;

@@ -287,7 +287,7 @@ public final class CandidateStateMachine {
         }
 
         public static Config defaults() {
-            return new Config(3, 0.75, 0.2, 3, Set.of());
+            return new Config(2, 0.75, 0.2, 3, Set.of());
         }
     }
 }

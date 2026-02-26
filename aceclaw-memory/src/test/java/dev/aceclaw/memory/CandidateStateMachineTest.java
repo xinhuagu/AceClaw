@@ -86,7 +86,7 @@ class CandidateStateMachineTest {
     @Test
     void promotionDeniedWhenEvidenceBelowMinimum() {
         var sm = new CandidateStateMachine();
-        var candidate = candidateWith(CandidateState.SHADOW, 0.85, 2, 2, 0);
+        var candidate = candidateWith(CandidateState.SHADOW, 0.85, 1, 1, 0);
         var result = sm.evaluate(candidate, CandidateState.PROMOTED, "test");
         assertThat(result).isEmpty();
     }
@@ -131,7 +131,7 @@ class CandidateStateMachineTest {
     void configOverridesDefaults() {
         var config = new CandidateStateMachine.Config(1, 0.5, 0.5, 5, Set.of());
         var sm = new CandidateStateMachine(config);
-        // Would fail with defaults (evidence=2 < default 3) but passes with minEvidence=1
+        // Would fail with defaults (evidence=1 < default 2) but passes with minEvidence=1
         var candidate = candidateWith(CandidateState.SHADOW, 0.6, 2, 2, 0);
         var result = sm.evaluate(candidate, CandidateState.PROMOTED, "test");
         assertThat(result).isPresent();

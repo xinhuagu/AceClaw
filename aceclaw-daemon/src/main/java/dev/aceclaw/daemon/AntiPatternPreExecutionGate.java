@@ -117,7 +117,7 @@ final class AntiPatternPreExecutionGate {
         if (stats == null) {
             return false;
         }
-        if (stats.blockedCount() < 3) {
+        if (stats.blockedCount() < 2) {
             return false;
         }
         double falsePositiveRate = stats.falsePositiveRate();
@@ -246,7 +246,7 @@ final class AntiPatternPreExecutionGate {
                         .filter(c -> c.kind() == CandidateKind.ANTI_PATTERN)
                         .toList();
                 for (var c : promoted) {
-                    Action action = (c.score() >= 0.85 && c.evidenceCount() >= 3) ? Action.BLOCK : Action.PENALIZE;
+                    Action action = (c.score() >= 0.75 && c.evidenceCount() >= 2) ? Action.BLOCK : Action.PENALIZE;
                     rules.add(new Rule(
                             "candidate:" + c.id(),
                             c.toolTag(),

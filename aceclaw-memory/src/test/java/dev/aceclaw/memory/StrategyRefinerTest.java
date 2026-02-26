@@ -64,20 +64,17 @@ class StrategyRefinerTest {
     }
 
     @Test
-    void errorConsolidationSkipsWhenLessThan3Entries() {
+    void errorConsolidationSkipsWhenLessThan2Entries() {
         store.add(MemoryEntry.Category.ERROR_RECOVERY,
                 "Tool bash error: command not found — resolved by: using full path",
                 List.of("bash", "error-recovery"), "session:1", false, projectPath);
-        store.add(MemoryEntry.Category.ERROR_RECOVERY,
-                "Tool bash error: command not found — resolved by: installing dependency",
-                List.of("bash", "error-recovery"), "session:2", false, projectPath);
 
         var result = refiner.refine(List.of(), projectPath);
 
         assertThat(result.strategiesCreated()).isEqualTo(0);
         assertThat(result.entriesConsolidated()).isEqualTo(0);
         assertThat(result.hasChanges()).isFalse();
-        assertThat(store.size()).isEqualTo(2);
+        assertThat(store.size()).isEqualTo(1);
     }
 
     // -- Strategy 2: Tool Sequence Optimization --

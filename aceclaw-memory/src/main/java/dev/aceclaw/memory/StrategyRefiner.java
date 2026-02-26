@@ -33,7 +33,7 @@ public final class StrategyRefiner {
     private static final Logger log = LoggerFactory.getLogger(StrategyRefiner.class);
 
     /** Minimum number of similar entries required to trigger consolidation. */
-    static final int MIN_ENTRIES_TO_CONSOLIDATE = 3;
+    static final int MIN_ENTRIES_TO_CONSOLIDATE = 2;
 
     /** Jaccard similarity threshold for grouping error recoveries and sequences. */
     static final double SIMILARITY_THRESHOLD = 0.7;

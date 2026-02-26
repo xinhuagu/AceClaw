@@ -124,7 +124,7 @@ class CandidateStoreTest {
     @Test
     void transitionShadowToPromoted() {
         var t0 = Instant.parse("2026-02-22T00:00:00Z");
-        // Upsert enough observations to meet default promotion gates (evidence >= 3, score >= 0.75)
+        // Upsert enough observations to meet default promotion gates (evidence >= 2, score >= 0.75)
         store.upsert(observation("command timeout after 120 seconds", "session:a", t0));
         store.upsert(observation("bash command timed out after 120 sec", "session:b", t0.plusSeconds(60)));
         store.upsert(observation("command timeout after 120 seconds retry", "session:c", t0.plusSeconds(120)));
@@ -149,7 +149,7 @@ class CandidateStoreTest {
         store.upsert(observation("command timeout after 120 seconds", "session:a",
                 Instant.parse("2026-02-22T00:00:00Z")));
         var candidate = store.all().getFirst();
-        // Only 1 evidence, default gate requires 3
+        // Only 1 evidence, default gate requires 2
         var transition = store.transition(candidate.id(), CandidateState.PROMOTED, "test");
         assertThat(transition).isEmpty();
         // State unchanged
