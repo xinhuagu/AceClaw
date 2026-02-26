@@ -185,10 +185,34 @@ User Query -> Plan -> Reason -> Act (Tool Execution) -> Observe -> Repeat
 - Conversation history persistence as JSONL transcripts
 - Automatic context compression at configurable threshold (~92%)
 - Manual compaction via `/compact`
-- Session resume capability
+- Deterministic task resume capability
 - Multi-turn tool use with result incorporation
 
-### 4.5.1 Task Planner (Autonomous Planning & Execution)
+### 4.5.1 Task Resume Routing (Deterministic, Isolation-Safe)
+
+Resume behavior for natural-language inputs like `continue` / `resume` must follow a deterministic routing policy that preserves session/workspace isolation.
+
+**Routing Priority (strict order)**:
+1. **Current Session Scope**: resume unfinished task in current `sessionId`.
+2. **Client-Instance Scope**: if no match in current session, search unfinished tasks under the same `clientInstanceId` and same workspace.
+3. **Workspace Scope**: if still no match, search unfinished tasks in the same workspace and require deterministic tie-break.
+4. **Fallback**: if no safe/unique match exists, return a disambiguation prompt instead of guessing.
+
+**Deterministic tie-break policy**:
+- Prefer foreground task
+- Else most recently active (`updatedAt`)
+- If still ambiguous, ask user to choose task ID
+
+**Isolation hard constraints**:
+- Default behavior MUST NOT auto-resume across workspaces.
+- Default behavior MUST NOT auto-resume across client instances (for example CLI vs Web) unless explicitly requested by the user.
+- Resume checkpoints must carry at least: `sessionId`, `taskId`, `workspaceHash`, `clientType`, `clientInstanceId`, `status`, `resumeHint`.
+
+**Observability requirements**:
+- Emit `resume.detected`, `resume.bound_task`, `resume.injected`, `resume.fallback`.
+- Include `sessionId`, `taskId`, `workspaceHash`, and `clientInstanceId` in resume audit payloads.
+
+### 4.5.2 Task Planner (Autonomous Planning & Execution)
 
 For complex, multi-step tasks, AceClaw provides an **autonomous Task Planner** that decomposes user goals into structured, dependency-aware task graphs (DAGs) before execution begins — going beyond step-by-step ReAct reasoning.
 
@@ -839,7 +863,7 @@ This ensures no insight is lost even if the agent did not actively call `memory 
 | Subagent delegation | P1 | Context isolation |
 | Slash commands | P1 | User-invocable shortcuts |
 | Multi-session support | P1 | Concurrent CLI + IDE sessions in daemon |
-| Session persistence/resume | P1 | Sessions survive client disconnect |
+| Session persistence/resume | P1 | Deterministic task resume with scope routing (session > client-instance > workspace) |
 | Heartbeat runner (HEARTBEAT.md) | P1 | Proactive periodic agent tasks |
 | Cron scheduler (persistent jobs) | P1 | Scheduled tasks, dependency audits |
 | BOOT.md execution on daemon start | P1 | Boot-time initialization |
@@ -918,6 +942,8 @@ This ensures no insight is lost even if the agent did not actively call `memory 
 | Plan parallel speedup | > 1.5x vs sequential (2+ branch plans) |
 | Auto-memory plan reuse rate | > 30% after 50 sessions |
 | User plan approval rate | > 80% |
+| Resume binding accuracy (`continue`) | >= 95% (replay set) |
+| Cross-workspace auto-resume leakage | 0 |
 
 ### User Experience
 

@@ -2,6 +2,9 @@ package dev.aceclaw.cli;
 
 import com.fasterxml.jackson.databind.JsonNode;
 
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.List;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -60,6 +63,8 @@ public final class TaskHandle {
 
     /** Optional permission description shown while waiting. */
     private volatile String permissionDetail;
+    /** Recent tool events for resume checkpointing. */
+    private final Deque<ToolEvent> recentToolEvents;
 
     public TaskHandle(String taskId, String promptSummary, DaemonConnection connection,
                       OutputSink initialSink) {
@@ -75,6 +80,7 @@ public final class TaskHandle {
         this.activityLabel = "starting";
         this.waitingPermission = false;
         this.permissionDetail = "";
+        this.recentToolEvents = new ArrayDeque<>();
     }
 
     public String taskId() { return taskId; }
@@ -88,6 +94,11 @@ public final class TaskHandle {
     public String activityLabel() { return activityLabel; }
     public boolean waitingPermission() { return waitingPermission; }
     public String permissionDetail() { return permissionDetail; }
+    public List<ToolEvent> recentToolEventsSnapshot() {
+        synchronized (recentToolEvents) {
+            return List.copyOf(recentToolEvents);
+        }
+    }
 
     /**
      * Returns the current output sink.
@@ -149,6 +160,26 @@ public final class TaskHandle {
         this.activityLabel = "resumed";
     }
 
+    /**
+     * Appends a tool/runtime event for resume checkpointing.
+     */
+    public void appendToolEvent(String toolName, String eventType, boolean isError, long durationMs, String summary) {
+        var event = new ToolEvent(
+                toolName != null ? toolName : "unknown",
+                eventType != null ? eventType : "unknown",
+                Instant.now(),
+                isError,
+                durationMs,
+                summary != null ? summary : ""
+        );
+        synchronized (recentToolEvents) {
+            recentToolEvents.addLast(event);
+            if (recentToolEvents.size() > 20) {
+                recentToolEvents.removeFirst();
+            }
+        }
+    }
+
     public boolean isRunning() { return state == TaskState.RUNNING; }
     public boolean isTerminal() {
         return state == TaskState.COMPLETED || state == TaskState.FAILED
@@ -161,4 +192,13 @@ public final class TaskHandle {
     public enum TaskState {
         RUNNING, COMPLETED, FAILED, CANCELLED
     }
+
+    public record ToolEvent(
+            String toolName,
+            String eventType,
+            Instant timestamp,
+            boolean isError,
+            long durationMs,
+            String summary
+    ) {}
 }
