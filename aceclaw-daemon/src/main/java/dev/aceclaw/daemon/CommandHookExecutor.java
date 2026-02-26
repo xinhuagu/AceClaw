@@ -14,6 +14,7 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
@@ -43,12 +44,12 @@ public final class CommandHookExecutor implements HookExecutor {
 
     private final HookRegistry registry;
     private final ObjectMapper objectMapper;
-    private final Path workingDir;
+    private final Path fallbackWorkingDir;
 
     public CommandHookExecutor(HookRegistry registry, ObjectMapper objectMapper, Path workingDir) {
         this.registry = registry;
         this.objectMapper = objectMapper;
-        this.workingDir = workingDir;
+        this.fallbackWorkingDir = workingDir;
     }
 
     @Override
@@ -106,7 +107,7 @@ public final class CommandHookExecutor implements HookExecutor {
             } else {
                 pb = new ProcessBuilder(UNIX_SHELL, "-c", hookConfig.command());
             }
-            pb.directory(workingDir.toFile());
+            pb.directory(resolveExecutionDir(event).toFile());
 
             Process process = pb.start();
 
@@ -172,6 +173,20 @@ public final class CommandHookExecutor implements HookExecutor {
             Thread.currentThread().interrupt();
             return new HookResult.Error(-1, "Hook execution interrupted");
         }
+    }
+
+    private Path resolveExecutionDir(HookEvent event) {
+        if (event != null && event.cwd() != null && !event.cwd().isBlank()) {
+            try {
+                return Paths.get(event.cwd()).toAbsolutePath().normalize();
+            } catch (Exception ignored) {
+                // fall through to fallback dir
+            }
+        }
+        if (fallbackWorkingDir != null) {
+            return fallbackWorkingDir.toAbsolutePath().normalize();
+        }
+        return Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
     }
 
     /**

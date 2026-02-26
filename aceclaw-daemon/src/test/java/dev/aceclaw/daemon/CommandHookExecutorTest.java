@@ -92,6 +92,12 @@ class CommandHookExecutorTest {
                 #!/bin/bash
                 exit 0
                 """);
+
+        // Script that prints current working directory
+        writeScript("print_pwd.sh", """
+                #!/bin/bash
+                pwd
+                """);
     }
 
     @Test
@@ -245,6 +251,19 @@ class CommandHookExecutorTest {
         assertThat(result).isInstanceOf(HookResult.Proceed.class);
         var proceed = (HookResult.Proceed) result;
         assertThat(proceed.stdout()).isNull();
+    }
+
+    @Test
+    void hookRunsInEventCwd() throws Exception {
+        Path eventDir = tempDir.resolve("event-cwd");
+        Files.createDirectories(eventDir);
+        var executor = buildExecutor("PreToolUse", "bash", scriptPath("print_pwd.sh"));
+        var event = new HookEvent.PreToolUse("s1", eventDir.toString(), "bash", emptyInput());
+
+        var result = executor.execute(event);
+        assertThat(result).isInstanceOf(HookResult.Proceed.class);
+        var proceed = (HookResult.Proceed) result;
+        assertThat(proceed.stdout()).isEqualTo(eventDir.toAbsolutePath().normalize().toString());
     }
 
     // -- Helpers --
