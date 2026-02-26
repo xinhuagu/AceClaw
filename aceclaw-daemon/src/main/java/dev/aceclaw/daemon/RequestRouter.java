@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -214,14 +215,27 @@ public final class RequestRouter {
     }
 
     private Object handleSessionCreate(JsonNode params) {
-        var projectPath = extractString(params, "project", System.getProperty("user.dir"));
-        var session = sessionManager.createSession(Path.of(projectPath));
+        var projectPath = requireString(params, "project");
+        var canonicalProjectPath = canonicalizeProjectPath(projectPath);
+        var session = sessionManager.createSession(canonicalProjectPath);
 
         var result = objectMapper.createObjectNode();
         result.put("sessionId", session.id());
         result.put("project", session.projectPath().toString());
         result.put("createdAt", session.createdAt().toString());
         return result;
+    }
+
+    private static Path canonicalizeProjectPath(String projectPath) {
+        try {
+            var candidate = Paths.get(projectPath).toAbsolutePath().normalize();
+            if (java.nio.file.Files.exists(candidate)) {
+                return candidate.toRealPath();
+            }
+            return candidate;
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Invalid project path: " + projectPath);
+        }
     }
 
     private Object handleSessionDestroy(JsonNode params) {

@@ -12,6 +12,7 @@ import picocli.CommandLine.Option;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 
 /**
  * Main entry point for the AceClaw CLI.
@@ -60,18 +61,23 @@ public final class AceClawMain implements Runnable {
 
             // Create a session for the current working directory
             var params = client.objectMapper().createObjectNode();
-            String project = Path.of(System.getProperty("user.dir")).toString();
-            params.put("project", project);
+            String requestedProject = canonicalizeProject(Paths.get(System.getProperty("user.dir")));
+            params.put("project", requestedProject);
 
             JsonNode session = client.sendRequest("session.create", params);
             String sessionId = session.get("sessionId").asText();
+            String effectiveProject = session.path("project").asText(requestedProject);
+            if (!samePath(requestedProject, effectiveProject)) {
+                throw new IOException("Session project mismatch: requested=" + requestedProject
+                        + ", resolved=" + effectiveProject + ". Stop daemon and retry.");
+            }
 
             // Detect git branch for status bar
-            String gitBranch = detectGitBranch(project);
+            String gitBranch = detectGitBranch(effectiveProject);
 
             // Enter REPL with session info
             var sessionInfo = new TerminalRepl.SessionInfo(
-                    VERSION, model, project, contextWindowTokens, gitBranch);
+                    VERSION, model, effectiveProject, contextWindowTokens, gitBranch);
             var repl = new TerminalRepl(client, sessionId, sessionInfo);
             repl.run();
 
@@ -148,6 +154,31 @@ public final class AceClawMain implements Runnable {
     public static void main(String[] args) {
         int exitCode = new CommandLine(new AceClawMain()).execute(args);
         System.exit(exitCode);
+    }
+
+    private static String canonicalizeProject(Path path) {
+        try {
+            var candidate = path.toAbsolutePath().normalize();
+            if (Files.exists(candidate)) {
+                return candidate.toRealPath().toString();
+            }
+            return candidate.toString();
+        } catch (IOException e) {
+            return path.toAbsolutePath().normalize().toString();
+        }
+    }
+
+    private static boolean samePath(String left, String right) {
+        if (left == null || right == null) {
+            return false;
+        }
+        try {
+            Path l = Paths.get(left).toAbsolutePath().normalize();
+            Path r = Paths.get(right).toAbsolutePath().normalize();
+            return l.equals(r);
+        } catch (Exception e) {
+            return left.equals(right);
+        }
     }
 
     private static boolean hasCodexAccessToken() {

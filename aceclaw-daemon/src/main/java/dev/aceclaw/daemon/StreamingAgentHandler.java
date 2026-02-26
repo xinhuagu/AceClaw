@@ -547,14 +547,10 @@ public final class StreamingAgentHandler {
                         : AntiPatternPreExecutionGate.RuleFeedbackProvider.noop());
         // Prefer session's project path for hook cwd (each session may have a different working directory)
         var session = sessionManager.getSession(sessionId);
-        String cwd;
-        if (session != null && session.projectPath() != null) {
-            cwd = session.projectPath().toAbsolutePath().toString();
-        } else if (workingDir != null) {
-            cwd = workingDir.toAbsolutePath().toString();
-        } else {
-            cwd = System.getProperty("user.dir");
+        if (session == null || session.projectPath() == null) {
+            throw new IllegalStateException("Session project path is required for tool execution: " + sessionId);
         }
+        String cwd = session.projectPath().toAbsolutePath().toString();
         for (var tool : toolRegistry.all()) {
             registry.register(new PermissionAwareTool(
                     tool, permissionManager, context, objectMapper,

@@ -55,6 +55,7 @@ class TerminalReplTest {
         assertThat(output).contains("/exit");
         assertThat(output).contains("/model");
         assertThat(output).contains("/tools");
+        assertThat(output).contains("/project");
         assertThat(output).contains("/tasks");
         assertThat(output).contains("/bg");
         assertThat(output).contains("/fg");
@@ -125,6 +126,15 @@ class TerminalReplTest {
         boolean shouldExit = repl.handleSlashCommand(out, "/tasks", null);
         assertThat(shouldExit).isFalse();
         assertThat(outputBuffer.toString()).contains("No tasks");
+    }
+
+    @Test
+    void project_showsSessionProject() {
+        boolean shouldExit = repl.handleSlashCommand(out, "/project", null);
+        assertThat(shouldExit).isFalse();
+        String output = outputBuffer.toString();
+        assertThat(output).contains("Session Project");
+        assertThat(output).contains("/tmp/project");
     }
 
     @Test

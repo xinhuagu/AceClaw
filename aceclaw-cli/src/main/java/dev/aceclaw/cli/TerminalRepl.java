@@ -1175,6 +1175,7 @@ public final class TerminalRepl {
                 out.println(INFO + "  /model" + RESET + "    Show current model (or /model <name> to switch)");
                 out.println(INFO + "  /tools" + RESET + "    List available tools");
                 out.println(INFO + "  /status" + RESET + "   Show session status");
+                out.println(INFO + "  /project" + RESET + "  Show current session project");
                 out.println(INFO + "  /tasks" + RESET + "    List all tasks with status");
                 out.println(INFO + "  /bg" + RESET + "       Send foreground task to background");
                 out.println(INFO + "  /fg" + RESET + "       Bring background task to foreground (/fg [id])");
@@ -1218,6 +1219,14 @@ public final class TerminalRepl {
                         formatTokenCount(totalOutputTokens));
                 out.printf("  %sTasks:%s       %d running%n", MUTED, RESET,
                         taskManager.runningCount());
+                out.println();
+                out.flush();
+            }
+
+            case "/project" -> {
+                out.println();
+                out.println(BOLD + "Session Project" + RESET);
+                out.printf("  %sProject:%s %s%n", MUTED, RESET, sessionInfo.project());
                 out.println();
                 out.flush();
             }
