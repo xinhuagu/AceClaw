@@ -6,6 +6,11 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import dev.aceclaw.core.agent.StreamingAgentLoop;
 import dev.aceclaw.core.agent.ToolRegistry;
+import dev.aceclaw.memory.CandidateKind;
+import dev.aceclaw.memory.CandidateState;
+import dev.aceclaw.memory.CandidateStateMachine;
+import dev.aceclaw.memory.CandidateStore;
+import dev.aceclaw.memory.MemoryEntry;
 import dev.aceclaw.security.DefaultPermissionPolicy;
 import dev.aceclaw.security.PermissionManager;
 import dev.aceclaw.tools.*;
@@ -20,6 +25,7 @@ import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -50,6 +56,9 @@ class DaemonIntegrationTest {
     private static PermissionManager permissionManager;
     private static UdsListener udsListener;
     private static ObjectMapper objectMapper;
+    private static CandidateStore candidateStore;
+    private static String antiPatternCandidateId;
+    private static String antiPatternRuleId;
 
     @BeforeAll
     static void startDaemon() throws Exception {
@@ -87,7 +96,66 @@ class DaemonIntegrationTest {
         var agentHandler = new StreamingAgentHandler(
                 sessionManager, agentLoop, toolRegistry, permissionManager, objectMapper);
         agentHandler.setLlmConfig(mockLlm, "mock-model", "You are a test agent.");
+        candidateStore = createPromotedAntiPatternCandidateStore();
+        agentHandler.setCandidateStore(candidateStore);
+        seedAntiPatternFeedback(workDir, antiPatternRuleId);
+        agentHandler.setAntiPatternGateFeedbackStore(new AntiPatternGateFeedbackStore(workDir));
         agentHandler.register(router);
+        router.register("antiPatternGate.override.set", params -> {
+            if (params == null || !params.has("sessionId")) {
+                throw new IllegalArgumentException("Missing required parameter: sessionId");
+            }
+            if (!params.has("tool")) {
+                throw new IllegalArgumentException("Missing required parameter: tool");
+            }
+            String sessionId = params.get("sessionId").asText();
+            String tool = params.get("tool").asText();
+            long ttlSeconds = params.has("ttlSeconds") ? Math.max(1L, params.get("ttlSeconds").asLong()) : 300L;
+            String reason = params.has("reason") ? params.get("reason").asText() : "manual override";
+            agentHandler.setAntiPatternGateOverride(sessionId, tool, ttlSeconds, reason);
+            var status = agentHandler.getAntiPatternGateOverride(sessionId, tool);
+            var result = objectMapper.createObjectNode();
+            result.put("sessionId", status.sessionId());
+            result.put("tool", status.tool());
+            result.put("active", status.active());
+            result.put("ttlSecondsRemaining", status.ttlSecondsRemaining());
+            result.put("reason", status.reason());
+            return result;
+        });
+        router.register("antiPatternGate.override.get", params -> {
+            if (params == null || !params.has("sessionId")) {
+                throw new IllegalArgumentException("Missing required parameter: sessionId");
+            }
+            if (!params.has("tool")) {
+                throw new IllegalArgumentException("Missing required parameter: tool");
+            }
+            String sessionId = params.get("sessionId").asText();
+            String tool = params.get("tool").asText();
+            var status = agentHandler.getAntiPatternGateOverride(sessionId, tool);
+            var result = objectMapper.createObjectNode();
+            result.put("sessionId", status.sessionId());
+            result.put("tool", status.tool());
+            result.put("active", status.active());
+            result.put("ttlSecondsRemaining", status.ttlSecondsRemaining());
+            result.put("reason", status.reason());
+            return result;
+        });
+        router.register("antiPatternGate.override.clear", params -> {
+            if (params == null || !params.has("sessionId")) {
+                throw new IllegalArgumentException("Missing required parameter: sessionId");
+            }
+            if (!params.has("tool")) {
+                throw new IllegalArgumentException("Missing required parameter: tool");
+            }
+            String sessionId = params.get("sessionId").asText();
+            String tool = params.get("tool").asText();
+            boolean cleared = agentHandler.clearAntiPatternGateOverride(sessionId, tool);
+            var result = objectMapper.createObjectNode();
+            result.put("sessionId", sessionId);
+            result.put("tool", tool);
+            result.put("cleared", cleared);
+            return result;
+        });
 
         // Start UDS listener
         udsListener = new UdsListener(socketPath, connectionBridge);
@@ -109,6 +177,73 @@ class DaemonIntegrationTest {
     static void stopDaemon() {
         if (udsListener != null) {
             udsListener.stop();
+        }
+    }
+
+    private static CandidateStore createPromotedAntiPatternCandidateStore() throws Exception {
+        var cfg = new CandidateStateMachine.Config(1, 0.3, 1.0, 10, java.util.Set.of());
+        var store = new CandidateStore(tempDir.resolve("anti-pattern-store"), cfg);
+        store.load();
+        var t0 = Instant.parse("2026-02-26T00:00:00Z");
+        for (int i = 0; i < 3; i++) {
+            store.upsert(new CandidateStore.CandidateObservation(
+                    MemoryEntry.Category.ANTI_PATTERN,
+                    CandidateKind.ANTI_PATTERN,
+                    "Avoid x_anti_pattern_rollback_probe writes due to recurring errors",
+                    "write_file",
+                    List.of("anti-pattern", "write_file", "x_anti_pattern_rollback_probe"),
+                    0.95,
+                    0,
+                    1,
+                    "seed:" + i,
+                    t0.plusSeconds(i)));
+        }
+        var candidate = store.all().getFirst();
+        antiPatternCandidateId = candidate.id();
+        while (candidate.evidenceCount() < 3) {
+            store.recordOutcome(antiPatternCandidateId, new CandidateStore.CandidateOutcome(
+                    false, false, false, "seed-outcome", "seed", t0, null));
+            candidate = store.byId(antiPatternCandidateId).orElseThrow();
+        }
+        antiPatternRuleId = "candidate:" + antiPatternCandidateId;
+        var promoted = store.transition(antiPatternCandidateId, CandidateState.PROMOTED, "test seed");
+        if (promoted.isEmpty()) {
+            store.forceTransition(antiPatternCandidateId, CandidateState.PROMOTED,
+                    "test seed force", "TEST_FORCE_PROMOTE");
+        }
+        var finalState = store.byId(antiPatternCandidateId).orElseThrow().state();
+        if (finalState != CandidateState.PROMOTED) {
+            throw new IllegalStateException("Failed to seed promoted anti-pattern candidate for integration test");
+        }
+        return store;
+    }
+
+    private static void seedAntiPatternFeedback(Path root, String ruleId) throws Exception {
+        Path feedbackPath = root.resolve(".aceclaw/metrics/continuous-learning/anti-pattern-gate-feedback.json");
+        Files.createDirectories(feedbackPath.getParent());
+        String json = """
+                [
+                  {
+                    "ruleId": "%s",
+                    "blockedCount": 3,
+                    "falsePositiveCount": 1,
+                    "updatedAt": "2026-02-26T00:00:00Z"
+                  }
+                ]
+                """.formatted(ruleId);
+        Files.writeString(feedbackPath, json);
+    }
+
+    private static void resetAntiPatternGateFixtures() throws Exception {
+        if (candidateStore != null && antiPatternCandidateId != null) {
+            candidateStore.forceTransition(
+                    antiPatternCandidateId,
+                    CandidateState.PROMOTED,
+                    "test reset",
+                    "TEST_RESET_PROMOTE");
+        }
+        if (workDir != null && antiPatternRuleId != null) {
+            seedAntiPatternFeedback(workDir, antiPatternRuleId);
         }
     }
 
@@ -682,6 +817,97 @@ class DaemonIntegrationTest {
             assertThat(Files.exists(workDir.resolve("stale-check.txt"))).isTrue();
 
             destroySession(channel, sessionId, 3);
+        }
+    }
+
+    @Test
+    @Order(15)
+    void testOverrideApprovalExecutionTriggersFalsePositiveRollback() throws Exception {
+        resetAntiPatternGateFixtures();
+        try (var channel = connectToSocket()) {
+            String sessionId = createSession(channel, 1);
+
+            var overrideParams = objectMapper.createObjectNode();
+            overrideParams.put("sessionId", sessionId);
+            overrideParams.put("tool", "write_file");
+            overrideParams.put("ttlSeconds", 180);
+            overrideParams.put("reason", "integration-test");
+            var overrideResp = sendAndReceive(channel, "antiPatternGate.override.set", overrideParams, 2);
+            assertThat(overrideResp.path("result").path("active").asBoolean()).isTrue();
+
+            mockLlm.enqueueResponse(MockLlmClient.toolUseResponse(
+                    "Need to write file.",
+                    "toolu_031", "write_file",
+                    "{\"file_path\":\"x_anti_pattern_rollback_probe.txt\",\"content\":\"ok\"}"
+            ));
+            mockLlm.enqueueResponse(MockLlmClient.textResponse("Created probe file."));
+
+            var promptParams = objectMapper.createObjectNode();
+            promptParams.put("sessionId", sessionId);
+            promptParams.put("prompt", "Create x_anti_pattern_rollback_probe.txt");
+            sendRequest(channel, "agent.prompt", promptParams, 3);
+
+            JsonNode finalResponse = null;
+            boolean sentStale = false;
+            boolean sentMatching = false;
+            boolean sawOverrideGate = false;
+            String overrideRuleId = "";
+            long timeoutDeadline = System.currentTimeMillis() + 8_000;
+
+            while (System.currentTimeMillis() < timeoutDeadline) {
+                var msg = readMessage(channel);
+                if (msg == null) {
+                    throw new IOException("Connection closed while waiting for response");
+                }
+                if (msg.has("id") && !msg.get("id").isNull()) {
+                    finalResponse = msg;
+                    break;
+                }
+                if (msg.has("method") && "stream.gate".equals(msg.get("method").asText())) {
+                    var params = msg.path("params");
+                    if ("OVERRIDE".equals(params.path("action").asText())
+                            && "write_file".equals(params.path("tool").asText())) {
+                        sawOverrideGate = true;
+                        overrideRuleId = params.path("ruleId").asText("");
+                    }
+                }
+                if (msg.has("method") && "permission.request".equals(msg.get("method").asText())) {
+                    var permRequestId = msg.path("params").path("requestId").asText();
+
+                    var staleParams = objectMapper.createObjectNode();
+                    staleParams.put("requestId", "perm-stale-9999");
+                    staleParams.put("approved", true);
+                    staleParams.put("remember", false);
+                    sendNotification(channel, "permission.response", staleParams);
+                    sentStale = true;
+
+                    var okParams = objectMapper.createObjectNode();
+                    okParams.put("requestId", permRequestId);
+                    okParams.put("approved", true);
+                    okParams.put("remember", true);
+                    sendNotification(channel, "permission.response", okParams);
+                    sentMatching = true;
+                }
+            }
+
+            assertThat(finalResponse).isNotNull();
+            assertThat(sentStale).isTrue();
+            assertThat(sentMatching).isTrue();
+            assertThat(sawOverrideGate).isTrue();
+            assertThat(overrideRuleId).isEqualTo(antiPatternRuleId);
+            assertThat(finalResponse.has("error")).isFalse();
+            assertThat(finalResponse.path("result").path("response").asText()).contains("Created probe file.");
+            assertThat(Files.exists(workDir.resolve("x_anti_pattern_rollback_probe.txt"))).isTrue();
+
+            var candidate = candidateStore.byId(antiPatternCandidateId).orElseThrow();
+            assertThat(candidate.state()).isEqualTo(CandidateState.DEMOTED);
+
+            var feedback = new AntiPatternGateFeedbackStore(workDir);
+            var stats = feedback.statsFor(antiPatternRuleId);
+            assertThat(stats.blockedCount()).isGreaterThanOrEqualTo(3);
+            assertThat(stats.falsePositiveCount()).isGreaterThanOrEqualTo(2);
+
+            destroySession(channel, sessionId, 4);
         }
     }
 

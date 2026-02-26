@@ -80,10 +80,15 @@ final class AntiPatternPreExecutionGate {
                 continue;
             }
             int overlap = overlap(rule.keywords(), contextTokens);
-            boolean keywordMatch = rule.keywords().isEmpty() || overlap > 0;
-            boolean failureTypeMatch = rule.failureTypes().isEmpty()
-                    || intersects(rule.failureTypes(), contextFailureTypes);
-            if (!keywordMatch && !failureTypeMatch) {
+            boolean hasKeywords = !rule.keywords().isEmpty();
+            boolean hasFailureTypes = !rule.failureTypes().isEmpty();
+            boolean keywordMatch = hasKeywords && overlap > 0;
+            boolean failureTypeMatch = hasFailureTypes && intersects(rule.failureTypes(), contextFailureTypes);
+            boolean matches =
+                    (hasKeywords && hasFailureTypes && keywordMatch && failureTypeMatch)
+                            || (hasKeywords && !hasFailureTypes && keywordMatch)
+                            || (!hasKeywords && hasFailureTypes && failureTypeMatch);
+            if (!matches) {
                 continue;
             }
             if (rule.action() == Action.BLOCK) {

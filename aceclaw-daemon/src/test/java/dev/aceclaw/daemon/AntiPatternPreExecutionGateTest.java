@@ -100,4 +100,21 @@ class AntiPatternPreExecutionGateTest {
         var decision = gate.evaluate("bash", "{\"command\":\"run\"}", "encrypted ole doc");
         assertThat(decision.action()).isEqualTo(AntiPatternPreExecutionGate.Action.PENALIZE);
     }
+
+    @Test
+    void allowsWhenKeywordAndFailureTypeDoNotMatch() {
+        var gate = new AntiPatternPreExecutionGate(() -> List.of(
+                new AntiPatternPreExecutionGate.Rule(
+                        "r5", "bash", "Avoid unsupported encrypted payload path",
+                        "src", "fallback", AntiPatternPreExecutionGate.Action.BLOCK,
+                        Set.of("encrypted", "payload"),
+                        Set.of(dev.aceclaw.memory.FailureType.CAPABILITY_MISMATCH))));
+
+        var decision = gate.evaluate(
+                "bash",
+                "{\"command\":\"echo ok\"}",
+                "Execute: list local files");
+
+        assertThat(decision.action()).isEqualTo(AntiPatternPreExecutionGate.Action.ALLOW);
+    }
 }
