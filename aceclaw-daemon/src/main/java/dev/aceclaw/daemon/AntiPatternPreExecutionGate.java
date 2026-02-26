@@ -139,9 +139,10 @@ final class AntiPatternPreExecutionGate {
             List<Rule> loaded;
             try {
                 loaded = source.load();
+                loaded = loaded != null ? List.copyOf(loaded) : List.of();
             } catch (Exception e) {
-                log.warn("Failed to load anti-pattern rules: {}", e.getMessage());
-                loaded = List.of();
+                log.warn("Failed to load anti-pattern rules, keeping previous cache", e);
+                return current.rules();
             }
             cache = new CachedRules(now, loaded);
             return loaded;
@@ -343,7 +344,12 @@ final class AntiPatternPreExecutionGate {
         }
     }
 
-    private record CachedRules(Instant loadedAt, List<Rule> rules) {}
+    private record CachedRules(Instant loadedAt, List<Rule> rules) {
+        private CachedRules {
+            loadedAt = Objects.requireNonNull(loadedAt, "loadedAt");
+            rules = rules != null ? List.copyOf(rules) : List.of();
+        }
+    }
 
     interface RuleFeedbackProvider {
         RuleFeedbackStats statsFor(String ruleId);

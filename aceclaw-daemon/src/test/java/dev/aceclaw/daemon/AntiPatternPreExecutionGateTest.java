@@ -3,9 +3,12 @@ package dev.aceclaw.daemon;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -116,5 +119,42 @@ class AntiPatternPreExecutionGateTest {
                 "Execute: list local files");
 
         assertThat(decision.action()).isEqualTo(AntiPatternPreExecutionGate.Action.ALLOW);
+    }
+
+    @Test
+    void keepsPreviousRulesWhenReloadFails() throws Exception {
+        var calls = new AtomicInteger();
+        var gate = new AntiPatternPreExecutionGate(() -> {
+            if (calls.getAndIncrement() == 0) {
+                return List.of(new AntiPatternPreExecutionGate.Rule(
+                        "r6", "bash", "Avoid encrypted OLE path",
+                        "src", "fallback", AntiPatternPreExecutionGate.Action.BLOCK,
+                        Set.of("encrypted", "ole"), Set.of()));
+            }
+            throw new IllegalStateException("reload failed");
+        });
+
+        var first = gate.evaluate("bash", "{\"command\":\"run\"}", "encrypted ole document");
+        assertThat(first.action()).isEqualTo(AntiPatternPreExecutionGate.Action.BLOCK);
+        expireCache(gate, List.of(firstRule()));
+        var second = gate.evaluate("bash", "{\"command\":\"run\"}", "encrypted ole document");
+        assertThat(second.action()).isEqualTo(AntiPatternPreExecutionGate.Action.BLOCK);
+    }
+
+    private static AntiPatternPreExecutionGate.Rule firstRule() {
+        return new AntiPatternPreExecutionGate.Rule(
+                "r6", "bash", "Avoid encrypted OLE path",
+                "src", "fallback", AntiPatternPreExecutionGate.Action.BLOCK,
+                Set.of("encrypted", "ole"), Set.of());
+    }
+
+    private static void expireCache(AntiPatternPreExecutionGate gate, List<AntiPatternPreExecutionGate.Rule> rules) throws Exception {
+        var cacheClass = Class.forName("dev.aceclaw.daemon.AntiPatternPreExecutionGate$CachedRules");
+        Constructor<?> constructor = cacheClass.getDeclaredConstructor(java.time.Instant.class, List.class);
+        constructor.setAccessible(true);
+        Object expired = constructor.newInstance(java.time.Instant.EPOCH, rules);
+        Field cacheField = AntiPatternPreExecutionGate.class.getDeclaredField("cache");
+        cacheField.setAccessible(true);
+        cacheField.set(gate, expired);
     }
 }
