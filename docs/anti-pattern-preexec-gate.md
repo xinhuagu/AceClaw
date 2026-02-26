@@ -46,11 +46,14 @@ This gate adds execution constraints so repeated non-progressing failures are bl
   - evaluate matching rules
   - if `BLOCK`: skip execution and return structured gate result
   - if `PENALIZE`: allow execution with explicit warning and fallback hint attached
-  - emit gate events
+  - emit `stream.gate` notification (`BLOCK`/`PENALIZE`/`OVERRIDE`)
 
 4. Override Policy
-- Explicit user override command allowed for current task only.
-- Override is audited with reason and expires at task end.
+- Explicit runtime override RPC:
+  - `antiPatternGate.override.set`
+  - `antiPatternGate.override.get`
+  - `antiPatternGate.override.clear`
+- Override is session+tool scoped with TTL and reason.
 
 5. Lifecycle
 - Rule promotion: candidate pipeline -> promoted anti-pattern -> active gate rule.
@@ -58,12 +61,8 @@ This gate adds execution constraints so repeated non-progressing failures are bl
 - Rule rollback: automatic on high false-positive rate.
 
 ## Observability
-Emit machine-readable events:
-- `gate.detected`
-- `gate.blocked`
-- `gate.penalized`
-- `gate.override`
-- `gate.expired`
+Emit machine-readable event:
+- `stream.gate` with action `BLOCK` / `PENALIZE` / `OVERRIDE`
 
 Expose in CLI status:
 - active gate count
@@ -99,9 +98,9 @@ Expose in CLI status:
 3. Phase 3: full policy with CI replay threshold gate.
 
 ## Implementation Checklist
-- [ ] Add anti-pattern rule model and persistence.
-- [ ] Add pre-execution gate evaluator in agent loop.
-- [ ] Add structured blocked response payload.
-- [ ] Add override command and audit log.
-- [ ] Add observability events and CLI status display.
-- [ ] Add unit/integration/replay tests.
+- [x] Add anti-pattern rule model and persistence.
+- [x] Add pre-execution gate evaluator in agent loop.
+- [x] Add structured blocked response payload.
+- [x] Add override command (session+tool TTL via RPC).
+- [x] Add observability event (`stream.gate`).
+- [x] Add unit tests for gate + override lifecycle.
