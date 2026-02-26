@@ -2,8 +2,8 @@ package dev.aceclaw.cli;
 
 import com.fasterxml.jackson.databind.JsonNode;
 
-import java.util.ArrayList;
-import java.util.Collections;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.List;
 import java.time.Instant;
 import java.util.Objects;
@@ -64,7 +64,7 @@ public final class TaskHandle {
     /** Optional permission description shown while waiting. */
     private volatile String permissionDetail;
     /** Recent tool events for resume checkpointing. */
-    private final List<ToolEvent> recentToolEvents;
+    private final Deque<ToolEvent> recentToolEvents;
 
     public TaskHandle(String taskId, String promptSummary, DaemonConnection connection,
                       OutputSink initialSink) {
@@ -80,7 +80,7 @@ public final class TaskHandle {
         this.activityLabel = "starting";
         this.waitingPermission = false;
         this.permissionDetail = "";
-        this.recentToolEvents = Collections.synchronizedList(new ArrayList<>());
+        this.recentToolEvents = new ArrayDeque<>();
     }
 
     public String taskId() { return taskId; }
@@ -173,9 +173,9 @@ public final class TaskHandle {
                 summary != null ? summary : ""
         );
         synchronized (recentToolEvents) {
-            recentToolEvents.add(event);
+            recentToolEvents.addLast(event);
             if (recentToolEvents.size() > 20) {
-                recentToolEvents.remove(0);
+                recentToolEvents.removeFirst();
             }
         }
     }

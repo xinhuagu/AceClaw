@@ -23,6 +23,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalTime;
@@ -1313,7 +1314,12 @@ public final class TerminalRepl {
     private void recordResumeCheckpointOnComplete(TaskHandle handle) {
         var status = switch (handle.state()) {
             case CANCELLED -> ResumeCheckpointStore.Status.CANCELLED;
-            case COMPLETED, FAILED, RUNNING -> ResumeCheckpointStore.Status.PAUSED;
+            case COMPLETED, FAILED -> ResumeCheckpointStore.Status.PAUSED;
+            case RUNNING -> {
+                log.warn("Task {} completion callback received while state=RUNNING; checkpointing as PAUSED defensively",
+                        handle.taskId());
+                yield ResumeCheckpointStore.Status.PAUSED;
+            }
         };
         String currentStep = switch (handle.state()) {
             case COMPLETED -> "Last turn completed; task may still be resumable.";
@@ -1368,7 +1374,7 @@ public final class TerminalRepl {
                 hex.append(String.format("%02x", b));
             }
             return hex.toString();
-        } catch (Exception e) {
+        } catch (NoSuchAlgorithmException e) {
             return "workspace-unknown";
         }
     }

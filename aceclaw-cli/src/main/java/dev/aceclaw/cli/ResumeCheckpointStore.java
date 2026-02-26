@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -283,7 +284,11 @@ final class ResumeCheckpointStore {
             Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
             String json = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(checkpoint);
             Files.writeString(tmp, json, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-            Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            try {
+                Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
+            }
         } catch (IOException e) {
             log.warn("Failed persisting resume checkpoint {}: {}", file, e.getMessage());
         }
@@ -330,7 +335,13 @@ final class ResumeCheckpointStore {
             List<ToolEvent> lastToolEvents,
             String resumeHint,
             boolean foreground
-    ) {}
+    ) {
+        Checkpoint {
+            planSteps = planSteps == null ? List.of() : List.copyOf(planSteps);
+            artifacts = artifacts == null ? List.of() : List.copyOf(artifacts);
+            lastToolEvents = lastToolEvents == null ? List.of() : List.copyOf(lastToolEvents);
+        }
+    }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     record ToolEvent(
