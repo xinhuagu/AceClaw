@@ -535,6 +535,7 @@ public final class StreamingAgentHandler {
      */
     private ToolRegistry createPermissionAwareRegistry(StreamContext context, String sessionId) {
         var registry = new ToolRegistry();
+        var antiPatternGate = AntiPatternPreExecutionGate.fromStores(memoryStore, candidateStore);
         // Prefer session's project path for hook cwd (each session may have a different working directory)
         var session = sessionManager.getSession(sessionId);
         String cwd;
@@ -548,7 +549,7 @@ public final class StreamingAgentHandler {
         for (var tool : toolRegistry.all()) {
             registry.register(new PermissionAwareTool(
                     tool, permissionManager, context, objectMapper,
-                    hookExecutor, sessionId, cwd));
+                    hookExecutor, sessionId, cwd, antiPatternGate));
         }
         return registry;
     }
@@ -1368,10 +1369,12 @@ public final class StreamingAgentHandler {
         private final HookExecutor hookExecutor;
         private final String sessionId;
         private final String cwd;
+        private final AntiPatternPreExecutionGate antiPatternGate;
 
         PermissionAwareTool(Tool delegate, PermissionManager permissionManager,
                             StreamContext context, ObjectMapper objectMapper,
-                            HookExecutor hookExecutor, String sessionId, String cwd) {
+                            HookExecutor hookExecutor, String sessionId, String cwd,
+                            AntiPatternPreExecutionGate antiPatternGate) {
             this.delegate = delegate;
             this.permissionManager = permissionManager;
             this.context = context;
@@ -1379,6 +1382,7 @@ public final class StreamingAgentHandler {
             this.hookExecutor = hookExecutor;
             this.sessionId = sessionId;
             this.cwd = cwd;
+            this.antiPatternGate = antiPatternGate;
         }
 
         @Override
@@ -1444,11 +1448,29 @@ public final class StreamingAgentHandler {
 
             // Build a human-readable description of what the tool will do
             var toolDescription = buildToolDescription(delegate.name(), effectiveInputJson);
+            final String finalInputJson = effectiveInputJson;
 
             var permRequest = new PermissionRequest(delegate.name(), toolDescription, level);
             var decision = permissionManager.check(permRequest);
+            var antiPatternDecision = antiPatternGate != null
+                    ? antiPatternGate.evaluate(delegate.name(), finalInputJson, toolDescription)
+                    : AntiPatternPreExecutionGate.Decision.allow();
 
-            final String finalInputJson = effectiveInputJson;
+            if (antiPatternDecision.action() == AntiPatternPreExecutionGate.Action.BLOCK) {
+                log.info("Anti-pattern gate blocked tool {} (ruleId={})",
+                        delegate.name(), antiPatternDecision.ruleId());
+                return new ToolResult(
+                        "Anti-pattern gate blocked execution: "
+                                + "{gate=anti_pattern_preexec, action=BLOCK, ruleId="
+                                + antiPatternDecision.ruleId()
+                                + ", reason=\"" + antiPatternDecision.reason() + "\""
+                                + ", fallback=\"" + antiPatternDecision.fallback() + "\"}",
+                        true);
+            }
+            if (antiPatternDecision.action() == AntiPatternPreExecutionGate.Action.PENALIZE) {
+                log.info("Anti-pattern gate penalized tool {} (ruleId={})",
+                        delegate.name(), antiPatternDecision.ruleId());
+            }
 
             switch (decision) {
                 case PermissionDecision.Approved ignored -> {
