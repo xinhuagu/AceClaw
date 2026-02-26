@@ -147,6 +147,8 @@ failure_dist_delta="$(ensure_measured_metric "replay_failure_distribution_delta"
 token_estimation_error_ratio_max="$(ensure_measured_metric "token_estimation_error_ratio_max")"
 anti_pattern_fp_rate_weighted="$(read_metric_field "anti_pattern_gate_false_positive_rate_weighted" "value" 2>/dev/null || echo "null")"
 anti_pattern_fp_rate_status="$(read_metric_field "anti_pattern_gate_false_positive_rate_weighted" "status" 2>/dev/null || echo "pending")"
+anti_pattern_fp_rate_max="$(read_metric_field "anti_pattern_gate_false_positive_rate_max" "value" 2>/dev/null || echo "null")"
+anti_pattern_fp_rate_max_status="$(read_metric_field "anti_pattern_gate_false_positive_rate_max" "status" 2>/dev/null || echo "pending")"
 
 if ! compare "$success_rate_delta >= $MIN_SUCCESS_RATE_DELTA"; then
   echo "Replay quality gate failed: replay_success_rate_delta=$success_rate_delta < $MIN_SUCCESS_RATE_DELTA" >&2
@@ -176,8 +178,16 @@ if [[ "$ENFORCE_ANTI_PATTERN_FP_RATE" == "true" ]]; then
     echo "Replay quality gate failed: anti_pattern_gate_false_positive_rate_weighted is not measured." >&2
     exit 1
   fi
+  if [[ "$anti_pattern_fp_rate_max_status" != "measured" || "$anti_pattern_fp_rate_max" == "null" ]]; then
+    echo "Replay quality gate failed: anti_pattern_gate_false_positive_rate_max is not measured." >&2
+    exit 1
+  fi
   if ! compare "$anti_pattern_fp_rate_weighted <= $MAX_ANTI_PATTERN_FP_RATE"; then
     echo "Replay quality gate failed: anti_pattern_gate_false_positive_rate_weighted=$anti_pattern_fp_rate_weighted > $MAX_ANTI_PATTERN_FP_RATE" >&2
+    exit 1
+  fi
+  if ! compare "$anti_pattern_fp_rate_max <= $MAX_ANTI_PATTERN_FP_RATE"; then
+    echo "Replay quality gate failed: anti_pattern_gate_false_positive_rate_max=$anti_pattern_fp_rate_max > $MAX_ANTI_PATTERN_FP_RATE" >&2
     exit 1
   fi
 fi
@@ -190,4 +200,7 @@ echo "  replay_failure_distribution_delta=$failure_dist_delta (max $MAX_FAILURE_
 echo "  token_estimation_error_ratio_max=$token_estimation_error_ratio_max (max $MAX_TOKEN_ESTIMATION_ERROR_RATIO)"
 if [[ "$anti_pattern_fp_rate_status" == "measured" && "$anti_pattern_fp_rate_weighted" != "null" ]]; then
   echo "  anti_pattern_gate_false_positive_rate_weighted=$anti_pattern_fp_rate_weighted (max $MAX_ANTI_PATTERN_FP_RATE)"
+fi
+if [[ "$anti_pattern_fp_rate_max_status" == "measured" && "$anti_pattern_fp_rate_max" != "null" ]]; then
+  echo "  anti_pattern_gate_false_positive_rate_max=$anti_pattern_fp_rate_max (max $MAX_ANTI_PATTERN_FP_RATE)"
 fi

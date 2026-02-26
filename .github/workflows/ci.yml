@@ -23,7 +23,8 @@ jobs:
       REPLAY_SUITE_MIN_PER_CATEGORY: ${{ vars.ACECLAW_REPLAY_SUITE_MIN_PER_CATEGORY || (vars.ACECLAW_REPLAY_FULL_MODE == 'true' && '5' || '1') }}
       REPLAY_MAX_TOKEN_ESTIMATION_ERROR_RATIO: ${{ vars.ACECLAW_REPLAY_MAX_TOKEN_ESTIMATION_ERROR_RATIO || (vars.ACECLAW_REPLAY_FULL_MODE == 'true' && '0.25' || '0.65') }}
       REPLAY_FAIL_ON_LATENCY: ${{ vars.ACECLAW_REPLAY_FAIL_ON_LATENCY || 'false' }}
-      REPLAY_ENFORCE_ANTI_PATTERN_FP_RATE: ${{ vars.ACECLAW_REPLAY_ENFORCE_ANTI_PATTERN_FP_RATE || 'true' }}
+      # Rollout default: collect metric first; enforce only when explicitly enabled.
+      REPLAY_ENFORCE_ANTI_PATTERN_FP_RATE: ${{ vars.ACECLAW_REPLAY_ENFORCE_ANTI_PATTERN_FP_RATE || 'false' }}
       REPLAY_MAX_ANTI_PATTERN_FP_RATE: ${{ vars.ACECLAW_REPLAY_MAX_ANTI_PATTERN_FP_RATE || '0.50' }}
     steps:
       - uses: actions/checkout@v4

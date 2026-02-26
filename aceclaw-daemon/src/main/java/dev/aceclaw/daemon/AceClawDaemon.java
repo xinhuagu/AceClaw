@@ -527,10 +527,13 @@ public final class AceClawDaemon {
             return result;
         });
         router.register("antiPatternGate.override.set", params -> {
-            if (params == null || !params.has("sessionId")) {
+            if (params == null) {
+                throw new IllegalArgumentException("Missing required params");
+            }
+            if (!params.has("sessionId")) {
                 throw new IllegalArgumentException("Missing required parameter: sessionId");
             }
-            if (params == null || !params.has("tool")) {
+            if (!params.has("tool")) {
                 throw new IllegalArgumentException("Missing required parameter: tool");
             }
             String sessionId = params.get("sessionId").asText();
@@ -548,10 +551,13 @@ public final class AceClawDaemon {
             return result;
         });
         router.register("antiPatternGate.override.get", params -> {
-            if (params == null || !params.has("sessionId")) {
+            if (params == null) {
+                throw new IllegalArgumentException("Missing required params");
+            }
+            if (!params.has("sessionId")) {
                 throw new IllegalArgumentException("Missing required parameter: sessionId");
             }
-            if (params == null || !params.has("tool")) {
+            if (!params.has("tool")) {
                 throw new IllegalArgumentException("Missing required parameter: tool");
             }
             String sessionId = params.get("sessionId").asText();
@@ -566,10 +572,13 @@ public final class AceClawDaemon {
             return result;
         });
         router.register("antiPatternGate.override.clear", params -> {
-            if (params == null || !params.has("sessionId")) {
+            if (params == null) {
+                throw new IllegalArgumentException("Missing required params");
+            }
+            if (!params.has("sessionId")) {
                 throw new IllegalArgumentException("Missing required parameter: sessionId");
             }
-            if (params == null || !params.has("tool")) {
+            if (!params.has("tool")) {
                 throw new IllegalArgumentException("Missing required parameter: tool");
             }
             String sessionId = params.get("sessionId").asText();

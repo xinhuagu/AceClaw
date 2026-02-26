@@ -110,6 +110,11 @@ final class AntiPatternGateFeedbackStore implements AntiPatternPreExecutionGate.
             for (var node : root) {
                 try {
                     var item = mapper.treeToValue(node, RuleFeedback.class);
+                    var invalidField = validate(item);
+                    if (invalidField != null) {
+                        log.warn("Skipping malformed anti-pattern feedback entry: missing/invalid {}", invalidField);
+                        continue;
+                    }
                     feedbackByRule.put(item.ruleId(), item);
                 } catch (Exception e) {
                     log.warn("Skipping malformed anti-pattern feedback entry: {}", e.getMessage());
@@ -143,6 +148,19 @@ final class AntiPatternGateFeedbackStore implements AntiPatternPreExecutionGate.
             int falsePositiveCount,
             Instant updatedAt
     ) {}
+
+    private static String validate(RuleFeedback item) {
+        if (item == null) {
+            return "entry";
+        }
+        if (item.ruleId() == null || item.ruleId().isBlank()) {
+            return "ruleId";
+        }
+        if (item.updatedAt() == null) {
+            return "updatedAt";
+        }
+        return null;
+    }
 
     private static double clampRate(double value) {
         if (Double.isNaN(value)) return 0.5;

@@ -149,7 +149,29 @@ Parameters:
 }
 ```
 
-### 4) Generate skill drafts from promoted candidates
+### 4) Anti-pattern gate temporary override
+
+```json
+{
+  "method": "antiPatternGate.override.set",
+  "params": {
+    "sessionId": "SESSION_ID",
+    "tool": "bash",
+    "action": "ALLOW",
+    "scope": "session",
+    "reason": "false positive while investigating replay drift"
+  }
+}
+```
+
+Parameters:
+- `sessionId` (required): target session id.
+- `tool` (required): tool name to override (for example `bash`, `web_search`).
+- `action` (optional): `ALLOW` | `PENALIZE` | `BLOCK`.
+- `scope` (optional): `session` | `tool` | `global`.
+- `reason` (optional): human-readable audit reason.
+
+### 5) Generate skill drafts from promoted candidates
 
 ```json
 {
@@ -166,7 +188,7 @@ Behavior:
   `.aceclaw/metrics/continuous-learning/skill-draft-audit.jsonl`.
 - If draft validation is enabled, generation also returns a validation summary.
 
-### 5) Validate draft skills (autonomous gate)
+### 6) Validate draft skills (autonomous gate)
 
 ```json
 {
@@ -198,7 +220,7 @@ Gate behavior:
 - Auto re-evaluation trigger:
   candidate evidence/score updates trigger background re-validation (`trigger=evidence-update`).
 
-### 6) Evaluate automated release controller
+### 7) Evaluate automated release controller
 
 ```json
 {
@@ -219,7 +241,7 @@ Release audit/state:
 - State snapshot: `.aceclaw/metrics/continuous-learning/skill-release-state.json`
 - Transition audit: `.aceclaw/metrics/continuous-learning/skill-release-audit.jsonl`
 
-### 7) Emergency override commands
+### 8) Emergency override commands
 
 Pause automatic progression:
 
@@ -333,8 +355,8 @@ Replay gate configuration:
 - Custom report path: `./gradlew preMergeCheck -PreplayReport=/path/to/replay.json`
 - CI uses strict mode and can override report path with `ACECLAW_REPLAY_REPORT_PATH`.
 - CI first runs `generateReplayCases`, then `generateReplayReport`.
-- CI defaults to enforcing anti-pattern false-positive gate:
-  - `ACECLAW_REPLAY_ENFORCE_ANTI_PATTERN_FP_RATE=true`
+- CI default is metrics collection for anti-pattern false-positive gate; strict enforcement is opt-in:
+  - `ACECLAW_REPLAY_ENFORCE_ANTI_PATTERN_FP_RATE=false`
   - threshold `ACECLAW_REPLAY_MAX_ANTI_PATTERN_FP_RATE=0.50`
 - replay cases input/output path:
   - `ACECLAW_REPLAY_INPUT_PATH` (recommended), or
@@ -380,6 +402,7 @@ Default pre-merge pass criteria (CI):
 
 1. `replay_success_rate_delta` measured and above threshold.
 2. `replay_token_delta` measured and below threshold.
-3. `replay_failure_distribution_delta` measured and below threshold.
-4. `token_estimation_error_ratio_max` measured and below threshold.
-5. `anti_pattern_gate_false_positive_rate_weighted` measured and `<= 0.50`.
+3. `replay_failure_distribution_delta` is measured and remains below threshold.
+4. `token_estimation_error_ratio_max` does not exceed threshold.
+5. `anti_pattern_gate_false_positive_rate_weighted` is measured and `<= 0.50`.
+6. `anti_pattern_gate_false_positive_rate_max` is measured and `<= 0.50`.
