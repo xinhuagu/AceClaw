@@ -1,9 +1,9 @@
 package dev.aceclaw.core.agent;
 
-import java.util.EnumMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 /**
  * Detects repeated tool failures within a single turn and emits generic fallback advice.
@@ -40,15 +40,19 @@ final class ToolFailureAdvisor {
         if (containsAny(text, "timed out", "timeout", "deadline exceeded")) {
             return FailureCategory.TIMEOUT;
         }
-        if (containsAny(text, "no such file", "not found", "does not exist", "cannot find")) {
-            return FailureCategory.PATH;
-        }
         if (containsAny(text, "module not found", "nomodule", "command not found",
                 "cannot import", "no module named", "not installed")) {
             return FailureCategory.DEPENDENCY_OR_ENV;
         }
+        if (containsAny(text, "no such file", "does not exist", "cannot find", "file not found", "path not found")) {
+            return FailureCategory.PATH;
+        }
         if (containsAny(text, "unsupported", "not supported", "unknown format", "invalid format",
-                "not a zip file", "ole", "encrypted", "irm", "cannot parse", "parse error")) {
+                "not a zip file", "encrypted", "cannot parse", "parse error")) {
+            return FailureCategory.CAPABILITY_MISMATCH;
+        }
+        if (containsWholeWord(text, "ole") || containsWholeWord(text, "irm")
+                || containsAny(text, "ole format", "ole2", "irm protection")) {
             return FailureCategory.CAPABILITY_MISMATCH;
         }
         if (containsAny(text, "connection refused", "network is unreachable", "dns", "ssl",
@@ -84,6 +88,10 @@ final class ToolFailureAdvisor {
         return false;
     }
 
+    private static boolean containsWholeWord(String text, String word) {
+        return Pattern.compile("\\b" + Pattern.quote(word) + "\\b").matcher(text).find();
+    }
+
     enum FailureCategory {
         PERMISSION,
         TIMEOUT,
@@ -101,4 +109,3 @@ final class ToolFailureAdvisor {
         }
     }
 }
-

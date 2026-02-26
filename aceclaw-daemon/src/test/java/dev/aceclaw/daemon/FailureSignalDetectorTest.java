@@ -79,6 +79,16 @@ class FailureSignalDetectorTest {
     }
 
     @Test
+    void doesNotMisclassifyEmbeddedIrmSubstring() {
+        var turn = turnWithResult("t1", "bash",
+                "This text contains airmass keyword but no format/capability issue", true);
+
+        var insights = detector.analyze(turn);
+
+        assertThat(insights).isEmpty();
+    }
+
+    @Test
     void mapsBackgroundTaskBroken() {
         var turn = turnWithResult("t1", "task_output",
                 "Status: FAILED\nTask ID: abc\nError: worker crashed", true);

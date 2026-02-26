@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.StructuredTaskScope;
 
@@ -398,6 +399,7 @@ public final class StreamingAgentLoop {
             List<ContentBlock.ToolUse> toolUseBlocks,
             StreamEventHandler handler,
             ToolFailureAdvisor failureAdvisor) {
+        Objects.requireNonNull(failureAdvisor, "failureAdvisor");
         if (toolUseBlocks.size() == 1) {
             return List.of(executeSingleTool(toolUseBlocks.getFirst(), handler, failureAdvisor));
         }
@@ -425,6 +427,7 @@ public final class StreamingAgentLoop {
             ContentBlock.ToolUse toolUse,
             StreamEventHandler handler,
             ToolFailureAdvisor failureAdvisor) {
+        Objects.requireNonNull(failureAdvisor, "failureAdvisor");
         long toolStart = System.currentTimeMillis();
 
         // Check permission before execution
@@ -437,20 +440,22 @@ public final class StreamingAgentLoop {
                     publishEvent(new ToolEvent.PermissionDenied(
                             config.sessionId(), toolUse.name(), reason, Instant.now()));
                     long toolDuration = System.currentTimeMillis() - toolStart;
+                    String finalOutput = withFailureAdviceAndTruncation(
+                            "Permission denied: " + reason, toolUse.name(), failureAdvisor);
                     handler.onToolCompleted(toolUse.id(), toolUse.name(), toolDuration, true,
-                            summarizeError("Permission denied: " + reason));
-                    return new ContentBlock.ToolResult(
-                            toolUse.id(), "Permission denied: " + toolUse.name(), true);
+                            summarizeError(finalOutput));
+                    return new ContentBlock.ToolResult(toolUse.id(), finalOutput, true);
                 }
             } catch (Exception e) {
                 log.error("Permission checker threw for tool {}: {}", toolUse.name(), e.getMessage(), e);
                 publishEvent(new ToolEvent.PermissionDenied(
                         config.sessionId(), toolUse.name(), "checker error: " + e.getMessage(), Instant.now()));
                 long toolDuration = System.currentTimeMillis() - toolStart;
+                String finalOutput = withFailureAdviceAndTruncation(
+                        "Permission denied: " + e.getMessage(), toolUse.name(), failureAdvisor);
                 handler.onToolCompleted(toolUse.id(), toolUse.name(), toolDuration, true,
-                        summarizeError("Permission denied: " + e.getMessage()));
-                return new ContentBlock.ToolResult(
-                        toolUse.id(), "Permission denied: " + toolUse.name(), true);
+                        summarizeError(finalOutput));
+                return new ContentBlock.ToolResult(toolUse.id(), finalOutput, true);
             }
         }
 
@@ -458,9 +463,11 @@ public final class StreamingAgentLoop {
         if (toolOpt.isEmpty()) {
             log.warn("Unknown tool requested: {}", toolUse.name());
             long toolDuration = System.currentTimeMillis() - toolStart;
+            String finalOutput = withFailureAdviceAndTruncation(
+                    "Unknown tool: " + toolUse.name(), toolUse.name(), failureAdvisor);
             handler.onToolCompleted(toolUse.id(), toolUse.name(), toolDuration, true,
-                    summarizeError("Unknown tool: " + toolUse.name()));
-            return new ContentBlock.ToolResult(toolUse.id(), "Unknown tool: " + toolUse.name(), true);
+                    summarizeError(finalOutput));
+            return new ContentBlock.ToolResult(toolUse.id(), finalOutput, true);
         }
 
         var tool = toolOpt.get();
@@ -488,10 +495,7 @@ public final class StreamingAgentLoop {
             String finalOutput = output;
             String errorPreview = null;
             if (result.isError()) {
-                String advice = failureAdvisor.maybeAdvice(tool.name(), output);
-                if (advice != null && !advice.isBlank()) {
-                    finalOutput = output + "\n\n[auto-fallback-advice] " + advice;
-                }
+                finalOutput = withFailureAdviceAndTruncation(output, tool.name(), failureAdvisor);
                 errorPreview = summarizeError(finalOutput);
             }
             handler.onToolCompleted(toolUse.id(), tool.name(), toolDuration, result.isError(), errorPreview);
@@ -502,14 +506,22 @@ public final class StreamingAgentLoop {
             publishEvent(new ToolEvent.Completed(
                     config.sessionId(), tool.name(), toolDuration, true, Instant.now()));
             recordMetrics(tool.name(), false, toolDuration);
-            String base = "Tool error: " + e.getMessage();
-            String advice = failureAdvisor.maybeAdvice(tool.name(), base);
-            String finalOutput = (advice == null || advice.isBlank())
-                    ? base
-                    : base + "\n\n[auto-fallback-advice] " + advice;
+            String finalOutput = withFailureAdviceAndTruncation("Tool error: " + e.getMessage(), tool.name(), failureAdvisor);
             handler.onToolCompleted(toolUse.id(), tool.name(), toolDuration, true, summarizeError(finalOutput));
             return new ContentBlock.ToolResult(toolUse.id(), finalOutput, true);
         }
+    }
+
+    private static String withFailureAdviceAndTruncation(
+            String baseMessage,
+            String toolName,
+            ToolFailureAdvisor failureAdvisor) {
+        String safeBase = baseMessage == null ? "Tool error" : baseMessage;
+        String advice = failureAdvisor.maybeAdvice(toolName, safeBase);
+        String combined = (advice == null || advice.isBlank())
+                ? safeBase
+                : safeBase + "\n\n[auto-fallback-advice] " + advice;
+        return truncateToolResult(combined, MAX_TOOL_RESULT_CHARS);
     }
 
     private static String summarizeError(String errorText) {

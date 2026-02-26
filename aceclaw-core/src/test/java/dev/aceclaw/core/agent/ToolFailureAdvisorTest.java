@@ -23,5 +23,12 @@ class ToolFailureAdvisorTest {
         var category = ToolFailureAdvisor.classify("unsupported OLE encrypted format, cannot parse");
         assertThat(category).isEqualTo(ToolFailureAdvisor.FailureCategory.CAPABILITY_MISMATCH);
     }
-}
 
+    @Test
+    void classifiesModuleAndCommandNotFoundAsDependencyEnv() {
+        assertThat(ToolFailureAdvisor.classify("module not found"))
+                .isEqualTo(ToolFailureAdvisor.FailureCategory.DEPENDENCY_OR_ENV);
+        assertThat(ToolFailureAdvisor.classify("command not found"))
+                .isEqualTo(ToolFailureAdvisor.FailureCategory.DEPENDENCY_OR_ENV);
+    }
+}

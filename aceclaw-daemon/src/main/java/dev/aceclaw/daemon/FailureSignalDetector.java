@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Pattern;
 
 /**
  * Detects normalized runtime failure signals from structured tool results in a turn.
@@ -108,11 +109,14 @@ public final class FailureSignalDetector {
                 "invalid format",
                 "unknown format",
                 "not a zip file",
-                "ole",
                 "encrypted",
-                "irm",
                 "cannot parse",
                 "parse error")) {
+            return FailureType.CAPABILITY_MISMATCH;
+        }
+        if (containsWholeWord(normalizedReason, "ole")
+                || containsWholeWord(normalizedReason, "irm")
+                || containsAny(normalizedReason, "ole format", "ole2", "irm protection")) {
             return FailureType.CAPABILITY_MISMATCH;
         }
         if (normalizedReason.contains("timed out") || normalizedReason.contains("timeout")) {
@@ -164,6 +168,10 @@ public final class FailureSignalDetector {
             }
         }
         return false;
+    }
+
+    private static boolean containsWholeWord(String text, String word) {
+        return Pattern.compile("\\b" + Pattern.quote(word) + "\\b").matcher(text).find();
     }
 
     private static String sanitizeReason(String content) {
