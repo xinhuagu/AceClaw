@@ -4,6 +4,7 @@ import dev.aceclaw.memory.AutoMemoryStore;
 import dev.aceclaw.memory.CandidateKind;
 import dev.aceclaw.memory.CandidateState;
 import dev.aceclaw.memory.CandidateStore;
+import dev.aceclaw.memory.FailureType;
 import dev.aceclaw.memory.MemoryEntry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,14 +34,31 @@ final class AntiPatternPreExecutionGate {
     private static final Pattern TOKEN_SPLIT = Pattern.compile("[^a-z0-9_]+");
 
     private final RuleSource source;
+    private final RuleFeedbackProvider feedbackProvider;
     private volatile CachedRules cache = new CachedRules(Instant.EPOCH, List.of());
 
     AntiPatternPreExecutionGate(RuleSource source) {
+        this(source, RuleFeedbackProvider.noop());
+    }
+
+    AntiPatternPreExecutionGate(RuleSource source, RuleFeedbackProvider feedbackProvider) {
         this.source = Objects.requireNonNull(source, "source");
+        this.feedbackProvider = Objects.requireNonNull(feedbackProvider, "feedbackProvider");
     }
 
     static AntiPatternPreExecutionGate fromStores(AutoMemoryStore memoryStore, CandidateStore candidateStore) {
-        return new AntiPatternPreExecutionGate(new StoreBackedRuleSource(memoryStore, candidateStore));
+        return new AntiPatternPreExecutionGate(
+                new StoreBackedRuleSource(memoryStore, candidateStore),
+                RuleFeedbackProvider.noop());
+    }
+
+    static AntiPatternPreExecutionGate fromStores(
+            AutoMemoryStore memoryStore,
+            CandidateStore candidateStore,
+            RuleFeedbackProvider feedbackProvider) {
+        return new AntiPatternPreExecutionGate(
+                new StoreBackedRuleSource(memoryStore, candidateStore),
+                feedbackProvider);
     }
 
     Decision evaluate(String toolName, String inputJson, String toolDescription) {
@@ -49,8 +67,10 @@ final class AntiPatternPreExecutionGate {
         if (rules.isEmpty()) {
             return Decision.allow();
         }
-        var contextTokens = tokenize((inputJson == null ? "" : inputJson) + " " +
-                (toolDescription == null ? "" : toolDescription));
+        var combinedContext = (inputJson == null ? "" : inputJson) + " " +
+                (toolDescription == null ? "" : toolDescription);
+        var contextTokens = tokenize(combinedContext);
+        var contextFailureTypes = inferFailureTypes(combinedContext);
 
         Rule bestPenalize = null;
         int bestPenalizeOverlap = -1;
@@ -60,10 +80,19 @@ final class AntiPatternPreExecutionGate {
                 continue;
             }
             int overlap = overlap(rule.keywords(), contextTokens);
-            if (!rule.keywords().isEmpty() && overlap == 0) {
+            boolean keywordMatch = rule.keywords().isEmpty() || overlap > 0;
+            boolean failureTypeMatch = rule.failureTypes().isEmpty()
+                    || intersects(rule.failureTypes(), contextFailureTypes);
+            if (!keywordMatch && !failureTypeMatch) {
                 continue;
             }
             if (rule.action() == Action.BLOCK) {
+                if (shouldDowngradeToPenalize(rule.ruleId())) {
+                    return Decision.penalize(
+                            rule.ruleId(),
+                            rule.reason(),
+                            rule.fallback());
+                }
                 return Decision.block(rule.ruleId(), rule.reason(), rule.fallback());
             }
             if (rule.action() == Action.PENALIZE && overlap >= bestPenalizeOverlap) {
@@ -76,6 +105,18 @@ final class AntiPatternPreExecutionGate {
             return Decision.penalize(bestPenalize.ruleId(), bestPenalize.reason(), bestPenalize.fallback());
         }
         return Decision.allow();
+    }
+
+    private boolean shouldDowngradeToPenalize(String ruleId) {
+        var stats = feedbackProvider.statsFor(ruleId);
+        if (stats == null) {
+            return false;
+        }
+        if (stats.blockedCount() < 3) {
+            return false;
+        }
+        double falsePositiveRate = stats.falsePositiveRate();
+        return falsePositiveRate >= 0.5;
     }
 
     private List<Rule> loadRules() {
@@ -116,6 +157,16 @@ final class AntiPatternPreExecutionGate {
         return count;
     }
 
+    private static boolean intersects(Set<FailureType> a, Set<FailureType> b) {
+        if (a.isEmpty() || b.isEmpty()) return false;
+        for (var item : a) {
+            if (b.contains(item)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     static Set<String> tokenize(String text) {
         if (text == null || text.isBlank()) return Set.of();
         var result = new HashSet<String>();
@@ -126,6 +177,45 @@ final class AntiPatternPreExecutionGate {
             result.add(raw);
         }
         return Set.copyOf(result);
+    }
+
+    static Set<FailureType> inferFailureTypes(String text) {
+        if (text == null || text.isBlank()) {
+            return Set.of();
+        }
+        String normalized = text.toLowerCase(Locale.ROOT);
+        var types = new HashSet<FailureType>();
+        if (normalized.contains("permission denied")) {
+            types.add(FailureType.PERMISSION_DENIED);
+        }
+        if (normalized.contains("permission pending timeout")) {
+            types.add(FailureType.PERMISSION_PENDING_TIMEOUT);
+        }
+        if (containsAny(normalized, "timeout", "timed out")) {
+            types.add(FailureType.TIMEOUT);
+        }
+        if (containsAny(normalized, "module not found", "no module named", "not installed", "command not found")) {
+            types.add(FailureType.DEPENDENCY_MISSING);
+        }
+        if (containsAny(normalized, "unsupported", "cannot parse", "parse error", "encrypted", "ole", "irm")) {
+            types.add(FailureType.CAPABILITY_MISMATCH);
+        }
+        if (containsAny(normalized, "broken pipe", "status: failed")) {
+            types.add(FailureType.BROKEN);
+        }
+        if (containsAny(normalized, "cancelled", "canceled")) {
+            types.add(FailureType.CANCELLED);
+        }
+        return Set.copyOf(types);
+    }
+
+    private static boolean containsAny(String text, String... needles) {
+        for (var needle : needles) {
+            if (text.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     interface RuleSource {
@@ -158,7 +248,8 @@ final class AntiPatternPreExecutionGate {
                             c.content(),
                             fallbackFor(c.toolTag(), c.content()),
                             action,
-                            tokenize(c.content())
+                            tokenize(c.content()),
+                            inferFailureTypes(c.content())
                     ));
                 }
             }
@@ -174,7 +265,23 @@ final class AntiPatternPreExecutionGate {
                             m.content(),
                             fallbackFor(toolTag, m.content()),
                             Action.PENALIZE,
-                            tokenize(m.content())
+                            tokenize(m.content()),
+                            inferFailureTypes(m.content())
+                    ));
+                }
+
+                var failures = memoryStore.query(MemoryEntry.Category.FAILURE_SIGNAL, null, 200);
+                for (var f : failures) {
+                    String toolTag = firstToolTag(f.tags());
+                    rules.add(new Rule(
+                            "failure:" + f.id(),
+                            toolTag,
+                            f.content(),
+                            f.content(),
+                            fallbackFor(toolTag, f.content()),
+                            Action.PENALIZE,
+                            tokenize(f.content()),
+                            inferFailureTypes(f.content())
                     ));
                 }
             }
@@ -213,7 +320,8 @@ final class AntiPatternPreExecutionGate {
             String sourceContent,
             String fallback,
             Action action,
-            Set<String> keywords
+            Set<String> keywords,
+            Set<FailureType> failureTypes
     ) {}
 
     record Decision(Action action, String ruleId, String reason, String fallback) {
@@ -231,5 +339,23 @@ final class AntiPatternPreExecutionGate {
     }
 
     private record CachedRules(Instant loadedAt, List<Rule> rules) {}
-}
 
+    interface RuleFeedbackProvider {
+        RuleFeedbackStats statsFor(String ruleId);
+
+        static RuleFeedbackProvider noop() {
+            return _ -> RuleFeedbackStats.empty();
+        }
+    }
+
+    record RuleFeedbackStats(int blockedCount, int falsePositiveCount) {
+        static RuleFeedbackStats empty() {
+            return new RuleFeedbackStats(0, 0);
+        }
+
+        double falsePositiveRate() {
+            if (blockedCount <= 0) return 0.0;
+            return falsePositiveCount / (double) blockedCount;
+        }
+    }
+}

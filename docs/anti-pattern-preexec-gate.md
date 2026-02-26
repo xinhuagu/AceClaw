@@ -36,6 +36,9 @@ This gate adds execution constraints so repeated non-progressing failures are bl
   - `PENALIZE`
 - `fallback`:
   - required next strategy/tool preference guidance
+- `failure_types`:
+  - structured taxonomy (`dependency_missing`, `capability_mismatch`, etc.)
+  - used for robust matching in addition to keyword overlap
 - `cooldown_until`
 - `created_at`, `updated_at`
 
@@ -59,10 +62,14 @@ This gate adds execution constraints so repeated non-progressing failures are bl
 - Rule promotion: candidate pipeline -> promoted anti-pattern -> active gate rule.
 - Rule decay: cooldown and optional expiration after long healthy windows.
 - Rule rollback: automatic on high false-positive rate.
+  - false-positive signal source: override-active + successful execution on would-be BLOCK path
 
 ## Observability
 Emit machine-readable event:
 - `stream.gate` with action `BLOCK` / `PENALIZE` / `OVERRIDE`
+- Feedback persistence:
+  - `.aceclaw/metrics/continuous-learning/anti-pattern-gate-feedback.json`
+  - tracks blocked count + false-positive count per rule
 
 Expose in CLI status:
 - active gate count
@@ -77,6 +84,8 @@ Expose in CLI status:
 3. False-positive block rate remains under agreed threshold in replay.
 4. Atomic persistence validated under interruption.
 5. Override flow is deterministic and auditable.
+6. BLOCK rules auto-downgrade to PENALIZE when false-positive rate breaches threshold.
+7. Candidate-backed BLOCK rules auto-rollback when false-positive threshold is sustained.
 
 ## Test Plan
 - Unit
@@ -104,3 +113,5 @@ Expose in CLI status:
 - [x] Add override command (session+tool TTL via RPC).
 - [x] Add observability event (`stream.gate`).
 - [x] Add unit tests for gate + override lifecycle.
+- [x] Add persisted false-positive feedback for gate policy adaptation.
+- [x] Add automatic BLOCK->PENALIZE downgrade and candidate auto-rollback trigger.
