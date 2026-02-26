@@ -66,6 +66,7 @@ public final class TerminalRepl {
     private static final Duration TASK_STALLED_AFTER = Duration.ofSeconds(45);
     private static final Duration TASK_TIMEOUT_AFTER = Duration.ofSeconds(180);
     private static final Duration LEARNING_STATUS_REFRESH = Duration.ofSeconds(5);
+    private static final int MAX_RESUME_HINT_LEN = 200;
     private static final String CL_METRICS_DIR = ".aceclaw/metrics/continuous-learning";
     private static final String CL_REPLAY_REPORT = "replay-latest.json";
     private static final String CL_RELEASE_STATE = "skill-release-state.json";
@@ -1344,14 +1345,25 @@ public final class TerminalRepl {
             if (!text.isBlank()) {
                 String normalized = text.strip();
                 int idx = normalized.indexOf('\n');
-                return idx > 0 ? normalized.substring(0, idx).trim() : normalized;
+                String firstLine = idx > 0 ? normalized.substring(0, idx).trim() : normalized;
+                return truncateHint(firstLine);
             }
             var error = message.path("error").path("message").asText("");
             if (!error.isBlank()) {
-                return error.trim();
+                return truncateHint(error.trim());
             }
         }
-        return fallback == null ? "" : fallback;
+        return truncateHint(fallback == null ? "" : fallback);
+    }
+
+    private static String truncateHint(String value) {
+        if (value == null) {
+            return "";
+        }
+        if (value.length() <= MAX_RESUME_HINT_LEN) {
+            return value;
+        }
+        return value.substring(0, MAX_RESUME_HINT_LEN) + "...";
     }
 
     private static String resolveClientInstanceId() {

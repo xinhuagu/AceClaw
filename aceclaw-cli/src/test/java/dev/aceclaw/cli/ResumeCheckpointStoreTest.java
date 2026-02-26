@@ -143,6 +143,16 @@ class ResumeCheckpointStoreTest {
         assertThat(checkpoint.lastToolEvents()).isEmpty();
     }
 
+    @Test
+    void routesRunningStatusCheckpoint() {
+        var store = new ResumeCheckpointStore(tempDir);
+        store.recordTaskSubmitted("s1", "1", "w1", "cli", "cli-default", "goal", true);
+
+        var route = store.routeForContinue("s1", "w1", "cli-default");
+        assertThat(route.checkpoint()).isNotNull();
+        assertThat(route.route()).isEqualTo("session");
+    }
+
     private void writeCheckpoint(
             String sessionId,
             String taskId,

@@ -141,6 +141,9 @@ final class ResumeCheckpointStore {
     }
 
     RouteResult routeForContinue(String sessionId, String workspaceHash, String clientInstanceId) {
+        Objects.requireNonNull(sessionId, "sessionId");
+        Objects.requireNonNull(workspaceHash, "workspaceHash");
+        Objects.requireNonNull(clientInstanceId, "clientInstanceId");
         lock.lock();
         try {
             var resumable = loadAllResumable();
@@ -173,6 +176,7 @@ final class ResumeCheckpointStore {
     }
 
     static String buildResumePrompt(Checkpoint checkpoint, String additionalInstruction) {
+        Objects.requireNonNull(checkpoint, "checkpoint must not be null");
         String extra = additionalInstruction == null ? "" : additionalInstruction.trim();
         String lastBlocker = checkpoint.resumeHint == null || checkpoint.resumeHint.isBlank()
                 ? checkpoint.currentStep
