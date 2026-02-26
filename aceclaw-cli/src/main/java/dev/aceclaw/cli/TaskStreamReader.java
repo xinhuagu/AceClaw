@@ -141,6 +141,7 @@ public final class TaskStreamReader implements Runnable {
                     String toolId = params.path("id").asText("");
                     String toolName = params.path("name").asText("unknown");
                     String summary = params.path("summary").asText("");
+                    handle.appendToolEvent(toolName, "start", false, 0, summary);
                     handle.markActivity("tool:" + toolName);
                     sink.onToolUse(toolId, toolName, summary);
                 }
@@ -152,6 +153,7 @@ public final class TaskStreamReader implements Runnable {
                     long durationMs = params.path("durationMs").asLong(0);
                     boolean isError = params.path("isError").asBoolean(false);
                     String error = params.path("error").asText("");
+                    handle.appendToolEvent(toolName, "done", isError, durationMs, isError ? error : "");
                     handle.markActivity("tool done");
                     sink.onToolCompleted(toolId, toolName, durationMs, isError, error);
                 }
@@ -159,6 +161,7 @@ public final class TaskStreamReader implements Runnable {
             case "permission.request" -> handlePermissionRequest(params);
             case "stream.error" -> {
                 if (params != null && params.has("error")) {
+                    handle.appendToolEvent("stream", "error", true, 0, params.get("error").asText());
                     handle.markActivity("stream error");
                     sink.onStreamError(params.get("error").asText());
                 }

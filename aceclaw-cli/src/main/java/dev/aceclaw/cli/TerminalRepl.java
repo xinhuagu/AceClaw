@@ -19,8 +19,10 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalTime;
@@ -58,6 +60,8 @@ public final class TerminalRepl {
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm:ss");
     private static final Pattern ANSI_CSI_PATTERN =
             Pattern.compile("\\u001B\\[[0-?]*[ -/]*[@-~]");
+    private static final Pattern CONTINUE_INTENT_PATTERN =
+            Pattern.compile("^(?i)(continue|resume)\\b(?:\\s*(.*))?$");
     private static final Duration TASK_STALLED_AFTER = Duration.ofSeconds(45);
     private static final Duration TASK_TIMEOUT_AFTER = Duration.ofSeconds(180);
     private static final Duration LEARNING_STATUS_REFRESH = Duration.ofSeconds(5);
@@ -102,6 +106,11 @@ public final class TerminalRepl {
     /** Cached continuous-learning status line; refreshed periodically. */
     private volatile String cachedLearningStatusLine;
     private volatile Instant cachedLearningStatusAt = Instant.EPOCH;
+    /** Last non-trivial user task prompt, used by /continue fallback. */
+    private volatile String lastTaskPrompt;
+    private final ResumeCheckpointStore resumeCheckpointStore;
+    private final String clientInstanceId;
+    private final String workspaceHash;
 
     /** Current foreground output sink (for Ctrl+C spinner cleanup). */
     private volatile ForegroundOutputSink activeForegroundSink;
@@ -148,6 +157,9 @@ public final class TerminalRepl {
         this.taskManager = new TaskManager();
         this.permissionBridge = new PermissionBridge();
         this.statusMapper = new ObjectMapper();
+        this.clientInstanceId = resolveClientInstanceId();
+        this.workspaceHash = hashWorkspace(sessionInfo.project());
+        this.resumeCheckpointStore = new ResumeCheckpointStore(Path.of(System.getProperty("user.home"), ".aceclaw"));
     }
 
     /**
@@ -179,7 +191,10 @@ public final class TerminalRepl {
             statusTicker = startStatusTicker(stopStatusTicker, reader);
 
             // Register callback to auto-push background task output above prompt
-            taskManager.setOnTaskComplete(handle -> pushBackgroundCompletion(handle, reader));
+            taskManager.setOnTaskComplete(handle -> {
+                recordResumeCheckpointOnComplete(handle);
+                pushBackgroundCompletion(handle, reader);
+            });
             permissionBridge.setRequestListener(req -> onPermissionRequested(req, reader));
 
             // Render startup banner
@@ -266,7 +281,12 @@ public final class TerminalRepl {
                         break;
                     }
                 } else {
-                    submitAndWait(out, reader, trimmed);
+                    var continueArg = parseContinueIntent(trimmed);
+                    if (continueArg != null) {
+                        handleContinueCommand(out, reader, continueArg);
+                    } else {
+                        submitAndWait(out, reader, trimmed);
+                    }
                 }
             }
 
@@ -318,14 +338,27 @@ public final class TerminalRepl {
      */
     private void submitAndWait(PrintWriter out, LineReader reader, String input) {
         try {
+            String effectiveInput = input == null ? "" : input.trim();
+            if (!effectiveInput.isBlank()) {
+                lastTaskPrompt = effectiveInput;
+            }
             var conn = client.openTaskConnection();
             var fgSink = new ForegroundOutputSink(out, markdownRenderer);
             activeForegroundSink = fgSink;
 
             promptStartNanos = System.nanoTime();
 
-            var handle = taskManager.submit(input, conn, sessionId, fgSink, permissionBridge);
+            var handle = taskManager.submit(effectiveInput, conn, sessionId, fgSink, permissionBridge);
             taskManager.setForeground(handle.taskId());
+            resumeCheckpointStore.recordTaskSubmitted(
+                    sessionId,
+                    handle.taskId(),
+                    workspaceHash,
+                    "cli",
+                    clientInstanceId,
+                    effectiveInput,
+                    true
+            );
 
             // Start thinking spinner
             fgSink.startThinkingSpinner();
@@ -449,6 +482,7 @@ public final class TerminalRepl {
         if (oldSink instanceof ForegroundOutputSink fgSink) {
             fgSink.stopSpinner();
         }
+        resumeCheckpointStore.markForeground(sessionId, fgHandle.taskId(), false);
         taskManager.clearForeground();
         activeForegroundSink = null;
 
@@ -1142,6 +1176,7 @@ public final class TerminalRepl {
                 out.println(INFO + "  /tasks" + RESET + "    List all tasks with status");
                 out.println(INFO + "  /bg" + RESET + "       Send foreground task to background");
                 out.println(INFO + "  /fg" + RESET + "       Bring background task to foreground (/fg [id])");
+                out.println(INFO + "  /continue" + RESET + " Continue from the last task context");
                 out.println(INFO + "  /cancel" + RESET + "   Cancel a task (/cancel [id])");
                 out.println(INFO + "  /exit" + RESET + "     Exit the REPL");
                 out.println();
@@ -1191,6 +1226,8 @@ public final class TerminalRepl {
 
             case "/fg" -> handleFgCommand(out, reader, arg);
 
+            case "/continue", "/resume" -> handleContinueCommand(out, reader, arg);
+
             case "/cancel" -> handleCancelCommand(out, arg);
 
             case "/exit", "/quit" -> {
@@ -1206,6 +1243,134 @@ public final class TerminalRepl {
             }
         }
         return false;
+    }
+
+    private void handleContinueCommand(PrintWriter out, LineReader reader, String arg) {
+        if (client == null) {
+            out.println(WARNING + "Not connected to daemon." + RESET);
+            out.flush();
+            return;
+        }
+        var route = resumeCheckpointStore.routeForContinue(sessionId, workspaceHash, clientInstanceId);
+        if (route.checkpoint() == null) {
+            log.info("resume.fallback sessionId={} reason=no-checkpoint", sessionId);
+            String previous = lastTaskPrompt;
+            if (previous == null || previous.isBlank()) {
+                out.println(WARNING + "No previous task context to continue." + RESET);
+                out.flush();
+                return;
+            }
+            String prompt = buildLegacyContinuationPrompt(previous, arg);
+            submitAndWait(out, reader, prompt);
+            return;
+        }
+        if (route.ambiguous()) {
+            log.info("resume.fallback sessionId={} reason=ambiguous-route", sessionId);
+            out.println(WARNING + "Multiple resumable tasks match. Use /tasks and continue with more context." + RESET);
+            out.flush();
+            return;
+        }
+        log.info("resume.detected sessionId={} clientInstanceId={}", sessionId, clientInstanceId);
+        log.info("resume.bound_task sessionId={} taskId={} route={}",
+                route.checkpoint().sessionId(), route.checkpoint().taskId(), route.route());
+        String prompt = ResumeCheckpointStore.buildResumePrompt(route.checkpoint(), arg);
+        log.info("resume.injected sessionId={} taskId={}",
+                route.checkpoint().sessionId(), route.checkpoint().taskId());
+        submitAndWait(out, reader, prompt);
+    }
+
+    private static String buildLegacyContinuationPrompt(String previousPrompt, String additionalInstruction) {
+        String prev = previousPrompt == null ? "" : previousPrompt.trim();
+        String extra = additionalInstruction == null ? "" : additionalInstruction.trim();
+        if (extra.isBlank()) {
+            return """
+                    Continue the previous task with the same goal, constraints, and output style.
+                    Previous user request:
+                    %s
+                    """.formatted(prev).trim();
+        }
+        return """
+                Continue the previous task with the same goal, constraints, and output style.
+                Previous user request:
+                %s
+
+                Additional instruction:
+                %s
+                """.formatted(prev, extra).trim();
+    }
+
+    private String parseContinueIntent(String trimmedInput) {
+        if (trimmedInput == null) {
+            return null;
+        }
+        var matcher = CONTINUE_INTENT_PATTERN.matcher(trimmedInput.trim());
+        if (!matcher.matches()) {
+            return null;
+        }
+        return matcher.group(2) == null ? "" : matcher.group(2).trim();
+    }
+
+    private void recordResumeCheckpointOnComplete(TaskHandle handle) {
+        var status = switch (handle.state()) {
+            case CANCELLED -> ResumeCheckpointStore.Status.CANCELLED;
+            case COMPLETED, FAILED, RUNNING -> ResumeCheckpointStore.Status.PAUSED;
+        };
+        String currentStep = switch (handle.state()) {
+            case COMPLETED -> "Last turn completed; task may still be resumable.";
+            case FAILED -> "Last turn failed; resume from the last blocker and continue.";
+            case CANCELLED -> "Task was cancelled by user.";
+            case RUNNING -> "Task running.";
+        };
+        String resumeHint = extractResumeHint(handle.result(), handle.activityLabel());
+        resumeCheckpointStore.recordTaskCompletion(
+                sessionId,
+                handle.taskId(),
+                status,
+                currentStep,
+                resumeHint,
+                handle.recentToolEventsSnapshot()
+        );
+    }
+
+    private static String extractResumeHint(JsonNode message, String fallback) {
+        if (message != null) {
+            var text = message.path("result").path("response").asText("");
+            if (!text.isBlank()) {
+                String normalized = text.strip();
+                int idx = normalized.indexOf('\n');
+                return idx > 0 ? normalized.substring(0, idx).trim() : normalized;
+            }
+            var error = message.path("error").path("message").asText("");
+            if (!error.isBlank()) {
+                return error.trim();
+            }
+        }
+        return fallback == null ? "" : fallback;
+    }
+
+    private static String resolveClientInstanceId() {
+        String fromEnv = System.getenv("ACECLAW_CLIENT_INSTANCE_ID");
+        if (fromEnv != null && !fromEnv.isBlank()) {
+            return fromEnv.trim();
+        }
+        return "cli-default";
+    }
+
+    private static String hashWorkspace(String projectPath) {
+        if (projectPath == null || projectPath.isBlank()) {
+            return "workspace-unknown";
+        }
+        try {
+            var digest = MessageDigest.getInstance("SHA-256");
+            var bytes = digest.digest(projectPath.getBytes(StandardCharsets.UTF_8));
+            var hex = new StringBuilder(bytes.length * 2);
+            for (byte b : bytes) {
+                hex.append(String.format("%02x", b));
+            }
+            return hex.toString();
+        } catch (Exception e) {
+            return "workspace-unknown";
+        }
     }
 
     // -- /tasks command ------------------------------------------------------
@@ -1273,6 +1438,7 @@ public final class TerminalRepl {
         if (oldSink instanceof ForegroundOutputSink fgSink) {
             fgSink.stopSpinner();
         }
+        resumeCheckpointStore.markForeground(sessionId, fgHandle.taskId(), false);
         taskManager.clearForeground();
         activeForegroundSink = null;
 
@@ -1328,6 +1494,7 @@ public final class TerminalRepl {
         var oldSink = target.swapOutputSink(fgSink);
         activeForegroundSink = fgSink;
         taskManager.setForeground(target.taskId());
+        resumeCheckpointStore.markForeground(sessionId, target.taskId(), true);
 
         // Replay buffered events if the task was backgrounded
         if (oldSink instanceof BackgroundOutputBuffer bgBuffer) {
