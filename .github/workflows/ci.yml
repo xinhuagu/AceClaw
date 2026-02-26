@@ -23,6 +23,8 @@ jobs:
       REPLAY_SUITE_MIN_PER_CATEGORY: ${{ vars.ACECLAW_REPLAY_SUITE_MIN_PER_CATEGORY || (vars.ACECLAW_REPLAY_FULL_MODE == 'true' && '5' || '1') }}
       REPLAY_MAX_TOKEN_ESTIMATION_ERROR_RATIO: ${{ vars.ACECLAW_REPLAY_MAX_TOKEN_ESTIMATION_ERROR_RATIO || (vars.ACECLAW_REPLAY_FULL_MODE == 'true' && '0.25' || '0.65') }}
       REPLAY_FAIL_ON_LATENCY: ${{ vars.ACECLAW_REPLAY_FAIL_ON_LATENCY || 'false' }}
+      REPLAY_ENFORCE_ANTI_PATTERN_FP_RATE: ${{ vars.ACECLAW_REPLAY_ENFORCE_ANTI_PATTERN_FP_RATE || 'true' }}
+      REPLAY_MAX_ANTI_PATTERN_FP_RATE: ${{ vars.ACECLAW_REPLAY_MAX_ANTI_PATTERN_FP_RATE || '0.50' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -49,6 +51,7 @@ jobs:
           ./gradlew generateReplayReport
           -PreplayCasesInput=${{ vars.ACECLAW_REPLAY_INPUT_PATH || '.aceclaw/metrics/continuous-learning/replay-cases.json' }}
           -PreplayCasesManifestInput=${{ vars.ACECLAW_REPLAY_MANIFEST_PATH || '.aceclaw/metrics/continuous-learning/replay-cases.manifest.json' }}
+          -PreplayAntiPatternFeedbackPath=${{ vars.ACECLAW_ANTI_PATTERN_FEEDBACK_PATH || '.aceclaw/metrics/continuous-learning/anti-pattern-gate-feedback.json' }}
           -PreplayReport=${{ vars.ACECLAW_REPLAY_REPORT_PATH || '.aceclaw/metrics/continuous-learning/replay-latest.json' }}
           --no-daemon
 
@@ -59,6 +62,8 @@ jobs:
           -PreplayReport=${{ vars.ACECLAW_REPLAY_REPORT_PATH || '.aceclaw/metrics/continuous-learning/replay-latest.json' }}
           -PreplayMaxTokenEstimationErrorRatio=${{ env.REPLAY_MAX_TOKEN_ESTIMATION_ERROR_RATIO }}
           -PreplayFailOnLatency=${{ env.REPLAY_FAIL_ON_LATENCY }}
+          -PreplayEnforceAntiPatternFalsePositiveRate=${{ env.REPLAY_ENFORCE_ANTI_PATTERN_FP_RATE }}
+          -PreplayMaxAntiPatternFalsePositiveRate=${{ env.REPLAY_MAX_ANTI_PATTERN_FP_RATE }}
           --no-daemon
 
   # When main gets new commits, re-test all open PRs

@@ -295,6 +295,17 @@ Notes:
    - lower `candidatePromotionMaxFailureRate`
 3. Re-enable promotion after stabilization.
 
+### Anti-pattern gate false-positive drift
+
+1. Inspect `.aceclaw/metrics/continuous-learning/anti-pattern-gate-feedback.json`:
+   - weighted false-positive rate
+   - top offending `ruleId`
+2. If a rule is clearly over-blocking, apply temporary override for active session/tool:
+   - `antiPatternGate.override.set`
+3. Confirm success path with replay and runtime events (`stream.gate`).
+4. Let automatic rollback/downgrade run (default policy), only use manual `candidate.rollback` when urgent.
+5. Record root cause and threshold tuning decision in PR notes.
+
 ## Verification
 
 Smoke checks:
@@ -322,6 +333,9 @@ Replay gate configuration:
 - Custom report path: `./gradlew preMergeCheck -PreplayReport=/path/to/replay.json`
 - CI uses strict mode and can override report path with `ACECLAW_REPLAY_REPORT_PATH`.
 - CI first runs `generateReplayCases`, then `generateReplayReport`.
+- CI defaults to enforcing anti-pattern false-positive gate:
+  - `ACECLAW_REPLAY_ENFORCE_ANTI_PATTERN_FP_RATE=true`
+  - threshold `ACECLAW_REPLAY_MAX_ANTI_PATTERN_FP_RATE=0.50`
 - replay cases input/output path:
   - `ACECLAW_REPLAY_INPUT_PATH` (recommended), or
   - default `.aceclaw/metrics/continuous-learning/replay-cases.json`
@@ -358,3 +372,14 @@ Replay gate configuration:
   - `estimation_error_ratio` (number or null)
 - New replay gate metric:
   - `token_estimation_error_ratio_max` (target/default threshold: `<= 0.25`)
+- Anti-pattern gate replay metrics:
+  - `anti_pattern_gate_false_positive_rate_weighted`
+  - `anti_pattern_gate_false_positive_rate_max`
+
+Default pre-merge pass criteria (CI):
+
+1. `replay_success_rate_delta` measured and above threshold.
+2. `replay_token_delta` measured and below threshold.
+3. `replay_failure_distribution_delta` measured and below threshold.
+4. `token_estimation_error_ratio_max` measured and below threshold.
+5. `anti_pattern_gate_false_positive_rate_weighted` measured and `<= 0.50`.

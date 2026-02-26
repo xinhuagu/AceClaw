@@ -145,12 +145,15 @@ tasks.register<Exec>("generateReplayReport") {
             .orElse("${rootDir}/.aceclaw/metrics/continuous-learning/replay-cases.manifest.json")
     val replayReport = providers.gradleProperty("replayReport")
             .orElse("${rootDir}/.aceclaw/metrics/continuous-learning/replay-latest.json")
+    val replayAntiPatternFeedbackPath = providers.gradleProperty("replayAntiPatternFeedbackPath")
+            .orElse("${rootDir}/.aceclaw/metrics/continuous-learning/anti-pattern-gate-feedback.json")
 
     commandLine(
             "bash",
             "${rootDir}/scripts/generate-replay-report.sh",
             "--input", replayCasesInput.get(),
             "--manifest", replayCasesManifestInput.get(),
+            "--anti-pattern-feedback", replayAntiPatternFeedbackPath.get(),
             "--output", replayReport.get()
     )
 }
