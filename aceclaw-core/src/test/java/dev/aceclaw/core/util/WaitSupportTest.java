@@ -14,8 +14,8 @@ class WaitSupportTest {
     void awaitConditionReturnsFalseOnTimeout() throws Exception {
         boolean matched = WaitSupport.awaitCondition(
                 () -> false,
-                Duration.ofMillis(20),
-                Duration.ofMillis(5));
+                Duration.ofMillis(120),
+                Duration.ofMillis(10));
         assertThat(matched).isFalse();
     }
 
@@ -24,7 +24,7 @@ class WaitSupportTest {
         var ready = new AtomicBoolean(false);
         Thread.ofVirtual().start(() -> {
             try {
-                WaitSupport.sleepInterruptibly(Duration.ofMillis(20));
+                WaitSupport.sleepInterruptibly(Duration.ofMillis(50));
                 ready.set(true);
             } catch (InterruptedException ignored) {
                 Thread.currentThread().interrupt();
@@ -34,7 +34,7 @@ class WaitSupportTest {
         boolean matched = WaitSupport.awaitCondition(
                 ready::get,
                 Duration.ofSeconds(1),
-                Duration.ofMillis(5));
+                Duration.ofMillis(10));
         assertThat(matched).isTrue();
     }
 

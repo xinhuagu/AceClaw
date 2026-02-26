@@ -96,6 +96,10 @@ public final class AceClawMain implements Runnable {
             System.err.println("Failed to connect to daemon: " + e.getMessage());
             System.err.println("Check if the daemon is running with: aceclaw daemon status");
             System.exit(1);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            System.err.println("Interrupted while starting or connecting to daemon");
+            System.exit(1);
         }
     }
 

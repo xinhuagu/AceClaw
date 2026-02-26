@@ -136,7 +136,7 @@ public final class HealthMonitor {
         while (running.get()) {
             try {
                 synchronized (monitorSignal) {
-                    monitorSignal.wait(checkInterval.toMillis());
+                    monitorSignal.wait(Math.max(1L, checkInterval.toMillis()));
                 }
                 if (running.get()) {
                     runChecks();

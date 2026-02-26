@@ -220,8 +220,16 @@ public final class DaemonConnection implements AutoCloseable {
             try (Selector selector = Selector.open()) {
                 channel.register(selector, SelectionKey.OP_READ);
                 while (System.currentTimeMillis() < deadline) {
+                    if (Thread.currentThread().isInterrupted()) {
+                        Thread.currentThread().interrupt();
+                        return null;
+                    }
                     long waitMs = Math.max(1L, deadline - System.currentTimeMillis());
                     int selected = selector.select(waitMs);
+                    if (Thread.currentThread().isInterrupted()) {
+                        Thread.currentThread().interrupt();
+                        return null;
+                    }
                     if (selected == 0) {
                         continue;
                     }

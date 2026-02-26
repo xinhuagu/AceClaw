@@ -43,7 +43,7 @@ public final class DaemonStarter {
      * @return a connected DaemonClient
      * @throws IOException if the daemon cannot be started or connected to
      */
-    public static DaemonClient ensureRunning() throws IOException {
+    public static DaemonClient ensureRunning() throws IOException, InterruptedException {
         // Try connecting to an existing daemon
         if (isDaemonRunning()) {
             log.debug("Daemon already running; connecting");
@@ -131,16 +131,11 @@ public final class DaemonStarter {
         log.info("Daemon process started (PID {}); logs at {}", process.pid(), DAEMON_LOG);
     }
 
-    private static boolean waitForSocket() {
-        try {
-            return WaitSupport.awaitCondition(
-                    DaemonStarter::isDaemonRunning,
-                    Duration.ofMillis(START_TIMEOUT_MS),
-                    Duration.ofMillis(PROBE_INTERVAL_MS)
-            );
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return false;
-        }
+    private static boolean waitForSocket() throws InterruptedException {
+        return WaitSupport.awaitCondition(
+                DaemonStarter::isDaemonRunning,
+                Duration.ofMillis(START_TIMEOUT_MS),
+                Duration.ofMillis(PROBE_INTERVAL_MS)
+        );
     }
 }
