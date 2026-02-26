@@ -22,7 +22,7 @@ class WaitSupportTest {
     @Test
     void awaitConditionReturnsTrueWhenPredicateBecomesTrue() throws Exception {
         var ready = new AtomicBoolean(false);
-        Thread.ofVirtual().start(() -> {
+        var setter = Thread.ofVirtual().start(() -> {
             try {
                 WaitSupport.sleepInterruptibly(Duration.ofMillis(50));
                 ready.set(true);
@@ -36,6 +36,7 @@ class WaitSupportTest {
                 Duration.ofSeconds(1),
                 Duration.ofMillis(10));
         assertThat(matched).isTrue();
+        setter.join(Duration.ofMillis(200));
     }
 
     @Test
