@@ -216,6 +216,9 @@ public final class RequestRouter {
 
     private Object handleSessionCreate(JsonNode params) {
         var projectPath = requireString(params, "project");
+        if (projectPath.trim().isEmpty()) {
+            throw new IllegalArgumentException("Missing required parameter: project");
+        }
         var canonicalProjectPath = canonicalizeProjectPath(projectPath);
         var session = sessionManager.createSession(canonicalProjectPath);
 

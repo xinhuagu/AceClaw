@@ -49,4 +49,21 @@ class RequestRouterTest {
         assertThat(err.error().code()).isEqualTo(JsonRpc.INVALID_PARAMS);
         assertThat(err.error().message()).contains("project");
     }
+
+    @Test
+    void sessionCreateRejectsBlankProject() {
+        var sessionManager = new SessionManager();
+        var mapper = new ObjectMapper();
+        var router = new RequestRouter(sessionManager, mapper);
+
+        var params = mapper.createObjectNode();
+        params.put("project", "");
+        var request = new JsonRpc.Request(JsonRpc.VERSION, "session.create", params, 1);
+
+        Object response = router.route(request);
+        assertThat(response).isInstanceOf(JsonRpc.ErrorResponse.class);
+        var err = (JsonRpc.ErrorResponse) response;
+        assertThat(err.error().code()).isEqualTo(JsonRpc.INVALID_PARAMS);
+        assertThat(err.error().message()).contains("project");
+    }
 }

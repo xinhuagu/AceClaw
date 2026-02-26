@@ -62,6 +62,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -549,6 +550,8 @@ public final class StreamingAgentHandler {
      * Tools that need user approval will use the StreamContext to ask the client.
      */
     private ToolRegistry createPermissionAwareRegistry(StreamContext context, String sessionId) {
+        Objects.requireNonNull(context, "context");
+        Objects.requireNonNull(sessionId, "sessionId");
         var registry = new ToolRegistry();
         var antiPatternGate = AntiPatternPreExecutionGate.fromStores(
                 memoryStore,
@@ -584,6 +587,10 @@ public final class StreamingAgentHandler {
             Path sessionProject,
             ReadFileTool sessionReadFileTool,
             WriteFileTool sessionWriteFileTool) {
+        Objects.requireNonNull(original, "original");
+        Objects.requireNonNull(sessionProject, "sessionProject");
+        Objects.requireNonNull(sessionReadFileTool, "sessionReadFileTool");
+        Objects.requireNonNull(sessionWriteFileTool, "sessionWriteFileTool");
         return switch (original.name()) {
             case "read_file" -> sessionReadFileTool;
             case "write_file" -> sessionWriteFileTool;
