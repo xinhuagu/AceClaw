@@ -31,4 +31,30 @@ class ToolFailureAdvisorTest {
         assertThat(ToolFailureAdvisor.classify("command not found"))
                 .isEqualTo(ToolFailureAdvisor.FailureCategory.DEPENDENCY_OR_ENV);
     }
+
+    @Test
+    void blocksToolAfterRepeatedNonProgressingFailures() {
+        var advisor = new ToolFailureAdvisor();
+        String err = "ModuleNotFoundError: No module named 'docx'";
+
+        advisor.onFailure("bash", err);
+        advisor.onFailure("bash", err);
+        var third = advisor.onFailure("bash", err);
+
+        assertThat(third.blockTool()).isTrue();
+        assertThat(advisor.preflightBlockMessage("bash")).contains("circuit-breaker active");
+    }
+
+    @Test
+    void doesNotBlockTimeoutClassEvenWhenRepeated() {
+        var advisor = new ToolFailureAdvisor();
+        String err = "Command timed out after 120 seconds";
+
+        advisor.onFailure("bash", err);
+        advisor.onFailure("bash", err);
+        var third = advisor.onFailure("bash", err);
+
+        assertThat(third.blockTool()).isFalse();
+        assertThat(advisor.preflightBlockMessage("bash")).isNull();
+    }
 }

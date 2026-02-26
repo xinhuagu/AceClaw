@@ -15,18 +15,43 @@ import java.util.regex.Pattern;
 final class ToolFailureAdvisor {
 
     private static final int REPEAT_THRESHOLD = 2;
+    private static final int BLOCK_THRESHOLD = 3;
 
     private final Map<Key, Integer> counts = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, BlockedToolState> blockedTools = new java.util.concurrent.ConcurrentHashMap<>();
 
     String maybeAdvice(String toolName, String errorText) {
+        return onFailure(toolName, errorText).advice();
+    }
+
+    FailureDecision onFailure(String toolName, String errorText) {
         Objects.requireNonNull(toolName, "toolName");
         var category = classify(errorText);
         var key = new Key(toolName, category);
         int count = counts.merge(key, 1, Integer::sum);
-        if (count < REPEAT_THRESHOLD) {
+        String advice = null;
+        if (count >= REPEAT_THRESHOLD) {
+            advice = buildAdvice(toolName, category, count);
+        }
+        boolean block = count >= BLOCK_THRESHOLD && isBlockEligible(category);
+        if (block) {
+            blockedTools.put(toolName, new BlockedToolState(category, count, advice != null ? advice : ""));
+        }
+        return new FailureDecision(category, count, advice, block);
+    }
+
+    String preflightBlockMessage(String toolName) {
+        var blocked = blockedTools.get(toolName);
+        if (blocked == null) {
             return null;
         }
-        return buildAdvice(toolName, category, count);
+        String summary = ("Tool circuit-breaker active: tool=%s class=%s failures=%d. " +
+                "This path is temporarily blocked for the current turn to avoid repeated non-progressing retries.")
+                .formatted(toolName, blocked.category().name().toLowerCase(Locale.ROOT), blocked.count());
+        if (blocked.advice() == null || blocked.advice().isBlank()) {
+            return summary;
+        }
+        return summary + " " + blocked.advice();
     }
 
     static FailureCategory classify(String errorText) {
@@ -92,6 +117,13 @@ final class ToolFailureAdvisor {
         return Pattern.compile("\\b" + Pattern.quote(word) + "\\b").matcher(text).find();
     }
 
+    private static boolean isBlockEligible(FailureCategory category) {
+        return switch (category) {
+            case DEPENDENCY_OR_ENV, CAPABILITY_MISMATCH, PATH, UNKNOWN -> true;
+            case PERMISSION, TIMEOUT, NETWORK -> false;
+        };
+    }
+
     enum FailureCategory {
         PERMISSION,
         TIMEOUT,
@@ -105,6 +137,18 @@ final class ToolFailureAdvisor {
     private record Key(String toolName, FailureCategory category) {
         Key {
             Objects.requireNonNull(toolName, "toolName");
+            Objects.requireNonNull(category, "category");
+        }
+    }
+
+    record FailureDecision(FailureCategory category, int count, String advice, boolean blockTool) {
+        FailureDecision {
+            Objects.requireNonNull(category, "category");
+        }
+    }
+
+    private record BlockedToolState(FailureCategory category, int count, String advice) {
+        BlockedToolState {
             Objects.requireNonNull(category, "category");
         }
     }

@@ -430,6 +430,14 @@ public final class StreamingAgentLoop {
         Objects.requireNonNull(failureAdvisor, "failureAdvisor");
         long toolStart = System.currentTimeMillis();
 
+        String preflightBlock = failureAdvisor.preflightBlockMessage(toolUse.name());
+        if (preflightBlock != null && !preflightBlock.isBlank()) {
+            long toolDuration = System.currentTimeMillis() - toolStart;
+            String finalOutput = truncateToolResult(preflightBlock, MAX_TOOL_RESULT_CHARS);
+            handler.onToolCompleted(toolUse.id(), toolUse.name(), toolDuration, true, summarizeError(finalOutput));
+            return new ContentBlock.ToolResult(toolUse.id(), finalOutput, true);
+        }
+
         // Check permission before execution
         if (config.permissionChecker() != null) {
             try {
@@ -517,7 +525,7 @@ public final class StreamingAgentLoop {
             String toolName,
             ToolFailureAdvisor failureAdvisor) {
         String safeBase = baseMessage == null ? "Tool error" : baseMessage;
-        String advice = failureAdvisor.maybeAdvice(toolName, safeBase);
+        String advice = failureAdvisor.onFailure(toolName, safeBase).advice();
         String combined = (advice == null || advice.isBlank())
                 ? safeBase
                 : safeBase + "\n\n[auto-fallback-advice] " + advice;
