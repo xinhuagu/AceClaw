@@ -114,6 +114,10 @@ tasks.register<Exec>("replayQualityGate") {
             .orElse(false)
     val maxFailureDistDelta = providers.gradleProperty("replayMaxFailureDistDelta").orElse("0.15")
     val maxTokenEstimationErrorRatio = providers.gradleProperty("replayMaxTokenEstimationErrorRatio").orElse("0.25")
+    val enforceAntiPatternFpRate = providers.gradleProperty("replayEnforceAntiPatternFalsePositiveRate")
+            .map { it.toBooleanStrictOrNull() ?: false }
+            .orElse(false)
+    val maxAntiPatternFpRate = providers.gradleProperty("replayMaxAntiPatternFalsePositiveRate").orElse("0.50")
 
     commandLine(
             "bash", "${rootDir}/scripts/replay-quality-gate.sh",
@@ -123,7 +127,9 @@ tasks.register<Exec>("replayQualityGate") {
             "--max-latency-delta-ms", maxLatencyDeltaMs.get(),
             "--fail-on-latency", failOnLatency.get().toString(),
             "--max-failure-dist-delta", maxFailureDistDelta.get(),
-            "--max-token-estimation-error-ratio", maxTokenEstimationErrorRatio.get()
+            "--max-token-estimation-error-ratio", maxTokenEstimationErrorRatio.get(),
+            "--enforce-anti-pattern-fp-rate", enforceAntiPatternFpRate.get().toString(),
+            "--max-anti-pattern-fp-rate", maxAntiPatternFpRate.get()
     )
     if (strict.get()) args("--strict")
 }

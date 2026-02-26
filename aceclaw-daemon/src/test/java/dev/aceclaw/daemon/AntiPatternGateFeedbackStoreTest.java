@@ -38,4 +38,19 @@ class AntiPatternGateFeedbackStoreTest {
         assertThat(rollback1).isFalse();
         assertThat(rollback2).isTrue();
     }
+
+    @Test
+    void customThresholdsAreApplied() {
+        var store = new AntiPatternGateFeedbackStore(tempDir, 5, 0.6);
+        store.recordBlocked("candidate:r3");
+        store.recordBlocked("candidate:r3");
+        store.recordBlocked("candidate:r3");
+        store.recordBlocked("candidate:r3");
+        store.recordBlocked("candidate:r3");
+        store.recordFalsePositive("candidate:r3");
+        store.recordFalsePositive("candidate:r3");
+
+        boolean rollback = store.recordFalsePositive("candidate:r3");
+        assertThat(rollback).isTrue();
+    }
 }

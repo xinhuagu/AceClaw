@@ -70,6 +70,9 @@ Emit machine-readable event:
 - Feedback persistence:
   - `.aceclaw/metrics/continuous-learning/anti-pattern-gate-feedback.json`
   - tracks blocked count + false-positive count per rule
+  - replay report now carries:
+    - `anti_pattern_gate_false_positive_rate_weighted`
+    - `anti_pattern_gate_false_positive_rate_max`
 
 Expose in CLI status:
 - active gate count
@@ -105,6 +108,13 @@ Expose in CLI status:
 1. Phase 1: `PENALIZE` default, metrics-only for block candidates.
 2. Phase 2: enable `BLOCK` for high-confidence classes (`dependency_missing`, `capability_mismatch`, `path`) with kill-switch.
 3. Phase 3: full policy with CI replay threshold gate.
+
+## Config
+- `antiPatternGateMinBlockedBeforeRollback` (default `3`)
+- `antiPatternGateMaxFalsePositiveRate` (default `0.50`)
+- env overrides:
+  - `ACECLAW_ANTI_PATTERN_GATE_MIN_BLOCKED_BEFORE_ROLLBACK`
+  - `ACECLAW_ANTI_PATTERN_GATE_MAX_FALSE_POSITIVE_RATE`
 
 ## Implementation Checklist
 - [x] Add anti-pattern rule model and persistence.

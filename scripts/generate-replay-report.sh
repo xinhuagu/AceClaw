@@ -4,10 +4,11 @@ set -euo pipefail
 INPUT=""
 OUTPUT=""
 MANIFEST=""
+ANTI_PATTERN_FEEDBACK=""
 
 usage() {
   cat <<USAGE
-Usage: ./scripts/generate-replay-report.sh --input <cases.json> [--output <report.json>] [--manifest <manifest.json>]
+Usage: ./scripts/generate-replay-report.sh --input <cases.json> [--output <report.json>] [--manifest <manifest.json>] [--anti-pattern-feedback <feedback.json>]
 
 Input schema:
 {
@@ -47,6 +48,8 @@ Options:
   --output <path>  Output report path
                    (default: .aceclaw/metrics/continuous-learning/replay-latest.json)
   --manifest <path> Replay cases manifest JSON with cases_sha256.
+  --anti-pattern-feedback <path> Anti-pattern gate feedback JSON
+                   (default: .aceclaw/metrics/continuous-learning/anti-pattern-gate-feedback.json)
   --help           Show this help.
 USAGE
 }
@@ -63,6 +66,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --manifest)
       MANIFEST="$2"
+      shift 2
+      ;;
+    --anti-pattern-feedback)
+      ANTI_PATTERN_FEEDBACK="$2"
       shift 2
       ;;
     --help)
@@ -89,6 +96,9 @@ fi
 
 if [[ -z "$MANIFEST" ]]; then
   MANIFEST=".aceclaw/metrics/continuous-learning/replay-cases.manifest.json"
+fi
+if [[ -z "$ANTI_PATTERN_FEEDBACK" ]]; then
+  ANTI_PATTERN_FEEDBACK=".aceclaw/metrics/continuous-learning/anti-pattern-gate-feedback.json"
 fi
 
 if ! command -v jq >/dev/null 2>&1; then
@@ -309,6 +319,16 @@ jq \
           value: $token_err_max,
           target: 0.25,
           status: "measured"
+        },
+        anti_pattern_gate_false_positive_rate_weighted: {
+          value: null,
+          target: 0.50,
+          status: "pending"
+        },
+        anti_pattern_gate_false_positive_rate_max: {
+          value: null,
+          target: 0.50,
+          status: "pending"
         }
       },
       diagnostics: {
@@ -331,5 +351,41 @@ jq \
       }
     }
   ' "$INPUT" > "$OUTPUT"
+
+if [[ -f "$ANTI_PATTERN_FEEDBACK" ]]; then
+  ap_rules_total="$(jq -er 'length' "$ANTI_PATTERN_FEEDBACK" 2>/dev/null || echo 0)"
+  ap_blocked_total="$(jq -er '[.[] | (.blockedCount // 0)] | add // 0' "$ANTI_PATTERN_FEEDBACK" 2>/dev/null || echo 0)"
+  ap_fp_total="$(jq -er '[.[] | (.falsePositiveCount // 0)] | add // 0' "$ANTI_PATTERN_FEEDBACK" 2>/dev/null || echo 0)"
+  ap_rate_weighted="$(jq -ner --argjson b "$ap_blocked_total" --argjson fp "$ap_fp_total" 'if $b > 0 then ($fp / $b) else null end')"
+  ap_rate_max="$(jq -er '[.[] | select((.blockedCount // 0) > 0) | ((.falsePositiveCount // 0) / .blockedCount)] | max // null' "$ANTI_PATTERN_FEEDBACK" 2>/dev/null || echo "null")"
+  ap_status="pending"
+  if [[ "$ap_blocked_total" -gt 0 ]]; then
+    ap_status="measured"
+  fi
+  tmp_report="${OUTPUT}.tmp-ap"
+  jq \
+    --argjson ap_rules_total "$ap_rules_total" \
+    --argjson ap_blocked_total "$ap_blocked_total" \
+    --argjson ap_fp_total "$ap_fp_total" \
+    --argjson ap_rate_weighted "$ap_rate_weighted" \
+    --argjson ap_rate_max "$ap_rate_max" \
+    --arg ap_status "$ap_status" \
+    '
+    .metrics.anti_pattern_gate_false_positive_rate_weighted = {
+      value: $ap_rate_weighted,
+      target: 0.50,
+      status: $ap_status
+    }
+    | .metrics.anti_pattern_gate_false_positive_rate_max = {
+      value: $ap_rate_max,
+      target: 0.50,
+      status: $ap_status
+    }
+    | .diagnostics.anti_pattern_gate_rules_total = $ap_rules_total
+    | .diagnostics.anti_pattern_gate_blocked_total = $ap_blocked_total
+    | .diagnostics.anti_pattern_gate_false_positive_total = $ap_fp_total
+    ' "$OUTPUT" > "$tmp_report"
+  mv "$tmp_report" "$OUTPUT"
+fi
 
 echo "Replay report written to: $OUTPUT"

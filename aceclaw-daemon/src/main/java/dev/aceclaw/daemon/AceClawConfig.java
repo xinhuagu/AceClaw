@@ -64,6 +64,8 @@ public final class AceClawConfig {
     private static final double DEFAULT_CANDIDATE_PROMOTION_MAX_FAILURE_RATE = 0.2;
     private static final int DEFAULT_CANDIDATE_INJECTION_MAX_COUNT = 10;
     private static final int DEFAULT_CANDIDATE_INJECTION_MAX_TOKENS = 1200;
+    private static final int DEFAULT_ANTI_PATTERN_GATE_MIN_BLOCKED_BEFORE_ROLLBACK = 3;
+    private static final double DEFAULT_ANTI_PATTERN_GATE_MAX_FALSE_POSITIVE_RATE = 0.50;
     private static final boolean DEFAULT_SKILL_DRAFT_VALIDATION_ENABLED = true;
     private static final boolean DEFAULT_SKILL_DRAFT_VALIDATION_STRICT_MODE = false;
     private static final boolean DEFAULT_SKILL_DRAFT_VALIDATION_REPLAY_REQUIRED = true;
@@ -117,6 +119,8 @@ public final class AceClawConfig {
     private double candidatePromotionMaxFailureRate;
     private int candidateInjectionMaxCount;
     private int candidateInjectionMaxTokens;
+    private int antiPatternGateMinBlockedBeforeRollback;
+    private double antiPatternGateMaxFalsePositiveRate;
     private boolean skillDraftValidationEnabled;
     private boolean skillDraftValidationStrictMode;
     private boolean skillDraftValidationReplayRequired;
@@ -158,6 +162,8 @@ public final class AceClawConfig {
         this.candidatePromotionMaxFailureRate = DEFAULT_CANDIDATE_PROMOTION_MAX_FAILURE_RATE;
         this.candidateInjectionMaxCount = DEFAULT_CANDIDATE_INJECTION_MAX_COUNT;
         this.candidateInjectionMaxTokens = DEFAULT_CANDIDATE_INJECTION_MAX_TOKENS;
+        this.antiPatternGateMinBlockedBeforeRollback = DEFAULT_ANTI_PATTERN_GATE_MIN_BLOCKED_BEFORE_ROLLBACK;
+        this.antiPatternGateMaxFalsePositiveRate = DEFAULT_ANTI_PATTERN_GATE_MAX_FALSE_POSITIVE_RATE;
         this.skillDraftValidationEnabled = DEFAULT_SKILL_DRAFT_VALIDATION_ENABLED;
         this.skillDraftValidationStrictMode = DEFAULT_SKILL_DRAFT_VALIDATION_STRICT_MODE;
         this.skillDraftValidationReplayRequired = DEFAULT_SKILL_DRAFT_VALIDATION_REPLAY_REQUIRED;
@@ -264,6 +270,22 @@ public final class AceClawConfig {
                 config.candidateInjectionMaxTokens = Math.max(0, Integer.parseInt(envCandidateInjectionMaxTokens));
             } catch (NumberFormatException e) {
                 log.warn("Invalid ACECLAW_CANDIDATE_INJECTION_MAX_TOKENS: {}", envCandidateInjectionMaxTokens);
+            }
+        }
+        var envAntiPatternMinBlocked = System.getenv("ACECLAW_ANTI_PATTERN_GATE_MIN_BLOCKED_BEFORE_ROLLBACK");
+        if (envAntiPatternMinBlocked != null && !envAntiPatternMinBlocked.isBlank()) {
+            try {
+                config.antiPatternGateMinBlockedBeforeRollback = Math.max(1, Integer.parseInt(envAntiPatternMinBlocked));
+            } catch (NumberFormatException e) {
+                log.warn("Invalid ACECLAW_ANTI_PATTERN_GATE_MIN_BLOCKED_BEFORE_ROLLBACK: {}", envAntiPatternMinBlocked);
+            }
+        }
+        var envAntiPatternMaxFpRate = System.getenv("ACECLAW_ANTI_PATTERN_GATE_MAX_FALSE_POSITIVE_RATE");
+        if (envAntiPatternMaxFpRate != null && !envAntiPatternMaxFpRate.isBlank()) {
+            try {
+                config.antiPatternGateMaxFalsePositiveRate = clampRate(Double.parseDouble(envAntiPatternMaxFpRate));
+            } catch (NumberFormatException e) {
+                log.warn("Invalid ACECLAW_ANTI_PATTERN_GATE_MAX_FALSE_POSITIVE_RATE: {}", envAntiPatternMaxFpRate);
             }
         }
         var envSkillDraftValidation = System.getenv("ACECLAW_SKILL_DRAFT_VALIDATION");
@@ -709,6 +731,14 @@ public final class AceClawConfig {
         return candidateInjectionMaxTokens;
     }
 
+    public int antiPatternGateMinBlockedBeforeRollback() {
+        return antiPatternGateMinBlockedBeforeRollback;
+    }
+
+    public double antiPatternGateMaxFalsePositiveRate() {
+        return antiPatternGateMaxFalsePositiveRate;
+    }
+
     /**
      * Returns whether autonomous skill draft validation is enabled.
      */
@@ -1038,6 +1068,14 @@ public final class AceClawConfig {
             // Backward compatibility: old char-based setting converts to approximate token budget.
             this.candidateInjectionMaxTokens = Math.max(0, fileConfig.candidateInjectionMaxChars / 4);
         }
+        if (fileConfig.antiPatternGateMinBlockedBeforeRollback != null
+                && fileConfig.antiPatternGateMinBlockedBeforeRollback > 0) {
+            this.antiPatternGateMinBlockedBeforeRollback = fileConfig.antiPatternGateMinBlockedBeforeRollback;
+        }
+        if (fileConfig.antiPatternGateMaxFalsePositiveRate != null
+                && fileConfig.antiPatternGateMaxFalsePositiveRate >= 0) {
+            this.antiPatternGateMaxFalsePositiveRate = clampRate(fileConfig.antiPatternGateMaxFalsePositiveRate);
+        }
         if (fileConfig.skillDraftValidationEnabled != null) {
             this.skillDraftValidationEnabled = fileConfig.skillDraftValidationEnabled;
         }
@@ -1140,6 +1178,8 @@ public final class AceClawConfig {
         public Integer candidateInjectionMaxCount;
         public Integer candidateInjectionMaxTokens;
         public Integer candidateInjectionMaxChars;
+        public Integer antiPatternGateMinBlockedBeforeRollback;
+        public Double antiPatternGateMaxFalsePositiveRate;
         public Boolean skillDraftValidationEnabled;
         public Boolean skillDraftValidationStrictMode;
         public Boolean skillDraftValidationReplayRequired;

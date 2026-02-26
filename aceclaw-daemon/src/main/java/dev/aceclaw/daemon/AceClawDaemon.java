@@ -324,6 +324,10 @@ public final class AceClawDaemon {
         agentHandler.setPlannerConfig(config.plannerEnabled(), config.plannerThreshold());
         agentHandler.setCompactor(compactor);
         agentHandler.setMemoryStore(memoryStore, workingDir);
+        agentHandler.setAntiPatternGateFeedbackStore(new AntiPatternGateFeedbackStore(
+                workingDir,
+                config.antiPatternGateMinBlockedBeforeRollback(),
+                config.antiPatternGateMaxFalsePositiveRate()));
         if (journal != null) {
             agentHandler.setDailyJournal(journal);
         }

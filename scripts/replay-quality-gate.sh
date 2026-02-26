@@ -10,6 +10,8 @@ MAX_LATENCY_DELTA_MS="500.00"
 MAX_FAILURE_DISTRIBUTION_DELTA="0.15"
 MAX_TOKEN_ESTIMATION_ERROR_RATIO="0.25"
 FAIL_ON_LATENCY="false"
+ENFORCE_ANTI_PATTERN_FP_RATE="false"
+MAX_ANTI_PATTERN_FP_RATE="0.50"
 
 usage() {
   cat <<USAGE
@@ -24,6 +26,8 @@ Options:
   --fail-on-latency <true|false>         Default: false
   --max-failure-dist-delta <number>      Default: 0.15
   --max-token-estimation-error-ratio <number>  Default: 0.25
+  --enforce-anti-pattern-fp-rate <true|false>  Default: false
+  --max-anti-pattern-fp-rate <number>     Default: 0.50
   --help                                 Show this help.
 USAGE
 }
@@ -60,6 +64,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --max-token-estimation-error-ratio)
       MAX_TOKEN_ESTIMATION_ERROR_RATIO="$2"
+      shift 2
+      ;;
+    --enforce-anti-pattern-fp-rate)
+      ENFORCE_ANTI_PATTERN_FP_RATE="$2"
+      shift 2
+      ;;
+    --max-anti-pattern-fp-rate)
+      MAX_ANTI_PATTERN_FP_RATE="$2"
       shift 2
       ;;
     --help)
@@ -133,6 +145,8 @@ token_delta="$(ensure_measured_metric "replay_token_delta")"
 latency_delta_ms="$(ensure_measured_metric "replay_latency_delta_ms")"
 failure_dist_delta="$(ensure_measured_metric "replay_failure_distribution_delta")"
 token_estimation_error_ratio_max="$(ensure_measured_metric "token_estimation_error_ratio_max")"
+anti_pattern_fp_rate_weighted="$(read_metric_field "anti_pattern_gate_false_positive_rate_weighted" "value" 2>/dev/null || echo "null")"
+anti_pattern_fp_rate_status="$(read_metric_field "anti_pattern_gate_false_positive_rate_weighted" "status" 2>/dev/null || echo "pending")"
 
 if ! compare "$success_rate_delta >= $MIN_SUCCESS_RATE_DELTA"; then
   echo "Replay quality gate failed: replay_success_rate_delta=$success_rate_delta < $MIN_SUCCESS_RATE_DELTA" >&2
@@ -157,6 +171,16 @@ if ! compare "$token_estimation_error_ratio_max <= $MAX_TOKEN_ESTIMATION_ERROR_R
   echo "Replay quality gate failed: token_estimation_error_ratio_max=$token_estimation_error_ratio_max > $MAX_TOKEN_ESTIMATION_ERROR_RATIO" >&2
   exit 1
 fi
+if [[ "$ENFORCE_ANTI_PATTERN_FP_RATE" == "true" ]]; then
+  if [[ "$anti_pattern_fp_rate_status" != "measured" || "$anti_pattern_fp_rate_weighted" == "null" ]]; then
+    echo "Replay quality gate failed: anti_pattern_gate_false_positive_rate_weighted is not measured." >&2
+    exit 1
+  fi
+  if ! compare "$anti_pattern_fp_rate_weighted <= $MAX_ANTI_PATTERN_FP_RATE"; then
+    echo "Replay quality gate failed: anti_pattern_gate_false_positive_rate_weighted=$anti_pattern_fp_rate_weighted > $MAX_ANTI_PATTERN_FP_RATE" >&2
+    exit 1
+  fi
+fi
 
 echo "Replay quality gate passed:"
 echo "  replay_success_rate_delta=$success_rate_delta (min $MIN_SUCCESS_RATE_DELTA)"
@@ -164,3 +188,6 @@ echo "  replay_token_delta=$token_delta (max $MAX_TOKEN_DELTA)"
 echo "  replay_latency_delta_ms=$latency_delta_ms (max $MAX_LATENCY_DELTA_MS)"
 echo "  replay_failure_distribution_delta=$failure_dist_delta (max $MAX_FAILURE_DISTRIBUTION_DELTA)"
 echo "  token_estimation_error_ratio_max=$token_estimation_error_ratio_max (max $MAX_TOKEN_ESTIMATION_ERROR_RATIO)"
+if [[ "$anti_pattern_fp_rate_status" == "measured" && "$anti_pattern_fp_rate_weighted" != "null" ]]; then
+  echo "  anti_pattern_gate_false_positive_rate_weighted=$anti_pattern_fp_rate_weighted (max $MAX_ANTI_PATTERN_FP_RATE)"
+fi

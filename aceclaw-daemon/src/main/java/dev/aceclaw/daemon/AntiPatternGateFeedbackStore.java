@@ -23,18 +23,23 @@ final class AntiPatternGateFeedbackStore implements AntiPatternPreExecutionGate.
 
     private static final Logger log = LoggerFactory.getLogger(AntiPatternGateFeedbackStore.class);
     private static final String METRICS_FILE = ".aceclaw/metrics/continuous-learning/anti-pattern-gate-feedback.json";
-    private static final int MIN_ROLLBACK_BLOCKED = 3;
-    private static final double ROLLBACK_FALSE_POSITIVE_RATE = 0.5;
-
     private final Path file;
     private final ObjectMapper mapper;
     private final ReentrantLock lock = new ReentrantLock();
+    private final int minBlockedBeforeRollback;
+    private final double rollbackFalsePositiveRate;
     private final Map<String, RuleFeedback> feedbackByRule = new HashMap<>();
 
     AntiPatternGateFeedbackStore(Path projectRoot) {
+        this(projectRoot, 3, 0.5);
+    }
+
+    AntiPatternGateFeedbackStore(Path projectRoot, int minBlockedBeforeRollback, double rollbackFalsePositiveRate) {
         Objects.requireNonNull(projectRoot, "projectRoot");
         this.file = projectRoot.resolve(METRICS_FILE);
         this.mapper = new ObjectMapper().registerModule(new JavaTimeModule());
+        this.minBlockedBeforeRollback = Math.max(1, minBlockedBeforeRollback);
+        this.rollbackFalsePositiveRate = clampRate(rollbackFalsePositiveRate);
         load();
     }
 
@@ -85,11 +90,11 @@ final class AntiPatternGateFeedbackStore implements AntiPatternPreExecutionGate.
     }
 
     private boolean shouldRollback(RuleFeedback feedback) {
-        if (feedback.blockedCount() < MIN_ROLLBACK_BLOCKED) {
+        if (feedback.blockedCount() < minBlockedBeforeRollback) {
             return false;
         }
         double rate = feedback.falsePositiveCount() / (double) feedback.blockedCount();
-        return rate >= ROLLBACK_FALSE_POSITIVE_RATE;
+        return rate >= rollbackFalsePositiveRate;
     }
 
     private void load() {
@@ -138,4 +143,11 @@ final class AntiPatternGateFeedbackStore implements AntiPatternPreExecutionGate.
             int falsePositiveCount,
             Instant updatedAt
     ) {}
+
+    private static double clampRate(double value) {
+        if (Double.isNaN(value)) return 0.5;
+        if (value < 0.0) return 0.0;
+        if (value > 1.0) return 1.0;
+        return value;
+    }
 }
