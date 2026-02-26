@@ -34,7 +34,18 @@ import dev.aceclaw.security.PermissionDecision;
 import dev.aceclaw.security.PermissionLevel;
 import dev.aceclaw.security.PermissionManager;
 import dev.aceclaw.security.PermissionRequest;
+import dev.aceclaw.tools.AppleScriptTool;
+import dev.aceclaw.tools.BashExecTool;
+import dev.aceclaw.tools.EditFileTool;
+import dev.aceclaw.tools.GlobSearchTool;
+import dev.aceclaw.tools.GrepSearchTool;
+import dev.aceclaw.tools.ListDirTool;
+import dev.aceclaw.tools.MemoryTool;
+import dev.aceclaw.tools.ReadFileTool;
+import dev.aceclaw.tools.ScreenCaptureTool;
 import dev.aceclaw.tools.SkillTool;
+import dev.aceclaw.tools.WebFetchTool;
+import dev.aceclaw.tools.WriteFileTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -550,16 +561,43 @@ public final class StreamingAgentHandler {
         if (session == null || session.projectPath() == null) {
             throw new IllegalStateException("Session project path is required for tool execution: " + sessionId);
         }
-        String cwd = session.projectPath().toAbsolutePath().toString();
+        Path sessionProject = session.projectPath().toAbsolutePath().normalize();
+        String cwd = sessionProject.toString();
+        // Build a session-scoped read/write pair so relative paths always resolve to this session project.
+        var sessionWriteFileTool = new WriteFileTool(sessionProject);
+        var sessionReadFileTool = new ReadFileTool(sessionProject, sessionWriteFileTool.readFiles());
         for (var tool : toolRegistry.all()) {
+            Tool effectiveTool = materializeSessionScopedTool(
+                    tool, sessionProject, sessionReadFileTool, sessionWriteFileTool);
             registry.register(new PermissionAwareTool(
-                    tool, permissionManager, context, objectMapper,
+                    effectiveTool, permissionManager, context, objectMapper,
                     hookExecutor, sessionId, cwd, antiPatternGate,
-                    () -> getAntiPatternGateOverride(sessionId, tool.name()),
+                    () -> getAntiPatternGateOverride(sessionId, effectiveTool.name()),
                     antiPatternGateFeedbackStore,
                     candidateStore));
         }
         return registry;
+    }
+
+    private Tool materializeSessionScopedTool(
+            Tool original,
+            Path sessionProject,
+            ReadFileTool sessionReadFileTool,
+            WriteFileTool sessionWriteFileTool) {
+        return switch (original.name()) {
+            case "read_file" -> sessionReadFileTool;
+            case "write_file" -> sessionWriteFileTool;
+            case "edit_file" -> new EditFileTool(sessionProject);
+            case "bash" -> new BashExecTool(sessionProject);
+            case "glob" -> new GlobSearchTool(sessionProject);
+            case "grep" -> new GrepSearchTool(sessionProject);
+            case "list_directory" -> new ListDirTool(sessionProject);
+            case "web_fetch" -> new WebFetchTool(sessionProject);
+            case "memory" -> memoryStore != null ? new MemoryTool(memoryStore, sessionProject) : original;
+            case "applescript" -> new AppleScriptTool(sessionProject);
+            case "screen_capture" -> new ScreenCaptureTool(sessionProject);
+            default -> original;
+        };
     }
 
     // Access helpers so the permission-aware loop can use the same LLM config.
