@@ -7,6 +7,7 @@ import dev.aceclaw.core.agent.ToolRegistry;
 import dev.aceclaw.core.llm.LlmClient;
 import dev.aceclaw.core.llm.LlmException;
 import dev.aceclaw.core.llm.StreamEventHandler;
+import dev.aceclaw.core.util.WaitSupport;
 import dev.aceclaw.infra.event.EventBus;
 import dev.aceclaw.infra.event.SchedulerEvent;
 import org.slf4j.Logger;
@@ -256,7 +257,7 @@ public final class CronScheduler {
                     log.warn("Cron job '{}' attempt {}/{} failed, retrying in {}s: {}",
                             job.id(), attempt, maxAttempts, delaySec, e.getMessage());
                     try {
-                        Thread.sleep(delaySec * 1000L);
+                        WaitSupport.sleepInterruptibly(Duration.ofSeconds(delaySec));
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
                         throw e;

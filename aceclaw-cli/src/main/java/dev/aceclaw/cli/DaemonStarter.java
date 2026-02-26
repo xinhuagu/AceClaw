@@ -2,10 +2,12 @@ package dev.aceclaw.cli;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import dev.aceclaw.core.util.WaitSupport;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 
 /**
  * Auto-starts the AceClaw daemon if it is not already running.
@@ -130,19 +132,15 @@ public final class DaemonStarter {
     }
 
     private static boolean waitForSocket() {
-        long deadline = System.currentTimeMillis() + START_TIMEOUT_MS;
-
-        while (System.currentTimeMillis() < deadline) {
-            if (isDaemonRunning()) {
-                return true;
-            }
-            try {
-                Thread.sleep(PROBE_INTERVAL_MS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return false;
-            }
+        try {
+            return WaitSupport.awaitCondition(
+                    DaemonStarter::isDaemonRunning,
+                    Duration.ofMillis(START_TIMEOUT_MS),
+                    Duration.ofMillis(PROBE_INTERVAL_MS)
+            );
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
         }
-        return false;
     }
 }

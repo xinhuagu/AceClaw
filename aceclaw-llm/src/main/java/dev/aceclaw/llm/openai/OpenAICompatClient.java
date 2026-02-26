@@ -8,6 +8,7 @@ import dev.aceclaw.core.llm.LlmRequest;
 import dev.aceclaw.core.llm.LlmResponse;
 import dev.aceclaw.core.llm.ProviderCapabilities;
 import dev.aceclaw.core.llm.StreamSession;
+import dev.aceclaw.core.util.WaitSupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -299,7 +300,7 @@ public final class OpenAICompatClient implements LlmClient {
                 log.warn("Retrying request (attempt {}/{}, backoff {}ms): HTTP {}",
                         attempt + 1, MAX_RETRIES, backoffMs, e.statusCode());
                 try {
-                    Thread.sleep(backoffMs);
+                    WaitSupport.sleepInterruptibly(Duration.ofMillis(backoffMs));
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     throw new LlmException("Retry interrupted", ie);

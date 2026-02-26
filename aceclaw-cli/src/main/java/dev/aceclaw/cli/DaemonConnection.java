@@ -10,6 +10,8 @@ import java.io.IOException;
 import java.net.StandardProtocolFamily;
 import java.net.UnixDomainSocketAddress;
 import java.nio.ByteBuffer;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -215,30 +217,36 @@ public final class DaemonConnection implements AutoCloseable {
         channel.configureBlocking(false);
         try {
             var buffer = ByteBuffer.allocate(BUFFER_SIZE);
-            while (System.currentTimeMillis() < deadline) {
-                buffer.clear();
-                int bytesRead = channel.read(buffer);
-                if (bytesRead == -1) {
-                    return lineBuffer.isEmpty() ? null : lineBuffer.toString().trim();
-                }
-                if (bytesRead == 0) {
-                    try { Thread.sleep(50); } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        return null;
+            try (Selector selector = Selector.open()) {
+                channel.register(selector, SelectionKey.OP_READ);
+                while (System.currentTimeMillis() < deadline) {
+                    long waitMs = Math.max(1L, deadline - System.currentTimeMillis());
+                    int selected = selector.select(waitMs);
+                    if (selected == 0) {
+                        continue;
                     }
-                    continue;
-                }
-                buffer.flip();
-                lineBuffer.append(StandardCharsets.UTF_8.decode(buffer));
+                    selector.selectedKeys().clear();
 
-                // Drain any complete lines (skip empty ones)
-                while (true) {
-                    int idx = lineBuffer.indexOf("\n");
-                    if (idx == -1) break;
-                    var line = lineBuffer.substring(0, idx).trim();
-                    lineBuffer.delete(0, idx + 1);
-                    if (!line.isEmpty()) {
-                        return line;
+                    buffer.clear();
+                    int bytesRead = channel.read(buffer);
+                    if (bytesRead == -1) {
+                        return lineBuffer.isEmpty() ? null : lineBuffer.toString().trim();
+                    }
+                    if (bytesRead == 0) {
+                        continue;
+                    }
+                    buffer.flip();
+                    lineBuffer.append(StandardCharsets.UTF_8.decode(buffer));
+
+                    // Drain any complete lines (skip empty ones)
+                    while (true) {
+                        int idx = lineBuffer.indexOf("\n");
+                        if (idx == -1) break;
+                        var line = lineBuffer.substring(0, idx).trim();
+                        lineBuffer.delete(0, idx + 1);
+                        if (!line.isEmpty()) {
+                            return line;
+                        }
                     }
                 }
             }

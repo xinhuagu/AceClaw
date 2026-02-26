@@ -2,6 +2,7 @@ package dev.aceclaw.mcp;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.Tool;
+import dev.aceclaw.core.util.WaitSupport;
 import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.HttpClientSseClientTransport;
@@ -85,7 +86,7 @@ public final class McpClientManager implements AutoCloseable {
                             serverName, attempt, MAX_START_ATTEMPTS, e.getMessage());
                     if (attempt < MAX_START_ATTEMPTS) {
                         try {
-                            Thread.sleep(BACKOFF_BASE.toMillis() * attempt);
+                            WaitSupport.sleepInterruptibly(BACKOFF_BASE.multipliedBy(attempt));
                         } catch (InterruptedException ie) {
                             Thread.currentThread().interrupt();
                             break;

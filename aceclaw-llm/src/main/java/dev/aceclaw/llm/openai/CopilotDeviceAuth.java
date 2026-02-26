@@ -3,6 +3,7 @@ package dev.aceclaw.llm.openai;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.aceclaw.core.util.WaitSupport;
 
 import java.io.IOException;
 import java.net.URI;
@@ -115,7 +116,7 @@ public final class CopilotDeviceAuth {
             int pollMs = (interval + 1) * 1000;
 
             while (System.currentTimeMillis() < deadline) {
-                Thread.sleep(pollMs);
+                WaitSupport.sleepInterruptibly(Duration.ofMillis(pollMs));
 
                 HttpRequest pollRequest = HttpRequest.newBuilder()
                         .uri(URI.create(ACCESS_TOKEN_URL))

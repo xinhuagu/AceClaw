@@ -33,6 +33,7 @@ public final class HealthMonitor {
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicReference<HealthEvent.Status> lastAggregateStatus =
             new AtomicReference<>(HealthEvent.Status.HEALTHY);
+    private final Object monitorSignal = new Object();
     private final Map<String, HealthCheckResult> lastResults = new ConcurrentHashMap<>();
     private volatile Thread monitorThread;
 
@@ -89,6 +90,9 @@ public final class HealthMonitor {
      */
     public void stop() {
         if (running.compareAndSet(true, false)) {
+            synchronized (monitorSignal) {
+                monitorSignal.notifyAll();
+            }
             if (monitorThread != null) {
                 monitorThread.interrupt();
             }
@@ -131,7 +135,9 @@ public final class HealthMonitor {
     private void monitorLoop() {
         while (running.get()) {
             try {
-                Thread.sleep(checkInterval.toMillis());
+                synchronized (monitorSignal) {
+                    monitorSignal.wait(checkInterval.toMillis());
+                }
                 if (running.get()) {
                     runChecks();
                 }

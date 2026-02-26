@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import dev.aceclaw.core.agent.*;
+import dev.aceclaw.core.util.WaitSupport;
 import dev.aceclaw.core.llm.LlmClient;
 import dev.aceclaw.daemon.cron.CronScheduler;
 import dev.aceclaw.daemon.cron.JobStore;
@@ -997,10 +998,8 @@ public final class AceClawDaemon {
 
     private void awaitShutdown() {
         try {
-            // Wait on the UDS accept thread; when it stops, we're shutting down
-            while (running && udsListener.isRunning()) {
-                Thread.sleep(500);
-            }
+            // Wait on the UDS accept thread; when it stops, we're shutting down.
+            WaitSupport.awaitCondition(() -> !running || !udsListener.isRunning(), Duration.ofMillis(500));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.debug("Daemon await interrupted");
