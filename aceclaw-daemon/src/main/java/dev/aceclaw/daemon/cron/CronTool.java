@@ -13,6 +13,8 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
 
@@ -36,9 +38,9 @@ public final class CronTool implements Tool {
     }
 
     CronTool(JobStore jobStore, BooleanSupplier schedulerRunning, Clock clock) {
-        this.jobStore = jobStore;
-        this.schedulerRunning = schedulerRunning;
-        this.clock = clock;
+        this.jobStore = Objects.requireNonNull(jobStore, "jobStore cannot be null");
+        this.schedulerRunning = Objects.requireNonNull(schedulerRunning, "schedulerRunning cannot be null");
+        this.clock = Objects.requireNonNull(clock, "clock cannot be null");
     }
 
     @Override
@@ -102,7 +104,13 @@ public final class CronTool implements Tool {
 
     @Override
     public ToolResult execute(String inputJson) throws Exception {
+        if (inputJson == null || inputJson.isBlank()) {
+            return new ToolResult("Empty or invalid JSON input", true);
+        }
         JsonNode input = MAPPER.readTree(inputJson);
+        if (input == null) {
+            return new ToolResult("Empty or invalid JSON input", true);
+        }
         if (!input.has("action") || input.get("action").asText().isBlank()) {
             return new ToolResult("Missing required parameter: action", true);
         }
@@ -119,7 +127,8 @@ public final class CronTool implements Tool {
     }
 
     private ToolResult listJobs() {
-        var jobs = jobStore.all().stream()
+        var allJobs = jobStore.all();
+        var jobs = (allJobs != null ? allJobs : List.<CronJob>of()).stream()
                 .sorted(Comparator.comparing(CronJob::id))
                 .toList();
         if (jobs.isEmpty()) {

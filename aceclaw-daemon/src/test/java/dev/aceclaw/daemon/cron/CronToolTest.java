@@ -71,6 +71,35 @@ class CronToolTest {
     }
 
     @Test
+    void addRejectsMissingId() throws Exception {
+        var result = tool.execute("""
+                {"action":"add","expression":"0 8 * * *","prompt":"x"}
+                """);
+        assertThat(result.isError()).isTrue();
+        assertThat(result.output()).contains("Missing required parameter for add: id");
+    }
+
+    @Test
+    void addRejectsMissingExpression() throws Exception {
+        var result = tool.execute("""
+                {"action":"add","id":"daily-news","prompt":"x"}
+                """);
+        assertThat(result.isError()).isTrue();
+        assertThat(result.output()).contains("Missing required parameter for add: expression");
+    }
+
+    @Test
+    void executeRejectsEmptyInput() throws Exception {
+        var blank = tool.execute("");
+        assertThat(blank.isError()).isTrue();
+        assertThat(blank.output()).contains("Empty or invalid JSON input");
+
+        var nullInput = tool.execute(null);
+        assertThat(nullInput.isError()).isTrue();
+        assertThat(nullInput.output()).contains("Empty or invalid JSON input");
+    }
+
+    @Test
     void removeRejectsHeartbeatJobs() throws Exception {
         jobStore.put(CronJob.create("hb-daily", "Heartbeat", "*/10 * * * *", "x"));
         jobStore.save();
