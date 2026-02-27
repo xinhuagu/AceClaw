@@ -277,6 +277,7 @@ public final class CronScheduler {
         var loopConfig = AgentLoopConfig.builder()
                 .sessionId("cron-" + job.id())
                 .permissionChecker(permChecker)
+                .maxIterations(job.maxIterations())
                 .build();
         var agentLoop = new StreamingAgentLoop(
                 llmClient, toolRegistry, model, systemPrompt,

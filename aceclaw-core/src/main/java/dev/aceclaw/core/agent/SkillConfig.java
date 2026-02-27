@@ -45,7 +45,7 @@ public record SkillConfig(
 ) {
 
     /** Default maximum turns for fork-mode skill execution. */
-    public static final int DEFAULT_MAX_TURNS = 25;
+    public static final int DEFAULT_MAX_TURNS = AgentLoopConfig.DEFAULT_MAX_ITERATIONS;
 
     /** Execution context for a skill. */
     public enum ExecutionContext {

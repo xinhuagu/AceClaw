@@ -33,9 +33,6 @@ public final class StreamingAgentLoop {
 
     private static final Logger log = LoggerFactory.getLogger(StreamingAgentLoop.class);
 
-    /** Maximum number of tool-use iterations before forcing a stop. */
-    private static final int MAX_ITERATIONS = 25;
-
     /** Maximum characters allowed in a single tool result before truncation. */
     private static final int MAX_TOOL_RESULT_CHARS = 30_000;
 
@@ -145,9 +142,10 @@ public final class StreamingAgentLoop {
         CompactionResult compactionResult = null;
         // Tracks repeated tool failures within this turn to emit generic fallback guidance.
         var toolFailureAdvisor = new ToolFailureAdvisor();
+        int maxIterations = config.effectiveMaxIterations();
 
         try {
-            for (int iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+            for (int iteration = 0; iteration < maxIterations; iteration++) {
 
                 // Checkpoint 1: before LLM call
                 if (cancellationToken != null && cancellationToken.isCancelled()) {
@@ -273,7 +271,7 @@ public final class StreamingAgentLoop {
             }
 
             // Exceeded max iterations
-            log.warn("Streaming ReAct loop exceeded max iterations ({})", MAX_ITERATIONS);
+            log.warn("Streaming ReAct loop exceeded max iterations ({})", maxIterations);
             var totalUsage = new Usage(
                     totalInputTokens, totalOutputTokens,
                     totalCacheCreationTokens, totalCacheReadTokens);

@@ -164,6 +164,7 @@ public final class SubAgentRunner {
         if (permissionChecker != null) {
             loopConfigBuilder.permissionChecker(permissionChecker);
         }
+        loopConfigBuilder.maxIterations(config.maxTurns());
         var loopConfig = loopConfigBuilder.build();
 
         // Sub-agents use no compaction (short-lived, fresh context)
