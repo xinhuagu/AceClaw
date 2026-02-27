@@ -1,6 +1,7 @@
 package dev.aceclaw.daemon;
 
 import dev.aceclaw.core.agent.ToolRegistry;
+import dev.aceclaw.core.agent.AgentLoopConfig;
 import dev.aceclaw.core.llm.*;
 import dev.aceclaw.tools.GlobSearchTool;
 import dev.aceclaw.tools.GrepSearchTool;
@@ -54,7 +55,7 @@ class BootExecutorTest {
     void noBootMd_returnsNotExecuted() {
         var result = BootExecutor.execute(
                 homeDir, workDir, mockLlm, toolRegistry,
-                "mock-model", "system prompt", 4096, 0, 30);
+                "mock-model", "system prompt", 4096, 0, AgentLoopConfig.DEFAULT_MAX_ITERATIONS, 30);
 
         assertThat(result.executed()).isFalse();
         assertThat(result.filesFound()).isZero();
@@ -75,7 +76,7 @@ class BootExecutorTest {
 
         var result = BootExecutor.execute(
                 homeDir, workDir, mockLlm, toolRegistry,
-                "mock-model", "system prompt", 4096, 0, 30);
+                "mock-model", "system prompt", 4096, 0, AgentLoopConfig.DEFAULT_MAX_ITERATIONS, 30);
 
         assertThat(result.executed()).isTrue();
         assertThat(result.filesFound()).isEqualTo(1);
@@ -99,7 +100,7 @@ class BootExecutorTest {
 
         var result = BootExecutor.execute(
                 homeDir, workDir, mockLlm, toolRegistry,
-                "mock-model", "system prompt", 4096, 0, 30);
+                "mock-model", "system prompt", 4096, 0, AgentLoopConfig.DEFAULT_MAX_ITERATIONS, 30);
 
         assertThat(result.executed()).isTrue();
         assertThat(result.filesFound()).isEqualTo(1);
@@ -121,7 +122,7 @@ class BootExecutorTest {
 
         var result = BootExecutor.execute(
                 homeDir, workDir, mockLlm, toolRegistry,
-                "mock-model", "system prompt", 4096, 0, 30);
+                "mock-model", "system prompt", 4096, 0, AgentLoopConfig.DEFAULT_MAX_ITERATIONS, 30);
 
         assertThat(result.executed()).isTrue();
         assertThat(result.filesFound()).isEqualTo(2);
@@ -152,7 +153,7 @@ class BootExecutorTest {
 
         var result = BootExecutor.execute(
                 homeDir, workDir, mockLlm, toolRegistry,
-                "mock-model", "system prompt", 4096, 0, 30);
+                "mock-model", "system prompt", 4096, 0, AgentLoopConfig.DEFAULT_MAX_ITERATIONS, 30);
 
         assertThat(result.executed()).isTrue();
         assertThat(result.filesFound()).isEqualTo(1);
@@ -172,7 +173,7 @@ class BootExecutorTest {
 
         var result = BootExecutor.execute(
                 homeDir, workDir, mockLlm, toolRegistry,
-                "mock-model", "system prompt", 4096, 0, 30);
+                "mock-model", "system prompt", 4096, 0, AgentLoopConfig.DEFAULT_MAX_ITERATIONS, 30);
 
         // Boot should fail gracefully, not crash
         assertThat(result.filesFound()).isEqualTo(1);
@@ -188,7 +189,7 @@ class BootExecutorTest {
 
         var result = BootExecutor.execute(
                 homeDir, workDir, mockLlm, toolRegistry,
-                "mock-model", "system prompt", 4096, 0, 30);
+                "mock-model", "system prompt", 4096, 0, AgentLoopConfig.DEFAULT_MAX_ITERATIONS, 30);
 
         // Empty file found but not executed
         assertThat(result.filesFound()).isEqualTo(1);

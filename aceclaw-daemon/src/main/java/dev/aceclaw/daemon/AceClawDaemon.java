@@ -323,15 +323,18 @@ public final class AceClawDaemon {
                 systemPrompt.length(), systemPromptTokens, compactionConfig.effectiveWindowTokens());
 
         // 7. Streaming agent loop (with compaction support)
+        var loopConfig = dev.aceclaw.core.agent.AgentLoopConfig.builder()
+                .maxIterations(config.maxTurns())
+                .build();
         var agentLoop = new StreamingAgentLoop(
                 llmClient, toolRegistry, model, systemPrompt,
-                config.maxTokens(), config.thinkingBudget(), compactor);
+                config.maxTokens(), config.thinkingBudget(), compactor, loopConfig);
 
         // 8. Streaming agent handler
         var agentHandler = new StreamingAgentHandler(
                 sessionManager, agentLoop, toolRegistry, permissionManager, objectMapper);
         agentHandler.setLlmConfig(llmClient, model, systemPrompt);
-        agentHandler.setTokenConfig(config.maxTokens(), config.thinkingBudget());
+        agentHandler.setTokenConfig(config.maxTokens(), config.thinkingBudget(), config.maxTurns());
         agentHandler.setPlannerConfig(config.plannerEnabled(), config.plannerThreshold());
         agentHandler.setCompactor(compactor);
         agentHandler.setMemoryStore(memoryStore, workingDir);
@@ -881,6 +884,7 @@ public final class AceClawDaemon {
                         bootLlmClient, bootToolRegistry,
                         bootModel, bootSystemPrompt,
                         config.maxTokens(), config.thinkingBudget(),
+                        config.maxTurns(),
                         config.bootTimeoutSeconds());
                 if (bootResult.executed()) {
                     log.info("Boot completed: {}", bootResult.summary());

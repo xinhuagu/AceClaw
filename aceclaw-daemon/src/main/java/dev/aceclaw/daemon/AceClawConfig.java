@@ -3,6 +3,7 @@ package dev.aceclaw.daemon;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import dev.aceclaw.core.agent.AgentLoopConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -33,6 +34,7 @@ import java.util.Map;
  *   <li>{@code ANTHROPIC_API_KEY} → apiKey</li>
  *   <li>{@code OPENAI_API_KEY} → apiKey (fallback for non-Anthropic providers)</li>
  *   <li>{@code ACECLAW_MODEL} → model</li>
+ *   <li>{@code ACECLAW_MAX_TURNS} → maxTurns</li>
  *   <li>{@code ACECLAW_LOG_LEVEL} → logLevel</li>
  *   <li>{@code BRAVE_SEARCH_API_KEY} → braveSearchApiKey</li>
  * </ul>
@@ -48,6 +50,7 @@ public final class AceClawConfig {
     private static final String DEFAULT_MODEL = "claude-sonnet-4-5-20250929";
     private static final int DEFAULT_MAX_TOKENS = 16384;
     private static final int DEFAULT_THINKING_BUDGET = 10240;
+    private static final int DEFAULT_MAX_TURNS = AgentLoopConfig.DEFAULT_MAX_ITERATIONS;
     private static final int DEFAULT_CONTEXT_WINDOW = 0;
     private static final String DEFAULT_LOG_LEVEL = "INFO";
     private static final boolean DEFAULT_BOOT_ENABLED = true;
@@ -97,6 +100,7 @@ public final class AceClawConfig {
     private String model;
     private int maxTokens;
     private int thinkingBudget;
+    private int maxTurns;
     private int contextWindowTokens;
     private String logLevel;
     private String braveSearchApiKey;
@@ -145,6 +149,7 @@ public final class AceClawConfig {
         this.model = null; // resolved dynamically via providerModels or LlmClientFactory defaults
         this.maxTokens = DEFAULT_MAX_TOKENS;
         this.thinkingBudget = DEFAULT_THINKING_BUDGET;
+        this.maxTurns = DEFAULT_MAX_TURNS;
         this.contextWindowTokens = DEFAULT_CONTEXT_WINDOW;
         this.logLevel = DEFAULT_LOG_LEVEL;
         this.permissionMode = "normal";
@@ -243,6 +248,14 @@ public final class AceClawConfig {
         var envModel = System.getenv("ACECLAW_MODEL");
         if (envModel != null && !envModel.isBlank()) {
             config.model = envModel;
+        }
+        var envMaxTurns = System.getenv("ACECLAW_MAX_TURNS");
+        if (envMaxTurns != null && !envMaxTurns.isBlank()) {
+            try {
+                config.maxTurns = Math.max(1, Integer.parseInt(envMaxTurns));
+            } catch (NumberFormatException e) {
+                log.warn("Invalid ACECLAW_MAX_TURNS: {}", envMaxTurns);
+            }
         }
         var envLogLevel = System.getenv("ACECLAW_LOG_LEVEL");
         if (envLogLevel != null && !envLogLevel.isBlank()) {
@@ -453,8 +466,8 @@ public final class AceClawConfig {
             config.loadClaudeCliCredentials();
         }
 
-        log.info("Config loaded: provider={}, model={}, maxTokens={}, thinkingBudget={}, contextWindow={}, logLevel={}, baseUrl={}, apiKey={}, refreshToken={}",
-                config.provider, config.model, config.maxTokens, config.thinkingBudget, config.contextWindowTokens, config.logLevel,
+        log.info("Config loaded: provider={}, model={}, maxTokens={}, thinkingBudget={}, maxTurns={}, contextWindow={}, logLevel={}, baseUrl={}, apiKey={}, refreshToken={}",
+                config.provider, config.model, config.maxTokens, config.thinkingBudget, config.maxTurns, config.contextWindowTokens, config.logLevel,
                 config.baseUrl != null ? config.baseUrl : "(default)",
                 config.apiKey != null ? config.apiKey.substring(0, Math.min(15, config.apiKey.length())) + "***" : "(not set)",
                 config.refreshToken != null ? "***" : "(not set)");
@@ -521,6 +534,13 @@ public final class AceClawConfig {
      */
     public int thinkingBudget() {
         return thinkingBudget;
+    }
+
+    /**
+     * Returns the max ReAct iterations per turn.
+     */
+    public int maxTurns() {
+        return maxTurns;
     }
 
     /**
@@ -1006,6 +1026,9 @@ public final class AceClawConfig {
         if (fileConfig.thinkingBudget > 0) {
             this.thinkingBudget = fileConfig.thinkingBudget;
         }
+        if (fileConfig.maxTurns > 0) {
+            this.maxTurns = fileConfig.maxTurns;
+        }
         if (fileConfig.contextWindowTokens > 0) {
             this.contextWindowTokens = fileConfig.contextWindowTokens;
         }
@@ -1158,6 +1181,7 @@ public final class AceClawConfig {
         public String model;
         public int maxTokens;
         public int thinkingBudget;
+        public int maxTurns;
         public int contextWindowTokens;
         public String logLevel;
         public String braveSearchApiKey;

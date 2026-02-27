@@ -77,6 +77,7 @@ public final class BootExecutor {
      * @param systemPrompt   system prompt for the LLM
      * @param maxTokens      max tokens per LLM request
      * @param thinkingBudget thinking budget tokens (0 = disabled)
+     * @param maxTurns       max ReAct iterations per BOOT execution
      * @param timeoutSeconds max seconds for all boot execution
      * @return the boot result (never null)
      */
@@ -84,6 +85,7 @@ public final class BootExecutor {
                                      LlmClient llmClient, ToolRegistry toolRegistry,
                                      String model, String systemPrompt,
                                      int maxTokens, int thinkingBudget,
+                                     int maxTurns,
                                      int timeoutSeconds) {
         long startNanos = System.nanoTime();
 
@@ -102,6 +104,7 @@ public final class BootExecutor {
         var bootConfig = AgentLoopConfig.builder()
                 .sessionId("boot")
                 .permissionChecker(bootPermChecker)
+                .maxIterations(maxTurns)
                 .build();
         var agentLoop = new StreamingAgentLoop(
                 llmClient, toolRegistry, model, systemPrompt,

@@ -179,6 +179,7 @@ public final class StreamingAgentHandler {
         var agentConfig = AgentLoopConfig.builder()
                 .sessionId(sessionId)
                 .metricsCollector(metricsCollector)
+                .maxIterations(maxIterations)
                 .build();
         var permissionAwareLoop = new StreamingAgentLoop(
                 getLlmClient(), permissionAwareRegistry,
@@ -618,6 +619,7 @@ public final class StreamingAgentHandler {
     private String systemPrompt;
     private int maxTokens = 16384;
     private int thinkingBudget = 10240;
+    private int maxIterations = AgentLoopConfig.DEFAULT_MAX_ITERATIONS;
     private MessageCompactor compactor;
     private AutoMemoryStore memoryStore;
     private DailyJournal dailyJournal;
@@ -645,9 +647,10 @@ public final class StreamingAgentHandler {
     /**
      * Sets the token configuration for permission-aware agent loop creation.
      */
-    public void setTokenConfig(int maxTokens, int thinkingBudget) {
+    public void setTokenConfig(int maxTokens, int thinkingBudget, int maxIterations) {
         this.maxTokens = maxTokens;
         this.thinkingBudget = thinkingBudget;
+        this.maxIterations = Math.max(1, maxIterations);
     }
 
     /**

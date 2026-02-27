@@ -31,9 +31,6 @@ public final class AgentLoop {
 
     private static final Logger log = LoggerFactory.getLogger(AgentLoop.class);
 
-    /** Maximum number of tool-use iterations before forcing a stop. */
-    private static final int MAX_ITERATIONS = 25;
-
     private final LlmClient llmClient;
     private final ToolRegistry toolRegistry;
     private final String model;
@@ -97,9 +94,10 @@ public final class AgentLoop {
         int totalOutputTokens = 0;
         int totalCacheCreationTokens = 0;
         int totalCacheReadTokens = 0;
+        int maxIterations = config.effectiveMaxIterations();
 
         try {
-            for (int iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+            for (int iteration = 0; iteration < maxIterations; iteration++) {
                 log.debug("ReAct iteration {} (messages: {})", iteration + 1, allMessages.size());
 
                 // Build and send the LLM request
@@ -145,7 +143,7 @@ public final class AgentLoop {
             }
 
             // Exceeded max iterations — return what we have
-            log.warn("ReAct loop exceeded max iterations ({})", MAX_ITERATIONS);
+            log.warn("ReAct loop exceeded max iterations ({})", maxIterations);
             var totalUsage = new Usage(
                     totalInputTokens, totalOutputTokens,
                     totalCacheCreationTokens, totalCacheReadTokens);

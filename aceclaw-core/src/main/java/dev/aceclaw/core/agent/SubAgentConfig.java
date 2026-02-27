@@ -15,7 +15,7 @@ import java.util.List;
  * @param model               model to use (null = inherit parent model)
  * @param allowedTools        explicit list of allowed tools (empty = all minus disallowed)
  * @param disallowedTools     tools to exclude (always includes "task" for no-nesting)
- * @param maxTurns            maximum ReAct iterations (default 25)
+ * @param maxTurns            maximum ReAct iterations (default from {@link AgentLoopConfig})
  * @param systemPromptTemplate system prompt markdown body for the sub-agent
  */
 public record SubAgentConfig(
@@ -29,7 +29,7 @@ public record SubAgentConfig(
 ) {
 
     /** Default maximum turns for sub-agents. */
-    public static final int DEFAULT_MAX_TURNS = 25;
+    public static final int DEFAULT_MAX_TURNS = AgentLoopConfig.DEFAULT_MAX_ITERATIONS;
 
     public SubAgentConfig {
         if (name == null || name.isBlank()) {

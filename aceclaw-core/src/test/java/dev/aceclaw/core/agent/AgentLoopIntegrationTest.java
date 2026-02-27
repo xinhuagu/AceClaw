@@ -12,11 +12,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -225,6 +223,44 @@ class AgentLoopIntegrationTest {
         var loop = new AgentLoop(llm, registry, "model", null);
         var turn = loop.runTurn("hi", List.of());
         assertThat(turn.text()).isEqualTo("Hello");
+    }
+
+    @Test
+    void maxIterationsFromConfigCapsLoop() throws Exception {
+        var llmCalls = new AtomicInteger();
+        var llm = new LlmClient() {
+            @Override
+            public String provider() {
+                return "test";
+            }
+
+            @Override
+            public String defaultModel() {
+                return "test-model";
+            }
+
+            @Override
+            public LlmResponse sendMessage(LlmRequest request) {
+                int seq = llmCalls.incrementAndGet();
+                var toolUse = new ContentBlock.ToolUse("t" + seq, "missing_tool", "{}");
+                return new LlmResponse(
+                        "id-" + seq, "model", List.of(toolUse), StopReason.TOOL_USE, new Usage(1, 1, 0, 0));
+            }
+
+            @Override
+            public StreamSession streamMessage(LlmRequest request) {
+                throw new UnsupportedOperationException();
+            }
+        };
+
+        var config = AgentLoopConfig.builder()
+                .maxIterations(3)
+                .build();
+        var loop = new AgentLoop(llm, new ToolRegistry(), "model", null, config);
+
+        var turn = loop.runTurn("loop", List.of());
+        assertThat(llmCalls.get()).isEqualTo(3);
+        assertThat(turn.finalStopReason()).isEqualTo(StopReason.END_TURN);
     }
 
     // -- Test helpers --

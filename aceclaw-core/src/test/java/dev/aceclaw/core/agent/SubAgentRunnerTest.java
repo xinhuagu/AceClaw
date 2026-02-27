@@ -10,6 +10,7 @@ import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -115,6 +116,52 @@ class SubAgentRunnerTest {
 
         assertThat(result).isEqualTo("Result from haiku");
         assertThat(mockClient.lastRequest.model()).isEqualTo("haiku-model");
+    }
+
+    @Test
+    void runRespectsConfigMaxTurns() throws Exception {
+        var calls = new AtomicInteger();
+        var loopingClient = new LlmClient() {
+            @Override
+            public LlmResponse sendMessage(LlmRequest request) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public StreamSession streamMessage(LlmRequest request) {
+                calls.incrementAndGet();
+                return new StreamSession() {
+                    @Override
+                    public void onEvent(StreamEventHandler handler) {
+                        handler.onMessageStart(new StreamEvent.MessageStart("msg", "mock"));
+                        handler.onContentBlockStart(
+                                new StreamEvent.ContentBlockStart(0, new ContentBlock.ToolUse("t", "nope", "{}")));
+                        handler.onContentBlockStop(new StreamEvent.ContentBlockStop(0));
+                        handler.onMessageDelta(new StreamEvent.MessageDelta(StopReason.TOOL_USE, new Usage(1, 1)));
+                        handler.onComplete(new StreamEvent.StreamComplete());
+                    }
+
+                    @Override
+                    public void cancel() {}
+                };
+            }
+
+            @Override
+            public String provider() {
+                return "mock";
+            }
+
+            @Override
+            public String defaultModel() {
+                return "mock-model";
+            }
+        };
+
+        var runner = new SubAgentRunner(loopingClient, new ToolRegistry(), "model", tempDir, 4096, 0);
+        var config = new SubAgentConfig("test", "", null, List.of(), List.of(), 2, "prompt");
+
+        runner.run(config, "do stuff", null);
+        assertThat(calls.get()).isEqualTo(2);
     }
 
     @Test
