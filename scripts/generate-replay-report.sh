@@ -366,8 +366,8 @@ if [[ -f "$ANTI_PATTERN_FEEDBACK" ]]; then
   ap_rules_total="$(jq -er 'length' "$ANTI_PATTERN_FEEDBACK" 2>/dev/null || echo 0)"
   ap_blocked_total="$(jq -er '[.[] | (.blockedCount // 0)] | add // 0' "$ANTI_PATTERN_FEEDBACK" 2>/dev/null || echo 0)"
   ap_fp_total="$(jq -er '[.[] | (.falsePositiveCount // 0)] | add // 0' "$ANTI_PATTERN_FEEDBACK" 2>/dev/null || echo 0)"
-  ap_rate_weighted="$(jq -ner --argjson b "$ap_blocked_total" --argjson fp "$ap_fp_total" 'if $b > 0 then ($fp / $b) else null end')"
-  ap_rate_max="$(jq -er '[.[] | select((.blockedCount // 0) > 0) | ((.falsePositiveCount // 0) / .blockedCount)] | max // null' "$ANTI_PATTERN_FEEDBACK" 2>/dev/null || echo "null")"
+  ap_rate_weighted="$(jq -nr --argjson b "$ap_blocked_total" --argjson fp "$ap_fp_total" 'if $b > 0 then ($fp / $b) else null end')"
+  ap_rate_max="$(jq -r '[.[] | select((.blockedCount // 0) > 0) | ((.falsePositiveCount // 0) / .blockedCount)] | max // null' "$ANTI_PATTERN_FEEDBACK" 2>/dev/null || echo "null")"
   ap_status="pending"
   if [[ "$ap_blocked_total" -gt 0 ]]; then
     ap_status="measured"
@@ -414,12 +414,24 @@ promotion_rate=0.0
 demotion_rate=0.0
 rollback_rate=0.0
 
+read_json_number_or_default() {
+  local jq_expr="$1"
+  local input_file="$2"
+  local fallback="$3"
+  local value
+  value="$(jq -s "$jq_expr" "$input_file" 2>/dev/null | tail -n1 || true)"
+  if [[ -z "$value" || ! "$value" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then
+    value="$fallback"
+  fi
+  printf '%s' "$value"
+}
+
 if [[ -f "$CANDIDATE_TRANSITIONS" ]]; then
   transition_source="candidate-transitions"
-  transition_total="$(jq -s 'length' "$CANDIDATE_TRANSITIONS" 2>/dev/null || echo 0)"
-  promotion_count="$(jq -s '[.[] | select((.toState // "") == "PROMOTED")] | length' "$CANDIDATE_TRANSITIONS" 2>/dev/null || echo 0)"
-  demotion_count="$(jq -s '[.[] | select((.toState // "") == "DEMOTED")] | length' "$CANDIDATE_TRANSITIONS" 2>/dev/null || echo 0)"
-  rollback_count="$(jq -s '[.[] | select(((.reasonCode // "") == "MANUAL_ROLLBACK") or ((.reasonCode // "") == "ANTI_PATTERN_FALSE_POSITIVE_ROLLBACK"))] | length' "$CANDIDATE_TRANSITIONS" 2>/dev/null || echo 0)"
+  transition_total="$(read_json_number_or_default 'length' "$CANDIDATE_TRANSITIONS" 0)"
+  promotion_count="$(read_json_number_or_default '[.[] | select((.toState // "") == "PROMOTED")] | length' "$CANDIDATE_TRANSITIONS" 0)"
+  demotion_count="$(read_json_number_or_default '[.[] | select((.toState // "") == "DEMOTED")] | length' "$CANDIDATE_TRANSITIONS" 0)"
+  rollback_count="$(read_json_number_or_default '[.[] | select(((.reasonCode // "") == "MANUAL_ROLLBACK") or ((.reasonCode // "") == "ANTI_PATTERN_FALSE_POSITIVE_ROLLBACK"))] | length' "$CANDIDATE_TRANSITIONS" 0)"
   promotion_rate="$(jq -ner --argjson p "$promotion_count" --argjson t "$transition_total" 'if $t > 0 then ($p / $t) else 0.0 end')"
   demotion_rate="$(jq -ner --argjson d "$demotion_count" --argjson t "$transition_total" 'if $t > 0 then ($d / $t) else 0.0 end')"
   rollback_rate="$(jq -ner --argjson r "$rollback_count" --argjson p "$promotion_count" 'if $p > 0 then ($r / $p) else 0.0 end')"
@@ -456,7 +468,7 @@ jq \
   | .metrics.anti_pattern_false_positive_rate = {
     value: (if ($ap_rate == null) then 0.0 else $ap_rate end),
     target: 0.50,
-    status: "measured"
+    status: (if $ap_status == "" then "measured" else $ap_status end)
   }
   | .diagnostics.learning_lifecycle_source = $transition_source
   | .diagnostics.learning_lifecycle_transition_total = $transition_total
