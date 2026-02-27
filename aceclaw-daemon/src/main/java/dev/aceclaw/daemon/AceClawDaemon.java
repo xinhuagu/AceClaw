@@ -8,6 +8,7 @@ import dev.aceclaw.core.util.WaitSupport;
 import dev.aceclaw.core.llm.LlmClient;
 import dev.aceclaw.daemon.cron.CronScheduler;
 import dev.aceclaw.daemon.cron.JobStore;
+import dev.aceclaw.daemon.cron.CronTool;
 import dev.aceclaw.daemon.heartbeat.HeartbeatRunner;
 import dev.aceclaw.infra.event.EventBus;
 import dev.aceclaw.infra.health.*;
@@ -60,6 +61,7 @@ public final class AceClawDaemon {
     private final SessionHistoryStore historyStore;
     private final AutoMemoryStore memoryStore;
     private final MarkdownMemoryStore markdownStore;
+    private final JobStore cronJobStore;
     private final EventBus eventBus;
     private final HealthMonitor healthMonitor;
     private final RequestRouter router;
@@ -119,6 +121,12 @@ public final class AceClawDaemon {
             log.warn("Failed to initialize markdown memory store: {}", e.getMessage());
         }
         this.markdownStore = mds;
+        this.cronJobStore = new JobStore(homeDir);
+        try {
+            this.cronJobStore.load();
+        } catch (java.io.IOException e) {
+            log.warn("Failed to preload cron job store: {}", e.getMessage());
+        }
 
         this.router = new RequestRouter(sessionManager, objectMapper);
         this.connectionBridge = new ConnectionBridge(router, objectMapper);
@@ -178,6 +186,8 @@ public final class AceClawDaemon {
         toolRegistry.register(new GrepSearchTool(workingDir));
         toolRegistry.register(new ListDirTool(workingDir));
         toolRegistry.register(new WebFetchTool(workingDir));
+        toolRegistry.register(new CronTool(
+                cronJobStore, () -> cronScheduler != null && cronScheduler.isRunning()));
 
         // Memory management tool (agent can actively save/search/list memories)
         if (memoryStore != null) {
@@ -893,9 +903,8 @@ public final class AceClawDaemon {
         // 5. Start cron scheduler (after listener is ready, jobs run in background)
         if (config.schedulerEnabled()) {
             try {
-                var jobStore = new JobStore(homeDir);
                 cronScheduler = new CronScheduler(
-                        jobStore, bootLlmClient, bootToolRegistry,
+                        cronJobStore, bootLlmClient, bootToolRegistry,
                         bootModel, bootSystemPrompt,
                         config.maxTokens(), config.thinkingBudget(),
                         eventBus, config.schedulerTickSeconds());
