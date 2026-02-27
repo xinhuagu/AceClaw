@@ -1,0 +1,29 @@
+{
+  "metadata": {
+    "schema": "learning-quality-gate-baseline-v1",
+    "updated_at": "2026-02-26T00:00:00Z",
+    "owner": "continuous-learning"
+  },
+  "metrics": {
+    "promotion_rate": {
+      "target": 0.00,
+      "direction": "min"
+    },
+    "demotion_rate": {
+      "target": 0.35,
+      "direction": "max"
+    },
+    "anti_pattern_false_positive_rate": {
+      "target": 0.50,
+      "direction": "max"
+    },
+    "rollback_rate": {
+      "target": 0.20,
+      "direction": "max"
+    }
+  },
+  "notes": [
+    "Used by scripts/replay-quality-gate.sh as default threshold source.",
+    "Tune values from 7-day baseline on main before tightening."
+  ]
+}

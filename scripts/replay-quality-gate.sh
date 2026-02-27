@@ -2,6 +2,8 @@
 set -euo pipefail
 
 REPORT=""
+BASELINE=""
+BASELINE_EXPLICIT=0
 STRICT=0
 
 MIN_SUCCESS_RATE_DELTA="0.00"
@@ -9,9 +11,16 @@ MAX_TOKEN_DELTA="200.00"
 MAX_LATENCY_DELTA_MS="500.00"
 MAX_FAILURE_DISTRIBUTION_DELTA="0.15"
 MAX_TOKEN_ESTIMATION_ERROR_RATIO="0.25"
+MIN_PROMOTION_RATE="0.00"
+MAX_DEMOTION_RATE="0.35"
+MAX_ROLLBACK_RATE="0.20"
 FAIL_ON_LATENCY="false"
 ENFORCE_ANTI_PATTERN_FP_RATE="false"
 MAX_ANTI_PATTERN_FP_RATE="0.50"
+MIN_PROMOTION_RATE_CLI=0
+MAX_DEMOTION_RATE_CLI=0
+MAX_ROLLBACK_RATE_CLI=0
+MAX_ANTI_PATTERN_FP_RATE_CLI=0
 
 usage() {
   cat <<USAGE
@@ -20,12 +29,16 @@ Usage: ./scripts/replay-quality-gate.sh [options]
 Options:
   --report <path>                        Replay report JSON path.
   --strict                               Fail when report is missing.
+  --baseline <path>                      Optional baseline JSON path for target defaults.
   --min-success-rate-delta <number>      Default: 0.00
   --max-token-delta <number>             Default: 200.00
   --max-latency-delta-ms <number>        Default: 500.00
   --fail-on-latency <true|false>         Default: false
   --max-failure-dist-delta <number>      Default: 0.15
   --max-token-estimation-error-ratio <number>  Default: 0.25
+  --min-promotion-rate <number>          Default: 0.00
+  --max-demotion-rate <number>           Default: 0.35
+  --max-rollback-rate <number>           Default: 0.20
   --enforce-anti-pattern-fp-rate <true|false>  Default: false
   --max-anti-pattern-fp-rate <number>     Default: 0.50
   --help                                 Show this help.
@@ -41,6 +54,11 @@ while [[ $# -gt 0 ]]; do
     --strict)
       STRICT=1
       shift
+      ;;
+    --baseline)
+      BASELINE="$2"
+      BASELINE_EXPLICIT=1
+      shift 2
       ;;
     --min-success-rate-delta)
       MIN_SUCCESS_RATE_DELTA="$2"
@@ -66,12 +84,28 @@ while [[ $# -gt 0 ]]; do
       MAX_TOKEN_ESTIMATION_ERROR_RATIO="$2"
       shift 2
       ;;
+    --min-promotion-rate)
+      MIN_PROMOTION_RATE="$2"
+      MIN_PROMOTION_RATE_CLI=1
+      shift 2
+      ;;
+    --max-demotion-rate)
+      MAX_DEMOTION_RATE="$2"
+      MAX_DEMOTION_RATE_CLI=1
+      shift 2
+      ;;
+    --max-rollback-rate)
+      MAX_ROLLBACK_RATE="$2"
+      MAX_ROLLBACK_RATE_CLI=1
+      shift 2
+      ;;
     --enforce-anti-pattern-fp-rate)
       ENFORCE_ANTI_PATTERN_FP_RATE="$2"
       shift 2
       ;;
     --max-anti-pattern-fp-rate)
       MAX_ANTI_PATTERN_FP_RATE="$2"
+      MAX_ANTI_PATTERN_FP_RATE_CLI=1
       shift 2
       ;;
     --help)
@@ -89,10 +123,41 @@ done
 if [[ -z "$REPORT" ]]; then
   REPORT=".aceclaw/metrics/continuous-learning/replay-latest.json"
 fi
+if [[ -z "$BASELINE" ]]; then
+  BASELINE="docs/reports/samples/learning-quality-gate-baseline.json"
+fi
+if [[ "$BASELINE_EXPLICIT" -eq 1 && ! -f "$BASELINE" ]]; then
+  echo "Replay quality gate failed: missing baseline at $BASELINE" >&2
+  exit 1
+fi
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "replay-quality-gate requires jq but it was not found in PATH." >&2
   exit 1
+fi
+
+if [[ -f "$BASELINE" ]]; then
+  baseline_target() {
+    local key="$1"
+    jq -er --arg key "$key" '.metrics[$key].target' "$BASELINE" 2>/dev/null || true
+  }
+  baseline_min_promotion_rate="$(baseline_target "promotion_rate")"
+  baseline_max_demotion_rate="$(baseline_target "demotion_rate")"
+  baseline_max_anti_pattern_fp_rate="$(baseline_target "anti_pattern_false_positive_rate")"
+  baseline_max_rollback_rate="$(baseline_target "rollback_rate")"
+
+  if [[ "$MIN_PROMOTION_RATE_CLI" -eq 0 && -n "$baseline_min_promotion_rate" ]]; then
+    MIN_PROMOTION_RATE="$baseline_min_promotion_rate"
+  fi
+  if [[ "$MAX_DEMOTION_RATE_CLI" -eq 0 && -n "$baseline_max_demotion_rate" ]]; then
+    MAX_DEMOTION_RATE="$baseline_max_demotion_rate"
+  fi
+  if [[ "$MAX_ANTI_PATTERN_FP_RATE_CLI" -eq 0 && -n "$baseline_max_anti_pattern_fp_rate" ]]; then
+    MAX_ANTI_PATTERN_FP_RATE="$baseline_max_anti_pattern_fp_rate"
+  fi
+  if [[ "$MAX_ROLLBACK_RATE_CLI" -eq 0 && -n "$baseline_max_rollback_rate" ]]; then
+    MAX_ROLLBACK_RATE="$baseline_max_rollback_rate"
+  fi
 fi
 
 if [[ ! -f "$REPORT" ]]; then
@@ -145,10 +210,15 @@ token_delta="$(ensure_measured_metric "replay_token_delta")"
 latency_delta_ms="$(ensure_measured_metric "replay_latency_delta_ms")"
 failure_dist_delta="$(ensure_measured_metric "replay_failure_distribution_delta")"
 token_estimation_error_ratio_max="$(ensure_measured_metric "token_estimation_error_ratio_max")"
+promotion_rate="$(ensure_measured_metric "promotion_rate")"
+demotion_rate="$(ensure_measured_metric "demotion_rate")"
+rollback_rate="$(ensure_measured_metric "rollback_rate")"
 anti_pattern_fp_rate_weighted="$(read_metric_field "anti_pattern_gate_false_positive_rate_weighted" "value" 2>/dev/null || echo "null")"
-anti_pattern_fp_rate_status="$(read_metric_field "anti_pattern_gate_false_positive_rate_weighted" "status" 2>/dev/null || echo "pending")"
+anti_pattern_fp_rate_weighted_status="$(read_metric_field "anti_pattern_gate_false_positive_rate_weighted" "status" 2>/dev/null || echo "pending")"
 anti_pattern_fp_rate_max="$(read_metric_field "anti_pattern_gate_false_positive_rate_max" "value" 2>/dev/null || echo "null")"
 anti_pattern_fp_rate_max_status="$(read_metric_field "anti_pattern_gate_false_positive_rate_max" "status" 2>/dev/null || echo "pending")"
+canonical_anti_pattern_fp_rate="$(read_metric_field "anti_pattern_false_positive_rate" "value" 2>/dev/null || echo "null")"
+canonical_anti_pattern_fp_status="$(read_metric_field "anti_pattern_false_positive_rate" "status" 2>/dev/null || echo "pending")"
 
 if ! compare "$success_rate_delta >= $MIN_SUCCESS_RATE_DELTA"; then
   echo "Replay quality gate failed: replay_success_rate_delta=$success_rate_delta < $MIN_SUCCESS_RATE_DELTA" >&2
@@ -173,21 +243,31 @@ if ! compare "$token_estimation_error_ratio_max <= $MAX_TOKEN_ESTIMATION_ERROR_R
   echo "Replay quality gate failed: token_estimation_error_ratio_max=$token_estimation_error_ratio_max > $MAX_TOKEN_ESTIMATION_ERROR_RATIO" >&2
   exit 1
 fi
+if ! compare "$promotion_rate >= $MIN_PROMOTION_RATE"; then
+  echo "Replay quality gate failed: promotion_rate=$promotion_rate < $MIN_PROMOTION_RATE" >&2
+  exit 1
+fi
+if ! compare "$demotion_rate <= $MAX_DEMOTION_RATE"; then
+  echo "Replay quality gate failed: demotion_rate=$demotion_rate > $MAX_DEMOTION_RATE" >&2
+  exit 1
+fi
+if ! compare "$rollback_rate <= $MAX_ROLLBACK_RATE"; then
+  echo "Replay quality gate failed: rollback_rate=$rollback_rate > $MAX_ROLLBACK_RATE" >&2
+  exit 1
+fi
 if [[ "$ENFORCE_ANTI_PATTERN_FP_RATE" == "true" ]]; then
-  if [[ "$anti_pattern_fp_rate_status" != "measured" || "$anti_pattern_fp_rate_weighted" == "null" ]]; then
-    echo "Replay quality gate failed: anti_pattern_gate_false_positive_rate_weighted is not measured." >&2
+  effective_anti_pattern_fp_rate="null"
+  if [[ "$canonical_anti_pattern_fp_status" == "measured" && "$canonical_anti_pattern_fp_rate" != "null" ]]; then
+    effective_anti_pattern_fp_rate="$canonical_anti_pattern_fp_rate"
+  elif [[ "$anti_pattern_fp_rate_weighted_status" == "measured" && "$anti_pattern_fp_rate_weighted" != "null" ]]; then
+    effective_anti_pattern_fp_rate="$anti_pattern_fp_rate_weighted"
+  fi
+  if [[ "$effective_anti_pattern_fp_rate" == "null" ]]; then
+    echo "Replay quality gate failed: anti_pattern_false_positive_rate is not measured." >&2
     exit 1
   fi
-  if [[ "$anti_pattern_fp_rate_max_status" != "measured" || "$anti_pattern_fp_rate_max" == "null" ]]; then
-    echo "Replay quality gate failed: anti_pattern_gate_false_positive_rate_max is not measured." >&2
-    exit 1
-  fi
-  if ! compare "$anti_pattern_fp_rate_weighted <= $MAX_ANTI_PATTERN_FP_RATE"; then
-    echo "Replay quality gate failed: anti_pattern_gate_false_positive_rate_weighted=$anti_pattern_fp_rate_weighted > $MAX_ANTI_PATTERN_FP_RATE" >&2
-    exit 1
-  fi
-  if ! compare "$anti_pattern_fp_rate_max <= $MAX_ANTI_PATTERN_FP_RATE"; then
-    echo "Replay quality gate failed: anti_pattern_gate_false_positive_rate_max=$anti_pattern_fp_rate_max > $MAX_ANTI_PATTERN_FP_RATE" >&2
+  if ! compare "$effective_anti_pattern_fp_rate <= $MAX_ANTI_PATTERN_FP_RATE"; then
+    echo "Replay quality gate failed: anti_pattern_false_positive_rate=$effective_anti_pattern_fp_rate > $MAX_ANTI_PATTERN_FP_RATE" >&2
     exit 1
   fi
 fi
@@ -198,7 +278,13 @@ echo "  replay_token_delta=$token_delta (max $MAX_TOKEN_DELTA)"
 echo "  replay_latency_delta_ms=$latency_delta_ms (max $MAX_LATENCY_DELTA_MS)"
 echo "  replay_failure_distribution_delta=$failure_dist_delta (max $MAX_FAILURE_DISTRIBUTION_DELTA)"
 echo "  token_estimation_error_ratio_max=$token_estimation_error_ratio_max (max $MAX_TOKEN_ESTIMATION_ERROR_RATIO)"
-if [[ "$anti_pattern_fp_rate_status" == "measured" && "$anti_pattern_fp_rate_weighted" != "null" ]]; then
+echo "  promotion_rate=$promotion_rate (min $MIN_PROMOTION_RATE)"
+echo "  demotion_rate=$demotion_rate (max $MAX_DEMOTION_RATE)"
+echo "  rollback_rate=$rollback_rate (max $MAX_ROLLBACK_RATE)"
+if [[ "$canonical_anti_pattern_fp_status" == "measured" && "$canonical_anti_pattern_fp_rate" != "null" ]]; then
+  echo "  anti_pattern_false_positive_rate=$canonical_anti_pattern_fp_rate (max $MAX_ANTI_PATTERN_FP_RATE)"
+fi
+if [[ "$anti_pattern_fp_rate_weighted_status" == "measured" && "$anti_pattern_fp_rate_weighted" != "null" ]]; then
   echo "  anti_pattern_gate_false_positive_rate_weighted=$anti_pattern_fp_rate_weighted (max $MAX_ANTI_PATTERN_FP_RATE)"
 fi
 if [[ "$anti_pattern_fp_rate_max_status" == "measured" && "$anti_pattern_fp_rate_max" != "null" ]]; then

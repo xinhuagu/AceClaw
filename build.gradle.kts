@@ -114,9 +114,14 @@ tasks.register<Exec>("replayQualityGate") {
             .orElse(false)
     val maxFailureDistDelta = providers.gradleProperty("replayMaxFailureDistDelta").orElse("0.15")
     val maxTokenEstimationErrorRatio = providers.gradleProperty("replayMaxTokenEstimationErrorRatio").orElse("0.25")
+    val replayBaseline = providers.gradleProperty("replayBaseline")
+            .orElse("${rootDir}/docs/reports/samples/learning-quality-gate-baseline.json")
+    val minPromotionRate = providers.gradleProperty("replayMinPromotionRate").orElse("0.00")
+    val maxDemotionRate = providers.gradleProperty("replayMaxDemotionRate").orElse("0.35")
+    val maxRollbackRate = providers.gradleProperty("replayMaxRollbackRate").orElse("0.20")
     val enforceAntiPatternFpRate = providers.gradleProperty("replayEnforceAntiPatternFalsePositiveRate")
             .map { it.toBooleanStrictOrNull() ?: false }
-            .orElse(false)
+            .orElse(true)
     val maxAntiPatternFpRate = providers.gradleProperty("replayMaxAntiPatternFalsePositiveRate").orElse("0.50")
 
     commandLine(
@@ -128,6 +133,10 @@ tasks.register<Exec>("replayQualityGate") {
             "--fail-on-latency", failOnLatency.get().toString(),
             "--max-failure-dist-delta", maxFailureDistDelta.get(),
             "--max-token-estimation-error-ratio", maxTokenEstimationErrorRatio.get(),
+            "--baseline", replayBaseline.get(),
+            "--min-promotion-rate", minPromotionRate.get(),
+            "--max-demotion-rate", maxDemotionRate.get(),
+            "--max-rollback-rate", maxRollbackRate.get(),
             "--enforce-anti-pattern-fp-rate", enforceAntiPatternFpRate.get().toString(),
             "--max-anti-pattern-fp-rate", maxAntiPatternFpRate.get()
     )
@@ -147,6 +156,8 @@ tasks.register<Exec>("generateReplayReport") {
             .orElse("${rootDir}/.aceclaw/metrics/continuous-learning/replay-latest.json")
     val replayAntiPatternFeedbackPath = providers.gradleProperty("replayAntiPatternFeedbackPath")
             .orElse("${rootDir}/.aceclaw/metrics/continuous-learning/anti-pattern-gate-feedback.json")
+    val replayCandidateTransitionsPath = providers.gradleProperty("replayCandidateTransitionsPath")
+            .orElse("${rootDir}/.aceclaw/memory/candidate-transitions.jsonl")
 
     commandLine(
             "bash",
@@ -154,6 +165,7 @@ tasks.register<Exec>("generateReplayReport") {
             "--input", replayCasesInput.get(),
             "--manifest", replayCasesManifestInput.get(),
             "--anti-pattern-feedback", replayAntiPatternFeedbackPath.get(),
+            "--candidate-transitions", replayCandidateTransitionsPath.get(),
             "--output", replayReport.get()
     )
 }

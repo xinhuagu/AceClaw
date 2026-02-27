@@ -350,14 +350,22 @@ CI guardrail job:
 Replay gate configuration:
 
 - Default report path: `.aceclaw/metrics/continuous-learning/replay-latest.json`
+- Default baseline thresholds file: `docs/reports/samples/learning-quality-gate-baseline.json`
 - Strict mode is the default for `preMergeCheck` (missing report fails the build).
 - Local override (only for exploratory runs): `./gradlew preMergeCheck -PreplayGateStrict=false`
 - Custom report path: `./gradlew preMergeCheck -PreplayReport=/path/to/replay.json`
+- Baseline override: `./gradlew preMergeCheck -PreplayBaseline=/path/to/baseline.json`
 - CI uses strict mode and can override report path with `ACECLAW_REPLAY_REPORT_PATH`.
 - CI first runs `generateReplayCases`, then `generateReplayReport`.
-- CI default is metrics collection for anti-pattern false-positive gate; strict enforcement is opt-in:
-  - `ACECLAW_REPLAY_ENFORCE_ANTI_PATTERN_FP_RATE=false`
+- CI default enforces anti-pattern false-positive gate:
+  - `ACECLAW_REPLAY_ENFORCE_ANTI_PATTERN_FP_RATE=true`
   - threshold `ACECLAW_REPLAY_MAX_ANTI_PATTERN_FP_RATE=0.50`
+- Canonical hard-gate metrics:
+  - `promotion_rate` (min)
+  - `demotion_rate` (max)
+  - `anti_pattern_false_positive_rate` (max)
+  - `rollback_rate` (max)
+- See `docs/continuous-learning-quality-gates.md` for formulas and baseline update process.
 - replay cases input/output path:
   - `ACECLAW_REPLAY_INPUT_PATH` (recommended), or
   - default `.aceclaw/metrics/continuous-learning/replay-cases.json`

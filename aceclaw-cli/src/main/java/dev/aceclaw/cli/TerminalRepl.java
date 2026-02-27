@@ -1026,6 +1026,22 @@ public final class TerminalRepl {
             JsonNode root = statusMapper.readTree(replayPath.toFile());
             if (root == null) return "pending";
             JsonNode metrics = root.path("metrics");
+            JsonNode promotionRate = metrics.path("promotion_rate");
+            JsonNode demotionRate = metrics.path("demotion_rate");
+            JsonNode antiPatternFpRate = metrics.path("anti_pattern_false_positive_rate");
+            JsonNode rollbackRate = metrics.path("rollback_rate");
+            if (isMeasuredNumber(promotionRate)
+                    && isMeasuredNumber(demotionRate)
+                    && isMeasuredNumber(antiPatternFpRate)
+                    && isMeasuredNumber(rollbackRate)) {
+                return String.format(
+                        java.util.Locale.ROOT,
+                        "measured:p=%.2f,d=%.2f,fp=%.2f,r=%.2f",
+                        promotionRate.path("value").asDouble(),
+                        demotionRate.path("value").asDouble(),
+                        antiPatternFpRate.path("value").asDouble(),
+                        rollbackRate.path("value").asDouble());
+            }
             JsonNode tokenErr = metrics.path("token_estimation_error_ratio_max");
             String status = tokenErr.path("status").asText("");
             JsonNode valueNode = tokenErr.path("value");
@@ -1037,6 +1053,17 @@ public final class TerminalRepl {
             log.debug("Failed to parse replay report: {}", e.getMessage());
             return "read-error";
         }
+    }
+
+    private static boolean isMeasuredNumber(JsonNode metric) {
+        if (metric == null || metric.isMissingNode()) {
+            return false;
+        }
+        if (!"measured".equalsIgnoreCase(metric.path("status").asText(""))) {
+            return false;
+        }
+        JsonNode value = metric.path("value");
+        return value.isNumber();
     }
 
     private String candidateStatusSummary(Path candidatesPath) {

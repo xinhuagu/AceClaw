@@ -164,6 +164,27 @@ class TerminalReplTest {
     }
 
     @Test
+    void replayStatusSummary_coreMetricsPresent_returnsCompactCoreSummary() throws Exception {
+        var statusRepl = newReplForProject(tempDir);
+        Path replay = tempDir.resolve(".aceclaw/metrics/continuous-learning/replay-latest.json");
+        Files.createDirectories(replay.getParent());
+        Files.writeString(replay, """
+                {
+                  "metrics": {
+                    "promotion_rate": {"value": 0.21, "status": "measured"},
+                    "demotion_rate": {"value": 0.07, "status": "measured"},
+                    "anti_pattern_false_positive_rate": {"value": 0.04, "status": "measured"},
+                    "rollback_rate": {"value": 0.02, "status": "measured"}
+                  }
+                }
+                """);
+
+        String summary = (String) invokePrivate(statusRepl, "replayStatusSummary",
+                new Class<?>[]{Path.class}, replay);
+        assertThat(summary).isEqualTo("measured:p=0.21,d=0.07,fp=0.04,r=0.02");
+    }
+
+    @Test
     void releaseStatusSummary_emptyFile_returnsNone() throws Exception {
         var statusRepl = newReplForProject(tempDir);
         Path state = tempDir.resolve(".aceclaw/metrics/continuous-learning/skill-release-state.json");
@@ -254,6 +275,10 @@ class TerminalReplTest {
         Files.writeString(replay, """
                 {
                   "metrics": {
+                    "promotion_rate": {"value": 0.25, "status": "measured"},
+                    "demotion_rate": {"value": 0.05, "status": "measured"},
+                    "anti_pattern_false_positive_rate": {"value": 0.03, "status": "measured"},
+                    "rollback_rate": {"value": 0.01, "status": "measured"},
                     "token_estimation_error_ratio_max": {"value": 0.12, "status": "measured"}
                   }
                 }

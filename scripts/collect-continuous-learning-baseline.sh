@@ -77,6 +77,10 @@ target_for_key() {
     replay_token_delta) echo "0.00" ;;
     replay_latency_delta_ms) echo "0.00" ;;
     replay_failure_distribution_delta) echo "0.15" ;;
+    promotion_rate) echo "0.00" ;;
+    demotion_rate) echo "0.35" ;;
+    anti_pattern_false_positive_rate) echo "0.50" ;;
+    rollback_rate) echo "0.20" ;;
     *)
       echo "Unknown metric key: $1" >&2
       exit 1
@@ -193,6 +197,10 @@ metric_keys=(
   replay_token_delta
   replay_latency_delta_ms
   replay_failure_distribution_delta
+  promotion_rate
+  demotion_rate
+  anti_pattern_false_positive_rate
+  rollback_rate
 )
 
 {
