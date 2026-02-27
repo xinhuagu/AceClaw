@@ -479,6 +479,12 @@ public final class StreamingAgentHandler {
             continuationNode.put("reason", adaptive.reason());
             continuationNode.put("stopped_by_budget", adaptive.stoppedByBudget());
             result.set("continuation", continuationNode);
+
+            var metricsNode = objectMapper.createObjectNode();
+            metricsNode.put("turns_used", adaptive.segmentIndex());
+            metricsNode.put("continuation_count", adaptive.continuationCount());
+            metricsNode.put("no_progress_stops", "no_progress_stop".equals(adaptive.reason()) ? 1 : 0);
+            result.set("metrics", metricsNode);
         }
 
         log.info("Streaming turn complete: sessionId={}, stopReason={}, tokens={}, cancelled={}, compacted={}",
@@ -755,7 +761,7 @@ public final class StreamingAgentHandler {
     private int maxTokens = 16384;
     private int thinkingBudget = 10240;
     private int maxIterations = AgentLoopConfig.DEFAULT_MAX_ITERATIONS;
-    private boolean adaptiveContinuationEnabled = false;
+    private boolean adaptiveContinuationEnabled = true;
     private int adaptiveContinuationMaxSegments = 3;
     private int adaptiveContinuationNoProgressThreshold = 2;
     private int adaptiveContinuationMaxTotalTokens = 0;

@@ -56,7 +56,7 @@ public final class AceClawConfig {
     private static final int DEFAULT_MAX_TOKENS = 16384;
     private static final int DEFAULT_THINKING_BUDGET = 10240;
     private static final int DEFAULT_MAX_TURNS = AgentLoopConfig.DEFAULT_MAX_ITERATIONS;
-    private static final boolean DEFAULT_ADAPTIVE_CONTINUATION_ENABLED = false;
+    private static final boolean DEFAULT_ADAPTIVE_CONTINUATION_ENABLED = true;
     private static final int DEFAULT_ADAPTIVE_CONTINUATION_MAX_SEGMENTS = 3;
     private static final int DEFAULT_ADAPTIVE_CONTINUATION_NO_PROGRESS_THRESHOLD = 2;
     private static final int DEFAULT_ADAPTIVE_CONTINUATION_MAX_TOTAL_TOKENS = 0;
