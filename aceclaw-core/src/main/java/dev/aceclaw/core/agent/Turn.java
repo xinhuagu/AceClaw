@@ -13,12 +13,14 @@ import java.util.List;
  * @param finalStopReason  the stop reason from the last LLM call
  * @param totalUsage       aggregated token usage across all LLM calls in this turn
  * @param compactionResult context compaction result, or null if no compaction occurred
+ * @param maxIterationsReached whether the loop hit max-iterations guardrail
  */
 public record Turn(
         List<Message> newMessages,
         StopReason finalStopReason,
         Usage totalUsage,
-        CompactionResult compactionResult
+        CompactionResult compactionResult,
+        boolean maxIterationsReached
 ) {
 
     public Turn {
@@ -29,7 +31,15 @@ public record Turn(
      * Creates a turn result without compaction info (backward-compatible).
      */
     public Turn(List<Message> newMessages, StopReason finalStopReason, Usage totalUsage) {
-        this(newMessages, finalStopReason, totalUsage, null);
+        this(newMessages, finalStopReason, totalUsage, null, false);
+    }
+
+    /**
+     * Creates a turn result with optional compaction info (backward-compatible).
+     */
+    public Turn(List<Message> newMessages, StopReason finalStopReason, Usage totalUsage,
+                CompactionResult compactionResult) {
+        this(newMessages, finalStopReason, totalUsage, compactionResult, false);
     }
 
     /**

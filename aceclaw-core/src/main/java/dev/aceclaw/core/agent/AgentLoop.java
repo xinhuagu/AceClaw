@@ -147,7 +147,7 @@ public final class AgentLoop {
             var totalUsage = new Usage(
                     totalInputTokens, totalOutputTokens,
                     totalCacheCreationTokens, totalCacheReadTokens);
-            var turn = new Turn(newMessages, StopReason.END_TURN, totalUsage);
+            var turn = new Turn(newMessages, StopReason.END_TURN, totalUsage, null, true);
             long durationMs = System.currentTimeMillis() - turnStart;
             publishEvent(new AgentEvent.TurnCompleted(
                     config.sessionId(), turnNumber, durationMs, Instant.now()));

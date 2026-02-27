@@ -275,7 +275,7 @@ public final class StreamingAgentLoop {
             var totalUsage = new Usage(
                     totalInputTokens, totalOutputTokens,
                     totalCacheCreationTokens, totalCacheReadTokens);
-            var turn = new Turn(newMessages, StopReason.END_TURN, totalUsage, compactionResult);
+            var turn = new Turn(newMessages, StopReason.END_TURN, totalUsage, compactionResult, true);
             publishTurnCompleted(turnNumber, turnStart);
             return turn;
         } catch (LlmException e) {

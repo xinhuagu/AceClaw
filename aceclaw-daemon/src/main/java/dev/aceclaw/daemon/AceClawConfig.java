@@ -35,6 +35,11 @@ import java.util.Map;
  *   <li>{@code OPENAI_API_KEY} → apiKey (fallback for non-Anthropic providers)</li>
  *   <li>{@code ACECLAW_MODEL} → model</li>
  *   <li>{@code ACECLAW_MAX_TURNS} → maxTurns</li>
+ *   <li>{@code ACECLAW_ADAPTIVE_CONTINUATION} → adaptiveContinuationEnabled</li>
+ *   <li>{@code ACECLAW_ADAPTIVE_CONTINUATION_MAX_SEGMENTS} → adaptiveContinuationMaxSegments</li>
+ *   <li>{@code ACECLAW_ADAPTIVE_CONTINUATION_NO_PROGRESS_THRESHOLD} → adaptiveContinuationNoProgressThreshold</li>
+ *   <li>{@code ACECLAW_ADAPTIVE_CONTINUATION_MAX_TOTAL_TOKENS} → adaptiveContinuationMaxTotalTokens</li>
+ *   <li>{@code ACECLAW_ADAPTIVE_CONTINUATION_MAX_WALL_CLOCK_SECONDS} → adaptiveContinuationMaxWallClockSeconds</li>
  *   <li>{@code ACECLAW_LOG_LEVEL} → logLevel</li>
  *   <li>{@code BRAVE_SEARCH_API_KEY} → braveSearchApiKey</li>
  * </ul>
@@ -51,6 +56,11 @@ public final class AceClawConfig {
     private static final int DEFAULT_MAX_TOKENS = 16384;
     private static final int DEFAULT_THINKING_BUDGET = 10240;
     private static final int DEFAULT_MAX_TURNS = AgentLoopConfig.DEFAULT_MAX_ITERATIONS;
+    private static final boolean DEFAULT_ADAPTIVE_CONTINUATION_ENABLED = false;
+    private static final int DEFAULT_ADAPTIVE_CONTINUATION_MAX_SEGMENTS = 3;
+    private static final int DEFAULT_ADAPTIVE_CONTINUATION_NO_PROGRESS_THRESHOLD = 2;
+    private static final int DEFAULT_ADAPTIVE_CONTINUATION_MAX_TOTAL_TOKENS = 0;
+    private static final int DEFAULT_ADAPTIVE_CONTINUATION_MAX_WALL_CLOCK_SECONDS = 0;
     private static final int DEFAULT_CONTEXT_WINDOW = 0;
     private static final String DEFAULT_LOG_LEVEL = "INFO";
     private static final boolean DEFAULT_BOOT_ENABLED = true;
@@ -101,6 +111,11 @@ public final class AceClawConfig {
     private int maxTokens;
     private int thinkingBudget;
     private int maxTurns;
+    private boolean adaptiveContinuationEnabled;
+    private int adaptiveContinuationMaxSegments;
+    private int adaptiveContinuationNoProgressThreshold;
+    private int adaptiveContinuationMaxTotalTokens;
+    private int adaptiveContinuationMaxWallClockSeconds;
     private int contextWindowTokens;
     private String logLevel;
     private String braveSearchApiKey;
@@ -150,6 +165,11 @@ public final class AceClawConfig {
         this.maxTokens = DEFAULT_MAX_TOKENS;
         this.thinkingBudget = DEFAULT_THINKING_BUDGET;
         this.maxTurns = DEFAULT_MAX_TURNS;
+        this.adaptiveContinuationEnabled = DEFAULT_ADAPTIVE_CONTINUATION_ENABLED;
+        this.adaptiveContinuationMaxSegments = DEFAULT_ADAPTIVE_CONTINUATION_MAX_SEGMENTS;
+        this.adaptiveContinuationNoProgressThreshold = DEFAULT_ADAPTIVE_CONTINUATION_NO_PROGRESS_THRESHOLD;
+        this.adaptiveContinuationMaxTotalTokens = DEFAULT_ADAPTIVE_CONTINUATION_MAX_TOTAL_TOKENS;
+        this.adaptiveContinuationMaxWallClockSeconds = DEFAULT_ADAPTIVE_CONTINUATION_MAX_WALL_CLOCK_SECONDS;
         this.contextWindowTokens = DEFAULT_CONTEXT_WINDOW;
         this.logLevel = DEFAULT_LOG_LEVEL;
         this.permissionMode = "normal";
@@ -255,6 +275,42 @@ public final class AceClawConfig {
                 config.maxTurns = Math.max(1, Integer.parseInt(envMaxTurns));
             } catch (NumberFormatException e) {
                 log.warn("Invalid ACECLAW_MAX_TURNS: {}", envMaxTurns);
+            }
+        }
+        var envAdaptiveContinuation = System.getenv("ACECLAW_ADAPTIVE_CONTINUATION");
+        if (envAdaptiveContinuation != null && !envAdaptiveContinuation.isBlank()) {
+            config.adaptiveContinuationEnabled = Boolean.parseBoolean(envAdaptiveContinuation);
+        }
+        var envAdaptiveSegments = System.getenv("ACECLAW_ADAPTIVE_CONTINUATION_MAX_SEGMENTS");
+        if (envAdaptiveSegments != null && !envAdaptiveSegments.isBlank()) {
+            try {
+                config.adaptiveContinuationMaxSegments = Math.max(1, Integer.parseInt(envAdaptiveSegments));
+            } catch (NumberFormatException e) {
+                log.warn("Invalid ACECLAW_ADAPTIVE_CONTINUATION_MAX_SEGMENTS: {}", envAdaptiveSegments);
+            }
+        }
+        var envAdaptiveNoProgress = System.getenv("ACECLAW_ADAPTIVE_CONTINUATION_NO_PROGRESS_THRESHOLD");
+        if (envAdaptiveNoProgress != null && !envAdaptiveNoProgress.isBlank()) {
+            try {
+                config.adaptiveContinuationNoProgressThreshold = Math.max(1, Integer.parseInt(envAdaptiveNoProgress));
+            } catch (NumberFormatException e) {
+                log.warn("Invalid ACECLAW_ADAPTIVE_CONTINUATION_NO_PROGRESS_THRESHOLD: {}", envAdaptiveNoProgress);
+            }
+        }
+        var envAdaptiveMaxTokens = System.getenv("ACECLAW_ADAPTIVE_CONTINUATION_MAX_TOTAL_TOKENS");
+        if (envAdaptiveMaxTokens != null && !envAdaptiveMaxTokens.isBlank()) {
+            try {
+                config.adaptiveContinuationMaxTotalTokens = Math.max(0, Integer.parseInt(envAdaptiveMaxTokens));
+            } catch (NumberFormatException e) {
+                log.warn("Invalid ACECLAW_ADAPTIVE_CONTINUATION_MAX_TOTAL_TOKENS: {}", envAdaptiveMaxTokens);
+            }
+        }
+        var envAdaptiveMaxWallClock = System.getenv("ACECLAW_ADAPTIVE_CONTINUATION_MAX_WALL_CLOCK_SECONDS");
+        if (envAdaptiveMaxWallClock != null && !envAdaptiveMaxWallClock.isBlank()) {
+            try {
+                config.adaptiveContinuationMaxWallClockSeconds = Math.max(0, Integer.parseInt(envAdaptiveMaxWallClock));
+            } catch (NumberFormatException e) {
+                log.warn("Invalid ACECLAW_ADAPTIVE_CONTINUATION_MAX_WALL_CLOCK_SECONDS: {}", envAdaptiveMaxWallClock);
             }
         }
         var envLogLevel = System.getenv("ACECLAW_LOG_LEVEL");
@@ -466,10 +522,12 @@ public final class AceClawConfig {
             config.loadClaudeCliCredentials();
         }
 
-        log.info("Config loaded: provider={}, model={}, maxTokens={}, thinkingBudget={}, maxTurns={}, contextWindow={}, logLevel={}, baseUrl={}, apiKey={}, refreshToken={}",
-                config.provider, config.model, config.maxTokens, config.thinkingBudget, config.maxTurns, config.contextWindowTokens, config.logLevel,
+        log.info("Config loaded: provider={}, model={}, maxTokens={}, thinkingBudget={}, maxTurns={}, adaptiveContinuationEnabled={}, adaptiveMaxSegments={}, contextWindow={}, logLevel={}, baseUrl={}, apiKey={}, refreshToken={}",
+                config.provider, config.model, config.maxTokens, config.thinkingBudget, config.maxTurns,
+                config.adaptiveContinuationEnabled, config.adaptiveContinuationMaxSegments,
+                config.contextWindowTokens, config.logLevel,
                 config.baseUrl != null ? config.baseUrl : "(default)",
-                config.apiKey != null ? config.apiKey.substring(0, Math.min(15, config.apiKey.length())) + "***" : "(not set)",
+                config.apiKey != null ? "(set)" : "(not set)",
                 config.refreshToken != null ? "***" : "(not set)");
 
         return config;
@@ -541,6 +599,26 @@ public final class AceClawConfig {
      */
     public int maxTurns() {
         return maxTurns;
+    }
+
+    public boolean adaptiveContinuationEnabled() {
+        return adaptiveContinuationEnabled;
+    }
+
+    public int adaptiveContinuationMaxSegments() {
+        return adaptiveContinuationMaxSegments;
+    }
+
+    public int adaptiveContinuationNoProgressThreshold() {
+        return adaptiveContinuationNoProgressThreshold;
+    }
+
+    public int adaptiveContinuationMaxTotalTokens() {
+        return adaptiveContinuationMaxTotalTokens;
+    }
+
+    public int adaptiveContinuationMaxWallClockSeconds() {
+        return adaptiveContinuationMaxWallClockSeconds;
     }
 
     /**
@@ -1029,6 +1107,24 @@ public final class AceClawConfig {
         if (fileConfig.maxTurns > 0) {
             this.maxTurns = fileConfig.maxTurns;
         }
+        if (fileConfig.adaptiveContinuationEnabled != null) {
+            this.adaptiveContinuationEnabled = fileConfig.adaptiveContinuationEnabled;
+        }
+        if (fileConfig.adaptiveContinuationMaxSegments != null && fileConfig.adaptiveContinuationMaxSegments > 0) {
+            this.adaptiveContinuationMaxSegments = fileConfig.adaptiveContinuationMaxSegments;
+        }
+        if (fileConfig.adaptiveContinuationNoProgressThreshold != null
+                && fileConfig.adaptiveContinuationNoProgressThreshold > 0) {
+            this.adaptiveContinuationNoProgressThreshold = fileConfig.adaptiveContinuationNoProgressThreshold;
+        }
+        if (fileConfig.adaptiveContinuationMaxTotalTokens != null
+                && fileConfig.adaptiveContinuationMaxTotalTokens >= 0) {
+            this.adaptiveContinuationMaxTotalTokens = fileConfig.adaptiveContinuationMaxTotalTokens;
+        }
+        if (fileConfig.adaptiveContinuationMaxWallClockSeconds != null
+                && fileConfig.adaptiveContinuationMaxWallClockSeconds >= 0) {
+            this.adaptiveContinuationMaxWallClockSeconds = fileConfig.adaptiveContinuationMaxWallClockSeconds;
+        }
         if (fileConfig.contextWindowTokens > 0) {
             this.contextWindowTokens = fileConfig.contextWindowTokens;
         }
@@ -1182,6 +1278,11 @@ public final class AceClawConfig {
         public int maxTokens;
         public int thinkingBudget;
         public int maxTurns;
+        public Boolean adaptiveContinuationEnabled;
+        public Integer adaptiveContinuationMaxSegments;
+        public Integer adaptiveContinuationNoProgressThreshold;
+        public Integer adaptiveContinuationMaxTotalTokens;
+        public Integer adaptiveContinuationMaxWallClockSeconds;
         public int contextWindowTokens;
         public String logLevel;
         public String braveSearchApiKey;

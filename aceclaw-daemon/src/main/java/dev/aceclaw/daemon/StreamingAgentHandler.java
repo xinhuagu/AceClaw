@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.AgentLoopConfig;
 import dev.aceclaw.core.agent.CancellationAware;
 import dev.aceclaw.core.agent.CancellationToken;
+import dev.aceclaw.core.agent.CompactionResult;
 import dev.aceclaw.core.agent.HookEvent;
 import dev.aceclaw.core.agent.HookExecutor;
 import dev.aceclaw.core.agent.HookResult;
@@ -14,6 +15,7 @@ import dev.aceclaw.core.agent.Tool;
 import dev.aceclaw.core.agent.ToolMetricsCollector;
 import dev.aceclaw.core.agent.ToolRegistry;
 import dev.aceclaw.core.llm.ContentBlock;
+import dev.aceclaw.core.llm.LlmException;
 import dev.aceclaw.core.llm.Message;
 import dev.aceclaw.core.llm.StopReason;
 import dev.aceclaw.core.llm.StreamEvent;
@@ -60,6 +62,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Locale;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -209,13 +212,14 @@ public final class StreamingAgentHandler {
                 }
             }
 
-            var turn = permissionAwareLoop.runTurn(prompt, conversationHistory,
-                    eventHandler, cancellationToken);
+            var adaptive = runTurnWithAdaptiveContinuation(
+                    permissionAwareLoop, prompt, conversationHistory, eventHandler, cancellationToken);
 
             // Send cancelled notification if the turn was cancelled
             sendCancelledNotificationIfNeeded(cancellationToken, cancelContext, sessionId);
 
-            return buildTurnResult(turn, session, sessionId, prompt, cancellationToken, metricsCollector);
+            return buildTurnResult(adaptive.turn(), session, sessionId, prompt, cancellationToken, metricsCollector,
+                    adaptive);
 
         } catch (dev.aceclaw.core.llm.LlmException e) {
             // Translate LLM errors to user-friendly messages
@@ -258,10 +262,11 @@ public final class StreamingAgentHandler {
             log.warn("Plan generation failed, falling back to direct execution: {}", e.getMessage());
             // Fall back to direct execution
             var conversationHistory = toMessages(session.messages());
-            var turn = permissionAwareLoop.runTurn(prompt, conversationHistory,
-                    eventHandler, cancellationToken);
+            var adaptive = runTurnWithAdaptiveContinuation(
+                    permissionAwareLoop, prompt, conversationHistory, eventHandler, cancellationToken);
             sendCancelledNotificationIfNeeded(cancellationToken, cancelContext, sessionId);
-            return buildTurnResult(turn, session, sessionId, prompt, cancellationToken, metricsCollector);
+            return buildTurnResult(adaptive.turn(), session, sessionId, prompt, cancellationToken, metricsCollector,
+                    adaptive);
         }
 
         log.info("Plan generated: {} steps for goal: {}", plan.steps().size(),
@@ -399,7 +404,8 @@ public final class StreamingAgentHandler {
     private Object buildTurnResult(dev.aceclaw.core.agent.Turn turn, AgentSession session,
                                     String sessionId, String prompt,
                                     CancellationToken cancellationToken,
-                                    ToolMetricsCollector metricsCollector) {
+                                    ToolMetricsCollector metricsCollector,
+                                    AdaptiveTurnResult adaptive) {
         // Handle compaction
         if (turn.wasCompacted()) {
             handleCompactionResult(session, turn.compactionResult());
@@ -465,6 +471,15 @@ public final class StreamingAgentHandler {
             result.put("compacted", true);
             result.put("compactionPhase", turn.compactionResult().phaseReached().name());
         }
+        if (adaptive != null) {
+            var continuationNode = objectMapper.createObjectNode();
+            continuationNode.put("enabled", true);
+            continuationNode.put("segment_index", adaptive.segmentIndex());
+            continuationNode.put("continuation_count", adaptive.continuationCount());
+            continuationNode.put("reason", adaptive.reason());
+            continuationNode.put("stopped_by_budget", adaptive.stoppedByBudget());
+            result.set("continuation", continuationNode);
+        }
 
         log.info("Streaming turn complete: sessionId={}, stopReason={}, tokens={}, cancelled={}, compacted={}",
                 sessionId, turn.finalStopReason(), turn.totalUsage().totalTokens(),
@@ -472,6 +487,126 @@ public final class StreamingAgentHandler {
 
         return result;
     }
+
+    private AdaptiveTurnResult runTurnWithAdaptiveContinuation(
+            StreamingAgentLoop loop,
+            String userPrompt,
+            List<Message> initialConversation,
+            StreamEventHandler handler,
+            CancellationToken cancellationToken) throws LlmException {
+        var conversation = new ArrayList<>(initialConversation);
+        var mergedMessages = new ArrayList<Message>();
+        int totalInput = 0;
+        int totalOutput = 0;
+        int totalCacheCreate = 0;
+        int totalCacheRead = 0;
+        String reason = "single_segment";
+        int segments = 0;
+        int continuationCount = 0;
+        int noProgressStreak = 0;
+        String prevSignature = null;
+        boolean stoppedByBudget = false;
+        boolean maxIterationsReached = false;
+        CompactionResult lastCompaction = null;
+        StopReason lastStopReason = StopReason.END_TURN;
+        long startMillis = System.currentTimeMillis();
+        String prompt = userPrompt;
+
+        int maxSegments = adaptiveContinuationEnabled ? adaptiveContinuationMaxSegments : 1;
+        for (int segment = 1; segment <= maxSegments; segment++) {
+            if (cancellationToken != null && cancellationToken.isCancelled()) {
+                reason = "cancelled";
+                break;
+            }
+            var turn = loop.runTurn(prompt, conversation, handler, cancellationToken);
+            segments = segment;
+            continuationCount = Math.max(0, segment - 1);
+            lastStopReason = turn.finalStopReason();
+            maxIterationsReached = turn.maxIterationsReached();
+            if (cancellationToken != null && cancellationToken.isCancelled()) {
+                reason = "cancelled";
+                break;
+            }
+            if (turn.wasCompacted()) {
+                lastCompaction = turn.compactionResult();
+            }
+            mergedMessages.addAll(turn.newMessages());
+            totalInput += turn.totalUsage().inputTokens();
+            totalOutput += turn.totalUsage().outputTokens();
+            totalCacheCreate += turn.totalUsage().cacheCreationInputTokens();
+            totalCacheRead += turn.totalUsage().cacheReadInputTokens();
+            conversation.addAll(turn.newMessages());
+
+            String signature = normalizeSignature(turn.text());
+            if (!signature.isEmpty() && signature.equals(prevSignature)) {
+                noProgressStreak++;
+            } else if (!signature.isEmpty()) {
+                noProgressStreak = 0;
+                prevSignature = signature;
+            }
+
+            if (!adaptiveContinuationEnabled) {
+                reason = "adaptive_disabled";
+                break;
+            }
+            if (!turn.maxIterationsReached() && turn.finalStopReason() != StopReason.MAX_TOKENS) {
+                reason = "segment_complete";
+                break;
+            }
+            if (adaptiveContinuationMaxTotalTokens > 0
+                    && (totalInput + totalOutput) >= adaptiveContinuationMaxTotalTokens) {
+                reason = "token_budget_exhausted";
+                stoppedByBudget = true;
+                break;
+            }
+            if (adaptiveContinuationMaxWallClockSeconds > 0
+                    && (System.currentTimeMillis() - startMillis) >= adaptiveContinuationMaxWallClockSeconds * 1000L) {
+                reason = "wall_clock_budget_exhausted";
+                stoppedByBudget = true;
+                break;
+            }
+            if (noProgressStreak >= adaptiveContinuationNoProgressThreshold) {
+                reason = "no_progress_stop";
+                stoppedByBudget = true;
+                break;
+            }
+            if (segment >= maxSegments) {
+                reason = "max_segments_reached";
+                stoppedByBudget = true;
+                break;
+            }
+            prompt = """
+                    Continue the current task from where you stopped.
+                    Do not restart from scratch.
+                    Focus on the next concrete action and complete remaining steps.
+                    """;
+        }
+
+        var usage = new dev.aceclaw.core.llm.Usage(totalInput, totalOutput, totalCacheCreate, totalCacheRead);
+        var mergedTurn = new dev.aceclaw.core.agent.Turn(
+                mergedMessages, lastStopReason, usage, lastCompaction, maxIterationsReached);
+        return new AdaptiveTurnResult(
+                mergedTurn,
+                segments <= 0 ? 1 : segments,
+                continuationCount,
+                reason,
+                stoppedByBudget);
+    }
+
+    private static String normalizeSignature(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text.toLowerCase(Locale.ROOT).replaceAll("\\s+", " ").trim();
+    }
+
+    private record AdaptiveTurnResult(
+            dev.aceclaw.core.agent.Turn turn,
+            int segmentIndex,
+            int continuationCount,
+            String reason,
+            boolean stoppedByBudget
+    ) {}
 
     /**
      * Builds a human-readable summary of a plan execution result.
@@ -620,6 +755,11 @@ public final class StreamingAgentHandler {
     private int maxTokens = 16384;
     private int thinkingBudget = 10240;
     private int maxIterations = AgentLoopConfig.DEFAULT_MAX_ITERATIONS;
+    private boolean adaptiveContinuationEnabled = false;
+    private int adaptiveContinuationMaxSegments = 3;
+    private int adaptiveContinuationNoProgressThreshold = 2;
+    private int adaptiveContinuationMaxTotalTokens = 0;
+    private int adaptiveContinuationMaxWallClockSeconds = 0;
     private MessageCompactor compactor;
     private AutoMemoryStore memoryStore;
     private DailyJournal dailyJournal;
@@ -651,6 +791,18 @@ public final class StreamingAgentHandler {
         this.maxTokens = maxTokens;
         this.thinkingBudget = thinkingBudget;
         this.maxIterations = Math.max(1, maxIterations);
+    }
+
+    public void setAdaptiveContinuationConfig(boolean enabled,
+                                              int maxSegments,
+                                              int noProgressThreshold,
+                                              int maxTotalTokens,
+                                              int maxWallClockSeconds) {
+        this.adaptiveContinuationEnabled = enabled;
+        this.adaptiveContinuationMaxSegments = Math.max(1, maxSegments);
+        this.adaptiveContinuationNoProgressThreshold = Math.max(1, noProgressThreshold);
+        this.adaptiveContinuationMaxTotalTokens = Math.max(0, maxTotalTokens);
+        this.adaptiveContinuationMaxWallClockSeconds = Math.max(0, maxWallClockSeconds);
     }
 
     /**

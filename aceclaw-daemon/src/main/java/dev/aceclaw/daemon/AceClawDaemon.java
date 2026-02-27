@@ -335,6 +335,12 @@ public final class AceClawDaemon {
                 sessionManager, agentLoop, toolRegistry, permissionManager, objectMapper);
         agentHandler.setLlmConfig(llmClient, model, systemPrompt);
         agentHandler.setTokenConfig(config.maxTokens(), config.thinkingBudget(), config.maxTurns());
+        agentHandler.setAdaptiveContinuationConfig(
+                config.adaptiveContinuationEnabled(),
+                config.adaptiveContinuationMaxSegments(),
+                config.adaptiveContinuationNoProgressThreshold(),
+                config.adaptiveContinuationMaxTotalTokens(),
+                config.adaptiveContinuationMaxWallClockSeconds());
         agentHandler.setPlannerConfig(config.plannerEnabled(), config.plannerThreshold());
         agentHandler.setCompactor(compactor);
         agentHandler.setMemoryStore(memoryStore, workingDir);
