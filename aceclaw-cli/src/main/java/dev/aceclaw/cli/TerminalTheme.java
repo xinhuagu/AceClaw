@@ -31,6 +31,9 @@ public final class TerminalTheme {
     public static final String MUTED = "\u001B[90m";        // bright black / gray
     public static final String INFO = "\u001B[36m";         // cyan
 
+    /** Accenture brand purple (#A100FF) — 24-bit true color */
+    public static final String PURPLE = "\u001B[38;2;161;0;255m";
+
     // -- Semantic combinations -----------------------------------------------
 
     /** H1 headings: bold cyan */
@@ -87,6 +90,28 @@ public final class TerminalTheme {
 
     /** Checkmark for completed items */
     public static final String CHECKMARK = "\u2713";
+
+    // -- Status panel icons --------------------------------------------------
+
+    /** Filled diamond for primary header — Accenture purple */
+    public static final String ICON_PRIMARY = "\u25C6";
+    /** Brain emoji for learning section */
+    public static final String ICON_LEARNING = "\uD83E\uDDE0";   // U+1F9E0
+    /** Clock emoji for cron/scheduler section */
+    public static final String ICON_CRON = "\u23F0";              // U+23F0
+    /** Lightning emoji for tasks section */
+    public static final String ICON_TASKS = "\u26A1";             // U+26A1
+    /** Bell emoji for notices section */
+    public static final String ICON_NOTICES = "\uD83D\uDD14";    // U+1F514
+    /** Right-pointing triangle for list items */
+    public static final String ICON_ITEM = "\u25B8";
+
+    // -- Status panel tree connectors ----------------------------------------
+
+    public static final String TREE_BRANCH = "\u251C\u2500";    // ├─
+    public static final String TREE_LAST   = "\u2514\u2500";    // └─
+    public static final String TREE_PIPE   = "\u2502";          // │
+    public static final String TREE_PIPE_SPACE = "\u2502    ";  // │    (with indent)
 
     // -- Utility methods -----------------------------------------------------
 
@@ -174,6 +199,10 @@ public final class TerminalTheme {
         int width = 0;
         for (int i = 0; i < text.length(); ) {
             int cp = text.codePointAt(i);
+            if (cp == 0x200D || cp == 0xFE0F) {
+                i += Character.charCount(cp);
+                continue;
+            }
             width += isWideChar(cp) ? 2 : 1;
             i += Character.charCount(cp);
         }
@@ -185,6 +214,8 @@ public final class TerminalTheme {
      * character in a terminal — CJK ideographs, fullwidth forms, etc.
      */
     public static boolean isWideChar(int cp) {
+        if (cp >= 0x2300 && cp <= 0x23FF) return true; // clocks/hourglass/misc technical symbols
+        if (cp >= 0x2600 && cp <= 0x27BF) return true; // dingbats/misc symbols (emoji-presented on many terminals)
         if (cp >= 0x2E80 && cp <= 0x2FFF) return true;
         if (cp >= 0x3000 && cp <= 0x303F) return true;
         if (cp >= 0x3040 && cp <= 0x309F) return true;

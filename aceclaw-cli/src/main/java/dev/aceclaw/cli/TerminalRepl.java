@@ -1015,7 +1015,7 @@ public final class TerminalRepl {
     private String buildStatusString() {
         var sb = new StringBuilder();
 
-        sb.append(MUTED).append("-").append(RESET).append(" ");
+        sb.append(PURPLE).append(ICON_PRIMARY).append(RESET).append(" ");
         sb.append(INFO).append(BOLD).append(effectiveModel).append(RESET);
 
         String branch = sessionInfo.gitBranch();
@@ -1120,13 +1120,13 @@ public final class TerminalRepl {
             int terminalWidth = Math.max(20, terminal.getWidth() - 1);
             var lines = buildStatusPanelLines();
             if (!uiNoticeBuffer.isEmpty()) {
-                lines.add(MUTED + "  + notices" + RESET);
+                lines.add(MUTED + "  " + ICON_NOTICES + " notices" + RESET);
                 UiNotice latest = null;
                 for (UiNotice note : uiNoticeBuffer) {
                     latest = note;
                 }
                 if (latest != null) {
-                    lines.add(MUTED + "    - " + RESET + fitWidth(latest.text(), 72));
+                    lines.add(MUTED + "    " + ICON_ITEM + " " + RESET + fitWidth(latest.text(), 72));
                 }
             }
             // Pad to fixed line count so JLine's Status widget never resizes
@@ -1212,16 +1212,16 @@ public final class TerminalRepl {
 
         String learningStatus = buildContinuousLearningStatusLine();
         if (learningStatus == null || learningStatus.isBlank()) {
-            lines.add(MUTED + "  |- " + RESET
+            lines.add(MUTED + "  " + TREE_BRANCH + " " + ICON_LEARNING + " " + RESET
                     + INFO + "learning" + RESET
                     + MUTED + " | unavailable" + RESET);
         } else {
-            lines.add(learningStatus.replaceFirst("  `- ", "  |- "));
+            lines.add(learningStatus);
         }
 
         var cron = cachedCronStatus;
         if (cron == null) {
-            lines.add(MUTED + "  |- " + RESET
+            lines.add(MUTED + "  " + TREE_BRANCH + " " + ICON_CRON + " " + RESET
                     + INFO + "cron" + RESET
                     + MUTED + " | loading..." + RESET);
         } else {
@@ -1233,7 +1233,7 @@ public final class TerminalRepl {
             long scheduledCount = visibleJobs.stream().filter(j -> "scheduled".equals(j.kind())).count();
             String schedulerState = cron.schedulerRunning() ? "on" : "off";
             String runningState = cron.jobRunning() ? "running" : "idle";
-            lines.add(MUTED + "  |- " + RESET
+            lines.add(MUTED + "  " + TREE_BRANCH + " " + ICON_CRON + " " + RESET
                     + INFO + "cron" + RESET
                     + MUTED + " | scheduler=" + schedulerState
                     + " | state=" + runningState
@@ -1246,7 +1246,7 @@ public final class TerminalRepl {
                 String elapsed = cron.currentJobStartedAt() == null
                         ? "running"
                         : formatDuration(Duration.between(cron.currentJobStartedAt(), now));
-                lines.add(MUTED + "  |   - " + RESET
+                lines.add(MUTED + "  " + TREE_PIPE_SPACE + " " + ICON_ITEM + " " + RESET
                         + WARNING + "running " + RESET
                         + fitWidth(runningJobId, 28)
                         + MUTED + " * " + elapsed + RESET);
@@ -1265,12 +1265,13 @@ public final class TerminalRepl {
                     String next = formatCronNext(now, cron, job);
                     String kind = job.kind();
                     String desc = fitWidth(job.description() == null ? "" : job.description(), 24);
-                    lines.add(MUTED + "  |   - " + job.id() + " [" + kind + "] "
+                    lines.add(MUTED + "  " + TREE_PIPE_SPACE + " " + ICON_ITEM + " "
+                            + job.id() + " [" + kind + "] "
                             + enabled + " next=" + next + " :: " + desc + RESET);
                     shown++;
                 }
                 if (visibleJobs.size() > maxCronVisible) {
-                    lines.add(MUTED + "  |   ... +" + (visibleJobs.size() - maxCronVisible)
+                    lines.add(MUTED + "  " + TREE_PIPE_SPACE + "   +" + (visibleJobs.size() - maxCronVisible)
                             + " more cron job(s)" + RESET);
                 }
             }
@@ -1280,7 +1281,7 @@ public final class TerminalRepl {
                 .filter(TaskHandle::isRunning)
                 .toList();
         var pending = permissionBridge.pendingSnapshot();
-        lines.add(MUTED + "  `- " + RESET
+        lines.add(MUTED + "  " + TREE_LAST + " " + ICON_TASKS + " " + RESET
                 + INFO + "tasks" + RESET
                 + MUTED + " | running=" + runningTasks.size()
                 + " | permissions=" + pending.size() + RESET);
@@ -1297,7 +1298,7 @@ public final class TerminalRepl {
                 var runtime = deriveRuntimeInfo(task, now);
                 String runtimeLabel = fitWidth(runtime.label(), 24);
 
-                lines.add(MUTED + "      - " + RESET
+                lines.add(MUTED + "       " + ICON_ITEM + " " + RESET
                         + runtime.color() + runtime.shortState() + RESET + " "
                         + INFO + "#" + task.taskId() + RESET + " "
                         + prefix + summary
@@ -1305,7 +1306,7 @@ public final class TerminalRepl {
             }
             int hidden = runningTasks.size() - visible.size();
             if (hidden > 0) {
-                lines.add(MUTED + "      ... +" + hidden + " more running task(s)" + RESET);
+                lines.add(MUTED + "         +" + hidden + " more running task(s)" + RESET);
             }
         }
 
@@ -1314,13 +1315,13 @@ public final class TerminalRepl {
             for (int i = 0; i < Math.min(maxPermVisible, pending.size()); i++) {
                 var req = pending.get(i);
                 String detail = fitWidth(req.description(), 58);
-                lines.add(MUTED + "      - " + RESET
+                lines.add(MUTED + "       " + ICON_ITEM + " " + RESET
                         + WARNING + "permission" + RESET + " "
                         + INFO + "#" + req.taskId() + RESET + " "
                         + detail);
             }
             if (pending.size() > maxPermVisible) {
-                lines.add(MUTED + "      ... +" + (pending.size() - maxPermVisible)
+                lines.add(MUTED + "         +" + (pending.size() - maxPermVisible)
                         + " more permission request(s)" + RESET);
             }
         }
@@ -1367,7 +1368,7 @@ public final class TerminalRepl {
         }
 
         var sb = new StringBuilder();
-        sb.append(MUTED).append("  `- ").append(RESET)
+        sb.append(MUTED).append("  ").append(TREE_BRANCH).append(" ").append(ICON_LEARNING).append(" ").append(RESET)
                 .append(INFO).append("learning").append(RESET);
         if (replaySummary != null) {
             sb.append(MUTED).append(" | ").append(RESET)
