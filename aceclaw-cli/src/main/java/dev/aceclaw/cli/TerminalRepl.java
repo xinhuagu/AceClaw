@@ -96,7 +96,7 @@ public final class TerminalRepl {
     private final Deque<UiNotice> uiNoticeBuffer = new ArrayDeque<>();
     private final List<String> pendingPrintAbove = new ArrayList<>();
     /** Fixed status panel height so JLine's Status widget never resizes its scroll region. */
-    private static final int FIXED_STATUS_LINE_COUNT = 10;
+    private static final int FIXED_STATUS_LINE_COUNT = 6;
     private final Object uiRenderLock = new Object();
     private final AtomicBoolean permissionInterruptRequested = new AtomicBoolean(false);
     private final AtomicBoolean uiRenderRequested = new AtomicBoolean(true);
@@ -1118,6 +1118,10 @@ public final class TerminalRepl {
                 promptStatus = Status.getStatus(terminal);
             }
             int terminalWidth = Math.max(20, terminal.getWidth() - 1);
+            int terminalHeight = Math.max(6, terminal.getHeight());
+            // Never use more than 1/3 of the terminal for status
+            int maxLines = Math.min(FIXED_STATUS_LINE_COUNT, terminalHeight / 3);
+
             var lines = buildStatusPanelLines();
             if (!uiNoticeBuffer.isEmpty()) {
                 lines.add(MUTED + "  " + ICON_NOTICES + " notices" + RESET);
@@ -1129,8 +1133,11 @@ public final class TerminalRepl {
                     lines.add(MUTED + "    " + ICON_ITEM + " " + RESET + fitWidth(latest.text(), 72));
                 }
             }
-            // Pad to fixed line count so JLine's Status widget never resizes
-            while (lines.size() < FIXED_STATUS_LINE_COUNT) {
+            // Truncate if over budget, then pad to fixed count
+            if (lines.size() > maxLines) {
+                lines.subList(maxLines, lines.size()).clear();
+            }
+            while (lines.size() < maxLines) {
                 lines.add("");
             }
 
@@ -1139,8 +1146,17 @@ public final class TerminalRepl {
                     .map(AttributedString::fromAnsi)
                     .map(as -> clampAttributedLine(as, safeWidth, terminalWidth))
                     .toList();
+
+            // Save cursor (CSI s) before status update, restore (CSI u) after.
+            // Uses SCP/RCP stack which is separate from JLine's internal DECSC/DECRC.
+            var writer = terminal.writer();
+            writer.print("\u001B[s");
+            writer.flush();
             promptStatus.update(rendered);
+            writer.print("\u001B[u");
+            writer.flush();
         }
+        ensureCursorVisible();
     }
 
     private void ensureCursorVisible() {
@@ -1205,7 +1221,7 @@ public final class TerminalRepl {
      * room for the notices section added by {@link #renderStatusFrame}.
      */
     private List<String> buildStatusPanelLines() {
-        int budget = FIXED_STATUS_LINE_COUNT - 2;
+        int budget = Math.max(3, FIXED_STATUS_LINE_COUNT - 2);
         var lines = new ArrayList<String>();
         lines.add(buildStatusString());
         Instant now = Instant.now();
