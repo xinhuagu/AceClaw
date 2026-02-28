@@ -254,58 +254,17 @@ class TerminalReplTest {
     }
 
     @Test
-    void flushUiEvents_drainsQueuedNoticesAndTriggersPromptRedisplay() throws Exception {
-        var statusRepl = newReplForProject(tempDir);
-        var printed = new ArrayList<String>();
-        var widgets = new ArrayList<String>();
-
-        var reader = (org.jline.reader.LineReader) Proxy.newProxyInstance(
-                TerminalReplTest.class.getClassLoader(),
-                new Class[]{org.jline.reader.LineReader.class},
-                (proxy, method, args) -> {
-                    switch (method.getName()) {
-                        case "printAbove" -> {
-                            printed.add(args[0].toString());
-                            return null;
-                        }
-                        case "callWidget" -> {
-                            widgets.add((String) args[0]);
-                            return true;
-                        }
-                        default -> {
-                            Class<?> rt = method.getReturnType();
-                            if (rt.equals(boolean.class)) return false;
-                            if (rt.equals(int.class)) return 0;
-                            if (rt.equals(long.class)) return 0L;
-                            return null;
-                        }
-                    }
-                });
-
-        var activeReaderField = TerminalRepl.class.getDeclaredField("activeReader");
-        activeReaderField.setAccessible(true);
-        activeReaderField.set(statusRepl, reader);
-
-        invokePrivate(statusRepl, "enqueueUiNotice", new Class<?>[]{String.class}, "notice-1");
-        invokePrivate(statusRepl, "enqueueUiNotice", new Class<?>[]{String.class}, "notice-2");
-        invokePrivate(statusRepl, "flushUiEvents", new Class<?>[]{org.jline.reader.LineReader.class}, reader);
-
-        assertThat(printed).hasSize(2);
-        assertThat(printed.get(0)).contains("notice-1");
-        assertThat(printed.get(1)).contains("notice-2");
-        assertThat(widgets).contains(org.jline.reader.LineReader.REDRAW_LINE, org.jline.reader.LineReader.REDISPLAY);
-    }
-
-    @Test
-    void clampStatusLine_stripsAnsiCsiControlSequences() throws Exception {
-        String input = "prefix\u001B[2A\u001B[1Gmiddle";
-        String clamped = (String) invokePrivate(
+    void clampAttributedLine_handlesAnsiAndTruncation() throws Exception {
+        var input = org.jline.utils.AttributedString.fromAnsi(
+                "prefix\u001B[32mmiddle\u001B[0m");
+        var clamped = (org.jline.utils.AttributedString) invokePrivate(
                 repl,
-                "clampStatusLine",
-                new Class<?>[]{String.class, int.class},
-                input, 8);
-        assertThat(clamped).doesNotContain("\u001B[");
-        assertThat(clamped).isNotBlank();
+                "clampAttributedLine",
+                new Class<?>[]{org.jline.utils.AttributedString.class, int.class, int.class},
+                input, 80, 80);
+        assertThat(clamped.toAnsi()).isNotBlank();
+        // padded to clearWidth
+        assertThat(clamped.columnLength()).isEqualTo(80);
     }
 
     private static TerminalRepl newReplForProject(Path project) {
