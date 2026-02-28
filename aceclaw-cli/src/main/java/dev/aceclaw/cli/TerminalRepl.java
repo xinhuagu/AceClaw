@@ -1218,19 +1218,19 @@ public final class TerminalRepl {
     /**
      * Builds the status panel lines shown below the prompt.
      *
-     * <p>Section headers (learning, cron, tasks) are always present.
-     * Detail lines (running jobs, task items) fill remaining budget
-     * so that no section header is pushed out by another section's details.
+     * <p>Each section (learning, cron, tasks) renders its header immediately
+     * followed by its own detail lines, so items always appear under the
+     * correct section. {@code renderStatusFrame} handles final truncation
+     * and padding to {@link #FIXED_STATUS_LINE_COUNT}.
      */
     private List<String> buildStatusPanelLines() {
-        int budget = Math.max(4, FIXED_STATUS_LINE_COUNT - 2);
         var lines = new ArrayList<String>();
         Instant now = Instant.now();
 
-        // -- 1. Header (always present) --
+        // -- 1. Header --
         lines.add(buildStatusString());
 
-        // -- 2. Learning header (always present) --
+        // -- 2. Learning (header only) --
         String learningStatus = buildContinuousLearningStatusLine();
         if (learningStatus == null || learningStatus.isBlank()) {
             lines.add(MUTED + "  " + TREE_BRANCH + " " + ICON_LEARNING + " " + RESET
@@ -1240,16 +1240,14 @@ public final class TerminalRepl {
             lines.add(learningStatus);
         }
 
-        // -- 3. Cron header (always present) --
+        // -- 3. Cron (header + registered jobs inline) --
         var cron = cachedCronStatus;
-        String runningJobId = null;
-        List<CronJobStatus> visibleJobs = List.of();
         if (cron == null) {
             lines.add(MUTED + "  " + TREE_BRANCH + " " + ICON_CRON + " " + RESET
                     + INFO + "cron" + RESET
                     + MUTED + " | loading..." + RESET);
         } else {
-            visibleJobs = cron.jobs().stream()
+            var visibleJobs = cron.jobs().stream()
                     .filter(job -> !("one-shot".equals(job.kind()) && job.lastRunAt() != null))
                     .toList();
             long hbCount = visibleJobs.stream().filter(j -> "heartbeat-longterm".equals(j.kind())).count();
@@ -1264,10 +1262,47 @@ public final class TerminalRepl {
                     + " | jobs=" + visibleJobs.size()
                     + " (s:" + scheduledCount + ",h:" + hbCount + ",o:" + oneShotCount + ")"
                     + RESET);
-            runningJobId = cron.jobRunning() ? cron.currentJobId() : null;
+
+            // Running job (highlighted)
+            String runningJobId = cron.jobRunning() ? cron.currentJobId() : null;
+            if (runningJobId != null && !runningJobId.isBlank()) {
+                String elapsed = cron.currentJobStartedAt() == null
+                        ? "running"
+                        : formatDuration(Duration.between(cron.currentJobStartedAt(), now));
+                lines.add(MUTED + "  " + TREE_PIPE_SPACE + " " + ICON_ITEM + " " + RESET
+                        + WARNING + "running " + RESET
+                        + fitWidth(runningJobId, 28)
+                        + MUTED + " * " + elapsed + RESET);
+            }
+
+            // All registered jobs (always shown, max 3)
+            int maxCronVisible = 3;
+            int shown = 0;
+            for (CronJobStatus job : visibleJobs) {
+                if (runningJobId != null && runningJobId.equals(job.id())) {
+                    continue; // already shown in the running line
+                }
+                if (shown >= maxCronVisible) break;
+                String enabled = job.enabled() ? "enabled" : "disabled";
+                String next = formatCronNext(now, cron, job);
+                String kind = job.kind();
+                String desc = fitWidth(job.description() == null ? "" : job.description(), 24);
+                lines.add(MUTED + "  " + TREE_PIPE_SPACE + " " + ICON_ITEM + " "
+                        + job.id() + " [" + kind + "] "
+                        + enabled + " next=" + next + " :: " + desc + RESET);
+                shown++;
+            }
+            String finalRunningJobId = runningJobId;
+            int remaining = (int) visibleJobs.stream()
+                    .filter(j -> finalRunningJobId == null || !finalRunningJobId.equals(j.id()))
+                    .count() - shown;
+            if (remaining > 0) {
+                lines.add(MUTED + "  " + TREE_PIPE_SPACE + "   +" + remaining
+                        + " more cron job(s)" + RESET);
+            }
         }
 
-        // -- 4. Tasks header (always present) --
+        // -- 4. Tasks (header + running tasks inline) --
         var runningTasks = taskManager.list().stream()
                 .filter(TaskHandle::isRunning)
                 .toList();
@@ -1277,56 +1312,8 @@ public final class TerminalRepl {
                 + MUTED + " | running=" + runningTasks.size()
                 + " | permissions=" + pending.size() + RESET);
 
-        // -- 5. Detail lines fill remaining budget --
-        int detailBudget = budget - lines.size();
-
-        // Cron details (running job + expanded list)
-        if (detailBudget > 0 && runningJobId != null && !runningJobId.isBlank()) {
-            String elapsed = cron.currentJobStartedAt() == null
-                    ? "running"
-                    : formatDuration(Duration.between(cron.currentJobStartedAt(), now));
-            lines.add(MUTED + "  " + TREE_PIPE_SPACE + " " + ICON_ITEM + " " + RESET
-                    + WARNING + "running " + RESET
-                    + fitWidth(runningJobId, 28)
-                    + MUTED + " * " + elapsed + RESET);
-            detailBudget--;
-        }
-
-        if (detailBudget > 0 && cron != null) {
-            boolean expandDetails = cron.jobRunning() || CRON_STATUS_EXPANDED;
-            if (expandDetails) {
-                int maxCronVisible = Math.min(2, detailBudget);
-                int shown = 0;
-                for (CronJobStatus job : visibleJobs) {
-                    if (runningJobId != null && runningJobId.equals(job.id())) {
-                        continue;
-                    }
-                    if (shown >= maxCronVisible) break;
-                    String enabled = job.enabled() ? "enabled" : "disabled";
-                    String next = formatCronNext(now, cron, job);
-                    String kind = job.kind();
-                    String desc = fitWidth(job.description() == null ? "" : job.description(), 24);
-                    lines.add(MUTED + "  " + TREE_PIPE_SPACE + " " + ICON_ITEM + " "
-                            + job.id() + " [" + kind + "] "
-                            + enabled + " next=" + next + " :: " + desc + RESET);
-                    shown++;
-                    detailBudget--;
-                }
-                String currentRunning = runningJobId;
-                int remaining = (int) visibleJobs.stream()
-                        .filter(j -> currentRunning == null || !currentRunning.equals(j.id()))
-                        .count() - shown;
-                if (remaining > 0 && detailBudget > 0) {
-                    lines.add(MUTED + "  " + TREE_PIPE_SPACE + "   +" + remaining
-                            + " more cron job(s)" + RESET);
-                    detailBudget--;
-                }
-            }
-        }
-
-        // Task details
-        if (detailBudget > 0 && !runningTasks.isEmpty()) {
-            int maxVisible = Math.min(2, detailBudget);
+        if (!runningTasks.isEmpty()) {
+            int maxVisible = 2;
             int from = Math.max(0, runningTasks.size() - maxVisible);
             var visible = runningTasks.subList(from, runningTasks.size());
             String fgId = taskManager.foregroundTaskId();
@@ -1342,18 +1329,15 @@ public final class TerminalRepl {
                         + INFO + "#" + task.taskId() + RESET + " "
                         + prefix + summary
                         + MUTED + "  " + runtimeLabel + " * " + elapsed + RESET);
-                detailBudget--;
             }
             int hidden = runningTasks.size() - visible.size();
-            if (hidden > 0 && detailBudget > 0) {
+            if (hidden > 0) {
                 lines.add(MUTED + "         +" + hidden + " more running task(s)" + RESET);
-                detailBudget--;
             }
         }
 
-        // Permission details
-        if (detailBudget > 0 && !pending.isEmpty()) {
-            int maxPermVisible = Math.min(2, detailBudget);
+        if (!pending.isEmpty()) {
+            int maxPermVisible = 2;
             for (int i = 0; i < Math.min(maxPermVisible, pending.size()); i++) {
                 var req = pending.get(i);
                 String detail = fitWidth(req.description(), 58);
