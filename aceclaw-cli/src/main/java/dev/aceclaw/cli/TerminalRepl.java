@@ -940,7 +940,13 @@ public final class TerminalRepl {
 
             String output = sb.toString();
             if (!output.isBlank()) {
-                enqueueUiNotice(output);
+                // Full output printed above the prompt (like cron completion)
+                enqueueUiPrintAbove(output);
+                // Short notice in status bar
+                String stateLabel = handle.state().name().toLowerCase();
+                String summary = fitWidth(handle.promptSummary(), 40);
+                enqueueUiNotice(stateColor + "bg #" + handle.taskId()
+                        + " " + stateLabel + RESET + " " + summary);
             }
         } catch (Exception e) {
             log.debug("Failed to push background task output: {}", e.getMessage());
