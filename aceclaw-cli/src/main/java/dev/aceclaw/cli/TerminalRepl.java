@@ -1055,60 +1055,23 @@ public final class TerminalRepl {
     private List<String> buildStatusPanelLines() {
         var lines = new ArrayList<String>();
         lines.add(buildStatusString());
-        String learningStatus = buildContinuousLearningStatusLine();
-        if (learningStatus != null && !learningStatus.isBlank()) {
-            lines.add(learningStatus);
-        }
         Instant now = Instant.now();
 
-        var runningTasks = taskManager.list().stream()
-                .filter(TaskHandle::isRunning)
-                .toList();
-        if (!runningTasks.isEmpty()) {
-            final int maxVisible = 4;
-            int from = Math.max(0, runningTasks.size() - maxVisible);
-            var visible = runningTasks.subList(from, runningTasks.size());
-
-            String fgId = taskManager.foregroundTaskId();
-            for (var task : visible) {
-                String elapsed = formatDuration(Duration.between(task.startedAt(), now));
-                String prefix = task.taskId().equals(fgId) ? "[fg] " : "";
-                String summary = fitWidth(task.promptSummary(), 52);
-                var runtime = deriveRuntimeInfo(task, now);
-                String runtimeLabel = fitWidth(runtime.label(), 24);
-
-                lines.add(MUTED + "  \u2514 " + RESET
-                        + runtime.color() + runtime.icon() + RESET + " "
-                        + INFO + "#" + task.taskId() + RESET + " "
-                        + prefix + summary
-                        + MUTED + "  " + runtimeLabel + " \u00B7 " + elapsed + RESET);
-            }
-
-            int hidden = runningTasks.size() - visible.size();
-            if (hidden > 0) {
-                lines.add(MUTED + "    ... +" + hidden + " more running task(s)" + RESET);
-            }
-        }
-
-        var pending = permissionBridge.pendingSnapshot();
-        if (!pending.isEmpty()) {
-            int maxPermVisible = 2;
-            for (int i = 0; i < Math.min(maxPermVisible, pending.size()); i++) {
-                var req = pending.get(i);
-                String detail = fitWidth(req.description(), 58);
-                lines.add(MUTED + "  \u2514 " + RESET
-                        + WARNING + "\uD83D\uDD10" + RESET + " "
-                        + INFO + "#" + req.taskId() + RESET + " "
-                        + detail);
-            }
-            if (pending.size() > maxPermVisible) {
-                lines.add(MUTED + "    ... +" + (pending.size() - maxPermVisible)
-                        + " more permission request(s)" + RESET);
-            }
+        String learningStatus = buildContinuousLearningStatusLine();
+        if (learningStatus == null || learningStatus.isBlank()) {
+            lines.add(MUTED + "  \u251C " + RESET
+                    + INFO + "\uD83E\uDDE0 learning" + RESET
+                    + MUTED + " \u2502 unavailable" + RESET);
+        } else {
+            lines.add(learningStatus.replaceFirst("\\u2514", "\u251C"));
         }
 
         var cron = cachedCronStatus;
-        if (cron != null) {
+        if (cron == null) {
+            lines.add(MUTED + "  \u251C " + RESET
+                    + INFO + "\u23F0 cron" + RESET
+                    + MUTED + " \u2502 loading..." + RESET);
+        } else {
             var visibleJobs = cron.jobs().stream()
                     .filter(job -> !("one-shot".equals(job.kind()) && job.lastRunAt() != null))
                     .toList();
@@ -1125,7 +1088,7 @@ public final class TerminalRepl {
                 }
                 runningDetail += ")";
             }
-            lines.add(MUTED + "  \u2514 " + RESET
+            lines.add(MUTED + "  \u251C " + RESET
                     + INFO + "\u23F0 cron" + RESET
                     + MUTED + " \u2502 scheduler=" + schedulerState
                     + " \u2502 state=" + runningState + runningDetail
@@ -1138,9 +1101,7 @@ public final class TerminalRepl {
                 int maxCronVisible = 4;
                 int shown = 0;
                 for (CronJobStatus job : visibleJobs) {
-                    if (shown >= maxCronVisible) {
-                        break;
-                    }
+                    if (shown >= maxCronVisible) break;
                     String enabled = job.enabled() ? "enabled" : "disabled";
                     String next = job.nextFireAt() == null ? "n/a"
                             : formatDuration(Duration.between(now, job.nextFireAt()).abs()) + " @ "
@@ -1148,14 +1109,63 @@ public final class TerminalRepl {
                             java.time.ZoneId.systemDefault()));
                     String kind = job.kind();
                     String desc = fitWidth(job.description() == null ? "" : job.description(), 52);
-                    lines.add(MUTED + "    · " + job.id() + " [" + kind + "] "
+                    lines.add(MUTED + "  \u2502   \u00B7 " + job.id() + " [" + kind + "] "
                             + enabled + " next=" + next + " :: " + desc + RESET);
                     shown++;
                 }
                 if (visibleJobs.size() > maxCronVisible) {
-                    lines.add(MUTED + "    ... +" + (visibleJobs.size() - maxCronVisible)
+                    lines.add(MUTED + "  \u2502   ... +" + (visibleJobs.size() - maxCronVisible)
                             + " more cron job(s)" + RESET);
                 }
+            }
+        }
+
+        var runningTasks = taskManager.list().stream()
+                .filter(TaskHandle::isRunning)
+                .toList();
+        var pending = permissionBridge.pendingSnapshot();
+        lines.add(MUTED + "  \u2514 " + RESET
+                + INFO + "\u2699 tasks" + RESET
+                + MUTED + " \u2502 running=" + runningTasks.size()
+                + " \u2502 permissions=" + pending.size() + RESET);
+
+        if (!runningTasks.isEmpty()) {
+            final int maxVisible = 4;
+            int from = Math.max(0, runningTasks.size() - maxVisible);
+            var visible = runningTasks.subList(from, runningTasks.size());
+            String fgId = taskManager.foregroundTaskId();
+            for (var task : visible) {
+                String elapsed = formatDuration(Duration.between(task.startedAt(), now));
+                String prefix = task.taskId().equals(fgId) ? "[fg] " : "";
+                String summary = fitWidth(task.promptSummary(), 52);
+                var runtime = deriveRuntimeInfo(task, now);
+                String runtimeLabel = fitWidth(runtime.label(), 24);
+
+                lines.add(MUTED + "      \u00B7 " + RESET
+                        + runtime.color() + runtime.icon() + RESET + " "
+                        + INFO + "#" + task.taskId() + RESET + " "
+                        + prefix + summary
+                        + MUTED + "  " + runtimeLabel + " \u00B7 " + elapsed + RESET);
+            }
+            int hidden = runningTasks.size() - visible.size();
+            if (hidden > 0) {
+                lines.add(MUTED + "      ... +" + hidden + " more running task(s)" + RESET);
+            }
+        }
+
+        if (!pending.isEmpty()) {
+            int maxPermVisible = 2;
+            for (int i = 0; i < Math.min(maxPermVisible, pending.size()); i++) {
+                var req = pending.get(i);
+                String detail = fitWidth(req.description(), 58);
+                lines.add(MUTED + "      \u00B7 " + RESET
+                        + WARNING + "\uD83D\uDD10" + RESET + " "
+                        + INFO + "#" + req.taskId() + RESET + " "
+                        + detail);
+            }
+            if (pending.size() > maxPermVisible) {
+                lines.add(MUTED + "      ... +" + (pending.size() - maxPermVisible)
+                        + " more permission request(s)" + RESET);
             }
         }
 
