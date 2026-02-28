@@ -27,6 +27,8 @@ public final class PermissionBridge {
     private final BlockingQueue<PermissionRequest> pending = new LinkedBlockingQueue<>();
     private final ConcurrentHashMap<String, CompletableFuture<PermissionAnswer>> futures =
             new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, PermissionAnswer> resolvedAnswers =
+            new ConcurrentHashMap<>();
     private volatile RequestListener requestListener;
 
     /**
@@ -125,12 +127,24 @@ public final class PermissionBridge {
     public void submitAnswer(String requestId, PermissionAnswer answer) {
         Objects.requireNonNull(requestId, "requestId");
         Objects.requireNonNull(answer, "answer");
+        resolvedAnswers.put(requestId, answer);
         var future = futures.get(requestId);
         if (future != null) {
             future.complete(answer);
         } else {
             log.warn("No pending permission future for requestId={}, answer dropped", requestId);
         }
+    }
+
+    /**
+     * Returns and clears a previously resolved answer for a request, if present.
+     *
+     * <p>This is used by the UI polling loop to detect requests that were
+     * auto-resolved before the interactive permission dialog was shown.
+     */
+    public PermissionAnswer consumeResolvedAnswer(String requestId) {
+        if (requestId == null || requestId.isBlank()) return null;
+        return resolvedAnswers.remove(requestId);
     }
 
     /**

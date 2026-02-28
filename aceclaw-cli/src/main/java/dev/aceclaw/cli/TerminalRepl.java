@@ -757,6 +757,7 @@ public final class TerminalRepl {
 
         permissionBridge.submitAnswer(req.requestId(),
                 new PermissionBridge.PermissionAnswer(approved, remember));
+        permissionBridge.consumeResolvedAnswer(req.requestId());
         var task = taskManager.get(req.taskId());
         if (task != null) {
             task.clearWaitingPermission();
@@ -773,6 +774,22 @@ public final class TerminalRepl {
             try {
                 var req = permissionBridge.pollPending(0, TimeUnit.MILLISECONDS);
                 if (req != null) {
+                    var resolved = permissionBridge.consumeResolvedAnswer(req.requestId());
+                    if (resolved != null) {
+                        var task = taskManager.get(req.taskId());
+                        if (task != null) {
+                            task.clearWaitingPermission();
+                        }
+                        String note = resolved.approved()
+                                ? MUTED + "[Permission auto-approved] " + RESET
+                                  + "task #" + req.taskId() + " -> " + fitWidth(req.description(), 90)
+                                : WARNING + "[Permission auto-denied] " + RESET
+                                  + "task #" + req.taskId() + " -> " + fitWidth(req.description(), 90);
+                        enqueueUiNotice(note);
+                        permissionInterruptRequested.set(false);
+                        redrawStatusPanelBelowPrompt(reader);
+                        continue;
+                    }
                     handlePermissionFromBridge(out, reader, req);
                 }
             } catch (InterruptedException e) {
@@ -1047,15 +1064,6 @@ public final class TerminalRepl {
         var task = taskManager.get(request.taskId());
         if (task != null) {
             task.markWaitingPermission(request.description());
-        }
-        try {
-            String note = WARNING + "[Permission required] " + RESET
-                    + "task #" + request.taskId() + " \u2192 "
-                    + fitWidth(request.description(), 90)
-                    + MUTED + "  (opening popup...)" + RESET;
-            enqueueUiNotice(note);
-        } catch (Exception e) {
-            log.debug("Failed to print permission notice: {}", e.getMessage());
         }
         interruptPromptForPermissionPopup();
     }
