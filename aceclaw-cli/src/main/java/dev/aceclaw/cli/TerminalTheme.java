@@ -97,8 +97,8 @@ public final class TerminalTheme {
     public static final String ICON_PRIMARY = "\u25C6";
     /** Brain emoji for learning section */
     public static final String ICON_LEARNING = "\uD83E\uDDE0";   // U+1F9E0
-    /** Clock emoji for cron/scheduler section */
-    public static final String ICON_CRON = "\u23F0";              // U+23F0
+    /** Cycle arrows emoji for cron/scheduler section */
+    public static final String ICON_CRON = "\uD83D\uDD04";       // U+1F504
     /** Rocket emoji for tasks section */
     public static final String ICON_TASKS = "\uD83D\uDE80";      // U+1F680
     /** Bell emoji for notices section */

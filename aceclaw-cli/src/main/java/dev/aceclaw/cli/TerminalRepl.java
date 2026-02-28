@@ -1281,7 +1281,7 @@ public final class TerminalRepl {
                 .filter(TaskHandle::isRunning)
                 .toList();
         var pending = permissionBridge.pendingSnapshot();
-        lines.add(MUTED + "  " + TREE_LAST + " " + ICON_TASKS + " " + RESET
+        lines.add(MUTED + "  " + TREE_BRANCH + " " + ICON_TASKS + " " + RESET
                 + INFO + "tasks" + RESET
                 + MUTED + " | running=" + runningTasks.size()
                 + " | permissions=" + pending.size() + RESET);
