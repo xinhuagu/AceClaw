@@ -862,9 +862,7 @@ public final class AceClawDaemon {
         boolean oneShotHint = id.contains("once") || id.contains("one-shot")
                 || p.contains("remove self")
                 || p.contains("delete self")
-                || p.contains("cron remove")
-                || p.contains("一次性")
-                || p.contains("删除自己");
+                || p.contains("cron remove");
         return oneShotHint ? "one-shot" : "scheduled";
     }
 
