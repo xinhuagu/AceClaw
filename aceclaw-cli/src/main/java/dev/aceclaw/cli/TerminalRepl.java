@@ -1010,25 +1010,27 @@ public final class TerminalRepl {
 
     private void flushUiEvents(LineReader reader) {
         if (reader == null || reader != activeReader) return;
-        UiEvent event;
-        while ((event = uiEvents.poll()) != null) {
-            if (event instanceof UiNoticeEvent notice) {
-                try {
-                    reader.printAbove(AttributedString.fromAnsi(notice.ansiText()));
-                } catch (Exception e) {
-                    log.debug("Failed to render queued UI notice: {}", e.getMessage());
+        synchronized (uiRenderLock) {
+            UiEvent event;
+            while ((event = uiEvents.poll()) != null) {
+                if (event instanceof UiNoticeEvent notice) {
+                    try {
+                        reader.printAbove(AttributedString.fromAnsi(notice.ansiText()));
+                    } catch (Exception e) {
+                        log.debug("Failed to render queued UI notice: {}", e.getMessage());
+                    }
                 }
             }
-        }
-        try {
-            reader.callWidget(LineReader.REDRAW_LINE);
-        } catch (Exception e) {
-            log.debug("Failed to call REDRAW_LINE: {}", e.getMessage());
-        }
-        try {
-            reader.callWidget(LineReader.REDISPLAY);
-        } catch (Exception e) {
-            log.debug("Failed to call REDISPLAY: {}", e.getMessage());
+            try {
+                reader.callWidget(LineReader.REDRAW_LINE);
+            } catch (Exception e) {
+                log.debug("Failed to call REDRAW_LINE: {}", e.getMessage());
+            }
+            try {
+                reader.callWidget(LineReader.REDISPLAY);
+            } catch (Exception e) {
+                log.debug("Failed to call REDISPLAY: {}", e.getMessage());
+            }
         }
         ensureCursorVisible();
     }
@@ -2110,10 +2112,15 @@ public final class TerminalRepl {
     private static String clampStatusLine(String line, int maxWidth) {
         if (line == null || line.isEmpty()) return "";
         if (maxWidth <= 0) return "";
-        String plain = ANSI_CSI_PATTERN.matcher(line).replaceAll("");
-        if (displayWidth(plain) <= maxWidth) {
-            return line;
+        // Normalize controls so no carriage-return/backspace can corrupt prompt rows.
+        String plain = ANSI_CSI_PATTERN.matcher(line).replaceAll("")
+                .replace('\r', ' ')
+                .replace('\t', ' ');
+        String fitted = plain;
+        if (displayWidth(plain) > maxWidth) {
+            fitted = fitWidth(plain, maxWidth);
         }
-        return fitWidth(plain, maxWidth);
+        // Pad to terminal width to clear leftovers from previous longer frames.
+        return padRight(fitted, maxWidth);
     }
 }
