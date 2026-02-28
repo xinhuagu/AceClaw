@@ -13,6 +13,7 @@ import org.jline.terminal.Attributes;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 import org.jline.utils.AttributedString;
+import org.jline.utils.Status;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,6 +32,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
@@ -66,6 +68,8 @@ public final class TerminalRepl {
     private static final Duration TASK_STALLED_AFTER = Duration.ofSeconds(45);
     private static final Duration TASK_TIMEOUT_AFTER = Duration.ofSeconds(180);
     private static final Duration LEARNING_STATUS_REFRESH = Duration.ofSeconds(5);
+    private static final boolean PROMPT_STATUS_PANEL_ENABLED =
+            Boolean.parseBoolean(System.getenv().getOrDefault("ACECLAW_PROMPT_STATUS_PANEL", "true"));
     private static final int MAX_RESUME_HINT_LEN = 200;
     private static final String CL_METRICS_DIR = ".aceclaw/metrics/continuous-learning";
     private static final String CL_REPLAY_REPORT = "replay-latest.json";
@@ -81,9 +85,9 @@ public final class TerminalRepl {
     private final TaskManager taskManager;
     private final PermissionBridge permissionBridge;
     private final ObjectMapper statusMapper;
+    private final ConcurrentLinkedQueue<UiEvent> uiEvents = new ConcurrentLinkedQueue<>();
     private final Object uiRenderLock = new Object();
     private final AtomicBoolean permissionInterruptRequested = new AtomicBoolean(false);
-    private int previousStatusLineCount;
 
     /** Tracks the effective model, updated after successful model switches. */
     private volatile String effectiveModel;
@@ -116,8 +120,14 @@ public final class TerminalRepl {
 
     /** Current foreground output sink (for Ctrl+C spinner cleanup). */
     private volatile ForegroundOutputSink activeForegroundSink;
+    /** JLine status panel renderer. */
+    private volatile Status promptStatus;
     /** Last consumed scheduler event sequence from daemon. */
     private volatile long schedulerEventSeq;
+
+    private sealed interface UiEvent permits UiNoticeEvent {}
+
+    private record UiNoticeEvent(String ansiText) implements UiEvent {}
 
     /**
      * Session metadata displayed in the startup banner and status line.
@@ -190,6 +200,9 @@ public final class TerminalRepl {
 
             activeReader = reader;
             activeTerminal = terminal;
+            if (PROMPT_STATUS_PANEL_ENABLED) {
+                promptStatus = Status.getStatus(terminal);
+            }
 
             PrintWriter out = terminal.writer();
 
@@ -215,12 +228,7 @@ public final class TerminalRepl {
             // Override Ctrl+L: clear screen + redraw status bar below prompt
             reader.getWidgets().put("aceclaw-clear-screen", () -> {
                 reader.callWidget(LineReader.CLEAR_SCREEN);
-                synchronized (uiRenderLock) {
-                    previousStatusLineCount = 0;
-                    PrintWriter w = terminal.writer();
-                    renderStatusPanel(w, true);
-                    w.flush();
-                }
+                redrawStatusPanelBelowPrompt(reader);
                 return true;
             });
             reader.getKeyMaps().get(LineReader.MAIN)
@@ -243,11 +251,8 @@ public final class TerminalRepl {
 
                 String line;
                 try {
-                    // Print status on the line below, then move cursor back up.
-                    synchronized (uiRenderLock) {
-                        renderStatusPanel(out, true);
-                        out.flush();
-                    }
+                    flushUiEvents(reader);
+                    redrawStatusPanelBelowPrompt(reader);
                     readingPrompt = true;
                     try {
                         line = reader.readLine(PROMPT_STR);
@@ -313,6 +318,13 @@ public final class TerminalRepl {
             if (schedulerEventConnection != null) {
                 schedulerEventConnection.close();
             }
+            if (promptStatus != null) {
+                try {
+                    promptStatus.update(List.of());
+                } catch (Exception e) {
+                    log.debug("Failed to clear prompt status: {}", e.getMessage());
+                }
+            }
         }
     }
 
@@ -329,8 +341,10 @@ public final class TerminalRepl {
                         }
 
                         pollAndRenderSchedulerEvents(schedulerEventConn, reader);
-                        if (!readingPrompt) continue;
-                        redrawStatusPanelBelowPrompt(reader);
+                        flushUiEvents(reader);
+                        if (readingPrompt) {
+                            redrawStatusPanelBelowPrompt(reader);
+                        }
                     }
                 });
     }
@@ -362,10 +376,9 @@ public final class TerminalRepl {
             for (JsonNode event : events) {
                 String note = renderSchedulerEventNote(event);
                 if (note != null) {
-                    reader.printAbove(AttributedString.fromAnsi(note));
+                    enqueueUiNotice(note);
                 }
             }
-            redrawStatusPanelBelowPrompt(reader);
         } catch (Exception e) {
             log.debug("Failed to poll scheduler events: {}", e.getMessage());
         }
@@ -751,9 +764,7 @@ public final class TerminalRepl {
 
             String output = sb.toString();
             if (!output.isBlank()) {
-                // printAbove is thread-safe — displays above current prompt, redraws prompt
-                reader.printAbove(AttributedString.fromAnsi(output));
-                redrawStatusPanelBelowPrompt(reader);
+                enqueueUiNotice(output);
             }
         } catch (Exception e) {
             log.debug("Failed to push background task output: {}", e.getMessage());
@@ -869,60 +880,45 @@ public final class TerminalRepl {
     }
 
     /**
-     * Renders the prompt status panel below the current cursor.
-     *
-     * <p>The first line is the compact global status; following lines show
-     * currently running tasks so concurrent background activity is visible.
-     *
-     * @param restoreCursorByUp if true, moves cursor back up by rendered line count
-     */
-    private void renderStatusPanel(PrintWriter out, boolean restoreCursorByUp) {
-        var lines = buildStatusPanelLines();
-        int currentLineCount = lines.size();
-        int renderLineCount = Math.max(currentLineCount, previousStatusLineCount);
-        if (renderLineCount == 0) return;
-        int terminalWidth = activeTerminal != null ? activeTerminal.getWidth() : 120;
-        int maxWidth = Math.max(20, terminalWidth - 1);
-
-        for (int i = 0; i < renderLineCount; i++) {
-            out.print("\n\r\033[K");
-            if (i < currentLineCount) {
-                out.print(clampStatusLine(lines.get(i), maxWidth));
-            }
-        }
-
-        if (restoreCursorByUp) {
-            out.print("\033[" + renderLineCount + "A\r");
-        }
-        previousStatusLineCount = currentLineCount;
-    }
-
-    /**
-     * Re-renders the prompt status panel after asynchronous printAbove output.
-     *
-     * <p>Without this, JLine redraws only the prompt line after printAbove, and
-     * our custom status panel (rendered below the prompt) disappears until the
-     * next explicit prompt redraw.
+     * Re-renders the prompt status panel via JLine Status API.
      */
     private void redrawStatusPanelBelowPrompt(LineReader reader) {
-        var terminal = activeTerminal;
-        if (terminal == null) return;
         if (reader == null || reader != activeReader) return;
         if (taskManager.hasForegroundTask()) return;
+        if (!PROMPT_STATUS_PANEL_ENABLED) return;
+        var terminal = activeTerminal;
+        if (terminal == null) return;
 
         synchronized (uiRenderLock) {
-            PrintWriter out = terminal.writer();
-            renderStatusPanel(out, true);
-            out.flush();
+            if (promptStatus == null) {
+                promptStatus = Status.getStatus(terminal);
+            }
+            int terminalWidth = Math.max(20, terminal.getWidth() - 1);
+            var rendered = buildStatusPanelLines().stream()
+                    .map(line -> clampStatusLine(line, terminalWidth))
+                    .map(AttributedString::fromAnsi)
+                    .toList();
+            promptStatus.update(rendered);
         }
-        forcePromptRedisplay(reader);
     }
 
-    /**
-     * Forces JLine to redraw the editable prompt line so cursor returns
-     * to prompt+buffer position (instead of column 0) after async UI writes.
-     */
-    private void forcePromptRedisplay(LineReader reader) {
+    private void enqueueUiNotice(String ansiText) {
+        if (ansiText == null || ansiText.isBlank()) return;
+        uiEvents.add(new UiNoticeEvent(ansiText));
+    }
+
+    private void flushUiEvents(LineReader reader) {
+        if (reader == null || reader != activeReader) return;
+        UiEvent event;
+        while ((event = uiEvents.poll()) != null) {
+            if (event instanceof UiNoticeEvent notice) {
+                try {
+                    reader.printAbove(AttributedString.fromAnsi(notice.ansiText()));
+                } catch (Exception e) {
+                    log.debug("Failed to render queued UI notice: {}", e.getMessage());
+                }
+            }
+        }
         try {
             reader.callWidget(LineReader.REDRAW_LINE);
         } catch (Exception e) {
@@ -953,12 +949,11 @@ public final class TerminalRepl {
                     + "task #" + request.taskId() + " \u2192 "
                     + fitWidth(request.description(), 90)
                     + MUTED + "  (opening popup...)" + RESET;
-            reader.printAbove(AttributedString.fromAnsi(note));
+            enqueueUiNotice(note);
         } catch (Exception e) {
             log.debug("Failed to print permission notice: {}", e.getMessage());
         }
         interruptPromptForPermissionPopup();
-        redrawStatusPanelBelowPrompt(reader);
     }
 
     /**
