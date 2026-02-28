@@ -13,6 +13,7 @@ import org.jline.terminal.Attributes;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 import org.jline.utils.AttributedString;
+import org.jline.utils.InfoCmp;
 import org.jline.utils.Status;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -277,13 +278,16 @@ public final class TerminalRepl {
                 try {
                     flushUiEvents(reader);
                     redrawStatusPanelBelowPrompt(reader);
+                    ensureCursorVisible();
                     readingPrompt = true;
                     try {
                         line = reader.readLine(PROMPT_STR);
                     } finally {
                         readingPrompt = false;
+                        ensureCursorVisible();
                     }
                 } catch (UserInterruptException e) {
+                    ensureCursorVisible();
                     // Permission requests can intentionally interrupt prompt input
                     // so approval appears immediately as a popup flow.
                     if (permissionInterruptRequested.getAndSet(false) || permissionBridge.hasPending()) {
@@ -295,6 +299,7 @@ public final class TerminalRepl {
                     out.println();
                     break;
                 } catch (EndOfFileException e) {
+                    ensureCursorVisible();
                     // Ctrl+D: exit gracefully
                     out.println();
                     break;
@@ -369,6 +374,7 @@ public final class TerminalRepl {
                         if (readingPrompt) {
                             flushUiEvents(reader);
                             redrawStatusPanelBelowPrompt(reader);
+                            ensureCursorVisible();
                         }
                     }
                 });
@@ -975,6 +981,7 @@ public final class TerminalRepl {
                     .toList();
             promptStatus.update(rendered);
         }
+        ensureCursorVisible();
     }
 
     private void enqueueUiNotice(String ansiText) {
@@ -1003,6 +1010,28 @@ public final class TerminalRepl {
             reader.callWidget(LineReader.REDISPLAY);
         } catch (Exception e) {
             log.debug("Failed to call REDISPLAY: {}", e.getMessage());
+        }
+        ensureCursorVisible();
+    }
+
+    private void ensureCursorVisible() {
+        Terminal terminal = activeTerminal;
+        if (terminal == null) {
+            return;
+        }
+        try {
+            terminal.puts(InfoCmp.Capability.cursor_visible);
+            terminal.flush();
+            return;
+        } catch (Exception e) {
+            log.debug("Failed to force cursor_visible capability: {}", e.getMessage());
+        }
+        try {
+            PrintWriter writer = terminal.writer();
+            writer.print("\u001B[?25h");
+            writer.flush();
+        } catch (Exception e) {
+            log.debug("Failed to force ANSI cursor show: {}", e.getMessage());
         }
     }
 
