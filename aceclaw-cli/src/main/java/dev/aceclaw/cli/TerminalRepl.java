@@ -68,6 +68,7 @@ public final class TerminalRepl {
     private static final Duration TASK_STALLED_AFTER = Duration.ofSeconds(45);
     private static final Duration TASK_TIMEOUT_AFTER = Duration.ofSeconds(180);
     private static final Duration LEARNING_STATUS_REFRESH = Duration.ofSeconds(5);
+    private static final Duration CRON_STATUS_REFRESH = Duration.ofSeconds(5);
     private static final boolean PROMPT_STATUS_PANEL_ENABLED =
             Boolean.parseBoolean(System.getenv().getOrDefault("ACECLAW_PROMPT_STATUS_PANEL", "true"));
     private static final int MAX_RESUME_HINT_LEN = 200;
@@ -112,6 +113,9 @@ public final class TerminalRepl {
     /** Cached continuous-learning status line; refreshed periodically. */
     private volatile String cachedLearningStatusLine;
     private volatile Instant cachedLearningStatusAt = Instant.EPOCH;
+    /** Cached cron status snapshot from daemon RPC. */
+    private volatile CronStatusSnapshot cachedCronStatus;
+    private volatile Instant cachedCronStatusAt = Instant.EPOCH;
     /** Last non-trivial user task prompt, used by /continue fallback. */
     private volatile String lastTaskPrompt;
     private final ResumeCheckpointStore resumeCheckpointStore;
@@ -128,6 +132,23 @@ public final class TerminalRepl {
     private sealed interface UiEvent permits UiNoticeEvent {}
 
     private record UiNoticeEvent(String ansiText) implements UiEvent {}
+
+    private record CronJobStatus(
+            String id,
+            String name,
+            String kind,
+            boolean enabled,
+            Instant nextFireAt,
+            String description
+    ) {}
+
+    private record CronStatusSnapshot(
+            boolean schedulerRunning,
+            boolean jobRunning,
+            String currentJobId,
+            Instant currentJobStartedAt,
+            List<CronJobStatus> jobs
+    ) {}
 
     /**
      * Session metadata displayed in the startup banner and status line.
@@ -341,6 +362,7 @@ public final class TerminalRepl {
                         }
 
                         pollAndRenderSchedulerEvents(schedulerEventConn, reader);
+                        pollCronStatus(schedulerEventConn);
                         if (readingPrompt) {
                             flushUiEvents(reader);
                             redrawStatusPanelBelowPrompt(reader);
@@ -382,10 +404,51 @@ public final class TerminalRepl {
         }
     }
 
+    private void pollCronStatus(DaemonConnection conn) {
+        if (conn == null) return;
+        Instant now = Instant.now();
+        if (cachedCronStatus != null
+                && Duration.between(cachedCronStatusAt, now).compareTo(CRON_STATUS_REFRESH) < 0) {
+            return;
+        }
+        try {
+            JsonNode result = conn.sendRequest("scheduler.cron.status", client.objectMapper().createObjectNode());
+            boolean schedulerRunning = result.path("schedulerRunning").asBoolean(false);
+            boolean jobRunning = result.path("jobRunning").asBoolean(false);
+            String currentJobId = result.path("currentJobId").asText("");
+            if (currentJobId.isBlank()) currentJobId = null;
+            Instant currentJobStartedAt = parseInstant(result.path("currentJobStartedAt").asText(""));
+            var jobs = new ArrayList<CronJobStatus>();
+            JsonNode arr = result.path("jobs");
+            if (arr.isArray()) {
+                for (JsonNode j : arr) {
+                    jobs.add(new CronJobStatus(
+                            j.path("id").asText(""),
+                            j.path("name").asText(""),
+                            j.path("kind").asText("scheduled"),
+                            j.path("enabled").asBoolean(true),
+                            parseInstant(j.path("nextFireAt").asText("")),
+                            j.path("description").asText("")
+                    ));
+                }
+            }
+            cachedCronStatus = new CronStatusSnapshot(
+                    schedulerRunning, jobRunning, currentJobId, currentJobStartedAt, List.copyOf(jobs));
+            cachedCronStatusAt = now;
+        } catch (Exception e) {
+            log.debug("Failed to poll scheduler.cron.status: {}", e.getMessage());
+        }
+    }
+
     private String renderSchedulerEventNote(JsonNode event) {
         String type = event.path("type").asText("");
         String jobId = event.path("jobId").asText("unknown");
         return switch (type) {
+            case "triggered" -> {
+                String ts = event.path("timestamp").asText("");
+                yield MUTED + "[cron running] " + jobId
+                        + (ts.isBlank() ? "" : " @ " + ts) + RESET;
+            }
             case "completed" -> {
                 var sb = new StringBuilder();
                 sb.append(MUTED).append("--- ").append(SUCCESS).append("cron completed")
@@ -421,7 +484,7 @@ public final class TerminalRepl {
                 yield WARNING + "[cron skipped] " + RESET + jobId
                         + (reason.isBlank() ? "" : " - " + reason);
             }
-            default -> null; // suppress noisy triggered events
+            default -> null;
         };
     }
 
@@ -1037,6 +1100,35 @@ public final class TerminalRepl {
             if (pending.size() > maxPermVisible) {
                 lines.add(MUTED + "    ... +" + (pending.size() - maxPermVisible)
                         + " more permission request(s)" + RESET);
+            }
+        }
+
+        var cron = cachedCronStatus;
+        if (cron != null) {
+            String schedulerState = cron.schedulerRunning() ? "on" : "off";
+            String runningState = cron.jobRunning() ? "running" : "idle";
+            String runningDetail = "";
+            if (cron.jobRunning() && cron.currentJobId() != null) {
+                runningDetail = " (" + cron.currentJobId();
+                if (cron.currentJobStartedAt() != null) {
+                    runningDetail += " " + formatDuration(Duration.between(cron.currentJobStartedAt(), now));
+                }
+                runningDetail += ")";
+            }
+            lines.add(MUTED + "  \u2514 cron scheduler=" + schedulerState
+                    + " | state=" + runningState + runningDetail
+                    + " | jobs=" + cron.jobs().size() + RESET);
+
+            for (CronJobStatus job : cron.jobs()) {
+                String enabled = job.enabled() ? "enabled" : "disabled";
+                String next = job.nextFireAt() == null ? "n/a"
+                        : formatDuration(Duration.between(now, job.nextFireAt()).abs()) + " @ "
+                        + TIME_FMT.format(java.time.LocalDateTime.ofInstant(job.nextFireAt(),
+                        java.time.ZoneId.systemDefault()));
+                String kind = job.kind();
+                String desc = fitWidth(job.description() == null ? "" : job.description(), 52);
+                lines.add(MUTED + "    · " + job.id() + " [" + kind + "] "
+                        + enabled + " next=" + next + " :: " + desc + RESET);
             }
         }
 
@@ -1888,6 +1980,15 @@ public final class TerminalRepl {
         if (mins < 60) return mins + "m " + (secs % 60) + "s";
         long hours = mins / 60;
         return hours + "h " + (mins % 60) + "m";
+    }
+
+    private static Instant parseInstant(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        try {
+            return Instant.parse(raw);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**

@@ -65,6 +65,8 @@ public final class CronScheduler {
     private ScheduledExecutorService scheduler;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean jobRunning = new AtomicBoolean(false);
+    private volatile String currentJobId;
+    private volatile Instant currentJobStartedAt;
 
     /**
      * Creates a CronScheduler.
@@ -208,6 +210,8 @@ public final class CronScheduler {
         }
 
         try {
+            currentJobId = job.id();
+            currentJobStartedAt = Instant.now();
             publishEvent(new SchedulerEvent.JobTriggered(
                     job.id(), job.expression(), Instant.now()));
             log.info("Executing cron job '{}': {}", job.id(), job.name());
@@ -253,8 +257,22 @@ public final class CronScheduler {
                     e.getMessage());
 
         } finally {
+            currentJobId = null;
+            currentJobStartedAt = null;
             jobRunning.set(false);
         }
+    }
+
+    public boolean isJobRunning() {
+        return jobRunning.get();
+    }
+
+    public String currentJobId() {
+        return currentJobId;
+    }
+
+    public Instant currentJobStartedAt() {
+        return currentJobStartedAt;
     }
 
     /**

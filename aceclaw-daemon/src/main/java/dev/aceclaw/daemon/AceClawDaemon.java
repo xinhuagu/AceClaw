@@ -7,6 +7,8 @@ import dev.aceclaw.core.agent.*;
 import dev.aceclaw.core.util.WaitSupport;
 import dev.aceclaw.core.llm.LlmClient;
 import dev.aceclaw.daemon.cron.CronScheduler;
+import dev.aceclaw.daemon.cron.CronExpression;
+import dev.aceclaw.daemon.cron.CronJob;
 import dev.aceclaw.daemon.cron.JobStore;
 import dev.aceclaw.daemon.cron.CronTool;
 import dev.aceclaw.daemon.heartbeat.HeartbeatRunner;
@@ -32,6 +34,7 @@ import org.slf4j.LoggerFactory;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Comparator;
 
 /**
  * The AceClaw daemon — a persistent system process that orchestrates all services.
@@ -728,6 +731,55 @@ public final class AceClawDaemon {
         });
 
         // Scheduler feed polling for foreground CLI notifications.
+        router.register("scheduler.cron.status", params -> {
+            var result = objectMapper.createObjectNode();
+            boolean schedulerRunning = cronScheduler != null && cronScheduler.isRunning();
+            result.put("schedulerRunning", schedulerRunning);
+            if (cronScheduler != null) {
+                result.put("jobRunning", cronScheduler.isJobRunning());
+                if (cronScheduler.currentJobId() != null) {
+                    result.put("currentJobId", cronScheduler.currentJobId());
+                }
+                if (cronScheduler.currentJobStartedAt() != null) {
+                    result.put("currentJobStartedAt", cronScheduler.currentJobStartedAt().toString());
+                }
+            } else {
+                result.put("jobRunning", false);
+            }
+
+            var jobs = objectMapper.createArrayNode();
+            for (CronJob job : cronJobStore.all().stream()
+                    .sorted(Comparator.comparing(CronJob::id))
+                    .toList()) {
+                var jn = objectMapper.createObjectNode();
+                jn.put("id", job.id());
+                jn.put("name", job.name());
+                jn.put("expression", job.expression());
+                jn.put("enabled", job.enabled());
+                jn.put("heartbeat", job.id().startsWith(HeartbeatRunner.JOB_ID_PREFIX));
+                jn.put("kind", cronKind(job));
+                jn.put("description", summarizePrompt(job.prompt()));
+                if (job.lastRunAt() != null) {
+                    jn.put("lastRunAt", job.lastRunAt().toString());
+                }
+                if (job.lastError() != null && !job.lastError().isBlank()) {
+                    jn.put("lastError", job.lastError());
+                }
+                try {
+                    Instant lastRun = job.lastRunAt() != null ? job.lastRunAt() : Instant.EPOCH;
+                    Instant nextFire = CronExpression.parse(job.expression()).nextFireTime(lastRun);
+                    if (nextFire != null) {
+                        jn.put("nextFireAt", nextFire.toString());
+                    }
+                } catch (Exception ignored) {
+                }
+                jobs.add(jn);
+            }
+            result.set("jobs", jobs);
+            return result;
+        });
+
+        // Scheduler feed polling for foreground CLI notifications.
         router.register("scheduler.events.poll", params -> {
             long afterSeq = 0L;
             int limit = 20;
@@ -788,6 +840,30 @@ public final class AceClawDaemon {
 
         log.info("Agent handler wired: provider={}, model={}, tools={}",
                 config.provider(), model, toolRegistry.size());
+    }
+
+    private static String summarizePrompt(String prompt) {
+        if (prompt == null || prompt.isBlank()) {
+            return "";
+        }
+        String firstLine = prompt.strip().split("\\R", 2)[0].trim();
+        if (firstLine.length() <= 120) {
+            return firstLine;
+        }
+        return firstLine.substring(0, 117) + "...";
+    }
+
+    private static String cronKind(CronJob job) {
+        if (job.id() != null && job.id().startsWith(HeartbeatRunner.JOB_ID_PREFIX)) {
+            return "heartbeat-longterm";
+        }
+        String p = job.prompt() == null ? "" : job.prompt().toLowerCase();
+        boolean oneShotHint = p.contains("remove self")
+                || p.contains("delete self")
+                || p.contains("cron remove")
+                || p.contains("一次性")
+                || p.contains("删除自己");
+        return oneShotHint ? "one-shot" : "scheduled";
     }
 
     private com.fasterxml.jackson.databind.node.ObjectNode toValidationJson(
