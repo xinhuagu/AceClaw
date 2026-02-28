@@ -71,6 +71,8 @@ public final class TerminalRepl {
     private static final Duration CRON_STATUS_REFRESH = Duration.ofSeconds(5);
     private static final boolean PROMPT_STATUS_PANEL_ENABLED =
             Boolean.parseBoolean(System.getenv().getOrDefault("ACECLAW_PROMPT_STATUS_PANEL", "true"));
+    private static final boolean CRON_STATUS_EXPANDED =
+            Boolean.parseBoolean(System.getenv().getOrDefault("ACECLAW_CRON_STATUS_EXPANDED", "false"));
     private static final int MAX_RESUME_HINT_LEN = 200;
     private static final String CL_METRICS_DIR = ".aceclaw/metrics/continuous-learning";
     private static final String CL_REPLAY_REPORT = "replay-latest.json";
@@ -1110,6 +1112,9 @@ public final class TerminalRepl {
             var visibleJobs = cron.jobs().stream()
                     .filter(job -> !("one-shot".equals(job.kind()) && job.lastRunAt() != null))
                     .toList();
+            long hbCount = visibleJobs.stream().filter(j -> "heartbeat-longterm".equals(j.kind())).count();
+            long oneShotCount = visibleJobs.stream().filter(j -> "one-shot".equals(j.kind())).count();
+            long scheduledCount = visibleJobs.stream().filter(j -> "scheduled".equals(j.kind())).count();
             String schedulerState = cron.schedulerRunning() ? "on" : "off";
             String runningState = cron.jobRunning() ? "running" : "idle";
             String runningDetail = "";
@@ -1124,28 +1129,33 @@ public final class TerminalRepl {
                     + INFO + "\u23F0 cron" + RESET
                     + MUTED + " \u2502 scheduler=" + schedulerState
                     + " \u2502 state=" + runningState + runningDetail
-                    + " \u2502 jobs=" + visibleJobs.size() + RESET);
+                    + " \u2502 jobs=" + visibleJobs.size()
+                    + " (s:" + scheduledCount + ",h:" + hbCount + ",o:" + oneShotCount + ")"
+                    + RESET);
 
-            int maxCronVisible = 4;
-            int shown = 0;
-            for (CronJobStatus job : visibleJobs) {
-                if (shown >= maxCronVisible) {
-                    break;
+            boolean expandDetails = cron.jobRunning() || CRON_STATUS_EXPANDED;
+            if (expandDetails) {
+                int maxCronVisible = 4;
+                int shown = 0;
+                for (CronJobStatus job : visibleJobs) {
+                    if (shown >= maxCronVisible) {
+                        break;
+                    }
+                    String enabled = job.enabled() ? "enabled" : "disabled";
+                    String next = job.nextFireAt() == null ? "n/a"
+                            : formatDuration(Duration.between(now, job.nextFireAt()).abs()) + " @ "
+                            + TIME_FMT.format(java.time.LocalDateTime.ofInstant(job.nextFireAt(),
+                            java.time.ZoneId.systemDefault()));
+                    String kind = job.kind();
+                    String desc = fitWidth(job.description() == null ? "" : job.description(), 52);
+                    lines.add(MUTED + "    · " + job.id() + " [" + kind + "] "
+                            + enabled + " next=" + next + " :: " + desc + RESET);
+                    shown++;
                 }
-                String enabled = job.enabled() ? "enabled" : "disabled";
-                String next = job.nextFireAt() == null ? "n/a"
-                        : formatDuration(Duration.between(now, job.nextFireAt()).abs()) + " @ "
-                        + TIME_FMT.format(java.time.LocalDateTime.ofInstant(job.nextFireAt(),
-                        java.time.ZoneId.systemDefault()));
-                String kind = job.kind();
-                String desc = fitWidth(job.description() == null ? "" : job.description(), 52);
-                lines.add(MUTED + "    · " + job.id() + " [" + kind + "] "
-                        + enabled + " next=" + next + " :: " + desc + RESET);
-                shown++;
-            }
-            if (visibleJobs.size() > maxCronVisible) {
-                lines.add(MUTED + "    ... +" + (visibleJobs.size() - maxCronVisible)
-                        + " more cron job(s)" + RESET);
+                if (visibleJobs.size() > maxCronVisible) {
+                    lines.add(MUTED + "    ... +" + (visibleJobs.size() - maxCronVisible)
+                            + " more cron job(s)" + RESET);
+                }
             }
         }
 
