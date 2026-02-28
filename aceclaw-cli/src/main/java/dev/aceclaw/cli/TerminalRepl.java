@@ -401,6 +401,16 @@ public final class TerminalRepl {
                     new TerminalMarkdownRenderer().render(summary, pw);
                     pw.flush();
                     sb.append(sw);
+                } else {
+                    long durationMs = event.path("durationMs").asLong(-1L);
+                    if (durationMs > 0) {
+                        sb.append(MUTED).append("(completed in ").append(durationMs).append("ms)").append(RESET).append("\n");
+                    }
+                    sb.append(WARNING)
+                            .append("No textual summary returned. ")
+                            .append("The job may have completed via tool calls only.")
+                            .append(RESET)
+                            .append("\n");
                 }
                 yield sb.toString();
             }
