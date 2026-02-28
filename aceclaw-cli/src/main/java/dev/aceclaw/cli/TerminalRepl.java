@@ -139,6 +139,7 @@ public final class TerminalRepl {
             String kind,
             boolean enabled,
             Instant nextFireAt,
+            Instant lastRunAt,
             String description
     ) {}
 
@@ -428,6 +429,7 @@ public final class TerminalRepl {
                             j.path("kind").asText("scheduled"),
                             j.path("enabled").asBoolean(true),
                             parseInstant(j.path("nextFireAt").asText("")),
+                            parseInstant(j.path("lastRunAt").asText("")),
                             j.path("description").asText("")
                     ));
                 }
@@ -1105,6 +1107,9 @@ public final class TerminalRepl {
 
         var cron = cachedCronStatus;
         if (cron != null) {
+            var visibleJobs = cron.jobs().stream()
+                    .filter(job -> !("one-shot".equals(job.kind()) && job.lastRunAt() != null))
+                    .toList();
             String schedulerState = cron.schedulerRunning() ? "on" : "off";
             String runningState = cron.jobRunning() ? "running" : "idle";
             String runningDetail = "";
@@ -1115,11 +1120,18 @@ public final class TerminalRepl {
                 }
                 runningDetail += ")";
             }
-            lines.add(MUTED + "  \u2514 cron scheduler=" + schedulerState
-                    + " | state=" + runningState + runningDetail
-                    + " | jobs=" + cron.jobs().size() + RESET);
+            lines.add(MUTED + "  \u2514 " + RESET
+                    + INFO + "\u23F0 cron" + RESET
+                    + MUTED + " \u2502 scheduler=" + schedulerState
+                    + " \u2502 state=" + runningState + runningDetail
+                    + " \u2502 jobs=" + visibleJobs.size() + RESET);
 
-            for (CronJobStatus job : cron.jobs()) {
+            int maxCronVisible = 4;
+            int shown = 0;
+            for (CronJobStatus job : visibleJobs) {
+                if (shown >= maxCronVisible) {
+                    break;
+                }
                 String enabled = job.enabled() ? "enabled" : "disabled";
                 String next = job.nextFireAt() == null ? "n/a"
                         : formatDuration(Duration.between(now, job.nextFireAt()).abs()) + " @ "
@@ -1129,6 +1141,11 @@ public final class TerminalRepl {
                 String desc = fitWidth(job.description() == null ? "" : job.description(), 52);
                 lines.add(MUTED + "    · " + job.id() + " [" + kind + "] "
                         + enabled + " next=" + next + " :: " + desc + RESET);
+                shown++;
+            }
+            if (visibleJobs.size() > maxCronVisible) {
+                lines.add(MUTED + "    ... +" + (visibleJobs.size() - maxCronVisible)
+                        + " more cron job(s)" + RESET);
             }
         }
 
