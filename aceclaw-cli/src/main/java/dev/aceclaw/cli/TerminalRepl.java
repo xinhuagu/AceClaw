@@ -94,7 +94,8 @@ public final class TerminalRepl {
     private final ObjectMapper statusMapper;
     private final ConcurrentLinkedQueue<UiEvent> uiEvents = new ConcurrentLinkedQueue<>();
     private final Deque<UiNotice> uiNoticeBuffer = new ArrayDeque<>();
-    private final List<String> pendingPrintAbove = new ArrayList<>();
+    private static final int MAX_PENDING_PRINT_ABOVE = 32;
+    private final Deque<String> pendingPrintAbove = new ArrayDeque<>();
     /** Fixed status panel height so JLine's Status widget never resizes its scroll region. */
     private static final int FIXED_STATUS_LINE_COUNT = 8;
     private final Object uiRenderLock = new Object();
@@ -162,7 +163,11 @@ public final class TerminalRepl {
             String currentJobId,
             Instant currentJobStartedAt,
             List<CronJobStatus> jobs
-    ) {}
+    ) {
+        private CronStatusSnapshot {
+            jobs = jobs != null ? List.copyOf(jobs) : List.of();
+        }
+    }
 
     /**
      * Session metadata displayed in the startup banner and status line.
@@ -1090,7 +1095,10 @@ public final class TerminalRepl {
                     changed = true;
                 }
                 case UiPrintAboveEvent pae -> {
-                    pendingPrintAbove.add(pae.ansiText());
+                    if (pendingPrintAbove.size() >= MAX_PENDING_PRINT_ABOVE) {
+                        pendingPrintAbove.removeFirst();
+                    }
+                    pendingPrintAbove.addLast(pae.ansiText());
                     changed = true;
                 }
             }

@@ -165,6 +165,11 @@ public final class TerminalTheme {
         int w = 0;
         for (int i = 0; i < text.length(); ) {
             int cp = text.codePointAt(i);
+            if (cp == 0x200D || cp == 0xFE0F) {
+                sb.appendCodePoint(cp);
+                i += Character.charCount(cp);
+                continue;
+            }
             int cpw = isWideChar(cp) ? 2 : 1;
             if (w + cpw > target) break;
             sb.appendCodePoint(cp);
