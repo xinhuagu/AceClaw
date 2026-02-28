@@ -361,17 +361,7 @@ public final class TerminalRepl {
             }
 
             for (JsonNode event : events) {
-                String type = event.path("type").asText("");
-                String jobId = event.path("jobId").asText("unknown");
-                String note = switch (type) {
-                    case "completed" -> SUCCESS + "[cron completed] " + RESET + jobId + " - "
-                            + fitWidth(event.path("summary").asText(""), 100);
-                    case "failed" -> ERROR + "[cron failed] " + RESET + jobId + " - "
-                            + fitWidth(event.path("error").asText("unknown error"), 100);
-                    case "skipped" -> WARNING + "[cron skipped] " + RESET + jobId + " - "
-                            + fitWidth(event.path("reason").asText(""), 100);
-                    default -> null; // suppress noisy triggered events
-                };
+                String note = renderSchedulerEventNote(event);
                 if (note != null) {
                     reader.printAbove(AttributedString.fromAnsi(note));
                 }
@@ -380,6 +370,39 @@ public final class TerminalRepl {
         } catch (Exception e) {
             log.debug("Failed to poll scheduler events: {}", e.getMessage());
         }
+    }
+
+    private String renderSchedulerEventNote(JsonNode event) {
+        String type = event.path("type").asText("");
+        String jobId = event.path("jobId").asText("unknown");
+        return switch (type) {
+            case "completed" -> {
+                var sb = new StringBuilder();
+                sb.append(MUTED).append("--- ").append(SUCCESS).append("cron completed")
+                        .append(RESET).append(MUTED).append(" [").append(jobId).append("] ---")
+                        .append(RESET).append("\n");
+
+                String summary = event.path("summary").asText("");
+                if (!summary.isBlank()) {
+                    var sw = new StringWriter();
+                    var pw = new PrintWriter(sw);
+                    new TerminalMarkdownRenderer().render(summary, pw);
+                    pw.flush();
+                    sb.append(sw);
+                }
+                yield sb.toString();
+            }
+            case "failed" -> {
+                String err = event.path("error").asText("unknown error");
+                yield ERROR + "[cron failed] " + RESET + jobId + " - " + err;
+            }
+            case "skipped" -> {
+                String reason = event.path("reason").asText("");
+                yield WARNING + "[cron skipped] " + RESET + jobId
+                        + (reason.isBlank() ? "" : " - " + reason);
+            }
+            default -> null; // suppress noisy triggered events
+        };
     }
 
     // -- Task submission and foreground wait ---------------------------------

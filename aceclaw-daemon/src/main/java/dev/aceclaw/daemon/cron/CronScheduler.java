@@ -45,6 +45,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class CronScheduler {
 
     private static final Logger log = LoggerFactory.getLogger(CronScheduler.class);
+    private static final int DEFAULT_EVENT_SUMMARY_MAX_CHARS = 8192;
+    private static final int EVENT_SUMMARY_MAX_CHARS = parseEventSummaryMaxChars();
 
     private final JobStore jobStore;
     private final LlmClient llmClient;
@@ -216,7 +218,7 @@ public final class CronScheduler {
 
             publishEvent(new SchedulerEvent.JobCompleted(
                     job.id(), durationMs,
-                    result.length() > 200 ? result.substring(0, 200) + "..." : result,
+                    truncateForEvent(result),
                     Instant.now()));
             log.info("Cron job '{}' completed in {}ms", job.id(), durationMs);
 
@@ -341,6 +343,30 @@ public final class CronScheduler {
             return normalized;
         }
         return normalized.substring(0, 400) + "...";
+    }
+
+    private static String truncateForEvent(String result) {
+        if (result == null) {
+            return "";
+        }
+        String normalized = result.strip();
+        if (normalized.length() <= EVENT_SUMMARY_MAX_CHARS) {
+            return normalized;
+        }
+        return normalized.substring(0, EVENT_SUMMARY_MAX_CHARS) + "...";
+    }
+
+    private static int parseEventSummaryMaxChars() {
+        String raw = System.getenv("ACECLAW_CRON_EVENT_MAX_CHARS");
+        if (raw == null || raw.isBlank()) {
+            return DEFAULT_EVENT_SUMMARY_MAX_CHARS;
+        }
+        try {
+            int parsed = Integer.parseInt(raw.trim());
+            return Math.max(256, parsed);
+        } catch (NumberFormatException e) {
+            return DEFAULT_EVENT_SUMMARY_MAX_CHARS;
+        }
     }
 
     /** No-op stream handler for cron execution (no user to display to). */
