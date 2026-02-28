@@ -341,8 +341,8 @@ public final class TerminalRepl {
                         }
 
                         pollAndRenderSchedulerEvents(schedulerEventConn, reader);
-                        flushUiEvents(reader);
                         if (readingPrompt) {
+                            flushUiEvents(reader);
                             redrawStatusPanelBelowPrompt(reader);
                         }
                     }
@@ -360,8 +360,6 @@ public final class TerminalRepl {
 
     private void pollAndRenderSchedulerEvents(DaemonConnection conn, LineReader reader) {
         if (conn == null) return;
-        if (!readingPrompt) return;
-        if (taskManager.hasForegroundTask()) return;
         try {
             var params = client.objectMapper().createObjectNode();
             params.put("afterSeq", schedulerEventSeq);
