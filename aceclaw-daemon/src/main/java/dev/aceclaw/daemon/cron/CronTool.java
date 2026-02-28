@@ -148,6 +148,9 @@ public final class CronTool implements Tool {
             if (job.lastRunAt() != null) {
                 sb.append(" | lastRun=").append(formatInstant(job.lastRunAt()));
             }
+            if (job.lastOutput() != null && !job.lastOutput().isBlank()) {
+                sb.append(" | lastOutput=").append(compact(job.lastOutput(), 120));
+            }
             if (job.lastError() != null && !job.lastError().isBlank()) {
                 sb.append(" | failures=").append(job.consecutiveFailures());
             }
@@ -195,6 +198,7 @@ public final class CronTool implements Tool {
                 Enabled: %s
                 Next fire: %s
                 Last run: %s
+                Last output: %s
                 Last error: %s
                 Consecutive failures: %d
                 Allowed tools: %s
@@ -204,6 +208,7 @@ public final class CronTool implements Tool {
                 job.id(), job.name(), job.expression(), job.enabled(),
                 nextFire(job),
                 formatNullableInstant(job.lastRunAt()),
+                job.lastOutput() == null || job.lastOutput().isBlank() ? "(none)" : compact(job.lastOutput(), 300),
                 job.lastError() == null || job.lastError().isBlank() ? "(none)" : job.lastError(),
                 job.consecutiveFailures(),
                 job.allowedTools().isEmpty() ? "(read-only defaults)" : String.join(", ", job.allowedTools()),
@@ -263,6 +268,7 @@ public final class CronTool implements Tool {
                 enabled,
                 existing.map(CronJob::retryBackoff).orElse(CronJob.DEFAULT_RETRY_BACKOFF),
                 existing.map(CronJob::lastRunAt).orElse(null),
+                existing.map(CronJob::lastOutput).orElse(null),
                 existing.map(CronJob::lastError).orElse(null),
                 existing.map(CronJob::consecutiveFailures).orElse(0));
         jobStore.put(job);
@@ -354,6 +360,14 @@ public final class CronTool implements Tool {
 
     private static String formatInstant(Instant at) {
         return TIME_FMT.format(at);
+    }
+
+    private static String compact(String text, int maxLen) {
+        String normalized = text.replaceAll("\\s+", " ").trim();
+        if (normalized.length() <= maxLen) {
+            return normalized;
+        }
+        return normalized.substring(0, maxLen) + "...";
     }
 
     private static ObjectNode stringNode(String description) {

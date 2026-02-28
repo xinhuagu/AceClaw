@@ -211,7 +211,7 @@ public final class CronScheduler {
             long durationMs = Duration.ofNanos(System.nanoTime() - startNanos).toMillis();
 
             // Mark success
-            jobStore.put(job.withSuccess(Instant.now()));
+            jobStore.put(job.withSuccess(Instant.now(), truncateResult(result)));
             saveQuietly();
 
             publishEvent(new SchedulerEvent.JobCompleted(
@@ -330,6 +330,17 @@ public final class CronScheduler {
         } catch (IOException e) {
             log.error("Failed to save job store: {}", e.getMessage(), e);
         }
+    }
+
+    private static String truncateResult(String result) {
+        if (result == null) {
+            return null;
+        }
+        String normalized = result.strip();
+        if (normalized.length() <= 400) {
+            return normalized;
+        }
+        return normalized.substring(0, 400) + "...";
     }
 
     /** No-op stream handler for cron execution (no user to display to). */

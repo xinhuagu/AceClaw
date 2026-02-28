@@ -22,6 +22,7 @@ import java.util.Set;
  * @param enabled       whether this job is active
  * @param retryBackoff  retry backoff delays in seconds (e.g. [30, 60, 300])
  * @param lastRunAt     last successful execution time (null if never run)
+ * @param lastOutput    last successful output summary (null if never succeeded)
  * @param lastError     last error message (null if last run succeeded)
  * @param consecutiveFailures number of consecutive failures (reset on success)
  */
@@ -37,6 +38,7 @@ public record CronJob(
         boolean enabled,
         List<Integer> retryBackoff,
         Instant lastRunAt,
+        String lastOutput,
         String lastError,
         int consecutiveFailures
 ) {
@@ -65,16 +67,23 @@ public record CronJob(
     public static CronJob create(String id, String name, String expression, String prompt) {
         return new CronJob(id, name, expression, prompt,
                 Set.of(), DEFAULT_TIMEOUT_SECONDS, DEFAULT_MAX_ITERATIONS,
-                true, DEFAULT_RETRY_BACKOFF, null, null, 0);
+                true, DEFAULT_RETRY_BACKOFF, null, null, null, 0);
     }
 
     /**
      * Returns a copy with updated last-run info after a successful execution.
      */
     public CronJob withSuccess(Instant runAt) {
+        return withSuccess(runAt, null);
+    }
+
+    /**
+     * Returns a copy with updated last-run info after a successful execution.
+     */
+    public CronJob withSuccess(Instant runAt, String output) {
         return new CronJob(id, name, expression, prompt, allowedTools,
                 timeoutSeconds, maxIterations, enabled, retryBackoff,
-                runAt, null, 0);
+                runAt, output, null, 0);
     }
 
     /**
@@ -83,7 +92,7 @@ public record CronJob(
     public CronJob withFailure(String error) {
         return new CronJob(id, name, expression, prompt, allowedTools,
                 timeoutSeconds, maxIterations, enabled, retryBackoff,
-                lastRunAt, error, consecutiveFailures + 1);
+                lastRunAt, lastOutput, error, consecutiveFailures + 1);
     }
 
     /**
@@ -92,7 +101,7 @@ public record CronJob(
     public CronJob withEnabled(boolean enabled) {
         return new CronJob(id, name, expression, prompt, allowedTools,
                 timeoutSeconds, maxIterations, enabled, retryBackoff,
-                lastRunAt, lastError, consecutiveFailures);
+                lastRunAt, lastOutput, lastError, consecutiveFailures);
     }
 
     /**

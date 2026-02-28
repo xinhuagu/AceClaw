@@ -302,7 +302,7 @@ class CronSchedulerTest {
     void scheduler_failureRecordedOnError() throws IOException {
         var jobStore = new JobStore(homeDir);
         var job = new CronJob("fail-job", "Fail Job", "* * * * *", "prompt",
-                Set.of(), 300, 15, true, List.of(), null, null, 0);
+                Set.of(), 300, 15, true, List.of(), null, null, null, 0);
         jobStore.put(job);
         jobStore.save(); // Persist to disk before scheduler.start() calls load()
 

@@ -162,7 +162,7 @@ public final class HeartbeatRunner {
                             task.allowedTools(), task.timeoutSeconds(),
                             CronJob.DEFAULT_MAX_ITERATIONS, existingJob.enabled(),
                             CronJob.DEFAULT_RETRY_BACKOFF,
-                            existingJob.lastRunAt(), existingJob.lastError(),
+                            existingJob.lastRunAt(), existingJob.lastOutput(), existingJob.lastError(),
                             existingJob.consecutiveFailures());
                     jobStore.put(updated);
                     log.info("Heartbeat job updated: {}", jobId);
@@ -173,7 +173,7 @@ public final class HeartbeatRunner {
                         jobId, task.name(), task.schedule(), task.prompt(),
                         task.allowedTools(), task.timeoutSeconds(),
                         CronJob.DEFAULT_MAX_ITERATIONS, true,
-                        CronJob.DEFAULT_RETRY_BACKOFF, null, null, 0);
+                        CronJob.DEFAULT_RETRY_BACKOFF, null, null, null, 0);
                 jobStore.put(job);
                 log.info("Heartbeat job created: {}", jobId);
             }
