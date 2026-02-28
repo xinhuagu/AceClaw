@@ -465,7 +465,7 @@ public final class TerminalRepl {
                         .append(RESET).append(MUTED).append(" [").append(jobId).append("] ---")
                         .append(RESET).append("\n");
 
-                String summary = event.path("summary").asText("");
+                String summary = sanitizeCronSummary(event.path("summary").asText(""));
                 if (!summary.isBlank()) {
                     var sw = new StringWriter();
                     var pw = new PrintWriter(sw);
@@ -943,7 +943,9 @@ public final class TerminalRepl {
         String branch = sessionInfo.gitBranch();
         if (branch != null && !branch.isBlank()) {
             sb.append(MUTED).append(" \u2502 ").append(RESET);
-            sb.append(SUCCESS).append("\u2387 ").append(branch).append(RESET);
+            sb.append(SUCCESS).append("\u2387 ")
+                    .append(fitWidth(branch, 28))
+                    .append(RESET);
         }
 
         int ctxWindow = sessionInfo.contextWindowTokens();
@@ -1117,21 +1119,23 @@ public final class TerminalRepl {
             long scheduledCount = visibleJobs.stream().filter(j -> "scheduled".equals(j.kind())).count();
             String schedulerState = cron.schedulerRunning() ? "on" : "off";
             String runningState = cron.jobRunning() ? "running" : "idle";
-            String runningDetail = "";
-            if (cron.jobRunning() && cron.currentJobId() != null) {
-                runningDetail = " (" + cron.currentJobId();
-                if (cron.currentJobStartedAt() != null) {
-                    runningDetail += " " + formatDuration(Duration.between(cron.currentJobStartedAt(), now));
-                }
-                runningDetail += ")";
-            }
             lines.add(MUTED + "  \u251C " + RESET
                     + INFO + "\u23F0 cron" + RESET
                     + MUTED + " \u2502 scheduler=" + schedulerState
-                    + " \u2502 state=" + runningState + runningDetail
+                    + " \u2502 state=" + runningState
                     + " \u2502 jobs=" + visibleJobs.size()
                     + " (s:" + scheduledCount + ",h:" + hbCount + ",o:" + oneShotCount + ")"
                     + RESET);
+
+            if (cron.jobRunning() && cron.currentJobId() != null && !cron.currentJobId().isBlank()) {
+                String elapsed = cron.currentJobStartedAt() == null
+                        ? "running"
+                        : formatDuration(Duration.between(cron.currentJobStartedAt(), now));
+                lines.add(MUTED + "  \u2502   \u00B7 " + RESET
+                        + WARNING + "\u23F3 running " + RESET
+                        + fitWidth(cron.currentJobId(), 28)
+                        + MUTED + " \u00B7 " + elapsed + RESET);
+            }
 
             boolean expandDetails = cron.jobRunning() || CRON_STATUS_EXPANDED;
             if (expandDetails) {
@@ -1140,12 +1144,9 @@ public final class TerminalRepl {
                 for (CronJobStatus job : visibleJobs) {
                     if (shown >= maxCronVisible) break;
                     String enabled = job.enabled() ? "enabled" : "disabled";
-                    String next = job.nextFireAt() == null ? "n/a"
-                            : formatDuration(Duration.between(now, job.nextFireAt()).abs()) + " @ "
-                            + TIME_FMT.format(java.time.LocalDateTime.ofInstant(job.nextFireAt(),
-                            java.time.ZoneId.systemDefault()));
+                    String next = formatCronNext(now, cron, job);
                     String kind = job.kind();
-                    String desc = fitWidth(job.description() == null ? "" : job.description(), 52);
+                    String desc = fitWidth(job.description() == null ? "" : job.description(), 40);
                     lines.add(MUTED + "  \u2502   \u00B7 " + job.id() + " [" + kind + "] "
                             + enabled + " next=" + next + " :: " + desc + RESET);
                     shown++;
@@ -2054,6 +2055,43 @@ public final class TerminalRepl {
         if (mins < 60) return mins + "m " + (secs % 60) + "s";
         long hours = mins / 60;
         return hours + "h " + (mins % 60) + "m";
+    }
+
+    private static String formatCronNext(Instant now, CronStatusSnapshot cron, CronJobStatus job) {
+        if (job == null) return "n/a";
+        if (cron != null && cron.jobRunning() && cron.currentJobId() != null
+                && cron.currentJobId().equals(job.id())) {
+            return "running";
+        }
+        Instant next = job.nextFireAt();
+        if (next == null) return "n/a";
+        Duration delta = Duration.between(now, next);
+        if (delta.isNegative()) {
+            // If stale/behind, show absolute only to avoid giant misleading "N hours" values.
+            return TIME_FMT.format(java.time.LocalDateTime.ofInstant(
+                    next, java.time.ZoneId.systemDefault()));
+        }
+        long days = delta.toDays();
+        if (days >= 7) {
+            return TIME_FMT.format(java.time.LocalDateTime.ofInstant(
+                    next, java.time.ZoneId.systemDefault()));
+        }
+        return formatDuration(delta) + " @ "
+                + TIME_FMT.format(java.time.LocalDateTime.ofInstant(next, java.time.ZoneId.systemDefault()));
+    }
+
+    private static String sanitizeCronSummary(String raw) {
+        if (raw == null || raw.isBlank()) return "";
+        StringBuilder sb = new StringBuilder(raw.length());
+        for (int i = 0; i < raw.length(); ) {
+            int cp = raw.codePointAt(i);
+            i += Character.charCount(cp);
+            // Keep newline/tab/printable chars, drop other control chars (including ESC).
+            if (cp == '\n' || cp == '\t' || cp >= 0x20) {
+                sb.appendCodePoint(cp);
+            }
+        }
+        return sb.toString().strip();
     }
 
     private static Instant parseInstant(String raw) {

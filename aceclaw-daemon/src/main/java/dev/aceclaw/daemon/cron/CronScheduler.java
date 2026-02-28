@@ -319,8 +319,18 @@ public final class CronScheduler {
                 llmClient, toolRegistry, model, systemPrompt,
                 maxTokens, thinkingBudget, null, loopConfig);
 
-        String cronPrompt = "[CRON] Executing scheduled task '" + job.name() + "' (id: " + job.id() + "):\n\n"
-                + job.prompt();
+        String cronPrompt = """
+                [CRON] Executing scheduled task '%s' (id: %s).
+
+                Rules for this run:
+                - Execute the requested task now.
+                - Do NOT create/update/remove cron jobs.
+                - Do NOT output setup/confirmation tables.
+                - Return only the actual result content for the user.
+
+                Task:
+                %s
+                """.formatted(job.name(), job.id(), job.prompt());
 
         var cancellationToken = new CancellationToken();
         var executor = Executors.newVirtualThreadPerTaskExecutor();

@@ -17,9 +17,15 @@ public final class CronPermissionChecker implements ToolPermissionChecker {
 
     private static final Logger log = LoggerFactory.getLogger(CronPermissionChecker.class);
 
-    /** Tools that are always auto-approved during cron execution (safe, read-only). */
+    /**
+     * Tools that are always auto-approved during cron execution (safe/read-only).
+     *
+     * <p>Web search/fetch are included so scheduled "collect news" style jobs can
+     * actually retrieve external content without extra per-job allowlist config.
+     */
     private static final Set<String> READ_ONLY_TOOLS = Set.of(
-            "read_file", "glob", "grep", "list_directory");
+            "read_file", "glob", "grep", "list_directory",
+            "web_search", "web_fetch");
 
     private final String jobId;
     private final Set<String> allowedTools;
