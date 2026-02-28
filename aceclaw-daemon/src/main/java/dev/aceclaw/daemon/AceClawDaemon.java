@@ -857,8 +857,10 @@ public final class AceClawDaemon {
         if (job.id() != null && job.id().startsWith(HeartbeatRunner.JOB_ID_PREFIX)) {
             return "heartbeat-longterm";
         }
+        String id = job.id() == null ? "" : job.id().toLowerCase();
         String p = job.prompt() == null ? "" : job.prompt().toLowerCase();
-        boolean oneShotHint = p.contains("remove self")
+        boolean oneShotHint = id.contains("once") || id.contains("one-shot")
+                || p.contains("remove self")
                 || p.contains("delete self")
                 || p.contains("cron remove")
                 || p.contains("一次性")
