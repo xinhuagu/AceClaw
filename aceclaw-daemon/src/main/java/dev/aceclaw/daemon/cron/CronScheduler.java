@@ -3,9 +3,12 @@ package dev.aceclaw.daemon.cron;
 import dev.aceclaw.core.agent.AgentLoopConfig;
 import dev.aceclaw.core.agent.CancellationToken;
 import dev.aceclaw.core.agent.StreamingAgentLoop;
+import dev.aceclaw.core.agent.Turn;
 import dev.aceclaw.core.agent.ToolRegistry;
+import dev.aceclaw.core.llm.ContentBlock;
 import dev.aceclaw.core.llm.LlmClient;
 import dev.aceclaw.core.llm.LlmException;
+import dev.aceclaw.core.llm.Message;
 import dev.aceclaw.core.llm.StreamEventHandler;
 import dev.aceclaw.core.util.WaitSupport;
 import dev.aceclaw.infra.event.EventBus;
@@ -47,6 +50,7 @@ public final class CronScheduler {
     private static final Logger log = LoggerFactory.getLogger(CronScheduler.class);
     private static final int DEFAULT_EVENT_SUMMARY_MAX_CHARS = 8192;
     private static final int EVENT_SUMMARY_MAX_CHARS = parseEventSummaryMaxChars();
+    private static final int TOOL_RESULT_FALLBACK_MAX_CHARS = 1600;
 
     private final JobStore jobStore;
     private final LlmClient llmClient;
@@ -61,6 +65,8 @@ public final class CronScheduler {
     private ScheduledExecutorService scheduler;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean jobRunning = new AtomicBoolean(false);
+    private volatile String currentJobId;
+    private volatile Instant currentJobStartedAt;
 
     /**
      * Creates a CronScheduler.
@@ -204,6 +210,8 @@ public final class CronScheduler {
         }
 
         try {
+            currentJobId = job.id();
+            currentJobStartedAt = Instant.now();
             publishEvent(new SchedulerEvent.JobTriggered(
                     job.id(), job.expression(), Instant.now()));
             log.info("Executing cron job '{}': {}", job.id(), job.name());
@@ -212,8 +220,13 @@ public final class CronScheduler {
             String result = runJobWithRetry(job);
             long durationMs = Duration.ofNanos(System.nanoTime() - startNanos).toMillis();
 
-            // Mark success
-            jobStore.put(job.withSuccess(Instant.now(), truncateResult(result)));
+            // Mark success only if the job still exists (avoid resurrecting one-shot jobs
+            // that removed themselves via cron.remove during execution).
+            if (jobStore.get(job.id()).isPresent()) {
+                jobStore.put(job.withSuccess(Instant.now(), truncateResult(result)));
+            } else {
+                log.info("Cron job '{}' removed during execution; skipping success write-back", job.id());
+            }
             saveQuietly();
 
             publishEvent(new SchedulerEvent.JobCompleted(
@@ -223,22 +236,43 @@ public final class CronScheduler {
             log.info("Cron job '{}' completed in {}ms", job.id(), durationMs);
 
         } catch (Exception e) {
-            // Mark failure
-            var failedJob = job.withFailure(e.getMessage());
-            jobStore.put(failedJob);
+            // Mark failure only if the job still exists (same non-resurrection rule).
+            CronJob failedJob = null;
+            if (jobStore.get(job.id()).isPresent()) {
+                failedJob = job.withFailure(e.getMessage());
+                jobStore.put(failedJob);
+            } else {
+                log.info("Cron job '{}' removed during execution; skipping failure write-back", job.id());
+            }
             saveQuietly();
 
             publishEvent(new SchedulerEvent.JobFailed(
                     job.id(), e.getMessage(),
-                    failedJob.consecutiveFailures(),
+                    failedJob != null ? failedJob.consecutiveFailures() : job.consecutiveFailures(),
                     CronJob.CIRCUIT_BREAKER_THRESHOLD,
                     Instant.now()));
             log.error("Cron job '{}' failed (attempt {}): {}",
-                    job.id(), failedJob.consecutiveFailures(), e.getMessage());
+                    job.id(),
+                    failedJob != null ? failedJob.consecutiveFailures() : job.consecutiveFailures(),
+                    e.getMessage());
 
         } finally {
+            currentJobId = null;
+            currentJobStartedAt = null;
             jobRunning.set(false);
         }
+    }
+
+    public boolean isJobRunning() {
+        return jobRunning.get();
+    }
+
+    public String currentJobId() {
+        return currentJobId;
+    }
+
+    public Instant currentJobStartedAt() {
+        return currentJobStartedAt;
     }
 
     /**
@@ -285,8 +319,18 @@ public final class CronScheduler {
                 llmClient, toolRegistry, model, systemPrompt,
                 maxTokens, thinkingBudget, null, loopConfig);
 
-        String cronPrompt = "[CRON] Executing scheduled task '" + job.name() + "' (id: " + job.id() + "):\n\n"
-                + job.prompt();
+        String cronPrompt = """
+                [CRON] Executing scheduled task '%s' (id: %s).
+
+                Rules for this run:
+                - Execute the requested task now.
+                - Do NOT create/update/remove cron jobs.
+                - Do NOT output setup/confirmation tables.
+                - Return only the actual result content for the user.
+
+                Task:
+                %s
+                """.formatted(job.name(), job.id(), job.prompt());
 
         var cancellationToken = new CancellationToken();
         var executor = Executors.newVirtualThreadPerTaskExecutor();
@@ -295,7 +339,7 @@ public final class CronScheduler {
                 try {
                     var turn = agentLoop.runTurn(cronPrompt, new ArrayList<>(),
                             new SilentStreamHandler(), cancellationToken);
-                    return turn.text();
+                    return summarizeTurnOutput(turn);
                 } catch (LlmException e) {
                     throw new CompletionException(e);
                 }
@@ -354,6 +398,49 @@ public final class CronScheduler {
             return normalized;
         }
         return normalized.substring(0, EVENT_SUMMARY_MAX_CHARS) + "...";
+    }
+
+    private static String summarizeTurnOutput(Turn turn) {
+        if (turn == null) {
+            return "";
+        }
+        String text = turn.text();
+        if (text != null && !text.isBlank()) {
+            return text.strip();
+        }
+
+        // Fallback: if the model did tool work but emitted no final assistant text,
+        // surface the latest successful tool result so scheduler events stay informative.
+        var messages = turn.newMessages();
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            Message msg = messages.get(i);
+            if (!(msg instanceof Message.UserMessage user)) {
+                continue;
+            }
+            var blocks = user.content();
+            for (int j = blocks.size() - 1; j >= 0; j--) {
+                if (blocks.get(j) instanceof ContentBlock.ToolResult tr) {
+                    if (tr.isError()) {
+                        continue;
+                    }
+                    String content = tr.content();
+                    if (content != null && !content.isBlank()) {
+                        String normalized = content.strip();
+                        if (normalized.length() > TOOL_RESULT_FALLBACK_MAX_CHARS) {
+                            normalized = normalized.substring(0, TOOL_RESULT_FALLBACK_MAX_CHARS) + "...";
+                        }
+                        return "[cron fallback from tool output]\n" + normalized;
+                    }
+                }
+            }
+        }
+
+        var usage = turn.totalUsage();
+        String usageText = usage == null
+                ? "n/a"
+                : usage.inputTokens() + " in / " + usage.outputTokens() + " out";
+        return "Cron execution completed with no final assistant text. "
+                + "stopReason=" + turn.finalStopReason() + ", usage=" + usageText;
     }
 
     private static int parseEventSummaryMaxChars() {

@@ -6,6 +6,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -250,6 +251,20 @@ class TerminalReplTest {
         } finally {
             pool.shutdownNow();
         }
+    }
+
+    @Test
+    void clampAttributedLine_handlesAnsiAndTruncation() throws Exception {
+        var input = org.jline.utils.AttributedString.fromAnsi(
+                "prefix\u001B[32mmiddle\u001B[0m");
+        var clamped = (org.jline.utils.AttributedString) invokePrivate(
+                repl,
+                "clampAttributedLine",
+                new Class<?>[]{org.jline.utils.AttributedString.class, int.class, int.class},
+                input, 80, 80);
+        assertThat(clamped.toAnsi()).isNotBlank();
+        // padded to clearWidth
+        assertThat(clamped.columnLength()).isEqualTo(80);
     }
 
     private static TerminalRepl newReplForProject(Path project) {

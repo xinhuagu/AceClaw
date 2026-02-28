@@ -13,6 +13,9 @@ import org.jline.terminal.Attributes;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 import org.jline.utils.AttributedString;
+import org.jline.utils.AttributedStringBuilder;
+import org.jline.utils.InfoCmp;
+import org.jline.utils.Status;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,9 +31,12 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
@@ -66,6 +72,11 @@ public final class TerminalRepl {
     private static final Duration TASK_STALLED_AFTER = Duration.ofSeconds(45);
     private static final Duration TASK_TIMEOUT_AFTER = Duration.ofSeconds(180);
     private static final Duration LEARNING_STATUS_REFRESH = Duration.ofSeconds(5);
+    private static final Duration CRON_STATUS_REFRESH = Duration.ofSeconds(5);
+    private static final boolean PROMPT_STATUS_PANEL_ENABLED =
+            Boolean.parseBoolean(System.getenv().getOrDefault("ACECLAW_PROMPT_STATUS_PANEL", "true"));
+    private static final boolean CRON_STATUS_EXPANDED =
+            Boolean.parseBoolean(System.getenv().getOrDefault("ACECLAW_CRON_STATUS_EXPANDED", "false"));
     private static final int MAX_RESUME_HINT_LEN = 200;
     private static final String CL_METRICS_DIR = ".aceclaw/metrics/continuous-learning";
     private static final String CL_REPLAY_REPORT = "replay-latest.json";
@@ -81,9 +92,15 @@ public final class TerminalRepl {
     private final TaskManager taskManager;
     private final PermissionBridge permissionBridge;
     private final ObjectMapper statusMapper;
+    private final ConcurrentLinkedQueue<UiEvent> uiEvents = new ConcurrentLinkedQueue<>();
+    private final Deque<UiNotice> uiNoticeBuffer = new ArrayDeque<>();
+    private static final int MAX_PENDING_PRINT_ABOVE = 32;
+    private final Deque<String> pendingPrintAbove = new ArrayDeque<>();
+    /** Fixed status panel height so JLine's Status widget never resizes its scroll region. */
+    private static final int FIXED_STATUS_LINE_COUNT = 8;
     private final Object uiRenderLock = new Object();
     private final AtomicBoolean permissionInterruptRequested = new AtomicBoolean(false);
-    private int previousStatusLineCount;
+    private final AtomicBoolean uiRenderRequested = new AtomicBoolean(true);
 
     /** Tracks the effective model, updated after successful model switches. */
     private volatile String effectiveModel;
@@ -108,6 +125,9 @@ public final class TerminalRepl {
     /** Cached continuous-learning status line; refreshed periodically. */
     private volatile String cachedLearningStatusLine;
     private volatile Instant cachedLearningStatusAt = Instant.EPOCH;
+    /** Cached cron status snapshot from daemon RPC. */
+    private volatile CronStatusSnapshot cachedCronStatus;
+    private volatile Instant cachedCronStatusAt = Instant.EPOCH;
     /** Last non-trivial user task prompt, used by /continue fallback. */
     private volatile String lastTaskPrompt;
     private final ResumeCheckpointStore resumeCheckpointStore;
@@ -116,8 +136,38 @@ public final class TerminalRepl {
 
     /** Current foreground output sink (for Ctrl+C spinner cleanup). */
     private volatile ForegroundOutputSink activeForegroundSink;
+    /** JLine status panel renderer. */
+    private volatile Status promptStatus;
     /** Last consumed scheduler event sequence from daemon. */
     private volatile long schedulerEventSeq;
+
+    private sealed interface UiEvent permits UiNoticeEvent, UiPrintAboveEvent {}
+
+    private record UiNoticeEvent(String ansiText) implements UiEvent {}
+    private record UiPrintAboveEvent(String ansiText) implements UiEvent {}
+    private record UiNotice(Instant at, String text) {}
+
+    private record CronJobStatus(
+            String id,
+            String name,
+            String kind,
+            boolean enabled,
+            Instant nextFireAt,
+            Instant lastRunAt,
+            String description
+    ) {}
+
+    private record CronStatusSnapshot(
+            boolean schedulerRunning,
+            boolean jobRunning,
+            String currentJobId,
+            Instant currentJobStartedAt,
+            List<CronJobStatus> jobs
+    ) {
+        private CronStatusSnapshot {
+            jobs = jobs != null ? List.copyOf(jobs) : List.of();
+        }
+    }
 
     /**
      * Session metadata displayed in the startup banner and status line.
@@ -171,7 +221,9 @@ public final class TerminalRepl {
      */
     public void run() {
         var stopStatusTicker = new AtomicBoolean(false);
+        var stopUiRenderer = new AtomicBoolean(false);
         Thread statusTicker = null;
+        Thread uiRenderer = null;
         DaemonConnection schedulerEventConnection = null;
         try (Terminal terminal = TerminalBuilder.builder()
                 .name("aceclaw")
@@ -190,6 +242,9 @@ public final class TerminalRepl {
 
             activeReader = reader;
             activeTerminal = terminal;
+            if (PROMPT_STATUS_PANEL_ENABLED) {
+                promptStatus = Status.getStatus(terminal);
+            }
 
             PrintWriter out = terminal.writer();
 
@@ -201,6 +256,7 @@ public final class TerminalRepl {
                 log.debug("Failed to initialize scheduler event polling: {}", e.getMessage());
             }
             statusTicker = startStatusTicker(stopStatusTicker, reader, schedulerEventConnection);
+            uiRenderer = startUiRenderer(stopUiRenderer, reader);
 
             // Register callback to auto-push background task output above prompt
             taskManager.setOnTaskComplete(handle -> {
@@ -215,12 +271,7 @@ public final class TerminalRepl {
             // Override Ctrl+L: clear screen + redraw status bar below prompt
             reader.getWidgets().put("aceclaw-clear-screen", () -> {
                 reader.callWidget(LineReader.CLEAR_SCREEN);
-                synchronized (uiRenderLock) {
-                    previousStatusLineCount = 0;
-                    PrintWriter w = terminal.writer();
-                    renderStatusPanel(w, true);
-                    w.flush();
-                }
+                requestUiRender();
                 return true;
             });
             reader.getKeyMaps().get(LineReader.MAIN)
@@ -243,18 +294,16 @@ public final class TerminalRepl {
 
                 String line;
                 try {
-                    // Print status on the line below, then move cursor back up.
-                    synchronized (uiRenderLock) {
-                        renderStatusPanel(out, true);
-                        out.flush();
-                    }
                     readingPrompt = true;
+                    requestUiRender();
                     try {
                         line = reader.readLine(PROMPT_STR);
                     } finally {
                         readingPrompt = false;
+                        ensureCursorVisible();
                     }
                 } catch (UserInterruptException e) {
+                    ensureCursorVisible();
                     // Permission requests can intentionally interrupt prompt input
                     // so approval appears immediately as a popup flow.
                     if (permissionInterruptRequested.getAndSet(false) || permissionBridge.hasPending()) {
@@ -266,6 +315,7 @@ public final class TerminalRepl {
                     out.println();
                     break;
                 } catch (EndOfFileException e) {
+                    ensureCursorVisible();
                     // Ctrl+D: exit gracefully
                     out.println();
                     break;
@@ -307,11 +357,22 @@ public final class TerminalRepl {
             System.err.println("Terminal error: " + e.getMessage());
         } finally {
             stopStatusTicker.set(true);
+            stopUiRenderer.set(true);
             if (statusTicker != null) {
                 statusTicker.interrupt();
             }
+            if (uiRenderer != null) {
+                uiRenderer.interrupt();
+            }
             if (schedulerEventConnection != null) {
                 schedulerEventConnection.close();
+            }
+            if (promptStatus != null) {
+                try {
+                    promptStatus.update(List.of());
+                } catch (Exception e) {
+                    log.debug("Failed to clear prompt status: {}", e.getMessage());
+                }
             }
         }
     }
@@ -329,8 +390,58 @@ public final class TerminalRepl {
                         }
 
                         pollAndRenderSchedulerEvents(schedulerEventConn, reader);
-                        if (!readingPrompt) continue;
-                        redrawStatusPanelBelowPrompt(reader);
+                        pollCronStatus(schedulerEventConn);
+                    }
+                });
+    }
+
+    private Thread startUiRenderer(AtomicBoolean stopFlag, LineReader reader) {
+        return Thread.ofVirtual()
+                .name("aceclaw-ui-renderer")
+                .start(() -> {
+                    long lastClockSecond = -1L;
+                    while (!stopFlag.get()) {
+                        try {
+                            Thread.sleep(100);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            return;
+                        }
+
+                        boolean hadUiEvent = drainUiEventsIntoState();
+
+                        // Flush print-above texts (full cron output) above the prompt.
+                        // When printAbove fires, skip status render for this tick to avoid
+                        // conflicting scroll region adjustments (printAbove temporarily
+                        // modifies the scroll region; immediate Status.update() corrupts it).
+                        boolean didPrintAbove = false;
+                        if (!pendingPrintAbove.isEmpty() && readingPrompt) {
+                            for (String text : pendingPrintAbove) {
+                                try {
+                                    reader.printAbove(AttributedString.fromAnsi(text));
+                                } catch (Exception e) {
+                                    log.debug("Failed to printAbove: {}", e.getMessage());
+                                }
+                            }
+                            pendingPrintAbove.clear();
+                            didPrintAbove = true;
+                        }
+
+                        long currentSecond = System.currentTimeMillis() / 1000L;
+                        boolean clockTick = currentSecond != lastClockSecond;
+                        if (clockTick) {
+                            lastClockSecond = currentSecond;
+                        }
+
+                        boolean shouldRender = (hadUiEvent || uiRenderRequested.getAndSet(false) || clockTick)
+                                && readingPrompt
+                                && !taskManager.hasForegroundTask()
+                                && PROMPT_STATUS_PANEL_ENABLED
+                                && !didPrintAbove;
+                        if (!shouldRender) {
+                            continue;
+                        }
+                        renderStatusFrame(reader);
                     }
                 });
     }
@@ -346,8 +457,6 @@ public final class TerminalRepl {
 
     private void pollAndRenderSchedulerEvents(DaemonConnection conn, LineReader reader) {
         if (conn == null) return;
-        if (!readingPrompt) return;
-        if (taskManager.hasForegroundTask()) return;
         try {
             var params = client.objectMapper().createObjectNode();
             params.put("afterSeq", schedulerEventSeq);
@@ -360,14 +469,67 @@ public final class TerminalRepl {
             }
 
             for (JsonNode event : events) {
-                String note = renderSchedulerEventNote(event);
-                if (note != null) {
-                    reader.printAbove(AttributedString.fromAnsi(note));
+                String type = event.path("type").asText("");
+                if ("completed".equals(type)) {
+                    // Full multi-line output printed above prompt
+                    String fullOutput = renderSchedulerEventNote(event);
+                    if (fullOutput != null) {
+                        enqueueUiPrintAbove(fullOutput);
+                    }
+                    // Short notice for status bar
+                    String jobId = event.path("jobId").asText("unknown");
+                    long durationMs = event.path("durationMs").asLong(-1L);
+                    String shortNote = SUCCESS + "cron completed" + RESET + " [" + jobId + "]"
+                            + (durationMs > 0 ? " in " + durationMs + "ms" : "");
+                    enqueueUiNotice(shortNote);
+                } else {
+                    String note = renderSchedulerEventNote(event);
+                    if (note != null) {
+                        enqueueUiNotice(note);
+                    }
                 }
             }
-            redrawStatusPanelBelowPrompt(reader);
+            requestUiRender();
         } catch (Exception e) {
             log.debug("Failed to poll scheduler events: {}", e.getMessage());
+        }
+    }
+
+    private void pollCronStatus(DaemonConnection conn) {
+        if (conn == null) return;
+        Instant now = Instant.now();
+        if (cachedCronStatus != null
+                && Duration.between(cachedCronStatusAt, now).compareTo(CRON_STATUS_REFRESH) < 0) {
+            return;
+        }
+        try {
+            JsonNode result = conn.sendRequest("scheduler.cron.status", client.objectMapper().createObjectNode());
+            boolean schedulerRunning = result.path("schedulerRunning").asBoolean(false);
+            boolean jobRunning = result.path("jobRunning").asBoolean(false);
+            String currentJobId = result.path("currentJobId").asText("");
+            if (currentJobId.isBlank()) currentJobId = null;
+            Instant currentJobStartedAt = parseInstant(result.path("currentJobStartedAt").asText(""));
+            var jobs = new ArrayList<CronJobStatus>();
+            JsonNode arr = result.path("jobs");
+            if (arr.isArray()) {
+                for (JsonNode j : arr) {
+                    jobs.add(new CronJobStatus(
+                            j.path("id").asText(""),
+                            j.path("name").asText(""),
+                            j.path("kind").asText("scheduled"),
+                            j.path("enabled").asBoolean(true),
+                            parseInstant(j.path("nextFireAt").asText("")),
+                            parseInstant(j.path("lastRunAt").asText("")),
+                            j.path("description").asText("")
+                    ));
+                }
+            }
+            cachedCronStatus = new CronStatusSnapshot(
+                    schedulerRunning, jobRunning, currentJobId, currentJobStartedAt, List.copyOf(jobs));
+            cachedCronStatusAt = now;
+            requestUiRender();
+        } catch (Exception e) {
+            log.debug("Failed to poll scheduler.cron.status: {}", e.getMessage());
         }
     }
 
@@ -375,19 +537,34 @@ public final class TerminalRepl {
         String type = event.path("type").asText("");
         String jobId = event.path("jobId").asText("unknown");
         return switch (type) {
+            case "triggered" -> {
+                String ts = event.path("timestamp").asText("");
+                yield MUTED + "[cron running] " + jobId
+                        + (ts.isBlank() ? "" : " @ " + ts) + RESET;
+            }
             case "completed" -> {
                 var sb = new StringBuilder();
                 sb.append(MUTED).append("--- ").append(SUCCESS).append("cron completed")
                         .append(RESET).append(MUTED).append(" [").append(jobId).append("] ---")
                         .append(RESET).append("\n");
 
-                String summary = event.path("summary").asText("");
+                String summary = sanitizeCronSummary(event.path("summary").asText(""));
                 if (!summary.isBlank()) {
                     var sw = new StringWriter();
                     var pw = new PrintWriter(sw);
                     new TerminalMarkdownRenderer().render(summary, pw);
                     pw.flush();
                     sb.append(sw);
+                } else {
+                    long durationMs = event.path("durationMs").asLong(-1L);
+                    if (durationMs > 0) {
+                        sb.append(MUTED).append("(completed in ").append(durationMs).append("ms)").append(RESET).append("\n");
+                    }
+                    sb.append(WARNING)
+                            .append("No textual summary returned. ")
+                            .append("The job may have completed via tool calls only.")
+                            .append(RESET)
+                            .append("\n");
                 }
                 yield sb.toString();
             }
@@ -400,7 +577,7 @@ public final class TerminalRepl {
                 yield WARNING + "[cron skipped] " + RESET + jobId
                         + (reason.isBlank() ? "" : " - " + reason);
             }
-            default -> null; // suppress noisy triggered events
+            default -> null;
         };
     }
 
@@ -663,12 +840,13 @@ public final class TerminalRepl {
 
         permissionBridge.submitAnswer(req.requestId(),
                 new PermissionBridge.PermissionAnswer(approved, remember));
+        permissionBridge.consumeResolvedAnswer(req.requestId());
         var task = taskManager.get(req.taskId());
         if (task != null) {
             task.clearWaitingPermission();
         }
         permissionInterruptRequested.set(false);
-        redrawStatusPanelBelowPrompt(reader);
+        requestUiRender();
     }
 
     /**
@@ -679,6 +857,22 @@ public final class TerminalRepl {
             try {
                 var req = permissionBridge.pollPending(0, TimeUnit.MILLISECONDS);
                 if (req != null) {
+                    var resolved = permissionBridge.consumeResolvedAnswer(req.requestId());
+                    if (resolved != null) {
+                        var task = taskManager.get(req.taskId());
+                        if (task != null) {
+                            task.clearWaitingPermission();
+                        }
+                        String note = resolved.approved()
+                                ? MUTED + "[Permission auto-approved] " + RESET
+                                  + "task #" + req.taskId() + " -> " + fitWidth(req.description(), 90)
+                                : WARNING + "[Permission auto-denied] " + RESET
+                                  + "task #" + req.taskId() + " -> " + fitWidth(req.description(), 90);
+                        enqueueUiNotice(note);
+                        permissionInterruptRequested.set(false);
+                        requestUiRender();
+                        continue;
+                    }
                     handlePermissionFromBridge(out, reader, req);
                 }
             } catch (InterruptedException e) {
@@ -751,9 +945,13 @@ public final class TerminalRepl {
 
             String output = sb.toString();
             if (!output.isBlank()) {
-                // printAbove is thread-safe — displays above current prompt, redraws prompt
-                reader.printAbove(AttributedString.fromAnsi(output));
-                redrawStatusPanelBelowPrompt(reader);
+                // Full output printed above the prompt (like cron completion)
+                enqueueUiPrintAbove(output);
+                // Short notice in status bar
+                String stateLabel = handle.state().name().toLowerCase();
+                String summary = fitWidth(handle.promptSummary(), 40);
+                enqueueUiNotice(stateColor + "bg #" + handle.taskId()
+                        + " " + stateLabel + RESET + " " + summary);
             }
         } catch (Exception e) {
             log.debug("Failed to push background task output: {}", e.getMessage());
@@ -828,18 +1026,20 @@ public final class TerminalRepl {
     private String buildStatusString() {
         var sb = new StringBuilder();
 
-        sb.append(MUTED).append("\u2500").append(RESET).append(" ");
+        sb.append(PURPLE).append(ICON_PRIMARY).append(RESET).append(" ");
         sb.append(INFO).append(BOLD).append(effectiveModel).append(RESET);
 
         String branch = sessionInfo.gitBranch();
         if (branch != null && !branch.isBlank()) {
-            sb.append(MUTED).append(" \u2502 ").append(RESET);
-            sb.append(SUCCESS).append("\u2387 ").append(branch).append(RESET);
+            sb.append(MUTED).append(" | ").append(RESET);
+            sb.append(SUCCESS).append("branch=")
+                    .append(fitWidth(branch, 28))
+                    .append(RESET);
         }
 
         int ctxWindow = sessionInfo.contextWindowTokens();
         if (ctxWindow > 0 && latestInputTokens > 0) {
-            sb.append(MUTED).append(" \u2502 ").append(RESET);
+            sb.append(MUTED).append(" | ").append(RESET);
             long pct = latestInputTokens * 100 / ctxWindow;
             sb.append(WARNING).append(formatTokenCount(latestInputTokens))
               .append("/").append(formatTokenCount(ctxWindow))
@@ -849,89 +1049,148 @@ public final class TerminalRepl {
         // Show running task count if > 0
         int running = taskManager.runningCount();
         if (running > 0) {
-            sb.append(MUTED).append(" \u2502 ").append(RESET);
+            sb.append(MUTED).append(" | ").append(RESET);
             sb.append(INFO).append(running).append(" task")
               .append(running > 1 ? "s" : "").append(RESET);
         }
 
         int pendingPermissions = permissionBridge.pendingCount();
         if (pendingPermissions > 0) {
-            sb.append(MUTED).append(" \u2502 ").append(RESET);
-            sb.append(WARNING).append("\uD83D\uDD10 ")
-              .append(pendingPermissions).append(" permission")
+            sb.append(MUTED).append(" | ").append(RESET);
+            sb.append(WARNING).append("permissions=")
+              .append(pendingPermissions)
+              .append(" permission")
               .append(pendingPermissions > 1 ? "s" : "").append(RESET);
         }
 
-        sb.append(MUTED).append(" \u2502 ").append(RESET);
+        sb.append(MUTED).append(" | ").append(RESET);
         sb.append(MUTED).append(LocalTime.now().format(TIME_FMT)).append(RESET);
 
         return sb.toString();
     }
 
-    /**
-     * Renders the prompt status panel below the current cursor.
-     *
-     * <p>The first line is the compact global status; following lines show
-     * currently running tasks so concurrent background activity is visible.
-     *
-     * @param restoreCursorByUp if true, moves cursor back up by rendered line count
-     */
-    private void renderStatusPanel(PrintWriter out, boolean restoreCursorByUp) {
-        var lines = buildStatusPanelLines();
-        int currentLineCount = lines.size();
-        int renderLineCount = Math.max(currentLineCount, previousStatusLineCount);
-        if (renderLineCount == 0) return;
-        int terminalWidth = activeTerminal != null ? activeTerminal.getWidth() : 120;
-        int maxWidth = Math.max(20, terminalWidth - 1);
+    private void requestUiRender() {
+        uiRenderRequested.set(true);
+    }
 
-        for (int i = 0; i < renderLineCount; i++) {
-            out.print("\n\r\033[K");
-            if (i < currentLineCount) {
-                out.print(clampStatusLine(lines.get(i), maxWidth));
+    private void enqueueUiNotice(String ansiText) {
+        if (ansiText == null || ansiText.isBlank()) return;
+        uiEvents.add(new UiNoticeEvent(ansiText));
+        requestUiRender();
+    }
+
+    private void enqueueUiPrintAbove(String ansiText) {
+        if (ansiText == null || ansiText.isBlank()) return;
+        uiEvents.add(new UiPrintAboveEvent(ansiText));
+        requestUiRender();
+    }
+
+    private boolean drainUiEventsIntoState() {
+        boolean changed = false;
+        UiEvent event;
+        while ((event = uiEvents.poll()) != null) {
+            switch (event) {
+                case UiNoticeEvent notice -> {
+                    addUiNotice(notice.ansiText());
+                    changed = true;
+                }
+                case UiPrintAboveEvent pae -> {
+                    if (pendingPrintAbove.size() >= MAX_PENDING_PRINT_ABOVE) {
+                        pendingPrintAbove.removeFirst();
+                    }
+                    pendingPrintAbove.addLast(pae.ansiText());
+                    changed = true;
+                }
             }
         }
-
-        if (restoreCursorByUp) {
-            out.print("\033[" + renderLineCount + "A\r");
-        }
-        previousStatusLineCount = currentLineCount;
+        return changed;
     }
 
-    /**
-     * Re-renders the prompt status panel after asynchronous printAbove output.
-     *
-     * <p>Without this, JLine redraws only the prompt line after printAbove, and
-     * our custom status panel (rendered below the prompt) disappears until the
-     * next explicit prompt redraw.
-     */
-    private void redrawStatusPanelBelowPrompt(LineReader reader) {
-        var terminal = activeTerminal;
-        if (terminal == null) return;
+    private void addUiNotice(String text) {
+        String normalized = sanitizeCronSummary(text);
+        if (normalized.isBlank()) return;
+        String singleLine = normalized.replace('\n', ' ')
+                .replaceAll("\\s+", " ")
+                .trim();
+        synchronized (uiRenderLock) {
+            uiNoticeBuffer.addLast(new UiNotice(Instant.now(), singleLine));
+            while (uiNoticeBuffer.size() > 4) {
+                uiNoticeBuffer.removeFirst();
+            }
+        }
+    }
+
+    private void renderStatusFrame(LineReader reader) {
         if (reader == null || reader != activeReader) return;
         if (taskManager.hasForegroundTask()) return;
+        if (!PROMPT_STATUS_PANEL_ENABLED) return;
+        var terminal = activeTerminal;
+        if (terminal == null) return;
 
         synchronized (uiRenderLock) {
-            PrintWriter out = terminal.writer();
-            renderStatusPanel(out, true);
-            out.flush();
+            if (promptStatus == null) {
+                promptStatus = Status.getStatus(terminal);
+            }
+            int terminalWidth = Math.max(20, terminal.getWidth() - 1);
+            int terminalHeight = Math.max(6, terminal.getHeight());
+            // Never use more than 1/3 of the terminal for status
+            int maxLines = Math.min(FIXED_STATUS_LINE_COUNT, terminalHeight / 3);
+
+            var lines = buildStatusPanelLines();
+            if (!uiNoticeBuffer.isEmpty()) {
+                lines.add(MUTED + "  " + ICON_NOTICES + " notices" + RESET);
+                UiNotice latest = null;
+                for (UiNotice note : uiNoticeBuffer) {
+                    latest = note;
+                }
+                if (latest != null) {
+                    lines.add(MUTED + "    " + ICON_ITEM + " " + RESET + fitWidth(latest.text(), 72));
+                }
+            }
+            // Truncate if over budget, then pad to fixed count
+            if (lines.size() > maxLines) {
+                lines.subList(maxLines, lines.size()).clear();
+            }
+            while (lines.size() < maxLines) {
+                lines.add("");
+            }
+
+            int safeWidth = Math.max(20, terminalWidth - 12);
+            var rendered = lines.stream()
+                    .map(AttributedString::fromAnsi)
+                    .map(as -> clampAttributedLine(as, safeWidth, terminalWidth))
+                    .toList();
+
+            // Save cursor (CSI s) before status update, restore (CSI u) after.
+            // Uses SCP/RCP stack which is separate from JLine's internal DECSC/DECRC.
+            var writer = terminal.writer();
+            writer.print("\u001B[s");
+            writer.flush();
+            promptStatus.update(rendered);
+            writer.print("\u001B[u");
+            writer.flush();
         }
-        forcePromptRedisplay(reader);
+        ensureCursorVisible();
     }
 
-    /**
-     * Forces JLine to redraw the editable prompt line so cursor returns
-     * to prompt+buffer position (instead of column 0) after async UI writes.
-     */
-    private void forcePromptRedisplay(LineReader reader) {
-        try {
-            reader.callWidget(LineReader.REDRAW_LINE);
-        } catch (Exception e) {
-            log.debug("Failed to call REDRAW_LINE: {}", e.getMessage());
+    private void ensureCursorVisible() {
+        Terminal terminal = activeTerminal;
+        if (terminal == null) {
+            return;
         }
         try {
-            reader.callWidget(LineReader.REDISPLAY);
+            terminal.puts(InfoCmp.Capability.cursor_visible);
+            terminal.flush();
+            return;
         } catch (Exception e) {
-            log.debug("Failed to call REDISPLAY: {}", e.getMessage());
+            log.debug("Failed to force cursor_visible capability: {}", e.getMessage());
+        }
+        try {
+            PrintWriter writer = terminal.writer();
+            writer.print("\u001B[?25h");
+            writer.flush();
+        } catch (Exception e) {
+            log.debug("Failed to force ANSI cursor show: {}", e.getMessage());
         }
     }
 
@@ -948,17 +1207,8 @@ public final class TerminalRepl {
         if (task != null) {
             task.markWaitingPermission(request.description());
         }
-        try {
-            String note = WARNING + "[Permission required] " + RESET
-                    + "task #" + request.taskId() + " \u2192 "
-                    + fitWidth(request.description(), 90)
-                    + MUTED + "  (opening popup...)" + RESET;
-            reader.printAbove(AttributedString.fromAnsi(note));
-        } catch (Exception e) {
-            log.debug("Failed to print permission notice: {}", e.getMessage());
-        }
+        requestUiRender();
         interruptPromptForPermissionPopup();
-        redrawStatusPanelBelowPrompt(reader);
     }
 
     /**
@@ -981,24 +1231,105 @@ public final class TerminalRepl {
 
     /**
      * Builds the status panel lines shown below the prompt.
+     *
+     * <p>Each section (learning, cron, tasks) renders its header immediately
+     * followed by its own detail lines, so items always appear under the
+     * correct section. {@code renderStatusFrame} handles final truncation
+     * and padding to {@link #FIXED_STATUS_LINE_COUNT}.
      */
     private List<String> buildStatusPanelLines() {
         var lines = new ArrayList<String>();
-        lines.add(buildStatusString());
-        String learningStatus = buildContinuousLearningStatusLine();
-        if (learningStatus != null && !learningStatus.isBlank()) {
-            lines.add(learningStatus);
-        }
         Instant now = Instant.now();
 
+        // -- 1. Header --
+        lines.add(buildStatusString());
+
+        // -- 2. Learning (header only) --
+        String learningStatus = buildContinuousLearningStatusLine();
+        if (learningStatus == null || learningStatus.isBlank()) {
+            lines.add(MUTED + "  " + TREE_BRANCH + " " + ICON_LEARNING + " " + RESET
+                    + INFO + "learning" + RESET
+                    + MUTED + " | unavailable" + RESET);
+        } else {
+            lines.add(learningStatus);
+        }
+
+        // -- 3. Cron (header + registered jobs inline) --
+        var cron = cachedCronStatus;
+        if (cron == null) {
+            lines.add(MUTED + "  " + TREE_BRANCH + " " + ICON_CRON + " " + RESET
+                    + INFO + "cron" + RESET
+                    + MUTED + " | loading..." + RESET);
+        } else {
+            var visibleJobs = cron.jobs().stream()
+                    .filter(job -> !("one-shot".equals(job.kind()) && job.lastRunAt() != null))
+                    .toList();
+            long hbCount = visibleJobs.stream().filter(j -> "heartbeat-longterm".equals(j.kind())).count();
+            long oneShotCount = visibleJobs.stream().filter(j -> "one-shot".equals(j.kind())).count();
+            long scheduledCount = visibleJobs.stream().filter(j -> "scheduled".equals(j.kind())).count();
+            String schedulerState = cron.schedulerRunning() ? "on" : "off";
+            String runningState = cron.jobRunning() ? "running" : "idle";
+            lines.add(MUTED + "  " + TREE_BRANCH + " " + ICON_CRON + " " + RESET
+                    + INFO + "cron" + RESET
+                    + MUTED + " | scheduler=" + schedulerState
+                    + " | state=" + runningState
+                    + " | jobs=" + visibleJobs.size()
+                    + " (s:" + scheduledCount + ",h:" + hbCount + ",o:" + oneShotCount + ")"
+                    + RESET);
+
+            // Running job (highlighted)
+            String runningJobId = cron.jobRunning() ? cron.currentJobId() : null;
+            if (runningJobId != null && !runningJobId.isBlank()) {
+                String elapsed = cron.currentJobStartedAt() == null
+                        ? "running"
+                        : formatDuration(Duration.between(cron.currentJobStartedAt(), now));
+                lines.add(MUTED + "  " + TREE_PIPE_SPACE + " " + ICON_ITEM + " " + RESET
+                        + WARNING + "running " + RESET
+                        + fitWidth(runningJobId, 28)
+                        + MUTED + " * " + elapsed + RESET);
+            }
+
+            // All registered jobs (always shown, max 3)
+            int maxCronVisible = 3;
+            int shown = 0;
+            for (CronJobStatus job : visibleJobs) {
+                if (runningJobId != null && runningJobId.equals(job.id())) {
+                    continue; // already shown in the running line
+                }
+                if (shown >= maxCronVisible) break;
+                String enabled = job.enabled() ? "enabled" : "disabled";
+                String next = formatCronNext(now, cron, job);
+                String kind = job.kind();
+                String desc = fitWidth(job.description() == null ? "" : job.description(), 24);
+                lines.add(MUTED + "  " + TREE_PIPE_SPACE + " " + ICON_ITEM + " "
+                        + job.id() + " [" + kind + "] "
+                        + enabled + " next=" + next + " :: " + desc + RESET);
+                shown++;
+            }
+            String finalRunningJobId = runningJobId;
+            int remaining = (int) visibleJobs.stream()
+                    .filter(j -> finalRunningJobId == null || !finalRunningJobId.equals(j.id()))
+                    .count() - shown;
+            if (remaining > 0) {
+                lines.add(MUTED + "  " + TREE_PIPE_SPACE + "   +" + remaining
+                        + " more cron job(s)" + RESET);
+            }
+        }
+
+        // -- 4. Tasks (header + running tasks inline) --
         var runningTasks = taskManager.list().stream()
                 .filter(TaskHandle::isRunning)
                 .toList();
+        var pending = permissionBridge.pendingSnapshot();
+        lines.add(MUTED + "  " + TREE_BRANCH + " " + ICON_TASKS + " " + RESET
+                + INFO + "tasks" + RESET
+                + MUTED + " | running=" + runningTasks.size()
+                + " | permissions=" + pending.size() + RESET);
+
         if (!runningTasks.isEmpty()) {
-            final int maxVisible = 4;
+            int maxVisible = 2;
             int from = Math.max(0, runningTasks.size() - maxVisible);
             var visible = runningTasks.subList(from, runningTasks.size());
-
             String fgId = taskManager.foregroundTaskId();
             for (var task : visible) {
                 String elapsed = formatDuration(Duration.between(task.startedAt(), now));
@@ -1007,32 +1338,30 @@ public final class TerminalRepl {
                 var runtime = deriveRuntimeInfo(task, now);
                 String runtimeLabel = fitWidth(runtime.label(), 24);
 
-                lines.add(MUTED + "  \u2514 " + RESET
-                        + runtime.color() + runtime.icon() + RESET + " "
+                lines.add(MUTED + "       " + ICON_ITEM + " " + RESET
+                        + runtime.color() + runtime.shortState() + RESET + " "
                         + INFO + "#" + task.taskId() + RESET + " "
                         + prefix + summary
-                        + MUTED + "  " + runtimeLabel + " \u00B7 " + elapsed + RESET);
+                        + MUTED + "  " + runtimeLabel + " * " + elapsed + RESET);
             }
-
             int hidden = runningTasks.size() - visible.size();
             if (hidden > 0) {
-                lines.add(MUTED + "    ... +" + hidden + " more running task(s)" + RESET);
+                lines.add(MUTED + "         +" + hidden + " more running task(s)" + RESET);
             }
         }
 
-        var pending = permissionBridge.pendingSnapshot();
         if (!pending.isEmpty()) {
             int maxPermVisible = 2;
             for (int i = 0; i < Math.min(maxPermVisible, pending.size()); i++) {
                 var req = pending.get(i);
                 String detail = fitWidth(req.description(), 58);
-                lines.add(MUTED + "  \u2514 " + RESET
-                        + WARNING + "\uD83D\uDD10" + RESET + " "
+                lines.add(MUTED + "       " + ICON_ITEM + " " + RESET
+                        + WARNING + "permission" + RESET + " "
                         + INFO + "#" + req.taskId() + RESET + " "
                         + detail);
             }
             if (pending.size() > maxPermVisible) {
-                lines.add(MUTED + "    ... +" + (pending.size() - maxPermVisible)
+                lines.add(MUTED + "         +" + (pending.size() - maxPermVisible)
                         + " more permission request(s)" + RESET);
             }
         }
@@ -1076,18 +1405,18 @@ public final class TerminalRepl {
         }
 
         var sb = new StringBuilder();
-        sb.append(MUTED).append("  \u2514 ").append(RESET)
-                .append(INFO).append("\uD83E\uDDE0 learning").append(RESET);
+        sb.append(MUTED).append("  ").append(TREE_BRANCH).append(" ").append(ICON_LEARNING).append(" ").append(RESET)
+                .append(INFO).append("learning").append(RESET);
         if (replaySummary != null) {
-            sb.append(MUTED).append(" \u2502 ").append(RESET)
+            sb.append(MUTED).append(" | ").append(RESET)
                     .append(MUTED).append("replay=").append(replaySummary).append(RESET);
         }
         if (candidateSummary != null) {
-            sb.append(MUTED).append(" \u2502 ").append(RESET)
+            sb.append(MUTED).append(" | ").append(RESET)
                     .append(MUTED).append("candidates=").append(candidateSummary).append(RESET);
         }
         if (releaseSummary != null) {
-            sb.append(MUTED).append(" \u2502 ").append(RESET)
+            sb.append(MUTED).append(" | ").append(RESET)
                     .append(MUTED).append("release=").append(releaseSummary).append(RESET);
         }
         return sb.toString();
@@ -1887,17 +2216,81 @@ public final class TerminalRepl {
         return hours + "h " + (mins % 60) + "m";
     }
 
-    /**
-     * Ensures status-panel lines never soft-wrap, otherwise cursor restoration drifts
-     * and typing can land on the status row instead of the prompt row.
-     */
-    private static String clampStatusLine(String line, int maxWidth) {
-        if (line == null || line.isEmpty()) return "";
-        if (maxWidth <= 0) return "";
-        String plain = ANSI_CSI_PATTERN.matcher(line).replaceAll("");
-        if (displayWidth(plain) <= maxWidth) {
-            return line;
+    private static String formatCronNext(Instant now, CronStatusSnapshot cron, CronJobStatus job) {
+        if (job == null) return "n/a";
+        if (cron != null && cron.jobRunning() && cron.currentJobId() != null
+                && cron.currentJobId().equals(job.id())) {
+            return "running";
         }
-        return fitWidth(plain, maxWidth);
+        Instant next = job.nextFireAt();
+        if (next == null) return "n/a";
+        Duration delta = Duration.between(now, next);
+        if (delta.isNegative()) {
+            // If stale/behind, show absolute only to avoid giant misleading "N hours" values.
+            return TIME_FMT.format(java.time.LocalDateTime.ofInstant(
+                    next, java.time.ZoneId.systemDefault()));
+        }
+        long days = delta.toDays();
+        if (days >= 7) {
+            return TIME_FMT.format(java.time.LocalDateTime.ofInstant(
+                    next, java.time.ZoneId.systemDefault()));
+        }
+        return formatDuration(delta) + " @ "
+                + TIME_FMT.format(java.time.LocalDateTime.ofInstant(next, java.time.ZoneId.systemDefault()));
+    }
+
+    private static String sanitizeCronSummary(String raw) {
+        if (raw == null || raw.isBlank()) return "";
+        String noAnsi = ANSI_CSI_PATTERN.matcher(raw).replaceAll("");
+        StringBuilder sb = new StringBuilder(noAnsi.length());
+        for (int i = 0; i < noAnsi.length(); ) {
+            int cp = noAnsi.codePointAt(i);
+            i += Character.charCount(cp);
+            // Keep newline/tab/printable chars, drop other control chars (including ESC).
+            if (cp == '\n' || cp == '\t' || cp >= 0x20) {
+                sb.appendCodePoint(cp);
+            }
+        }
+        return sb.toString().strip();
+    }
+
+    private static Instant parseInstant(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        try {
+            return Instant.parse(raw);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * Clamps an {@link AttributedString} to fit within the terminal width,
+     * preserving ANSI styling. Uses JLine's own width calculation for consistency.
+     *
+     * @param as         the styled string to clamp
+     * @param safeWidth  maximum visible columns for content (truncate if exceeded)
+     * @param clearWidth total columns to pad to (clears leftover from previous renders)
+     */
+    private static AttributedString clampAttributedLine(AttributedString as,
+                                                         int safeWidth, int clearWidth) {
+        if (as == null) return new AttributedString("");
+        int visibleWidth = as.columnLength();
+        if (visibleWidth <= safeWidth) {
+            // Fits — pad to clearWidth to overwrite previous longer content
+            if (visibleWidth >= clearWidth) return as;
+            var sb = new AttributedStringBuilder();
+            sb.append(as);
+            sb.append(" ".repeat(clearWidth - visibleWidth));
+            return sb.toAttributedString();
+        }
+        // Too long — truncate and pad
+        var sb = new AttributedStringBuilder();
+        sb.append(as.columnSubSequence(0, Math.max(0, safeWidth - 3)));
+        sb.append("...");
+        int truncatedWidth = sb.toAttributedString().columnLength();
+        if (truncatedWidth < clearWidth) {
+            sb.append(" ".repeat(clearWidth - truncatedWidth));
+        }
+        return sb.toAttributedString();
     }
 }
