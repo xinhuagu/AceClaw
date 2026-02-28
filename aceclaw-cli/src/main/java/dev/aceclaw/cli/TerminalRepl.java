@@ -330,7 +330,6 @@ public final class TerminalRepl {
 
                         pollAndRenderSchedulerEvents(schedulerEventConn, reader);
                         if (!readingPrompt) continue;
-                        if (taskManager.runningCount() <= 0 && permissionBridge.pendingCount() <= 0) continue;
                         redrawStatusPanelBelowPrompt(reader);
                     }
                 });
