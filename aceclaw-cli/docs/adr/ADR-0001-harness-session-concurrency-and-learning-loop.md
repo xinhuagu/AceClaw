@@ -198,16 +198,29 @@ Phase 0 (current):
 - No code changes required.
 
 Phase 1 -- Session Hierarchy and Read-Only Workers:
-- Add `parentSessionId` field to `AgentSession`; update `SessionManager.createSession()` to accept an optional parent.
-- Add `ExecutionStrategy` enum (`INLINE`, `SUBAGENT`) and field to `PlannedStep`.
-- Introduce `WorkerArtifact` sealed interface in `aceclaw-core`.
 - Introduce `WorkerBudget` record in `aceclaw-core` with enforcement in `SubAgentRunner`.
+- Add `parentSessionId` field to `AgentSession`; update `SessionManager.createSession()` to accept an optional parent.
+- Introduce `WorkerArtifact` sealed interface in `aceclaw-core`.
+- Add `ExecutionStrategy` enum (`INLINE`, `SUBAGENT`) and field to `PlannedStep`.
 - Add `SUBAGENT` dispatch branch in `SequentialPlanExecutor.execute()` for read-only workers (`SubAgentConfig.allowedTools` = `[read_file, glob, grep]`).
 - Worker-spawn policy flag (default off) in `StreamingAgentHandler`.
 
+Phase 1 dependency order (explicit):
+1. `WorkerBudget` (hard prerequisite for safe dispatch)
+2. `parentSessionId` on `AgentSession`
+3. `WorkerArtifact` contract
+4. `ExecutionStrategy` on `PlannedStep`
+5. `SequentialPlanExecutor` `SUBAGENT` branch
+6. `workerSpawnEnabled` runtime flag
+
+Phase 1 hard prerequisites before enabling worker spawning:
+- `WorkerBudget` enforcement must be active.
+- `WorkerArtifact` merge path must be active.
+- Worker path scopes must remain read-only (`read_file`, `glob`, `grep` only).
+
 Phase 2 -- Write-Capable Workers and Artifact Merge:
-- Expand `SubAgentConfig.allowedTools` to include `write_file` / `edit_file` with disjoint file scope enforcement.
-- Implement `WorkerArtifact` merge into lead session `ConversationMessage.System` messages.
+- Add minimal conflict prevention before write-capable rollout: assert disjoint `allowedPaths` across concurrently running workers at dispatch time; on overlap, reject parallel dispatch and fall back to serial execution.
+- Expand `SubAgentConfig.allowedTools` to include `write_file` / `edit_file` after disjoint path assertion is enabled.
 - Enable `SelfImprovementEngine` to tag insights originating from worker sessions via `parentSessionId`.
 - Harness outcome records (ADR-0002) connect to candidate evidence writeback.
 
@@ -263,12 +276,32 @@ Each worker session consumes a separate context window. Approximate per-worker t
 - **Automatic cleanup**: `SubAgentRunner.backgroundTasks` already applies `BG_CLEANUP_AGE` (30 minutes) for stale tasks. Worker `AgentSession` instances are deactivated and removed from `SessionManager` on completion or timeout.
 - **Audit trail**: Worker spawn, artifact merge, and rollback events are emitted as `AceClawEvent` instances (`SchedulerEvent` or new `WorkerEvent` subtype) for the event bus. `SubAgentTranscript` (captured in `SubAgentResult`) provides full conversation replay for debugging.
 
+### Worker Session State Machine
+
+Worker session lifecycle is explicitly constrained to:
+
+`PENDING -> RUNNING -> COMPLETED | FAILED | TIMED_OUT`
+
+`PENDING -> CANCELLED`
+
+`RUNNING -> CANCELLED`
+
+Legality rules:
+- Lead session may cancel workers in `PENDING` or `RUNNING`.
+- `TIMED_OUT` and `FAILED` workers emit `WorkerArtifact.ErrorReport`; no `FileChange` artifacts are merged from incomplete runs.
+- `COMPLETED` workers may emit `TextSummary` and `FileChange` artifacts (subject to phase-specific tool policy).
+- If a worker `FAILED`, `TIMED_OUT`, or is `CANCELLED`, the enclosing `PlannedStep` follows existing fallback semantics (`fallbackApproach`) in `SequentialPlanExecutor`.
+- Terminal states (`COMPLETED`, `FAILED`, `TIMED_OUT`, `CANCELLED`) are immutable and trigger session cleanup/deactivation.
+
 ## Acceptance Criteria
 
 1. User-visible `/continue` behavior remains unchanged for baseline tasks.
 2. At least one decomposed long task demonstrates parallel speedup with no resume regression.
 3. Harness repair outcomes are captured and appear in learning evidence artifacts.
 4. Governance gates can block harmful promoted repair patterns.
+
+Phase 1 exit criterion:
+- At least one `SUBAGENT` `PlannedStep` completes a read-only research task and returns `WorkerArtifact.TextSummary` merged into lead-session history, verified by integration test.
 
 ## Follow-Up ADRs
 
