@@ -417,10 +417,16 @@ public final class TerminalRepl {
                         boolean didPrintAbove = false;
                         if (!pendingPrintAbove.isEmpty() && readingPrompt) {
                             for (String text : pendingPrintAbove) {
-                                try {
-                                    reader.printAbove(AttributedString.fromAnsi(text));
-                                } catch (Exception e) {
-                                    log.debug("Failed to printAbove: {}", e.getMessage());
+                                // Split multi-line content into individual printAbove calls.
+                                // JLine's AttributedString is single-line oriented; passing
+                                // large multi-line ANSI strings to fromAnsi() can lose content.
+                                String[] lines = text.split("\n", -1);
+                                for (String line : lines) {
+                                    try {
+                                        reader.printAbove(AttributedString.fromAnsi(line));
+                                    } catch (Exception e) {
+                                        log.debug("Failed to printAbove: {}", e.getMessage());
+                                    }
                                 }
                             }
                             pendingPrintAbove.clear();
