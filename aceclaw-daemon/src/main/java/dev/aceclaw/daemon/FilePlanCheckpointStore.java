@@ -48,6 +48,7 @@ public final class FilePlanCheckpointStore implements PlanCheckpointStore {
 
     public FilePlanCheckpointStore(Path baseDir, ObjectMapper sharedMapper) {
         Objects.requireNonNull(baseDir, "baseDir");
+        Objects.requireNonNull(sharedMapper, "sharedMapper");
         this.baseDir = baseDir;
         // Create a dedicated mapper for checkpoints with JavaTimeModule
         this.mapper = sharedMapper.copy()
@@ -282,21 +283,34 @@ public final class FilePlanCheckpointStore implements PlanCheckpointStore {
             } catch (IllegalArgumentException | NullPointerException e) {
                 domainStatus = CheckpointStatus.INTERRUPTED; // safe fallback for corrupt data
             }
+            Instant parsedCreatedAt;
+            Instant parsedUpdatedAt;
+            try {
+                parsedCreatedAt = Instant.parse(createdAt);
+            } catch (Exception e) {
+                parsedCreatedAt = Instant.now(); // fallback for corrupt timestamp
+            }
+            try {
+                parsedUpdatedAt = Instant.parse(updatedAt);
+            } catch (Exception e) {
+                parsedUpdatedAt = Instant.now(); // fallback for corrupt timestamp
+            }
+            String safeGoal = originalGoal != null ? originalGoal : "unknown";
             return new PlanCheckpoint(
                     planId,
                     sessionId,
                     workspaceHash,
-                    originalGoal,
-                    plan != null ? plan.toDomain() : new TaskPlan("unknown", originalGoal, List.of(),
-                            new PlanStatus.Draft(), Instant.parse(createdAt)),
+                    safeGoal,
+                    plan != null ? plan.toDomain() : new TaskPlan("unknown", safeGoal, List.of(),
+                            new PlanStatus.Draft(), parsedCreatedAt),
                     completedStepResults.stream().map(StepResultDto::toDomain).toList(),
                     lastCompletedStepIndex,
                     conversationSnapshot,
                     domainStatus,
                     resumeHint,
                     artifacts,
-                    Instant.parse(createdAt),
-                    Instant.parse(updatedAt)
+                    parsedCreatedAt,
+                    parsedUpdatedAt
             );
         }
     }

@@ -191,6 +191,16 @@ class DaemonIntegrationTest {
         Thread.sleep(50);
     }
 
+    @BeforeEach
+    void cleanupCheckpointFiles() throws Exception {
+        if (checkpointDir != null && Files.isDirectory(checkpointDir)) {
+            try (var files = Files.list(checkpointDir)) {
+                files.filter(p -> p.toString().endsWith(".checkpoint.json"))
+                        .forEach(p -> { try { Files.deleteIfExists(p); } catch (IOException ignored) {} });
+            }
+        }
+    }
+
     @AfterAll
     static void stopDaemon() {
         if (udsListener != null) {

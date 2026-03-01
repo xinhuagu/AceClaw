@@ -90,6 +90,8 @@ public record PlanCheckpoint(
             List<String> updatedConversation,
             String hint,
             List<String> newArtifacts) {
+        Objects.requireNonNull(result, "result");
+        Objects.requireNonNull(updatedPlan, "updatedPlan");
         var newResults = new ArrayList<>(completedStepResults);
         newResults.add(result);
         var mergedArtifacts = new ArrayList<>(artifacts);
@@ -107,6 +109,7 @@ public record PlanCheckpoint(
      * Returns a copy with a new status.
      */
     public PlanCheckpoint withStatus(CheckpointStatus newStatus) {
+        Objects.requireNonNull(newStatus, "newStatus");
         return new PlanCheckpoint(
                 planId, sessionId, workspaceHash, originalGoal, plan,
                 completedStepResults, lastCompletedStepIndex, conversationSnapshot,

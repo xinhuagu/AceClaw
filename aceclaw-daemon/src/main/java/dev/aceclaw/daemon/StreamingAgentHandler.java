@@ -1426,7 +1426,7 @@ public final class StreamingAgentHandler {
                 Instant.now());
 
         // 4. Build conversation history from checkpoint snapshot
-        var conversationHistory = deserializeConversation(cp.conversationSnapshot());
+        var conversationHistory = new ArrayList<>(deserializeConversation(cp.conversationSnapshot()));
 
         // 5. Inject resume context prompt
         var resumePrompt = ResumeRouter.buildResumePrompt(cp);
@@ -1718,7 +1718,9 @@ public final class StreamingAgentHandler {
         private static List<String> serializeSessionMessages(AgentSession session) {
             // Simple serialization: role:content for each message
             var result = new ArrayList<String>();
-            for (var msg : session.messages()) {
+            var messages = session.messages();
+            if (messages == null) return result;
+            for (var msg : messages) {
                 switch (msg) {
                     case AgentSession.ConversationMessage.User u ->
                             result.add("{\"role\":\"user\",\"content\":" + escapeJson(u.content()) + "}");
