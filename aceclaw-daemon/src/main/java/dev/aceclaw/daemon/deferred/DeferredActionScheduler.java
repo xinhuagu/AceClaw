@@ -162,6 +162,7 @@ public final class DeferredActionScheduler {
                 Thread.currentThread().interrupt();
             }
         }
+        queuedActions.clear();
         log.info("DeferredActionScheduler stopped");
     }
 
@@ -269,17 +270,28 @@ public final class DeferredActionScheduler {
         var queue = queuedActions.get(sessionId);
         if (queue == null || queue.isEmpty()) return;
 
-        // Drain queued actions onto virtual threads
+        // Drain queued actions onto virtual threads (each acquires the turn lock)
         DeferredAction queued;
         while ((queued = queue.poll()) != null) {
             // Re-check that the action is still pending (may have been cancelled)
             var current = store.get(queued.actionId());
             if (current.isPresent() && current.get().state() == DeferredActionState.PENDING) {
                 final var actionToRun = current.get();
-                Thread.ofVirtual().name("deferred-drain-" + actionToRun.actionId()).start(
-                        () -> executeAction(actionToRun));
+                Thread.ofVirtual().name("deferred-drain-" + actionToRun.actionId()).start(() -> {
+                    var turnLock = sessionTurnLocks.computeIfAbsent(
+                            actionToRun.sessionId(), _ -> new ReentrantLock());
+                    turnLock.lock();
+                    try {
+                        executeAction(actionToRun);
+                    } finally {
+                        turnLock.unlock();
+                    }
+                });
             }
         }
+
+        // Clean up empty queue entry to prevent memory leak
+        queuedActions.computeIfPresent(sessionId, (_, q) -> q.isEmpty() ? null : q);
     }
 
     /**
