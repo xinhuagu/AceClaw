@@ -103,6 +103,7 @@ class SequentialPlanExecutorTest {
                     "Do step " + (i + 1),
                     List.of("read_file"),
                     i == 0 ? "Try alternative approach" : null,
+                    java.util.Set.of(),
                     StepStatus.PENDING));
         }
         return new TaskPlan("plan-1", "Test goal", steps, new PlanStatus.Draft(), Instant.now());
@@ -154,8 +155,8 @@ class SequentialPlanExecutorTest {
         client.enqueueError(); // step 1 fails
 
         var steps = List.of(
-                new PlannedStep("s1", "Step 1", "Do it", List.of(), null, StepStatus.PENDING),
-                new PlannedStep("s2", "Step 2", "Do more", List.of(), null, StepStatus.PENDING));
+                new PlannedStep("s1", "Step 1", "Do it", List.of(), null, java.util.Set.of(), StepStatus.PENDING),
+                new PlannedStep("s2", "Step 2", "Do more", List.of(), null, java.util.Set.of(), StepStatus.PENDING));
         var plan = new TaskPlan("plan-1", "Goal", steps, new PlanStatus.Draft(), Instant.now());
 
         var loop = createLoop(client);
@@ -182,7 +183,7 @@ class SequentialPlanExecutorTest {
 
         // Execute step 1, then cancel before step 2
         // We use a listener to cancel after step 1 completes
-        var cancellingListener = new SequentialPlanExecutor.PlanEventListener() {
+        var cancellingListener = new PlanEventListener() {
             @Override
             public void onStepStarted(PlannedStep step, int stepIndex, int totalSteps) {}
 
@@ -259,7 +260,7 @@ class SequentialPlanExecutorTest {
         var startedSteps = new ArrayList<String>();
         var completedSteps = new ArrayList<String>();
 
-        var listener = new SequentialPlanExecutor.PlanEventListener() {
+        var listener = new PlanEventListener() {
             @Override
             public void onStepStarted(PlannedStep step, int stepIndex, int totalSteps) {
                 startedSteps.add(step.name());

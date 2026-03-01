@@ -30,7 +30,7 @@ class FilePlanCheckpointStoreTest {
         for (int i = 0; i < stepCount; i++) {
             steps.add(new PlannedStep(
                     "step-" + i, "Step " + (i + 1), "Do step " + (i + 1),
-                    List.of("bash"), null, StepStatus.PENDING));
+                    List.of("bash"), null, java.util.Set.of(), StepStatus.PENDING));
         }
         return new TaskPlan(planId, "Build feature X", steps,
                 new PlanStatus.Draft(), Instant.now());
@@ -157,8 +157,8 @@ class FilePlanCheckpointStoreTest {
     @Test
     void planStatusSerialization_executingStatus() {
         var plan = new TaskPlan("plan-ex", "goal", List.of(
-                new PlannedStep("s1", "Step 1", "desc", List.of(), null, StepStatus.COMPLETED),
-                new PlannedStep("s2", "Step 2", "desc", List.of(), null, StepStatus.PENDING)
+                new PlannedStep("s1", "Step 1", "desc", List.of(), null, java.util.Set.of(), StepStatus.COMPLETED),
+                new PlannedStep("s2", "Step 2", "desc", List.of(), null, java.util.Set.of(), StepStatus.PENDING)
         ), new PlanStatus.Executing(1, 2), Instant.now());
 
         var cp = new PlanCheckpoint("plan-ex", "s1", "ws", "goal", plan,
@@ -178,7 +178,7 @@ class FilePlanCheckpointStoreTest {
     @Test
     void planStatusSerialization_completedStatus() {
         var plan = new TaskPlan("plan-c", "goal", List.of(
-                new PlannedStep("s1", "Step 1", "desc", List.of(), null, StepStatus.COMPLETED)
+                new PlannedStep("s1", "Step 1", "desc", List.of(), null, java.util.Set.of(), StepStatus.COMPLETED)
         ), new PlanStatus.Completed(java.time.Duration.ofMillis(5000)), Instant.now());
 
         var cp = new PlanCheckpoint("plan-c", "s1", "ws", "goal", plan,
@@ -195,7 +195,7 @@ class FilePlanCheckpointStoreTest {
     @Test
     void planStatusSerialization_failedStatus() {
         var plan = new TaskPlan("plan-f", "goal", List.of(
-                new PlannedStep("s1", "Step 1", "desc", List.of(), null, StepStatus.FAILED)
+                new PlannedStep("s1", "Step 1", "desc", List.of(), null, java.util.Set.of(), StepStatus.FAILED)
         ), new PlanStatus.Failed("timeout", "s1"), Instant.now());
 
         var cp = new PlanCheckpoint("plan-f", "s1", "ws", "goal", plan,
@@ -214,9 +214,9 @@ class FilePlanCheckpointStoreTest {
     void stepDetailsPreserved_afterRoundTrip() {
         var plan = new TaskPlan("plan-steps", "goal", List.of(
                 new PlannedStep("s1", "Research", "Find APIs",
-                        List.of("bash", "grep"), "manual search", StepStatus.COMPLETED),
+                        List.of("bash", "grep"), "manual search", java.util.Set.of(), StepStatus.COMPLETED),
                 new PlannedStep("s2", "Implement", "Write code",
-                        List.of("edit_file"), null, StepStatus.PENDING)
+                        List.of("edit_file"), null, java.util.Set.of(), StepStatus.PENDING)
         ), new PlanStatus.Executing(1, 2), Instant.now());
 
         var cp = new PlanCheckpoint("plan-steps", "s1", "ws", "goal", plan,

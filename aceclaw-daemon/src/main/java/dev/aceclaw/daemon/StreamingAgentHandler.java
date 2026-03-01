@@ -28,6 +28,10 @@ import dev.aceclaw.core.planner.PlanCheckpointStore;
 import dev.aceclaw.core.planner.PlanExecutionResult;
 import dev.aceclaw.core.planner.PlanStatus;
 import dev.aceclaw.core.planner.PlannedStep;
+import dev.aceclaw.core.planner.AgentLoopFactory;
+import dev.aceclaw.core.planner.DagPlanExecutor;
+import dev.aceclaw.core.planner.PlanEventListener;
+import dev.aceclaw.core.planner.PlanExecutor;
 import dev.aceclaw.core.planner.SequentialPlanExecutor;
 import dev.aceclaw.core.planner.StepResult;
 import dev.aceclaw.core.planner.StepStatus;
@@ -359,7 +363,7 @@ public final class StreamingAgentHandler {
 
         // 3. Execute the plan
         var conversationHistory = toMessages(session.messages());
-        var listener = new SequentialPlanExecutor.PlanEventListener() {
+        var listener = new PlanEventListener() {
             @Override
             public void onStepStarted(PlannedStep step, int stepIndex, int totalSteps) {
                 try {
@@ -409,7 +413,7 @@ public final class StreamingAgentHandler {
         };
 
         // Wrap listener with checkpointing if store is available
-        SequentialPlanExecutor.PlanEventListener effectiveListener = listener;
+        PlanEventListener effectiveListener = listener;
         if (planCheckpointStore != null) {
             var wsHash = ResumeRouter.hashWorkspace(session.projectPath());
             var initialCheckpoint = new PlanCheckpoint(
@@ -426,7 +430,17 @@ public final class StreamingAgentHandler {
                     listener, planCheckpointStore, initialCheckpoint, session, 0);
         }
 
-        var executor = new SequentialPlanExecutor(effectiveListener);
+        PlanExecutor executor;
+        if (plan.hasParallelizableSteps()) {
+            AgentLoopFactory factory = () -> new StreamingAgentLoop(
+                    getLlmClient(), createPermissionAwareRegistry(cancelContext, sessionId),
+                    getModelForSession(sessionId), getSystemPrompt(sessionId),
+                    maxTokens, thinkingBudget, null, AgentLoopConfig.EMPTY);
+            executor = new DagPlanExecutor(effectiveListener, factory);
+            log.info("Using DAG parallel executor for plan with {} steps", plan.steps().size());
+        } else {
+            executor = new SequentialPlanExecutor(effectiveListener);
+        }
         var planResult = executor.execute(plan, permissionAwareLoop, conversationHistory,
                 eventHandler, cancellationToken);
 
@@ -1573,7 +1587,7 @@ public final class StreamingAgentHandler {
         }
 
         // 8. Create notification listener for the resumed plan
-        var notificationListener = new SequentialPlanExecutor.PlanEventListener() {
+        var notificationListener = new PlanEventListener() {
             @Override
             public void onStepStarted(PlannedStep step, int stepIndex, int totalSteps) {
                 try {
@@ -1748,16 +1762,16 @@ public final class StreamingAgentHandler {
      * Writes a checkpoint after each step completion and marks final status.
      */
     private static final class CheckpointingPlanEventListener
-            implements SequentialPlanExecutor.PlanEventListener {
+            implements PlanEventListener {
 
-        private final SequentialPlanExecutor.PlanEventListener delegate;
+        private final PlanEventListener delegate;
         private final PlanCheckpointStore store;
         private volatile PlanCheckpoint currentCheckpoint;
         private final AgentSession session;
         private final int stepIndexOffset;
 
         CheckpointingPlanEventListener(
-                SequentialPlanExecutor.PlanEventListener delegate,
+                PlanEventListener delegate,
                 PlanCheckpointStore store,
                 PlanCheckpoint initialCheckpoint,
                 AgentSession session,

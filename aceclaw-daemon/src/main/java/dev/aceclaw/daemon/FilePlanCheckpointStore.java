@@ -394,16 +394,19 @@ public final class FilePlanCheckpointStore implements PlanCheckpointStore {
             String description,
             List<String> requiredTools,
             String fallbackApproach,
+            List<String> dependsOn,
             String status
     ) {
         StepDto {
             requiredTools = requiredTools != null ? List.copyOf(requiredTools) : List.of();
+            dependsOn = dependsOn != null ? List.copyOf(dependsOn) : List.of();
         }
 
         static StepDto from(PlannedStep step) {
             return new StepDto(
                     step.stepId(), step.name(), step.description(),
                     step.requiredTools(), step.fallbackApproach(),
+                    step.dependsOn() != null ? List.copyOf(step.dependsOn()) : List.of(),
                     step.status().name()
             );
         }
@@ -415,8 +418,9 @@ public final class FilePlanCheckpointStore implements PlanCheckpointStore {
             } catch (IllegalArgumentException e) {
                 domainStatus = StepStatus.PENDING;
             }
+            var depSet = dependsOn != null ? new java.util.HashSet<>(dependsOn) : java.util.Set.<String>of();
             return new PlannedStep(stepId, name, description, requiredTools,
-                    fallbackApproach, domainStatus);
+                    fallbackApproach, depSet, domainStatus);
         }
     }
 

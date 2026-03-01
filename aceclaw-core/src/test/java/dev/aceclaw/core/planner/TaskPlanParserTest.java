@@ -122,4 +122,105 @@ class TaskPlanParserTest {
         var text = "Some text {\"key\": \"value\"} more text";
         assertEquals("{\"key\": \"value\"}", TaskPlanParser.extractJson(text));
     }
+
+    @Test
+    void dependsOn_parsedAndResolved() {
+        var json = """
+                {
+                  "steps": [
+                    {"name": "Research", "description": "Find files"},
+                    {"name": "Implement", "description": "Write code", "dependsOn": ["Research"]},
+                    {"name": "Test", "description": "Run tests", "dependsOn": ["Implement"]}
+                  ]
+                }
+                """;
+
+        var plan = TaskPlanParser.parse(json, "Build feature");
+
+        assertEquals(3, plan.steps().size());
+        assertTrue(plan.steps().get(0).dependsOn().isEmpty());
+
+        // "Implement" depends on "Research" — resolved to Research's stepId
+        var implementStep = plan.steps().get(1);
+        assertEquals(1, implementStep.dependsOn().size());
+        assertTrue(implementStep.dependsOn().contains(plan.steps().get(0).stepId()));
+
+        // "Test" depends on "Implement" — resolved to Implement's stepId
+        var testStep = plan.steps().get(2);
+        assertEquals(1, testStep.dependsOn().size());
+        assertTrue(testStep.dependsOn().contains(implementStep.stepId()));
+    }
+
+    @Test
+    void dependsOn_unknownDepsIgnored() {
+        var json = """
+                {
+                  "steps": [
+                    {"name": "Step A", "description": "do A", "dependsOn": ["NonExistent"]},
+                    {"name": "Step B", "description": "do B"}
+                  ]
+                }
+                """;
+
+        var plan = TaskPlanParser.parse(json, "test");
+        // Unknown dep "NonExistent" should be silently ignored
+        assertTrue(plan.steps().get(0).dependsOn().isEmpty());
+    }
+
+    @Test
+    void dependsOn_cycleDetection_fallsBackToSequential() {
+        var json = """
+                {
+                  "steps": [
+                    {"name": "A", "description": "step A", "dependsOn": ["B"]},
+                    {"name": "B", "description": "step B", "dependsOn": ["A"]}
+                  ]
+                }
+                """;
+
+        var plan = TaskPlanParser.parse(json, "cycle test");
+        // All deps should be cleared because of cycle
+        assertTrue(plan.steps().get(0).dependsOn().isEmpty());
+        assertTrue(plan.steps().get(1).dependsOn().isEmpty());
+    }
+
+    @Test
+    void dependsOn_noDeps_noChange() {
+        var json = """
+                {
+                  "steps": [
+                    {"name": "Solo", "description": "independent step"}
+                  ]
+                }
+                """;
+
+        var plan = TaskPlanParser.parse(json, "test");
+        assertTrue(plan.steps().get(0).dependsOn().isEmpty());
+    }
+
+    @Test
+    void hasCycle_noCycle() {
+        var steps = java.util.List.of(
+                new PlannedStep("a", "A", "a", java.util.List.of(), null, java.util.Set.of(), StepStatus.PENDING),
+                new PlannedStep("b", "B", "b", java.util.List.of(), null, java.util.Set.of("a"), StepStatus.PENDING)
+        );
+        assertFalse(TaskPlanParser.hasCycle(steps));
+    }
+
+    @Test
+    void hasCycle_withCycle() {
+        var steps = java.util.List.of(
+                new PlannedStep("a", "A", "a", java.util.List.of(), null, java.util.Set.of("b"), StepStatus.PENDING),
+                new PlannedStep("b", "B", "b", java.util.List.of(), null, java.util.Set.of("a"), StepStatus.PENDING)
+        );
+        assertTrue(TaskPlanParser.hasCycle(steps));
+    }
+
+    @Test
+    void hasCycle_selfCycle() {
+        var steps = java.util.List.of(
+                new PlannedStep("a", "A", "a", java.util.List.of(), null, java.util.Set.of("a"), StepStatus.PENDING)
+        );
+        assertTrue(TaskPlanParser.hasCycle(steps));
+    }
 }

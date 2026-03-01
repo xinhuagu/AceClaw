@@ -31,15 +31,6 @@ public final class SequentialPlanExecutor implements PlanExecutor {
 
     private static final Logger log = LoggerFactory.getLogger(SequentialPlanExecutor.class);
 
-    /**
-     * Callback for plan execution events (step started, step completed, etc.).
-     */
-    public interface PlanEventListener {
-        void onStepStarted(PlannedStep step, int stepIndex, int totalSteps);
-        void onStepCompleted(PlannedStep step, int stepIndex, StepResult result);
-        void onPlanCompleted(TaskPlan plan, boolean success, long totalDurationMs);
-    }
-
     private final PlanEventListener listener;
 
     public SequentialPlanExecutor() {

@@ -4,6 +4,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
  * An immutable task plan consisting of sequential steps to achieve a goal.
@@ -64,5 +65,30 @@ public record TaskPlan(
     public boolean isComplete() {
         return steps.stream().allMatch(s -> s.status() == StepStatus.COMPLETED
                 || s.status() == StepStatus.SKIPPED);
+    }
+
+    /**
+     * Returns all steps whose dependencies are satisfied and status is PENDING.
+     * These steps are ready to execute (either sequentially or in parallel).
+     */
+    public List<PlannedStep> readySteps() {
+        var completedIds = steps.stream()
+                .filter(s -> s.status() == StepStatus.COMPLETED || s.status() == StepStatus.SKIPPED)
+                .map(PlannedStep::stepId)
+                .collect(Collectors.toSet());
+        return steps.stream()
+                .filter(s -> s.status() == StepStatus.PENDING)
+                .filter(s -> completedIds.containsAll(s.dependsOn()))
+                .toList();
+    }
+
+    /**
+     * Returns true if the plan has steps that can benefit from parallel execution.
+     * This is the case when any step has explicit dependencies or multiple root steps exist.
+     */
+    public boolean hasParallelizableSteps() {
+        boolean hasDeps = steps.stream().anyMatch(s -> !s.dependsOn().isEmpty());
+        long rootCount = steps.stream().filter(PlannedStep::isRoot).count();
+        return hasDeps || rootCount > 1;
     }
 }

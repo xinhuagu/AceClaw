@@ -7,7 +7,12 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
@@ -19,6 +24,8 @@ import java.util.regex.Pattern;
  *   <li>JSON wrapped in markdown code fences ({@code ```json ... ```})</li>
  *   <li>Missing or extra fields in step objects</li>
  *   <li>Too many or too few steps (clamped to 1-20)</li>
+ *   <li>dependsOn name resolution (step names → stepIds)</li>
+ *   <li>Cycle detection with fallback to sequential execution</li>
  * </ul>
  */
 public final class TaskPlanParser {
@@ -61,18 +68,55 @@ public final class TaskPlanParser {
                 throw new IllegalArgumentException("Plan response has no 'steps' array");
             }
 
-            var steps = new ArrayList<PlannedStep>();
+            // First pass: parse steps with raw dependsOn names
+            var rawSteps = new ArrayList<RawStep>();
             for (var stepNode : stepsNode) {
-                if (steps.size() >= MAX_STEPS) {
+                if (rawSteps.size() >= MAX_STEPS) {
                     log.warn("Plan exceeds {} steps, truncating", MAX_STEPS);
                     break;
                 }
-                steps.add(parseStep(stepNode));
+                rawSteps.add(parseRawStep(stepNode));
             }
 
-            if (steps.size() < MIN_STEPS) {
+            if (rawSteps.size() < MIN_STEPS) {
                 throw new IllegalArgumentException(
                         "Plan has fewer than " + MIN_STEPS + " steps");
+            }
+
+            // Second pass: resolve name-based deps to stepIds
+            var nameToId = new HashMap<String, String>();
+            for (var raw : rawSteps) {
+                nameToId.put(raw.name, raw.stepId);
+            }
+
+            var steps = new ArrayList<PlannedStep>();
+            for (var raw : rawSteps) {
+                var resolvedDeps = new HashSet<String>();
+                for (var depName : raw.dependsOnNames) {
+                    var depId = nameToId.get(depName);
+                    if (depId != null) {
+                        resolvedDeps.add(depId);
+                    } else {
+                        log.warn("Unknown dependency '{}' in step '{}', ignoring", depName, raw.name);
+                    }
+                }
+                steps.add(new PlannedStep(
+                        raw.stepId, raw.name, raw.description,
+                        raw.requiredTools, raw.fallbackApproach,
+                        resolvedDeps, StepStatus.PENDING));
+            }
+
+            // Third pass: cycle detection — if cycle found, clear all deps
+            if (hasCycle(steps)) {
+                log.warn("Cycle detected in plan dependencies, falling back to sequential execution");
+                var sequential = new ArrayList<PlannedStep>();
+                for (var step : steps) {
+                    sequential.add(new PlannedStep(
+                            step.stepId(), step.name(), step.description(),
+                            step.requiredTools(), step.fallbackApproach(),
+                            Set.of(), step.status()));
+                }
+                steps = sequential;
             }
 
             return new TaskPlan(
@@ -110,7 +154,66 @@ public final class TaskPlanParser {
         return text;
     }
 
-    private static PlannedStep parseStep(JsonNode stepNode) {
+    /**
+     * Detects cycles in the step dependency graph using DFS.
+     */
+    static boolean hasCycle(List<PlannedStep> steps) {
+        var idToStep = new HashMap<String, PlannedStep>();
+        for (var step : steps) {
+            idToStep.put(step.stepId(), step);
+        }
+
+        var visited = new HashSet<String>();
+        var inStack = new HashSet<String>();
+
+        for (var step : steps) {
+            if (hasCycleDfs(step.stepId(), idToStep, visited, inStack)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasCycleDfs(
+            String nodeId,
+            Map<String, PlannedStep> idToStep,
+            Set<String> visited,
+            Set<String> inStack) {
+        if (inStack.contains(nodeId)) {
+            return true;
+        }
+        if (visited.contains(nodeId)) {
+            return false;
+        }
+        visited.add(nodeId);
+        inStack.add(nodeId);
+
+        var step = idToStep.get(nodeId);
+        if (step != null) {
+            for (var dep : step.dependsOn()) {
+                if (hasCycleDfs(dep, idToStep, visited, inStack)) {
+                    return true;
+                }
+            }
+        }
+
+        inStack.remove(nodeId);
+        return false;
+    }
+
+    /**
+     * Intermediate representation for a parsed step before dependency resolution.
+     */
+    private record RawStep(
+            String stepId,
+            String name,
+            String description,
+            List<String> requiredTools,
+            String fallbackApproach,
+            Set<String> dependsOnNames
+    ) {}
+
+    private static RawStep parseRawStep(JsonNode stepNode) {
         String name = getTextOrDefault(stepNode, "name", "Unnamed step");
         String description = getTextOrDefault(stepNode, "description", "");
 
@@ -128,13 +231,20 @@ public final class TaskPlanParser {
             fallback = fallbackNode.asText();
         }
 
-        return new PlannedStep(
+        var dependsOnNames = new LinkedHashSet<String>();
+        var depsNode = stepNode.get("dependsOn");
+        if (depsNode != null && depsNode.isArray()) {
+            for (var depNode : depsNode) {
+                var depText = depNode.asText();
+                if (depText != null && !depText.isBlank()) {
+                    dependsOnNames.add(depText);
+                }
+            }
+        }
+
+        return new RawStep(
                 UUID.randomUUID().toString(),
-                name,
-                description,
-                requiredTools,
-                fallback,
-                StepStatus.PENDING);
+                name, description, requiredTools, fallback, dependsOnNames);
     }
 
     private static String getTextOrDefault(JsonNode node, String field, String defaultValue) {

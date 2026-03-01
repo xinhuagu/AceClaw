@@ -21,6 +21,12 @@ public final class PlanningPromptBuilder {
             - Return a JSON object with a single key "steps" containing an array.
             - Each step must have: "name" (short title), "description" (what to do), \
               "requiredTools" (list of tool names), "fallbackApproach" (alternative if primary fails, or null).
+            - Each step may include "dependsOn": a list of step names that must complete first.
+            - Steps without dependsOn can run in parallel. Only add dependencies when a step \
+              truly needs the output or side effects of another step.
+            - Example: {"name": "Write tests", "dependsOn": ["Implement feature"], \
+              "description": "Write unit tests for the new feature", "requiredTools": ["write_file"], \
+              "fallbackApproach": null}
             - Order steps logically: research first, then implement, then verify.
             - Keep steps focused: one logical unit of work per step.
             - Use 2-15 steps. Fewer for simpler tasks, more for complex ones.

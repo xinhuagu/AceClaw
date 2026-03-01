@@ -14,7 +14,7 @@ class PlanCheckpointTest {
         for (int i = 0; i < stepCount; i++) {
             steps.add(new PlannedStep(
                     "step-" + i, "Step " + (i + 1), "Do step " + (i + 1),
-                    List.of("bash"), null, StepStatus.PENDING));
+                    List.of("bash"), null, java.util.Set.of(), StepStatus.PENDING));
         }
         return new TaskPlan("plan-1", "Build feature X", steps,
                 new PlanStatus.Draft(), Instant.now());

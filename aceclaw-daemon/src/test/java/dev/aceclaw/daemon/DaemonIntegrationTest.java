@@ -37,6 +37,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -1083,9 +1084,9 @@ class DaemonIntegrationTest {
             // Build and save a checkpoint that matches this session
             var wsHash = ResumeRouter.hashWorkspace(projectDir);
             var plan = new TaskPlan("plan-resume-test", "Build feature X", List.of(
-                    new PlannedStep("s1", "Research", "Find APIs", List.of("read_file"), null, StepStatus.COMPLETED),
-                    new PlannedStep("s2", "Implement", "Write code", List.of("write_file"), null, StepStatus.PENDING),
-                    new PlannedStep("s3", "Test", "Run tests", List.of("bash"), null, StepStatus.PENDING)
+                    new PlannedStep("s1", "Research", "Find APIs", List.of("read_file"), null, Set.of(), StepStatus.COMPLETED),
+                    new PlannedStep("s2", "Implement", "Write code", List.of("write_file"), null, Set.of(), StepStatus.PENDING),
+                    new PlannedStep("s3", "Test", "Run tests", List.of("bash"), null, Set.of(), StepStatus.PENDING)
             ), new PlanStatus.Executing(1, 3), Instant.now());
 
             var checkpoint = new PlanCheckpoint(
@@ -1149,8 +1150,8 @@ class DaemonIntegrationTest {
 
             var wsHash = ResumeRouter.hashWorkspace(projectDir);
             var plan = new TaskPlan("plan-resume-accept", "Implement login", List.of(
-                    new PlannedStep("s1", "Research", "Find auth libs", List.of("read_file"), null, StepStatus.COMPLETED),
-                    new PlannedStep("s2", "Implement", "Write auth code", List.of("write_file"), null, StepStatus.PENDING)
+                    new PlannedStep("s1", "Research", "Find auth libs", List.of("read_file"), null, Set.of(), StepStatus.COMPLETED),
+                    new PlannedStep("s2", "Implement", "Write auth code", List.of("write_file"), null, Set.of(), StepStatus.PENDING)
             ), new PlanStatus.Executing(1, 2), Instant.now());
 
             var checkpoint = new PlanCheckpoint(
@@ -1218,8 +1219,8 @@ class DaemonIntegrationTest {
             // Seed a checkpoint for projectB (different workspace)
             var wsHashB = ResumeRouter.hashWorkspace(projectB);
             var plan = new TaskPlan("plan-wrong-ws", "Other project task", List.of(
-                    new PlannedStep("s1", "Done", "Done", List.of(), null, StepStatus.COMPLETED),
-                    new PlannedStep("s2", "Pending", "Pending", List.of(), null, StepStatus.PENDING)
+                    new PlannedStep("s1", "Done", "Done", List.of(), null, Set.of(), StepStatus.COMPLETED),
+                    new PlannedStep("s2", "Pending", "Pending", List.of(), null, Set.of(), StepStatus.PENDING)
             ), new PlanStatus.Executing(1, 2), Instant.now());
 
             var checkpoint = new PlanCheckpoint(
