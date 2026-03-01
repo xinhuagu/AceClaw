@@ -89,6 +89,10 @@ public final class DeferredActionScheduler {
     private final ConcurrentHashMap<String, Queue<DeferredAction>> queuedActions =
             new ConcurrentHashMap<>();
 
+    /** Dedup set for queued action IDs per session (prevents re-enqueueing on each tick). */
+    private final ConcurrentHashMap<String, java.util.Set<String>> queuedActionIds =
+            new ConcurrentHashMap<>();
+
     /** Active virtual worker threads for graceful shutdown coordination. */
     private final java.util.Set<Thread> activeWorkers =
             java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
@@ -177,6 +181,7 @@ public final class DeferredActionScheduler {
         }
         activeWorkers.clear();
         queuedActions.clear();
+        queuedActionIds.clear();
         log.info("DeferredActionScheduler stopped");
     }
 
@@ -209,6 +214,14 @@ public final class DeferredActionScheduler {
         }
         int clampedRetries = Math.min(Math.max(0, maxRetries), MAX_RETRIES);
 
+        // Idempotency check first — duplicates should dedup, not fail with "limit reached"
+        String idempotencyKey = computeIdempotencyKey(sessionId, goal);
+        var existing = store.findByIdempotencyKey(idempotencyKey);
+        if (existing.isPresent()) {
+            log.info("Dedup: returning existing action {} for idempotency key", existing.get().actionId());
+            return existing.get();
+        }
+
         if (store.pendingCountForSession(sessionId) >= MAX_PER_SESSION) {
             throw new IllegalArgumentException(
                     "Per-session limit reached (" + MAX_PER_SESSION + " pending actions)");
@@ -216,14 +229,6 @@ public final class DeferredActionScheduler {
         if (store.totalPendingCount() >= MAX_GLOBAL) {
             throw new IllegalArgumentException(
                     "Global limit reached (" + MAX_GLOBAL + " pending actions)");
-        }
-
-        // Idempotency check
-        String idempotencyKey = computeIdempotencyKey(sessionId, goal);
-        var existing = store.findByIdempotencyKey(idempotencyKey);
-        if (existing.isPresent()) {
-            log.info("Dedup: returning existing action {} for idempotency key", existing.get().actionId());
-            return existing.get();
         }
 
         Instant now = Instant.now();
@@ -287,6 +292,11 @@ public final class DeferredActionScheduler {
         // Drain queued actions onto virtual threads (each acquires the turn lock)
         DeferredAction queued;
         while ((queued = queue.poll()) != null) {
+            // Remove from dedup set
+            var ids = queuedActionIds.get(sessionId);
+            if (ids != null) {
+                ids.remove(queued.actionId());
+            }
             // Re-check that the action is still pending (may have been cancelled)
             var current = store.get(queued.actionId());
             if (current.isPresent() && current.get().state() == DeferredActionState.PENDING) {
@@ -307,8 +317,9 @@ public final class DeferredActionScheduler {
             }
         }
 
-        // Clean up empty queue entry to prevent memory leak
+        // Clean up empty entries to prevent memory leak
         queuedActions.computeIfPresent(sessionId, (_, q) -> q.isEmpty() ? null : q);
+        queuedActionIds.computeIfPresent(sessionId, (_, s) -> s.isEmpty() ? null : s);
     }
 
     /**
@@ -378,13 +389,17 @@ public final class DeferredActionScheduler {
                         turnLock.unlock();
                     }
                 } else {
-                    // Session is busy — queue for drain on notifyTurnComplete
-                    queuedActions.computeIfAbsent(action.sessionId(), _ -> new ConcurrentLinkedQueue<>())
-                            .offer(action);
-                    publishEvent(new DeferEvent.ActionQueued(
-                            action.actionId(), action.sessionId(),
-                            "Session busy", Instant.now()));
-                    log.debug("Deferred action '{}' queued (session busy)", action.actionId());
+                    // Session is busy — queue for drain on notifyTurnComplete (deduplicated)
+                    var ids = queuedActionIds.computeIfAbsent(
+                            action.sessionId(), _ -> ConcurrentHashMap.newKeySet());
+                    if (ids.add(action.actionId())) {
+                        queuedActions.computeIfAbsent(action.sessionId(), _ -> new ConcurrentLinkedQueue<>())
+                                .offer(action);
+                        publishEvent(new DeferEvent.ActionQueued(
+                                action.actionId(), action.sessionId(),
+                                "Session busy", Instant.now()));
+                        log.debug("Deferred action '{}' queued (session busy)", action.actionId());
+                    }
                 }
             }
         } catch (Exception e) {
@@ -549,7 +564,8 @@ public final class DeferredActionScheduler {
         try {
             var digest = MessageDigest.getInstance("SHA-256");
             digest.update(goal.getBytes(StandardCharsets.UTF_8));
-            String hash = HexFormat.of().formatHex(digest.digest()).substring(0, 16);
+            String fullHash = HexFormat.of().formatHex(digest.digest());
+            String hash = fullHash.length() > 16 ? fullHash.substring(0, 16) : fullHash;
             return sessionId + ":" + hash;
         } catch (NoSuchAlgorithmException e) {
             // SHA-256 is always available
