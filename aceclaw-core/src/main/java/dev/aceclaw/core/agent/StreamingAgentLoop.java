@@ -433,6 +433,7 @@ public final class StreamingAgentLoop {
             }
         } finally {
             heartbeatDone.set(true);
+            heartbeat.interrupt();
             try {
                 heartbeat.join(2000);
             } catch (InterruptedException e) {

@@ -101,6 +101,7 @@ final class AnthropicStreamSession implements StreamSession {
         } finally {
             // Ensure watchdog exits
             cancelled.set(true);
+            watchdog.interrupt();
             try {
                 watchdog.join(2000);
             } catch (InterruptedException e) {

@@ -1,5 +1,7 @@
 package dev.aceclaw.core.llm;
 
+import java.util.Objects;
+
 /**
  * Events emitted during a streaming LLM response.
  *
@@ -62,5 +64,9 @@ public sealed interface StreamEvent {
      *
      * @param phase describes what the agent is doing (e.g. "tool_execution")
      */
-    record Heartbeat(String phase) implements StreamEvent {}
+    record Heartbeat(String phase) implements StreamEvent {
+        public Heartbeat {
+            phase = Objects.requireNonNull(phase, "phase");
+        }
+    }
 }

@@ -167,7 +167,11 @@ public final class TaskStreamReader implements Runnable {
                 }
             }
             case "stream.heartbeat" -> {
-                String phase = params != null ? params.path("phase").asText("active") : "active";
+                String phase = "active";
+                if (params != null) {
+                    String raw = params.path("phase").asText("active");
+                    phase = (raw == null || raw.isBlank()) ? "active" : raw;
+                }
                 handle.markActivity("heartbeat:" + phase);
             }
             case "stream.cancelled" -> {
