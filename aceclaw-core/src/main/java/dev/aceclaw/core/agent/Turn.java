@@ -12,26 +12,30 @@ import java.util.List;
  * @param newMessages      all messages produced during this turn (assistant messages and tool results)
  * @param finalStopReason  the stop reason from the last LLM call
  * @param totalUsage       aggregated token usage across all LLM calls in this turn
- * @param compactionResult context compaction result, or null if no compaction occurred
- * @param maxIterationsReached whether the loop hit max-iterations guardrail
+ * @param compactionResult        context compaction result, or null if no compaction occurred
+ * @param maxIterationsReached    whether the loop hit max-iterations guardrail
+ * @param budgetExhausted         whether the turn was stopped by a watchdog budget limit
+ * @param budgetExhaustionReason  the budget that was exhausted: {@code "turn_budget"}, {@code "time_budget"}, or null
  */
 public record Turn(
         List<Message> newMessages,
         StopReason finalStopReason,
         Usage totalUsage,
         CompactionResult compactionResult,
-        boolean maxIterationsReached
+        boolean maxIterationsReached,
+        boolean budgetExhausted,
+        String budgetExhaustionReason
 ) {
 
     public Turn {
-        newMessages = List.copyOf(newMessages);
+        newMessages = newMessages != null ? List.copyOf(newMessages) : List.of();
     }
 
     /**
      * Creates a turn result without compaction info (backward-compatible).
      */
     public Turn(List<Message> newMessages, StopReason finalStopReason, Usage totalUsage) {
-        this(newMessages, finalStopReason, totalUsage, null, false);
+        this(newMessages, finalStopReason, totalUsage, null, false, false, null);
     }
 
     /**
@@ -39,7 +43,15 @@ public record Turn(
      */
     public Turn(List<Message> newMessages, StopReason finalStopReason, Usage totalUsage,
                 CompactionResult compactionResult) {
-        this(newMessages, finalStopReason, totalUsage, compactionResult, false);
+        this(newMessages, finalStopReason, totalUsage, compactionResult, false, false, null);
+    }
+
+    /**
+     * Creates a turn result with compaction and max-iterations info (backward-compatible).
+     */
+    public Turn(List<Message> newMessages, StopReason finalStopReason, Usage totalUsage,
+                CompactionResult compactionResult, boolean maxIterationsReached) {
+        this(newMessages, finalStopReason, totalUsage, compactionResult, maxIterationsReached, false, null);
     }
 
     /**

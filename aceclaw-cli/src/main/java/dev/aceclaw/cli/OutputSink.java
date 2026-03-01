@@ -74,4 +74,7 @@ public interface OutputSink {
 
     /** Called when context compaction occurs. */
     default void onCompaction(JsonNode params) {}
+
+    /** Called when a watchdog budget limit is reached. */
+    default void onBudgetExhausted(JsonNode params) {}
 }

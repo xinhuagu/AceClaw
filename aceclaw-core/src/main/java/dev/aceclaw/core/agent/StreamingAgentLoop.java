@@ -148,6 +148,13 @@ public final class StreamingAgentLoop {
         try {
             for (int iteration = 0; iteration < maxIterations; iteration++) {
 
+                // Watchdog budget check: before LLM call
+                var watchdog = config.watchdog();
+                if (watchdog != null) {
+                    watchdog.checkBudget(iteration);
+                }
+                // If budget exhausted, token is cancelled -> Checkpoint 1 exits cleanly
+
                 // Checkpoint 1: before LLM call
                 if (cancellationToken != null && cancellationToken.isCancelled()) {
                     log.info("Cancellation detected before LLM call (iteration {})", iteration + 1);
@@ -297,13 +304,17 @@ public final class StreamingAgentLoop {
     /**
      * Builds a Turn result for a cancelled agent turn.
      */
-    private static Turn buildCancelledTurn(List<Message> newMessages,
-                                           int totalInputTokens, int totalOutputTokens,
-                                           int totalCacheCreationTokens, int totalCacheReadTokens,
-                                           CompactionResult compactionResult) {
+    private Turn buildCancelledTurn(List<Message> newMessages,
+                                    int totalInputTokens, int totalOutputTokens,
+                                    int totalCacheCreationTokens, int totalCacheReadTokens,
+                                    CompactionResult compactionResult) {
         var totalUsage = new Usage(totalInputTokens, totalOutputTokens,
                 totalCacheCreationTokens, totalCacheReadTokens);
-        return new Turn(newMessages, StopReason.END_TURN, totalUsage, compactionResult);
+        var watchdog = config.watchdog();
+        boolean budgetExhausted = watchdog != null && watchdog.isExhausted();
+        String reason = watchdog != null ? watchdog.exhaustionReason() : null;
+        return new Turn(newMessages, StopReason.END_TURN, totalUsage, compactionResult,
+                false, budgetExhausted, reason);
     }
 
     /**

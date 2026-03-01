@@ -208,6 +208,11 @@ public final class TaskStreamReader implements Runnable {
                 handle.markActivity("compacting");
                 sink.onCompaction(params);
             }
+            case "stream.budget_exhausted" -> {
+                String reason = params != null ? params.path("reason").asText("unknown") : "unknown";
+                handle.markActivity("budget exhausted:" + reason);
+                sink.onBudgetExhausted(params);
+            }
             default -> log.debug("Task {}: ignoring notification: {}", handle.taskId(), method);
         }
     }

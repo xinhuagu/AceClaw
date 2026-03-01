@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.AgentLoopConfig;
 import dev.aceclaw.core.agent.CancellationAware;
 import dev.aceclaw.core.agent.CancellationToken;
+import dev.aceclaw.core.agent.WatchdogTimer;
 import dev.aceclaw.core.agent.CompactionResult;
 import dev.aceclaw.core.agent.HookEvent;
 import dev.aceclaw.core.agent.HookExecutor;
@@ -192,11 +193,19 @@ public final class StreamingAgentHandler {
         // Get or create a session-scoped metrics collector so tool stats accumulate across turns
         var metricsCollector = sessionMetrics.computeIfAbsent(sessionId, _ -> new ToolMetricsCollector());
 
+        // Create watchdog timer for turn/time budget enforcement
+        var watchdog = (maxAgentTurns > 0 || maxAgentWallTimeSec > 0)
+                ? new WatchdogTimer(maxAgentTurns,
+                        maxAgentWallTimeSec > 0 ? Duration.ofSeconds(maxAgentWallTimeSec) : Duration.ZERO,
+                        cancellationToken)
+                : null;
+
         // Create a temporary agent loop with the permission-aware registry, compaction and metrics
         var agentConfig = AgentLoopConfig.builder()
                 .sessionId(sessionId)
                 .metricsCollector(metricsCollector)
                 .maxIterations(maxIterations)
+                .watchdog(watchdog)
                 .build();
         var permissionAwareLoop = new StreamingAgentLoop(
                 getLlmClient(), permissionAwareRegistry,
@@ -227,6 +236,7 @@ public final class StreamingAgentHandler {
                         sessionId, session, cancelContext, eventHandler,
                         permissionAwareLoop, cancellationToken, metricsCollector);
                 if (resumeResult != null) {
+                    sendBudgetExhaustedNotificationIfNeeded(watchdog, cancelContext, sessionId);
                     return resumeResult;
                 }
             }
@@ -239,16 +249,19 @@ public final class StreamingAgentHandler {
                 if (complexityScore.shouldPlan()) {
                     log.info("Complex task detected (score={}, signals={}), generating plan",
                             complexityScore.score(), complexityScore.signals());
-                    return executePlannedPrompt(prompt, session, sessionId, cancelContext,
+                    var planResult = executePlannedPrompt(prompt, session, sessionId, cancelContext,
                             eventHandler, permissionAwareLoop, cancellationToken, metricsCollector);
+                    sendBudgetExhaustedNotificationIfNeeded(watchdog, cancelContext, sessionId);
+                    return planResult;
                 }
             }
 
             var adaptive = runTurnWithAdaptiveContinuation(
                     permissionAwareLoop, prompt, conversationHistory, eventHandler, cancellationToken);
 
-            // Send cancelled notification if the turn was cancelled
+            // Send cancelled / budget-exhausted notifications if applicable
             sendCancelledNotificationIfNeeded(cancellationToken, cancelContext, sessionId);
+            sendBudgetExhaustedNotificationIfNeeded(watchdog, cancelContext, sessionId);
 
             return buildTurnResult(adaptive.turn(), session, sessionId, prompt, cancellationToken, metricsCollector,
                     adaptive);
@@ -263,6 +276,9 @@ public final class StreamingAgentHandler {
             String userMessage = formatLlmError(e);
             throw new IllegalStateException(userMessage);
         } finally {
+            if (watchdog != null) {
+                watchdog.close();
+            }
             cancelContext.stopMonitor();
             // Release turn lock before draining deferred actions
             turnLock.unlock();
@@ -579,6 +595,8 @@ public final class StreamingAgentHandler {
         String prevSignature = null;
         boolean stoppedByBudget = false;
         boolean maxIterationsReached = false;
+        boolean budgetExhausted = false;
+        String budgetExhaustionReason = null;
         CompactionResult lastCompaction = null;
         StopReason lastStopReason = StopReason.END_TURN;
         long startMillis = System.currentTimeMillis();
@@ -595,6 +613,13 @@ public final class StreamingAgentHandler {
             continuationCount = Math.max(0, segment - 1);
             lastStopReason = turn.finalStopReason();
             maxIterationsReached = turn.maxIterationsReached();
+            if (turn.budgetExhausted()) {
+                budgetExhausted = true;
+                budgetExhaustionReason = turn.budgetExhaustionReason();
+                stoppedByBudget = true;
+                reason = "watchdog_" + turn.budgetExhaustionReason();
+                break;
+            }
             if (cancellationToken != null && cancellationToken.isCancelled()) {
                 reason = "cancelled";
                 break;
@@ -656,7 +681,8 @@ public final class StreamingAgentHandler {
 
         var usage = new dev.aceclaw.core.llm.Usage(totalInput, totalOutput, totalCacheCreate, totalCacheRead);
         var mergedTurn = new dev.aceclaw.core.agent.Turn(
-                mergedMessages, lastStopReason, usage, lastCompaction, maxIterationsReached);
+                mergedMessages, lastStopReason, usage, lastCompaction, maxIterationsReached,
+                budgetExhausted, budgetExhaustionReason);
         return new AdaptiveTurnResult(
                 mergedTurn,
                 segments <= 0 ? 1 : segments,
@@ -720,6 +746,25 @@ public final class StreamingAgentHandler {
                 context.sendNotification("stream.cancelled", params);
             } catch (IOException e) {
                 log.warn("Failed to send stream.cancelled notification: {}", e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Sends a stream.budget_exhausted notification to the client if the watchdog budget was exhausted.
+     */
+    private void sendBudgetExhaustedNotificationIfNeeded(WatchdogTimer watchdog,
+                                                          StreamContext context, String sessionId) {
+        if (watchdog != null && watchdog.isExhausted()) {
+            try {
+                var params = objectMapper.createObjectNode();
+                params.put("sessionId", sessionId);
+                params.put("reason", watchdog.exhaustionReason() != null
+                        ? watchdog.exhaustionReason() : "unknown");
+                params.put("elapsedMs", watchdog.elapsedMs());
+                context.sendNotification("stream.budget_exhausted", params);
+            } catch (IOException e) {
+                log.warn("Failed to send stream.budget_exhausted notification: {}", e.getMessage());
             }
         }
     }
@@ -845,6 +890,8 @@ public final class StreamingAgentHandler {
     private volatile int candidateInjectionMaxTokens = 1200;
     private boolean plannerEnabled = true;
     private int plannerThreshold = 5;
+    private int maxAgentTurns = 50;
+    private int maxAgentWallTimeSec = 600;
     private PlanCheckpointStore planCheckpointStore;
 
     /**
@@ -969,6 +1016,17 @@ public final class StreamingAgentHandler {
     public void setPlannerConfig(boolean enabled, int threshold) {
         this.plannerEnabled = enabled;
         this.plannerThreshold = Math.max(0, threshold);
+    }
+
+    /**
+     * Sets the watchdog timer configuration for budget enforcement.
+     *
+     * @param maxAgentTurns      maximum ReAct iterations per request (0 = disabled)
+     * @param maxAgentWallTimeSec maximum wall-clock seconds per request (0 = disabled)
+     */
+    public void setWatchdogConfig(int maxAgentTurns, int maxAgentWallTimeSec) {
+        this.maxAgentTurns = Math.max(0, maxAgentTurns);
+        this.maxAgentWallTimeSec = Math.max(0, maxAgentWallTimeSec);
     }
 
     /**

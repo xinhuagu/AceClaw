@@ -14,6 +14,7 @@ import dev.aceclaw.infra.event.EventBus;
  * @param memoryHandler      handler for persisting context extracted during compaction
  * @param metricsCollector   collector for per-tool execution statistics (null = disabled)
  * @param maxIterations      maximum ReAct iterations per turn (null/<=0 uses default)
+ * @param watchdog           optional watchdog timer for turn/time budget enforcement (null = disabled)
  */
 public record AgentLoopConfig(
         String sessionId,
@@ -21,14 +22,15 @@ public record AgentLoopConfig(
         ToolPermissionChecker permissionChecker,
         CompactionMemoryHandler memoryHandler,
         ToolMetricsCollector metricsCollector,
-        Integer maxIterations
+        Integer maxIterations,
+        WatchdogTimer watchdog
 ) {
 
     /** Default maximum ReAct iterations per turn when no override is provided. */
     public static final int DEFAULT_MAX_ITERATIONS = 25;
 
     /** Empty config with all integrations disabled. */
-    public static final AgentLoopConfig EMPTY = new AgentLoopConfig(null, null, null, null, null, null);
+    public static final AgentLoopConfig EMPTY = new AgentLoopConfig(null, null, null, null, null, null, null);
 
     /**
      * Resolves the effective max iterations for this loop config.
@@ -51,6 +53,7 @@ public record AgentLoopConfig(
         private CompactionMemoryHandler memoryHandler;
         private ToolMetricsCollector metricsCollector;
         private Integer maxIterations;
+        private WatchdogTimer watchdog;
 
         private Builder() {}
 
@@ -84,9 +87,14 @@ public record AgentLoopConfig(
             return this;
         }
 
+        public Builder watchdog(WatchdogTimer watchdog) {
+            this.watchdog = watchdog;
+            return this;
+        }
+
         public AgentLoopConfig build() {
             return new AgentLoopConfig(
-                    sessionId, eventBus, permissionChecker, memoryHandler, metricsCollector, maxIterations);
+                    sessionId, eventBus, permissionChecker, memoryHandler, metricsCollector, maxIterations, watchdog);
         }
     }
 }
