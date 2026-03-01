@@ -38,8 +38,7 @@ Adopt a **Dual-Channel Session Model**:
 
 2. **Worker Sessions (isolated, optional)**
 - Harness may create additional sessions only for explicitly decomposed sub-tasks (research/verification/isolated execution).
-- Worker sessions do not mutate lead-session transcript directly.
-- Worker outputs are returned as structured artifacts/evidence and merged by lead session.
+- Worker sessions do not mutate the lead-session transcript directly; they return structured artifacts/evidence which the lead session merges.
 
 3. **Session Spawning Policy (default conservative)**
 - Do not spawn worker sessions for simple or tightly stateful flows.
@@ -310,9 +309,6 @@ Phase 1 exit criterion:
 
 ## References
 
-- `research/openclaw-agent-orchestration.md`
-- `research/architecture-agent-teams.md`
-- `research/security-review.md`
 - `docs/continuous-learning-plan.md`
 - `docs/continuous-learning-governance.md`
 - `docs/continuous-learning-operations.md`
