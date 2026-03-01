@@ -6,6 +6,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
@@ -238,5 +240,48 @@ class FilePlanCheckpointStoreTest {
         assertEquals("Implement", s2.name());
         assertNull(s2.fallbackApproach());
         assertEquals(StepStatus.PENDING, s2.status());
+    }
+
+    @Test
+    void cleanup_deletesOldCheckpoints() {
+        // Save a checkpoint with very old updatedAt
+        var now = Instant.now();
+        var oldTime = now.minus(java.time.Duration.ofDays(30));
+        var plan = samplePlan("plan-old", 2);
+        var cp = new PlanCheckpoint("plan-old", "s1", "ws", "goal", plan,
+                List.of(), -1, List.of(), PlanCheckpoint.CheckpointStatus.COMPLETED,
+                null, List.of(), oldTime, oldTime);
+        store.save(cp);
+
+        // Save a recent checkpoint
+        store.save(sampleCheckpoint("plan-new", "s2", "ws", 0));
+
+        int deleted = store.cleanup(7);
+
+        assertEquals(1, deleted);
+        assertTrue(store.load("plan-old").isEmpty());
+        assertTrue(store.load("plan-new").isPresent());
+    }
+
+    @Test
+    void cleanup_deletesCorruptFiles() throws IOException {
+        // Save a valid checkpoint
+        store.save(sampleCheckpoint("plan-valid", "s1", "ws", 0));
+
+        // Write a corrupt checkpoint file
+        Files.writeString(tempDir.resolve("plan-corrupt.checkpoint.json"), "not-valid-json{{{");
+
+        int deleted = store.cleanup(7);
+
+        // Corrupt file should be deleted
+        assertEquals(1, deleted);
+        assertFalse(Files.exists(tempDir.resolve("plan-corrupt.checkpoint.json")));
+        // Valid checkpoint should remain
+        assertTrue(store.load("plan-valid").isPresent());
+    }
+
+    @Test
+    void cleanup_emptyDirectory_returnsZero() {
+        assertEquals(0, store.cleanup(7));
     }
 }

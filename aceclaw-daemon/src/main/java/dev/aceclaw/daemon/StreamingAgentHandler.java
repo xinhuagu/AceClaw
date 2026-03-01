@@ -373,7 +373,7 @@ public final class StreamingAgentHandler {
                 log.warn("Failed to save initial plan checkpoint: {}", e.getMessage());
             }
             effectiveListener = new CheckpointingPlanEventListener(
-                    listener, planCheckpointStore, initialCheckpoint, session);
+                    listener, planCheckpointStore, initialCheckpoint, session, 0);
         }
 
         var executor = new SequentialPlanExecutor(effectiveListener);
@@ -1531,7 +1531,8 @@ public final class StreamingAgentHandler {
         planCheckpointStore.save(newCheckpoint);
 
         var checkpointingListener = new CheckpointingPlanEventListener(
-                notificationListener, planCheckpointStore, newCheckpoint, session);
+                notificationListener, planCheckpointStore, newCheckpoint, session,
+                cp.nextStepIndex());
 
         // 10. Execute remaining steps
         var executor = new SequentialPlanExecutor(checkpointingListener);
@@ -1647,16 +1648,19 @@ public final class StreamingAgentHandler {
         private final PlanCheckpointStore store;
         private volatile PlanCheckpoint currentCheckpoint;
         private final AgentSession session;
+        private final int stepIndexOffset;
 
         CheckpointingPlanEventListener(
                 SequentialPlanExecutor.PlanEventListener delegate,
                 PlanCheckpointStore store,
                 PlanCheckpoint initialCheckpoint,
-                AgentSession session) {
+                AgentSession session,
+                int stepIndexOffset) {
             this.delegate = delegate;
             this.store = store;
             this.currentCheckpoint = initialCheckpoint;
             this.session = session;
+            this.stepIndexOffset = stepIndexOffset;
         }
 
         @Override
@@ -1668,6 +1672,11 @@ public final class StreamingAgentHandler {
         public void onStepCompleted(PlannedStep step, int stepIndex, StepResult result) {
             delegate.onStepCompleted(step, stepIndex, result);
 
+            // Apply offset: stepIndex from executor is 0-based relative to the
+            // (possibly partial) plan. For resumed plans, offset maps it back to
+            // the absolute index in the original full plan.
+            int absoluteIndex = stepIndex + stepIndexOffset;
+
             // Update and persist checkpoint
             var updatedPlan = currentCheckpoint.plan()
                     .withStepStatus(step.stepId(),
@@ -1677,12 +1686,12 @@ public final class StreamingAgentHandler {
             var conversationJson = serializeSessionMessages(session);
 
             String hint = result.success()
-                    ? "Step " + (stepIndex + 1) + " completed successfully"
-                    : "Step " + (stepIndex + 1) + " failed: "
+                    ? "Step " + (absoluteIndex + 1) + " completed successfully"
+                    : "Step " + (absoluteIndex + 1) + " failed: "
                             + (result.error() != null ? result.error() : "unknown");
 
             currentCheckpoint = currentCheckpoint.withStepCompleted(
-                    stepIndex, result, updatedPlan, conversationJson, hint, List.of());
+                    absoluteIndex, result, updatedPlan, conversationJson, hint, List.of());
 
             try {
                 store.save(currentCheckpoint);

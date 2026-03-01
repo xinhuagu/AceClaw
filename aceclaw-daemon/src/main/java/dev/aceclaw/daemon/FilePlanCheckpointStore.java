@@ -135,25 +135,33 @@ public final class FilePlanCheckpointStore implements PlanCheckpointStore {
                         .filter(p -> p.getFileName().toString().endsWith(CHECKPOINT_SUFFIX))
                         .toList();
                 for (var path : toDelete) {
-                    boolean existedBefore = Files.exists(path);
-                    readCheckpoint(path).ifPresent(cp -> {
-                        if (cp.updatedAt().isBefore(threshold)) {
-                            try {
-                                Files.deleteIfExists(path);
-                            } catch (IOException e) {
-                                log.debug("Failed to delete old checkpoint {}: {}", path, e.getMessage());
+                    var parsed = readCheckpoint(path);
+                    if (parsed.isEmpty()) {
+                        // Corrupt or unparseable file — delete it
+                        try {
+                            if (Files.deleteIfExists(path)) {
+                                deleted++;
+                                log.debug("Deleted corrupt checkpoint file: {}", path);
                             }
+                        } catch (IOException e) {
+                            log.debug("Failed to delete corrupt checkpoint {}: {}", path, e.getMessage());
                         }
-                    });
-                    // Only count as deleted if the file existed before and is now gone
-                    if (existedBefore && !Files.exists(path)) {
-                        deleted++;
+                        continue;
+                    }
+                    var cp = parsed.get();
+                    if (cp.updatedAt().isBefore(threshold)) {
+                        try {
+                            if (Files.deleteIfExists(path)) {
+                                deleted++;
+                            }
+                        } catch (IOException e) {
+                            log.debug("Failed to delete old checkpoint {}: {}", path, e.getMessage());
+                        }
                     }
                 }
             } catch (IOException e) {
                 log.warn("Failed to list checkpoint directory {}: {}", baseDir, e.getMessage());
             }
-            // Also delete corrupt files that couldn't be parsed (keeping only clean counter)
             return deleted;
         } finally {
             lock.unlock();
@@ -340,8 +348,12 @@ public final class FilePlanCheckpointStore implements PlanCheckpointStore {
                 case "Executing" -> {
                     if (statusDetail != null && statusDetail.contains("/")) {
                         var parts = statusDetail.split("/");
-                        yield new PlanStatus.Executing(
-                                Integer.parseInt(parts[0]), Integer.parseInt(parts[1]));
+                        try {
+                            yield new PlanStatus.Executing(
+                                    Integer.parseInt(parts[0]), Integer.parseInt(parts[1]));
+                        } catch (NumberFormatException ignored) {
+                            // Corrupt status detail — fall through to default
+                        }
                     }
                     yield new PlanStatus.Executing(0, domainSteps.size());
                 }
