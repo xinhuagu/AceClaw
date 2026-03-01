@@ -3,6 +3,7 @@ package dev.aceclaw.daemon;
 import dev.aceclaw.core.llm.*;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -17,7 +18,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class MockLlmClient implements LlmClient {
 
     private final ConcurrentLinkedQueue<Object> responses = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<LlmResponse> sendMessageResponses = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<LlmRequest> capturedRequests = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<LlmRequest> capturedSendRequests = new ConcurrentLinkedQueue<>();
 
     /**
      * Enqueues a canned streaming response. Events are fired synchronously
@@ -35,10 +38,25 @@ public final class MockLlmClient implements LlmClient {
     }
 
     /**
-     * Returns all captured requests (in order).
+     * Enqueues a canned non-streaming response for {@link #sendMessage(LlmRequest)}.
+     * Used by flows that call sendMessage (e.g. plan generation via LLMTaskPlanner).
+     */
+    public void enqueueSendMessageResponse(LlmResponse response) {
+        sendMessageResponses.add(Objects.requireNonNull(response, "response"));
+    }
+
+    /**
+     * Returns all captured streaming requests (in order).
      */
     public List<LlmRequest> capturedRequests() {
         return List.copyOf(capturedRequests);
+    }
+
+    /**
+     * Returns all captured sendMessage requests (in order).
+     */
+    public List<LlmRequest> capturedSendRequests() {
+        return List.copyOf(capturedSendRequests);
     }
 
     /**
@@ -46,12 +64,19 @@ public final class MockLlmClient implements LlmClient {
      */
     public void reset() {
         responses.clear();
+        sendMessageResponses.clear();
         capturedRequests.clear();
+        capturedSendRequests.clear();
     }
 
     @Override
     public LlmResponse sendMessage(LlmRequest request) throws LlmException {
-        throw new UnsupportedOperationException("Use streamMessage() in integration tests");
+        capturedSendRequests.add(Objects.requireNonNull(request, "request"));
+        var next = sendMessageResponses.poll();
+        if (next == null) {
+            throw new LlmException("No more mock sendMessage responses queued", 500);
+        }
+        return next;
     }
 
     @SuppressWarnings("unchecked")
@@ -125,6 +150,20 @@ public final class MockLlmClient implements LlmClient {
                 new StreamEvent.MessageStart("msg-mock", "mock-model"),
                 new StreamEvent.StreamError(new LlmException(message, 500))
         );
+    }
+
+    /**
+     * Creates an {@link LlmResponse} for non-streaming sendMessage calls.
+     * Used by plan generation (LLMTaskPlanner) which calls sendMessage.
+     */
+    public static LlmResponse sendMessageTextResponse(String text) {
+        Objects.requireNonNull(text, "text");
+        return new LlmResponse(
+                "msg-mock-send",
+                "mock-model",
+                List.of(new ContentBlock.Text(text)),
+                StopReason.END_TURN,
+                new Usage(200, 100));
     }
 
     /**

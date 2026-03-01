@@ -349,6 +349,13 @@ public final class AceClawDaemon {
                 config.adaptiveContinuationMaxTotalTokens(),
                 config.adaptiveContinuationMaxWallClockSeconds());
         agentHandler.setPlannerConfig(config.plannerEnabled(), config.plannerThreshold());
+
+        // Plan checkpoint store for crash-safe plan progress persistence and resume
+        var planCheckpointStore = new FilePlanCheckpointStore(
+                homeDir.resolve("checkpoints").resolve("plans"), objectMapper);
+        planCheckpointStore.cleanup(7); // clean old checkpoints on startup
+        agentHandler.setPlanCheckpointStore(planCheckpointStore);
+
         agentHandler.setCompactor(compactor);
         agentHandler.setMemoryStore(memoryStore, workingDir);
         agentHandler.setAntiPatternGateFeedbackStore(new AntiPatternGateFeedbackStore(

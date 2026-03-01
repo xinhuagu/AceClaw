@@ -272,11 +272,17 @@ class SelfImprovementEngineTest {
         var insights = engine.analyze(turn, List.of(), Map.of());
         int persisted = engine.persist(insights, "pipeline-session", tempDir);
 
-        // ErrorDetector should find the bash error-correction, which has base confidence 0.4
-        // That's below the 0.7 threshold, so 0 persisted unless cross-session boosted
+        // ErrorDetector finds the bash error-correction (base confidence 0.4, below 0.7 threshold).
+        // FailureSignalDetector also detects "command not found" as DEPENDENCY_MISSING (confidence 0.9),
+        // which is above the threshold and gets persisted.
         assertThat(insights).isNotEmpty();
-        // Confidence is 0.4 (base, no cross-session boost), so won't persist
-        assertThat(persisted).isEqualTo(0);
+        assertThat(insights).anyMatch(i -> i instanceof ErrorInsight);
+
+        // FailureSignalDetector's DEPENDENCY_MISSING insight (0.9) is above the 0.7 threshold
+        long highConfidenceCount = insights.stream()
+                .filter(i -> i.confidence() >= 0.7)
+                .count();
+        assertThat(persisted).isEqualTo((int) highConfidenceCount);
     }
 
     @Test
