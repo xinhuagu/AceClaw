@@ -97,6 +97,8 @@ public final class AceClawConfig {
     private static final double DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_TIMEOUT_RATE = 0.20;
     private static final double DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_PERMISSION_BLOCK_RATE = 0.20;
     private static final int DEFAULT_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS = 168;
+    private static final int DEFAULT_MAX_AGENT_TURNS = 50;
+    private static final int DEFAULT_MAX_AGENT_WALL_TIME_SEC = 600;
     private static final boolean DEFAULT_DEFERRED_ACTION_ENABLED = true;
     private static final int DEFAULT_DEFERRED_ACTION_TICK_SECONDS = 5;
 
@@ -159,6 +161,8 @@ public final class AceClawConfig {
     private double skillAutoReleaseRollbackMaxTimeoutRate;
     private double skillAutoReleaseRollbackMaxPermissionBlockRate;
     private int skillAutoReleaseHealthLookbackHours;
+    private int maxAgentTurns;
+    private int maxAgentWallTimeSec;
     private boolean deferredActionEnabled;
     private int deferredActionTickSeconds;
     private Map<String, List<HookMatcherFormat>> hooks;
@@ -212,6 +216,8 @@ public final class AceClawConfig {
         this.skillAutoReleaseRollbackMaxPermissionBlockRate =
                 DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_PERMISSION_BLOCK_RATE;
         this.skillAutoReleaseHealthLookbackHours = DEFAULT_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS;
+        this.maxAgentTurns = DEFAULT_MAX_AGENT_TURNS;
+        this.maxAgentWallTimeSec = DEFAULT_MAX_AGENT_WALL_TIME_SEC;
         this.deferredActionEnabled = DEFAULT_DEFERRED_ACTION_ENABLED;
         this.deferredActionTickSeconds = DEFAULT_DEFERRED_ACTION_TICK_SECONDS;
         this.providerModels = new java.util.HashMap<>();
@@ -281,6 +287,22 @@ public final class AceClawConfig {
                 config.maxTurns = Math.max(1, Integer.parseInt(envMaxTurns));
             } catch (NumberFormatException e) {
                 log.warn("Invalid ACECLAW_MAX_TURNS: {}", envMaxTurns);
+            }
+        }
+        var envMaxAgentTurns = System.getenv("ACECLAW_MAX_AGENT_TURNS");
+        if (envMaxAgentTurns != null && !envMaxAgentTurns.isBlank()) {
+            try {
+                config.maxAgentTurns = Math.max(0, Integer.parseInt(envMaxAgentTurns));
+            } catch (NumberFormatException e) {
+                log.warn("Invalid ACECLAW_MAX_AGENT_TURNS: {}", envMaxAgentTurns);
+            }
+        }
+        var envMaxAgentWallTime = System.getenv("ACECLAW_MAX_AGENT_WALL_TIME_SEC");
+        if (envMaxAgentWallTime != null && !envMaxAgentWallTime.isBlank()) {
+            try {
+                config.maxAgentWallTimeSec = Math.max(0, Integer.parseInt(envMaxAgentWallTime));
+            } catch (NumberFormatException e) {
+                log.warn("Invalid ACECLAW_MAX_AGENT_WALL_TIME_SEC: {}", envMaxAgentWallTime);
             }
         }
         var envAdaptiveContinuation = System.getenv("ACECLAW_ADAPTIVE_CONTINUATION");
@@ -943,6 +965,24 @@ public final class AceClawConfig {
     }
 
     /**
+     * Returns the maximum number of agent ReAct iterations per request.
+     * Enforced by the watchdog timer. 0 = disabled (uses existing maxTurns only).
+     * Defaults to 50.
+     */
+    public int maxAgentTurns() {
+        return maxAgentTurns;
+    }
+
+    /**
+     * Returns the maximum wall-clock time in seconds per agent request.
+     * Enforced by the watchdog timer. 0 = disabled.
+     * Defaults to 600 (10 minutes).
+     */
+    public int maxAgentWallTimeSec() {
+        return maxAgentWallTimeSec;
+    }
+
+    /**
      * Returns the hooks configuration map (event name to list of hook matchers).
      * Returns null if no hooks are configured.
      */
@@ -1285,6 +1325,12 @@ public final class AceClawConfig {
                 && fileConfig.skillAutoReleaseHealthLookbackHours > 0) {
             this.skillAutoReleaseHealthLookbackHours = fileConfig.skillAutoReleaseHealthLookbackHours;
         }
+        if (fileConfig.maxAgentTurns != null && fileConfig.maxAgentTurns >= 0) {
+            this.maxAgentTurns = fileConfig.maxAgentTurns;
+        }
+        if (fileConfig.maxAgentWallTimeSec != null && fileConfig.maxAgentWallTimeSec >= 0) {
+            this.maxAgentWallTimeSec = fileConfig.maxAgentWallTimeSec;
+        }
         if (fileConfig.deferredActionEnabled != null) {
             this.deferredActionEnabled = fileConfig.deferredActionEnabled;
         }
@@ -1350,6 +1396,8 @@ public final class AceClawConfig {
         public Double skillAutoReleaseRollbackMaxTimeoutRate;
         public Double skillAutoReleaseRollbackMaxPermissionBlockRate;
         public Integer skillAutoReleaseHealthLookbackHours;
+        public Integer maxAgentTurns;
+        public Integer maxAgentWallTimeSec;
         public Boolean deferredActionEnabled;
         public int deferredActionTickSeconds;
         public String defaultProfile;

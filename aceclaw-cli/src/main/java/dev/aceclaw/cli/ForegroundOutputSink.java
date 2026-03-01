@@ -238,6 +238,18 @@ public final class ForegroundOutputSink implements OutputSink {
     }
 
     @Override
+    public void onBudgetExhausted(JsonNode params) {
+        synchronized (lock) {
+            stopSpinner();
+            statusRenderer.hide();
+            String reason = params != null ? params.path("reason").asText("unknown") : "unknown";
+            out.printf("%s[budget exhausted: %s]%s%n", ERROR, reason, RESET);
+            out.flush();
+            statusRenderer.onCancelled();
+        }
+    }
+
+    @Override
     public void onPlanStepStarted(JsonNode params) {
         synchronized (lock) {
             statusRenderer.onPlanStepStarted(params);

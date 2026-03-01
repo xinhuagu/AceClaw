@@ -99,6 +99,11 @@ public final class BackgroundOutputBuffer implements OutputSink {
         events.add(new OutputEvent.Compaction(params));
     }
 
+    @Override
+    public void onBudgetExhausted(JsonNode params) {
+        events.add(new OutputEvent.BudgetExhausted(params));
+    }
+
     /**
      * Replays all buffered events to a foreground sink.
      *
@@ -127,6 +132,7 @@ public final class BackgroundOutputBuffer implements OutputSink {
                 case OutputEvent.SubAgentStart e -> sink.onSubAgentStart(e.params());
                 case OutputEvent.SubAgentEnd e -> sink.onSubAgentEnd(e.params());
                 case OutputEvent.Compaction e -> sink.onCompaction(e.params());
+                case OutputEvent.BudgetExhausted e -> sink.onBudgetExhausted(e.params());
                 case OutputEvent.Complete e -> sink.onTurnComplete(e.result(), e.hasError());
                 case OutputEvent.ConnectionClosed _ -> sink.onConnectionClosed();
             }
@@ -179,6 +185,7 @@ public final class BackgroundOutputBuffer implements OutputSink {
         record SubAgentStart(JsonNode params) implements OutputEvent {}
         record SubAgentEnd(JsonNode params) implements OutputEvent {}
         record Compaction(JsonNode params) implements OutputEvent {}
+        record BudgetExhausted(JsonNode params) implements OutputEvent {}
         record Complete(JsonNode result, boolean hasError) implements OutputEvent {}
         record ConnectionClosed() implements OutputEvent {}
     }
