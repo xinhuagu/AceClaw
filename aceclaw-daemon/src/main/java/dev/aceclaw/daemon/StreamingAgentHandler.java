@@ -21,6 +21,7 @@ import dev.aceclaw.core.llm.Message;
 import dev.aceclaw.core.llm.StopReason;
 import dev.aceclaw.core.llm.StreamEvent;
 import dev.aceclaw.core.llm.StreamEventHandler;
+import dev.aceclaw.core.planner.AdaptiveReplanner;
 import dev.aceclaw.core.planner.ComplexityEstimator;
 import dev.aceclaw.core.planner.LLMTaskPlanner;
 import dev.aceclaw.core.planner.PlanCheckpoint;
@@ -406,6 +407,32 @@ public final class StreamingAgentHandler {
                     log.warn("Failed to send plan_completed notification: {}", e.getMessage());
                 }
             }
+
+            @Override
+            public void onPlanReplanned(TaskPlan oldPlan, TaskPlan newPlan, int attempt, String rationale) {
+                try {
+                    var p = objectMapper.createObjectNode();
+                    p.put("planId", newPlan.planId());
+                    p.put("replanAttempt", attempt);
+                    p.put("newStepCount", newPlan.steps().size());
+                    p.put("rationale", rationale);
+                    cancelContext.sendNotification("stream.plan_replanned", p);
+                } catch (IOException e) {
+                    log.warn("Failed to send plan_replanned notification: {}", e.getMessage());
+                }
+            }
+
+            @Override
+            public void onPlanEscalated(TaskPlan escalatedPlan, String reason) {
+                try {
+                    var p = objectMapper.createObjectNode();
+                    p.put("planId", escalatedPlan.planId());
+                    p.put("reason", reason);
+                    cancelContext.sendNotification("stream.plan_escalated", p);
+                } catch (IOException e) {
+                    log.warn("Failed to send plan_escalated notification: {}", e.getMessage());
+                }
+            }
         };
 
         // Wrap listener with checkpointing if store is available
@@ -426,7 +453,8 @@ public final class StreamingAgentHandler {
                     listener, planCheckpointStore, initialCheckpoint, session, 0);
         }
 
-        var executor = new SequentialPlanExecutor(effectiveListener);
+        AdaptiveReplanner replanner = createReplannerIfEnabled(sessionId);
+        var executor = new SequentialPlanExecutor(effectiveListener, replanner);
         var planResult = executor.execute(plan, permissionAwareLoop, conversationHistory,
                 eventHandler, cancellationToken);
 
@@ -890,6 +918,7 @@ public final class StreamingAgentHandler {
     private volatile int candidateInjectionMaxTokens = 1200;
     private boolean plannerEnabled = true;
     private int plannerThreshold = 5;
+    private boolean adaptiveReplanEnabled = true;
     private int maxAgentTurns = 50;
     private int maxAgentWallTimeSec = 600;
     private PlanCheckpointStore planCheckpointStore;
@@ -1019,6 +1048,13 @@ public final class StreamingAgentHandler {
     }
 
     /**
+     * Sets whether adaptive replanning is enabled.
+     */
+    public void setAdaptiveReplanEnabled(boolean enabled) {
+        this.adaptiveReplanEnabled = enabled;
+    }
+
+    /**
      * Sets the watchdog timer configuration for budget enforcement.
      *
      * @param maxAgentTurns      maximum ReAct iterations per request (0 = disabled)
@@ -1035,6 +1071,16 @@ public final class StreamingAgentHandler {
      */
     public void setPlanCheckpointStore(PlanCheckpointStore planCheckpointStore) {
         this.planCheckpointStore = planCheckpointStore;
+    }
+
+    /**
+     * Creates an AdaptiveReplanner if adaptive replan is enabled, else returns null.
+     */
+    private AdaptiveReplanner createReplannerIfEnabled(String sessionId) {
+        if (!adaptiveReplanEnabled) {
+            return null;
+        }
+        return new AdaptiveReplanner(getLlmClient(), getModelForSession(sessionId));
     }
 
     private dev.aceclaw.core.llm.LlmClient getLlmClient() {
@@ -1621,6 +1667,33 @@ public final class StreamingAgentHandler {
                     log.warn("Failed to send plan_completed notification: {}", e.getMessage());
                 }
             }
+
+            @Override
+            public void onPlanReplanned(TaskPlan oldPlan, TaskPlan newPlan, int attempt, String rationale) {
+                try {
+                    var p = objectMapper.createObjectNode();
+                    p.put("planId", newPlan.planId());
+                    p.put("replanAttempt", attempt);
+                    p.put("newStepCount", newPlan.steps().size());
+                    p.put("rationale", rationale);
+                    p.put("resumed", true);
+                    cancelContext.sendNotification("stream.plan_replanned", p);
+                } catch (IOException e) {
+                    log.warn("Failed to send plan_replanned notification: {}", e.getMessage());
+                }
+            }
+
+            @Override
+            public void onPlanEscalated(TaskPlan escalatedPlan, String reason) {
+                try {
+                    var p = objectMapper.createObjectNode();
+                    p.put("planId", escalatedPlan.planId());
+                    p.put("reason", reason);
+                    cancelContext.sendNotification("stream.plan_escalated", p);
+                } catch (IOException e) {
+                    log.warn("Failed to send plan_escalated notification: {}", e.getMessage());
+                }
+            }
         };
 
         // 9. Wrap with checkpointing listener
@@ -1641,7 +1714,8 @@ public final class StreamingAgentHandler {
                 cp.nextStepIndex());
 
         // 10. Execute remaining steps
-        var executor = new SequentialPlanExecutor(checkpointingListener);
+        AdaptiveReplanner resumeReplanner = createReplannerIfEnabled(sessionId);
+        var executor = new SequentialPlanExecutor(checkpointingListener, resumeReplanner);
         var planResult = executor.execute(partialPlan, permissionAwareLoop,
                 conversationHistory, eventHandler, cancellationToken);
 
@@ -1818,6 +1892,39 @@ public final class StreamingAgentHandler {
                 store.save(currentCheckpoint);
             } catch (Exception e) {
                 log.warn("Failed to persist final plan checkpoint: {}", e.getMessage());
+            }
+        }
+
+        @Override
+        public void onPlanReplanned(TaskPlan oldPlan, TaskPlan newPlan, int attempt, String rationale) {
+            delegate.onPlanReplanned(oldPlan, newPlan, attempt, rationale);
+
+            // Update checkpoint with the new plan
+            currentCheckpoint = new PlanCheckpoint(
+                    currentCheckpoint.planId(), currentCheckpoint.sessionId(),
+                    currentCheckpoint.workspaceHash(), currentCheckpoint.originalGoal(),
+                    newPlan, currentCheckpoint.completedStepResults(),
+                    currentCheckpoint.lastCompletedStepIndex(),
+                    serializeSessionMessages(session),
+                    currentCheckpoint.status(),
+                    "Replanned (attempt " + attempt + "): " + rationale,
+                    currentCheckpoint.artifacts(),
+                    currentCheckpoint.createdAt(), Instant.now());
+            try {
+                store.save(currentCheckpoint);
+            } catch (Exception e) {
+                log.warn("Failed to persist plan checkpoint after replan: {}", e.getMessage());
+            }
+        }
+
+        @Override
+        public void onPlanEscalated(TaskPlan plan, String reason) {
+            delegate.onPlanEscalated(plan, reason);
+
+            try {
+                store.markFailed(currentCheckpoint.planId());
+            } catch (Exception e) {
+                log.warn("Failed to mark checkpoint as failed after escalation: {}", e.getMessage());
             }
         }
 

@@ -38,16 +38,28 @@ public final class SequentialPlanExecutor implements PlanExecutor {
         void onStepStarted(PlannedStep step, int stepIndex, int totalSteps);
         void onStepCompleted(PlannedStep step, int stepIndex, StepResult result);
         void onPlanCompleted(TaskPlan plan, boolean success, long totalDurationMs);
+
+        /** Called when the plan is revised after a step failure. */
+        default void onPlanReplanned(TaskPlan oldPlan, TaskPlan newPlan, int replanAttempt, String rationale) {}
+
+        /** Called when replanning determines recovery is impossible. */
+        default void onPlanEscalated(TaskPlan plan, String reason) {}
     }
 
     private final PlanEventListener listener;
+    private final AdaptiveReplanner replanner;
 
     public SequentialPlanExecutor() {
-        this(null);
+        this(null, null);
     }
 
     public SequentialPlanExecutor(PlanEventListener listener) {
+        this(listener, null);
+    }
+
+    public SequentialPlanExecutor(PlanEventListener listener, AdaptiveReplanner replanner) {
         this.listener = listener;
+        this.replanner = replanner;
     }
 
     @Override
@@ -65,7 +77,11 @@ public final class SequentialPlanExecutor implements PlanExecutor {
         var mutablePlan = plan.withStatus(new PlanStatus.Executing(0, plan.steps().size()));
         boolean allSuccess = true;
         boolean wasCancelled = false;
+        // Global replan budget for the entire plan execution (not per-step).
+        // This prevents runaway replanning across multiple failing steps.
+        int replanAttempt = 0;
 
+        stepLoop:
         for (int i = 0; i < plan.steps().size(); i++) {
             // Check cancellation between steps
             if (cancellationToken != null && cancellationToken.isCancelled()) {
@@ -158,15 +174,72 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                         0, 0);
                 stepResults.add(failResult);
 
-                mutablePlan = mutablePlan.withStepStatus(step.stepId(), StepStatus.FAILED)
-                        .withStatus(new PlanStatus.Failed(e.getMessage(), step.stepId()));
+                mutablePlan = mutablePlan.withStepStatus(step.stepId(), StepStatus.FAILED);
 
                 if (listener != null) {
                     listener.onStepCompleted(step, i, failResult);
                 }
 
-                allSuccess = false;
-                break;
+                // --- ADAPTIVE REPLAN ---
+                if (replanner != null) {
+                    replanAttempt++;
+                    var completedSummaries = buildCompletedSummaries(plan, stepResults, i);
+                    var remaining = (i + 1 < plan.steps().size())
+                            ? plan.steps().subList(i + 1, plan.steps().size())
+                            : List.<PlannedStep>of();
+                    var trigger = new ReplanTrigger(plan.originalGoal(), step, i,
+                            e.getMessage(), completedSummaries, remaining, replanAttempt);
+
+                    try {
+                        var replanResult = replanner.replan(trigger);
+                        switch (replanResult) {
+                            case ReplanResult.Revised revised -> {
+                                var oldPlan = mutablePlan;
+                                // Build new plan: completed steps + revised steps
+                                var newSteps = new ArrayList<PlannedStep>();
+                                for (int j = 0; j <= i; j++) {
+                                    newSteps.add(plan.steps().get(j));
+                                }
+                                newSteps.addAll(revised.revisedSteps());
+                                plan = new TaskPlan(plan.planId(), plan.originalGoal(),
+                                        newSteps,
+                                        new PlanStatus.Executing(i + 1, newSteps.size()),
+                                        plan.createdAt());
+                                mutablePlan = plan;
+                                if (listener != null) {
+                                    listener.onPlanReplanned(oldPlan, plan,
+                                            replanAttempt, revised.rationale());
+                                }
+                                log.info("Plan replanned (attempt {}): {} new steps",
+                                        replanAttempt, revised.revisedSteps().size());
+                                // Continue the for-loop with updated plan
+                                continue;
+                            }
+                            case ReplanResult.Escalated escalated -> {
+                                log.info("Replan escalated: {}", escalated.reason());
+                                if (listener != null) {
+                                    listener.onPlanEscalated(mutablePlan, escalated.reason());
+                                }
+                                mutablePlan = mutablePlan.withStatus(
+                                        new PlanStatus.Failed(escalated.reason(), step.stepId()));
+                                allSuccess = false;
+                                break stepLoop;
+                            }
+                        }
+                    } catch (LlmException replanEx) {
+                        log.warn("Replan LLM call failed: {}", replanEx.getMessage());
+                        mutablePlan = mutablePlan.withStatus(
+                                new PlanStatus.Failed(e.getMessage(), step.stepId()));
+                        allSuccess = false;
+                        break stepLoop;
+                    }
+                } else {
+                    // No replanner -- original behavior: mark failed and break
+                    mutablePlan = mutablePlan.withStatus(
+                            new PlanStatus.Failed(e.getMessage(), step.stepId()));
+                    allSuccess = false;
+                    break stepLoop;
+                }
             }
         }
 
@@ -239,5 +312,18 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                 Focus on completing this step. When done, summarize what you accomplished.
                 """.formatted(step.name(), error,
                 step.fallbackApproach() != null ? step.fallbackApproach() : "try a different method");
+    }
+
+    /**
+     * Builds summaries of all completed steps up to (and including) the given index.
+     */
+    private static List<CompletedStepSummary> buildCompletedSummaries(
+            TaskPlan plan, List<StepResult> stepResults, int upToIndex) {
+        var summaries = new ArrayList<CompletedStepSummary>();
+        int limit = Math.min(upToIndex + 1, Math.min(stepResults.size(), plan.steps().size()));
+        for (int j = 0; j < limit; j++) {
+            summaries.add(CompletedStepSummary.from(plan.steps().get(j), stepResults.get(j)));
+        }
+        return summaries;
     }
 }

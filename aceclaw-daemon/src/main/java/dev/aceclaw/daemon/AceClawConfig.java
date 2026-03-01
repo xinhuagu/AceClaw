@@ -70,6 +70,7 @@ public final class AceClawConfig {
     private static final boolean DEFAULT_HEARTBEAT_ENABLED = true;
     private static final boolean DEFAULT_PLANNER_ENABLED = true;
     private static final int DEFAULT_PLANNER_THRESHOLD = 5;
+    private static final boolean DEFAULT_ADAPTIVE_REPLAN_ENABLED = true;
     private static final boolean DEFAULT_CANDIDATE_INJECTION_ENABLED = true;
     private static final boolean DEFAULT_CANDIDATE_PROMOTION_ENABLED = true;
     private static final int DEFAULT_CANDIDATE_PROMOTION_MIN_EVIDENCE = 2;
@@ -135,6 +136,7 @@ public final class AceClawConfig {
     private Map<String, String> providerModels;
     private boolean plannerEnabled;
     private int plannerThreshold;
+    private boolean adaptiveReplanEnabled;
     private boolean candidateInjectionEnabled;
     private boolean candidatePromotionEnabled;
     private int candidatePromotionMinEvidence;
@@ -188,6 +190,7 @@ public final class AceClawConfig {
         this.heartbeatEnabled = DEFAULT_HEARTBEAT_ENABLED;
         this.plannerEnabled = DEFAULT_PLANNER_ENABLED;
         this.plannerThreshold = DEFAULT_PLANNER_THRESHOLD;
+        this.adaptiveReplanEnabled = DEFAULT_ADAPTIVE_REPLAN_ENABLED;
         this.candidateInjectionEnabled = DEFAULT_CANDIDATE_INJECTION_ENABLED;
         this.candidatePromotionEnabled = DEFAULT_CANDIDATE_PROMOTION_ENABLED;
         this.candidatePromotionMinEvidence = DEFAULT_CANDIDATE_PROMOTION_MIN_EVIDENCE;
@@ -802,6 +805,15 @@ public final class AceClawConfig {
     }
 
     /**
+     * Returns whether adaptive replanning is enabled.
+     * When true, failed plan steps trigger LLM-based replanning instead of immediate failure.
+     * Defaults to true.
+     */
+    public boolean adaptiveReplanEnabled() {
+        return adaptiveReplanEnabled;
+    }
+
+    /**
      * Returns whether candidate injection into the system prompt is enabled.
      * Defaults to true.
      */
@@ -1225,6 +1237,9 @@ public final class AceClawConfig {
         if (fileConfig.plannerThreshold != null) {
             this.plannerThreshold = fileConfig.plannerThreshold;
         }
+        if (fileConfig.adaptiveReplanEnabled != null) {
+            this.adaptiveReplanEnabled = fileConfig.adaptiveReplanEnabled;
+        }
         if (fileConfig.candidateInjectionEnabled != null) {
             this.candidateInjectionEnabled = fileConfig.candidateInjectionEnabled;
         }
@@ -1369,6 +1384,7 @@ public final class AceClawConfig {
         public String heartbeatActiveHours;
         public Boolean plannerEnabled;
         public Integer plannerThreshold;
+        public Boolean adaptiveReplanEnabled;
         public Boolean candidateInjectionEnabled;
         public Boolean candidatePromotionEnabled;
         public Integer candidatePromotionMinEvidence;

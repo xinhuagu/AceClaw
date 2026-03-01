@@ -1254,6 +1254,139 @@ class DaemonIntegrationTest {
         }
     }
 
+    @Test
+    @Order(24)
+    void testAdaptiveReplan_revisesAndCompletes() throws Exception {
+        agentHandlerRef.setAdaptiveReplanEnabled(true);
+        // Complex prompt that triggers planning (score >= 5):
+        // "multiple_actions" (+3) + "testing" (+2) = 5
+        String complexPrompt = "First analyze the config, and then write tests for it";
+
+        // 1. Plan generation (sendMessage): 2-step plan
+        String planJson = """
+                {
+                  "steps": [
+                    {"name": "Analyze config", "description": "Read and analyze config", "requiredTools": ["read_file"]},
+                    {"name": "Write tests", "description": "Write unit tests", "requiredTools": ["write_file"]}
+                  ]
+                }
+                """;
+        mockLlm.enqueueSendMessageResponse(MockLlmClient.sendMessageTextResponse(planJson));
+
+        // 2. Step 1 succeeds
+        mockLlm.enqueueResponse(MockLlmClient.textResponse("Config analyzed successfully."));
+
+        // 3. Step 2 fails (triggers replan)
+        mockLlm.enqueueResponse(MockLlmClient.errorResponse("Test framework not found"));
+
+        // 4. Replanner sendMessage response: revise with 1 new step
+        String replanJson = """
+                {
+                  "action": "revise",
+                  "rationale": "Install test framework first, then write tests",
+                  "steps": [
+                    {"name": "Install and write tests", "description": "Install framework and write tests", "requiredTools": ["bash", "write_file"]}
+                  ]
+                }
+                """;
+        mockLlm.enqueueSendMessageResponse(MockLlmClient.sendMessageTextResponse(replanJson));
+
+        // 5. Revised step succeeds
+        mockLlm.enqueueResponse(MockLlmClient.textResponse("Tests written with new framework."));
+
+        try (var channel = connectToSocket()) {
+            String sessionId = createSession(channel, 1);
+
+            var promptParams = objectMapper.createObjectNode();
+            promptParams.put("sessionId", sessionId);
+            promptParams.put("prompt", complexPrompt);
+
+            var result = collectEventsWithResumeHandling(channel, promptParams, 2,
+                    true, false, false);
+
+            // Verify plan was created
+            boolean hasPlanCreated = result.notifications().stream()
+                    .anyMatch(n -> "stream.plan_created".equals(n.path("method").asText()));
+            assertThat(hasPlanCreated).isTrue();
+
+            // Verify replan notification was sent
+            boolean hasPlanReplanned = result.notifications().stream()
+                    .anyMatch(n -> "stream.plan_replanned".equals(n.path("method").asText()));
+            assertThat(hasPlanReplanned).isTrue();
+
+            // Verify plan completed
+            boolean hasPlanCompleted = result.notifications().stream()
+                    .anyMatch(n -> "stream.plan_completed".equals(n.path("method").asText()));
+            assertThat(hasPlanCompleted).isTrue();
+
+            // Verify the final result indicates success
+            assertThat(result.finalResponse().has("result")).isTrue();
+            assertThat(result.finalResponse().path("result").path("planned").asBoolean()).isTrue();
+            assertThat(result.finalResponse().path("result").path("planSuccess").asBoolean()).isTrue();
+
+            destroySession(channel, sessionId, 3);
+        }
+    }
+
+    @Test
+    @Order(25)
+    void testAdaptiveReplan_escalatesOnPersistentFailure() throws Exception {
+        agentHandlerRef.setAdaptiveReplanEnabled(true);
+        // Complex prompt that triggers planning
+        String complexPrompt = "First read the database schema, and then migrate the tables";
+
+        // 1. Plan generation: 2-step plan
+        String planJson = """
+                {
+                  "steps": [
+                    {"name": "Read schema", "description": "Read database schema", "requiredTools": ["read_file"]},
+                    {"name": "Migrate tables", "description": "Run migration", "requiredTools": ["bash"]}
+                  ]
+                }
+                """;
+        mockLlm.enqueueSendMessageResponse(MockLlmClient.sendMessageTextResponse(planJson));
+
+        // 2. Step 1 fails
+        mockLlm.enqueueResponse(MockLlmClient.errorResponse("Database connection refused"));
+
+        // 3. Replanner escalates
+        String escalateJson = """
+                {
+                  "action": "escalate",
+                  "reason": "Database is unreachable, cannot proceed with migration"
+                }
+                """;
+        mockLlm.enqueueSendMessageResponse(MockLlmClient.sendMessageTextResponse(escalateJson));
+
+        try (var channel = connectToSocket()) {
+            String sessionId = createSession(channel, 1);
+
+            var promptParams = objectMapper.createObjectNode();
+            promptParams.put("sessionId", sessionId);
+            promptParams.put("prompt", complexPrompt);
+
+            var result = collectEventsWithResumeHandling(channel, promptParams, 2,
+                    true, false, false);
+
+            // Verify plan was created
+            boolean hasPlanCreated = result.notifications().stream()
+                    .anyMatch(n -> "stream.plan_created".equals(n.path("method").asText()));
+            assertThat(hasPlanCreated).isTrue();
+
+            // Verify escalation notification was sent
+            boolean hasPlanEscalated = result.notifications().stream()
+                    .anyMatch(n -> "stream.plan_escalated".equals(n.path("method").asText()));
+            assertThat(hasPlanEscalated).isTrue();
+
+            // Verify the final result indicates failure
+            assertThat(result.finalResponse().has("result")).isTrue();
+            assertThat(result.finalResponse().path("result").path("planned").asBoolean()).isTrue();
+            assertThat(result.finalResponse().path("result").path("planSuccess").asBoolean()).isFalse();
+
+            destroySession(channel, sessionId, 3);
+        }
+    }
+
     // -- Helper methods --
 
     private SocketChannel connectToSocket() throws IOException {

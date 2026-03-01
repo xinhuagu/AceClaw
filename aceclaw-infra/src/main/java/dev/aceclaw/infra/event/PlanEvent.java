@@ -1,6 +1,7 @@
 package dev.aceclaw.infra.event;
 
 import java.time.Instant;
+import java.util.Objects;
 
 /**
  * Events emitted during task plan lifecycle.
@@ -11,6 +12,8 @@ import java.time.Instant;
  *   <li>{@link StepStarted} — a plan step is about to execute</li>
  *   <li>{@link StepCompleted} — a plan step has finished (success or failure)</li>
  *   <li>{@link PlanCompleted} — the entire plan has finished execution</li>
+ *   <li>{@link PlanReplanned} — a plan was adaptively replanned after a step failure</li>
+ *   <li>{@link PlanEscalated} — replanning determined recovery is impossible</li>
  * </ul>
  */
 public sealed interface PlanEvent extends AceClawEvent {
@@ -28,4 +31,21 @@ public sealed interface PlanEvent extends AceClawEvent {
 
     record PlanCompleted(String planId, boolean success, long totalDurationMs, Instant timestamp)
             implements PlanEvent {}
+
+    record PlanReplanned(String planId, int replanAttempt, int newStepCount,
+                         String rationale, Instant timestamp) implements PlanEvent {
+        public PlanReplanned {
+            Objects.requireNonNull(planId, "planId");
+            Objects.requireNonNull(rationale, "rationale");
+            Objects.requireNonNull(timestamp, "timestamp");
+        }
+    }
+
+    record PlanEscalated(String planId, String reason, Instant timestamp) implements PlanEvent {
+        public PlanEscalated {
+            Objects.requireNonNull(planId, "planId");
+            Objects.requireNonNull(reason, "reason");
+            Objects.requireNonNull(timestamp, "timestamp");
+        }
+    }
 }
