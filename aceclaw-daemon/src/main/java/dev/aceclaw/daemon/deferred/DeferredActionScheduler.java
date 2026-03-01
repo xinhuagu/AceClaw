@@ -89,6 +89,10 @@ public final class DeferredActionScheduler {
     private final ConcurrentHashMap<String, Queue<DeferredAction>> queuedActions =
             new ConcurrentHashMap<>();
 
+    /** Active virtual worker threads for graceful shutdown coordination. */
+    private final java.util.Set<Thread> activeWorkers =
+            java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
+
     private ScheduledExecutorService scheduler;
     private volatile boolean running;
 
@@ -162,6 +166,16 @@ public final class DeferredActionScheduler {
                 Thread.currentThread().interrupt();
             }
         }
+        // Await in-flight virtual worker threads (best-effort, 15s max)
+        for (var worker : activeWorkers) {
+            try {
+                worker.join(Duration.ofSeconds(15));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        activeWorkers.clear();
         queuedActions.clear();
         log.info("DeferredActionScheduler stopped");
     }
@@ -277,7 +291,9 @@ public final class DeferredActionScheduler {
             var current = store.get(queued.actionId());
             if (current.isPresent() && current.get().state() == DeferredActionState.PENDING) {
                 final var actionToRun = current.get();
-                Thread.ofVirtual().name("deferred-drain-" + actionToRun.actionId()).start(() -> {
+                var worker = Thread.ofVirtual()
+                        .name("deferred-drain-" + actionToRun.actionId())
+                        .start(() -> {
                     var turnLock = sessionTurnLocks.computeIfAbsent(
                             actionToRun.sessionId(), _ -> new ReentrantLock());
                     turnLock.lock();
@@ -287,6 +303,7 @@ public final class DeferredActionScheduler {
                         turnLock.unlock();
                     }
                 });
+                activeWorkers.add(worker);
             }
         }
 
@@ -341,22 +358,25 @@ public final class DeferredActionScheduler {
                         action.sessionId(), _ -> new ReentrantLock());
 
                 if (turnLock.tryLock()) {
-                    // Session is idle — execute on a virtual thread while holding the lock.
-                    // The virtual thread inherits the lock context; we pass it explicitly
-                    // so executeAction can release it when done.
-                    final var actionToRun = action;
-                    final var heldLock = turnLock;
-                    Thread.ofVirtual().name("deferred-exec-" + action.actionId()).start(() -> {
-                        // Re-acquire the lock on the virtual thread (handoff from tick thread)
-                        heldLock.lock();
-                        try {
-                            executeAction(actionToRun);
-                        } finally {
-                            heldLock.unlock();
-                        }
-                    });
-                    // Release the tryLock from tick thread — the virtual thread will acquire its own
-                    turnLock.unlock();
+                    try {
+                        // Session is idle — spawn a virtual thread that acquires its own lock
+                        final var actionToRun = action;
+                        var worker = Thread.ofVirtual()
+                                .name("deferred-exec-" + action.actionId())
+                                .start(() -> {
+                            var lock = sessionTurnLocks.computeIfAbsent(
+                                    actionToRun.sessionId(), _ -> new ReentrantLock());
+                            lock.lock();
+                            try {
+                                executeAction(actionToRun);
+                            } finally {
+                                lock.unlock();
+                            }
+                        });
+                        activeWorkers.add(worker);
+                    } finally {
+                        turnLock.unlock();
+                    }
                 } else {
                     // Session is busy — queue for drain on notifyTurnComplete
                     queuedActions.computeIfAbsent(action.sessionId(), _ -> new ConcurrentLinkedQueue<>())
@@ -376,6 +396,7 @@ public final class DeferredActionScheduler {
      * Executes a single deferred action on the current thread (expected: virtual thread).
      */
     private void executeAction(DeferredAction action) {
+        try {
         // Check session still exists
         var session = sessionManager.getSession(action.sessionId());
         if (session == null || !session.isActive()) {
@@ -473,6 +494,9 @@ public final class DeferredActionScheduler {
                         action.actionId(), backoffSeconds);
             }
         }
+    } finally {
+        activeWorkers.remove(Thread.currentThread());
+    }
     }
 
     /**
