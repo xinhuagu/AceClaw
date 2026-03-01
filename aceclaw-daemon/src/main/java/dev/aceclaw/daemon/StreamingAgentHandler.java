@@ -22,10 +22,14 @@ import dev.aceclaw.core.llm.StreamEvent;
 import dev.aceclaw.core.llm.StreamEventHandler;
 import dev.aceclaw.core.planner.ComplexityEstimator;
 import dev.aceclaw.core.planner.LLMTaskPlanner;
+import dev.aceclaw.core.planner.PlanCheckpoint;
+import dev.aceclaw.core.planner.PlanCheckpointStore;
 import dev.aceclaw.core.planner.PlanExecutionResult;
+import dev.aceclaw.core.planner.PlanStatus;
 import dev.aceclaw.core.planner.PlannedStep;
 import dev.aceclaw.core.planner.SequentialPlanExecutor;
 import dev.aceclaw.core.planner.StepResult;
+import dev.aceclaw.core.planner.StepStatus;
 import dev.aceclaw.core.planner.TaskPlan;
 import dev.aceclaw.memory.AutoMemoryStore;
 import dev.aceclaw.memory.CandidatePromptAssembler;
@@ -199,6 +203,16 @@ public final class StreamingAgentHandler {
         // Start the cancel monitor thread to read from the socket
         cancelContext.startMonitor();
         try {
+            // Check for resumable plan checkpoint before planning or execution
+            if (planCheckpointStore != null) {
+                var resumeResult = tryResumeFromCheckpoint(
+                        sessionId, session, cancelContext, eventHandler,
+                        permissionAwareLoop, cancellationToken, metricsCollector);
+                if (resumeResult != null) {
+                    return resumeResult;
+                }
+            }
+
             // Check if this task warrants upfront planning
             if (plannerEnabled) {
                 var estimator = new ComplexityEstimator(plannerThreshold);
@@ -344,7 +358,25 @@ public final class StreamingAgentHandler {
             }
         };
 
-        var executor = new SequentialPlanExecutor(listener);
+        // Wrap listener with checkpointing if store is available
+        SequentialPlanExecutor.PlanEventListener effectiveListener = listener;
+        if (planCheckpointStore != null) {
+            var wsHash = ResumeRouter.hashWorkspace(session.projectPath());
+            var initialCheckpoint = new PlanCheckpoint(
+                    plan.planId(), sessionId, wsHash, prompt, plan,
+                    List.of(), -1, serializeConversation(session.messages()),
+                    PlanCheckpoint.CheckpointStatus.ACTIVE, null, List.of(),
+                    Instant.now(), Instant.now());
+            try {
+                planCheckpointStore.save(initialCheckpoint);
+            } catch (Exception e) {
+                log.warn("Failed to save initial plan checkpoint: {}", e.getMessage());
+            }
+            effectiveListener = new CheckpointingPlanEventListener(
+                    listener, planCheckpointStore, initialCheckpoint, session);
+        }
+
+        var executor = new SequentialPlanExecutor(effectiveListener);
         var planResult = executor.execute(plan, permissionAwareLoop, conversationHistory,
                 eventHandler, cancellationToken);
 
@@ -779,6 +811,7 @@ public final class StreamingAgentHandler {
     private volatile int candidateInjectionMaxTokens = 1200;
     private boolean plannerEnabled = true;
     private int plannerThreshold = 5;
+    private PlanCheckpointStore planCheckpointStore;
 
     /**
      * Sets the LLM configuration for permission-aware agent loop creation.
@@ -888,6 +921,14 @@ public final class StreamingAgentHandler {
     public void setPlannerConfig(boolean enabled, int threshold) {
         this.plannerEnabled = enabled;
         this.plannerThreshold = Math.max(0, threshold);
+    }
+
+    /**
+     * Sets the plan checkpoint store for crash-safe plan progress persistence
+     * and resume-from-checkpoint support.
+     */
+    public void setPlanCheckpointStore(PlanCheckpointStore planCheckpointStore) {
+        this.planCheckpointStore = planCheckpointStore;
     }
 
     private dev.aceclaw.core.llm.LlmClient getLlmClient() {
@@ -1255,6 +1296,438 @@ public final class StreamingAgentHandler {
         return params.get(field).asText();
     }
 
+    // -- Plan checkpoint resume logic -----------------------------------------
+
+    /**
+     * Attempts to resume from a plan checkpoint. Returns the result if resume
+     * was accepted and executed, or null if no checkpoint found or user declined.
+     */
+    private Object tryResumeFromCheckpoint(
+            String sessionId, AgentSession session,
+            StreamContext cancelContext, StreamEventHandler eventHandler,
+            StreamingAgentLoop permissionAwareLoop, CancellationToken cancellationToken,
+            ToolMetricsCollector metricsCollector) throws Exception {
+
+        var resumeRouter = new ResumeRouter(planCheckpointStore);
+        var routeDecision = resumeRouter.route(sessionId, session.projectPath());
+        if (!routeDecision.hasCheckpoint()) {
+            return null;
+        }
+
+        var cp = routeDecision.checkpoint();
+        log.info("Resumable plan checkpoint detected: planId={}, route={}, step {}/{}",
+                cp.planId(), routeDecision.route(),
+                cp.lastCompletedStepIndex() + 1, cp.plan().steps().size());
+
+        // Send resume.detected notification
+        try {
+            var p = objectMapper.createObjectNode();
+            p.put("planId", cp.planId());
+            p.put("completedSteps", cp.lastCompletedStepIndex() + 1);
+            p.put("totalSteps", cp.plan().steps().size());
+            p.put("route", routeDecision.route());
+            p.put("originalGoal", truncate(cp.originalGoal(), 200));
+            cancelContext.sendNotification("resume.detected", p);
+        } catch (IOException e) {
+            log.warn("Failed to send resume.detected notification: {}", e.getMessage());
+        }
+
+        // Offer resume to user
+        boolean userAccepted = offerResumeAndWaitForResponse(cancelContext, cp);
+
+        if (userAccepted && cp.hasRemainingSteps()) {
+            return executeResumedPlan(cp, session, sessionId, cancelContext,
+                    eventHandler, permissionAwareLoop, cancellationToken, metricsCollector);
+        }
+
+        // User declined or no remaining steps
+        String reason = userAccepted ? "no_remaining_steps" : "user_declined";
+        log.info("Resume declined: planId={}, reason={}", cp.planId(), reason);
+        try {
+            var p = objectMapper.createObjectNode();
+            p.put("planId", cp.planId());
+            p.put("reason", reason);
+            cancelContext.sendNotification("resume.fallback", p);
+        } catch (IOException e) {
+            log.warn("Failed to send resume.fallback notification: {}", e.getMessage());
+        }
+        planCheckpointStore.markFailed(cp.planId());
+        return null; // proceed with normal flow
+    }
+
+    /**
+     * Sends a resume.offer notification and waits for the client's resume.response.
+     */
+    private boolean offerResumeAndWaitForResponse(StreamContext context, PlanCheckpoint cp) {
+        try {
+            var params = objectMapper.createObjectNode();
+            params.put("planId", cp.planId());
+            params.put("originalGoal", truncate(cp.originalGoal(), 200));
+            params.put("completedSteps", cp.lastCompletedStepIndex() + 1);
+            params.put("totalSteps", cp.plan().steps().size());
+            if (cp.hasRemainingSteps()) {
+                var nextStep = cp.plan().steps().get(cp.nextStepIndex());
+                params.put("nextStepName", nextStep.name());
+            }
+            params.put("lastUpdated", cp.updatedAt().toString());
+            context.sendNotification("resume.offer", params);
+        } catch (IOException e) {
+            log.warn("Failed to send resume.offer: {}", e.getMessage());
+            return false;
+        }
+
+        // Wait for client response (30 second timeout)
+        try {
+            var response = context.readMessage(30_000);
+            if (response != null && response.has("method")
+                    && "resume.response".equals(response.get("method").asText())) {
+                var respParams = response.get("params");
+                return respParams != null && respParams.has("accept")
+                        && respParams.get("accept").asBoolean(false);
+            }
+        } catch (IOException e) {
+            log.warn("Failed to read resume.response: {}", e.getMessage());
+        }
+        return false; // timeout or parse failure = decline
+    }
+
+    /**
+     * Executes a plan from a checkpoint, resuming from the last completed step.
+     */
+    private Object executeResumedPlan(
+            PlanCheckpoint cp, AgentSession session, String sessionId,
+            StreamContext cancelContext, StreamEventHandler eventHandler,
+            StreamingAgentLoop permissionAwareLoop, CancellationToken cancellationToken,
+            ToolMetricsCollector metricsCollector) throws Exception {
+
+        // 1. Mark old checkpoint as RESUMED
+        planCheckpointStore.markResumed(cp.planId());
+
+        // 2. Send resume.bound_task notification
+        try {
+            var p = objectMapper.createObjectNode();
+            p.put("planId", cp.planId());
+            p.put("originalSessionId", cp.sessionId());
+            p.put("newSessionId", sessionId);
+            cancelContext.sendNotification("resume.bound_task", p);
+        } catch (IOException e) {
+            log.warn("Failed to send resume.bound_task notification: {}", e.getMessage());
+        }
+
+        // 3. Build partial plan with only remaining steps
+        var remainingSteps = cp.remainingSteps();
+        var resumedPlanId = cp.planId() + "-resumed";
+        var partialPlan = new TaskPlan(
+                resumedPlanId,
+                cp.originalGoal(),
+                remainingSteps,
+                new PlanStatus.Executing(
+                        cp.lastCompletedStepIndex() + 1, cp.plan().steps().size()),
+                Instant.now());
+
+        // 4. Build conversation history from checkpoint snapshot
+        var conversationHistory = deserializeConversation(cp.conversationSnapshot());
+
+        // 5. Inject resume context prompt
+        var resumePrompt = ResumeRouter.buildResumePrompt(cp);
+        conversationHistory.addFirst(Message.user(resumePrompt));
+
+        // 6. Send resume.injected notification
+        try {
+            var p = objectMapper.createObjectNode();
+            p.put("planId", cp.planId());
+            p.put("resumeFromStep", cp.nextStepIndex() + 1);
+            p.put("totalSteps", cp.plan().steps().size());
+            cancelContext.sendNotification("resume.injected", p);
+        } catch (IOException e) {
+            log.warn("Failed to send resume.injected notification: {}", e.getMessage());
+        }
+
+        // 7. Send plan_created notification for the resumed plan
+        try {
+            var params = objectMapper.createObjectNode();
+            params.put("planId", resumedPlanId);
+            params.put("stepCount", remainingSteps.size());
+            params.put("goal", truncate(cp.originalGoal(), 200));
+            params.put("resumed", true);
+            params.put("resumedFromStep", cp.nextStepIndex() + 1);
+            var stepsArray = objectMapper.createArrayNode();
+            for (int i = 0; i < remainingSteps.size(); i++) {
+                var step = remainingSteps.get(i);
+                var stepNode = objectMapper.createObjectNode();
+                stepNode.put("index", cp.nextStepIndex() + i + 1);
+                stepNode.put("name", step.name());
+                stepNode.put("description", step.description());
+                stepsArray.add(stepNode);
+            }
+            params.set("steps", stepsArray);
+            cancelContext.sendNotification("stream.plan_created", params);
+        } catch (IOException e) {
+            log.warn("Failed to send plan_created notification for resumed plan: {}", e.getMessage());
+        }
+
+        // 8. Create notification listener for the resumed plan
+        var notificationListener = new SequentialPlanExecutor.PlanEventListener() {
+            @Override
+            public void onStepStarted(PlannedStep step, int stepIndex, int totalSteps) {
+                try {
+                    var p = objectMapper.createObjectNode();
+                    p.put("planId", resumedPlanId);
+                    p.put("stepId", step.stepId());
+                    p.put("stepIndex", cp.nextStepIndex() + stepIndex + 1);
+                    p.put("totalSteps", cp.plan().steps().size());
+                    p.put("stepName", step.name());
+                    cancelContext.sendNotification("stream.plan_step_started", p);
+                } catch (IOException e) {
+                    log.warn("Failed to send plan_step_started notification: {}", e.getMessage());
+                }
+            }
+
+            @Override
+            public void onStepCompleted(PlannedStep step, int stepIndex, StepResult result) {
+                try {
+                    var p = objectMapper.createObjectNode();
+                    p.put("planId", resumedPlanId);
+                    p.put("stepId", step.stepId());
+                    p.put("stepIndex", cp.nextStepIndex() + stepIndex + 1);
+                    p.put("stepName", step.name());
+                    p.put("success", result.success());
+                    p.put("durationMs", result.durationMs());
+                    p.put("tokensUsed", result.tokensUsed());
+                    cancelContext.sendNotification("stream.plan_step_completed", p);
+                } catch (IOException e) {
+                    log.warn("Failed to send plan_step_completed notification: {}", e.getMessage());
+                }
+            }
+
+            @Override
+            public void onPlanCompleted(TaskPlan completedPlan, boolean success, long totalDurationMs) {
+                try {
+                    var p = objectMapper.createObjectNode();
+                    p.put("planId", resumedPlanId);
+                    p.put("success", success);
+                    p.put("totalDurationMs", totalDurationMs);
+                    p.put("stepsCompleted", completedPlan.completedSteps());
+                    p.put("totalSteps", completedPlan.steps().size());
+                    p.put("resumed", true);
+                    cancelContext.sendNotification("stream.plan_completed", p);
+                } catch (IOException e) {
+                    log.warn("Failed to send plan_completed notification: {}", e.getMessage());
+                }
+            }
+        };
+
+        // 9. Wrap with checkpointing listener
+        var wsHash = ResumeRouter.hashWorkspace(session.projectPath());
+        var newCheckpoint = new PlanCheckpoint(
+                resumedPlanId, sessionId, wsHash, cp.originalGoal(), cp.plan(),
+                new ArrayList<>(cp.completedStepResults()),
+                cp.lastCompletedStepIndex(),
+                cp.conversationSnapshot(),
+                PlanCheckpoint.CheckpointStatus.ACTIVE,
+                "Resumed from step " + (cp.nextStepIndex() + 1),
+                new ArrayList<>(cp.artifacts()),
+                cp.createdAt(), Instant.now());
+        planCheckpointStore.save(newCheckpoint);
+
+        var checkpointingListener = new CheckpointingPlanEventListener(
+                notificationListener, planCheckpointStore, newCheckpoint, session);
+
+        // 10. Execute remaining steps
+        var executor = new SequentialPlanExecutor(checkpointingListener);
+        var planResult = executor.execute(partialPlan, permissionAwareLoop,
+                conversationHistory, eventHandler, cancellationToken);
+
+        sendCancelledNotificationIfNeeded(cancellationToken, cancelContext, sessionId);
+
+        // 11. Store messages and build result
+        session.addMessage(new AgentSession.ConversationMessage.User(
+                "[Resumed plan: " + truncate(cp.originalGoal(), 100) + "]"));
+        var responseSummary = buildPlanResponseSummary(planResult);
+        if (!responseSummary.isEmpty()) {
+            session.addMessage(new AgentSession.ConversationMessage.Assistant(responseSummary));
+        }
+
+        if (dailyJournal != null) {
+            dailyJournal.append("Resumed plan (" + remainingSteps.size() + " remaining steps, "
+                    + (planResult.success() ? "success" : "failed") + "): "
+                    + truncate(cp.originalGoal(), 100) + " | Tokens: " + planResult.totalTokensUsed());
+        }
+
+        var plannedStopReason = planResult.success() ? StopReason.END_TURN : StopReason.ERROR;
+        recordInjectedCandidateOutcomes(
+                sessionId, planResult.success(), cancellationToken.isCancelled(), plannedStopReason);
+
+        var result = objectMapper.createObjectNode();
+        result.put("sessionId", sessionId);
+        result.put("response", responseSummary);
+        result.put("stopReason", "END_TURN");
+        result.put("planned", true);
+        result.put("resumed", true);
+        result.put("planSuccess", planResult.success());
+        result.put("planSteps", cp.plan().steps().size());
+        result.put("planStepsCompleted",
+                cp.lastCompletedStepIndex() + 1 + planResult.plan().completedSteps());
+        appendInjectedCandidateIds(result, sessionId);
+        if (cancellationToken.isCancelled()) {
+            result.put("cancelled", true);
+        }
+
+        int totalInput = planResult.stepResults().stream().mapToInt(StepResult::inputTokens).sum();
+        int totalOutput = planResult.stepResults().stream().mapToInt(StepResult::outputTokens).sum();
+        var usageNode = objectMapper.createObjectNode();
+        usageNode.put("inputTokens", totalInput);
+        usageNode.put("outputTokens", totalOutput);
+        usageNode.put("totalTokens", planResult.totalTokensUsed());
+        result.set("usage", usageNode);
+
+        log.info("Resumed plan complete: sessionId={}, success={}, steps={}/{}, tokens={}",
+                sessionId, planResult.success(),
+                cp.lastCompletedStepIndex() + 1 + planResult.plan().completedSteps(),
+                cp.plan().steps().size(), planResult.totalTokensUsed());
+
+        return result;
+    }
+
+    /**
+     * Serializes conversation messages to JSON strings for checkpoint persistence.
+     */
+    private List<String> serializeConversation(List<AgentSession.ConversationMessage> messages) {
+        var result = new ArrayList<String>();
+        if (messages == null) return result;
+        for (var msg : messages) {
+            try {
+                result.add(objectMapper.writeValueAsString(msg));
+            } catch (Exception e) {
+                log.debug("Failed to serialize conversation message: {}", e.getMessage());
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Deserializes conversation snapshot JSON strings back to LLM messages.
+     * Parses the simple {"role":"...", "content":"..."} format produced by
+     * CheckpointingPlanEventListener.
+     */
+    private List<Message> deserializeConversation(List<String> jsonMessages) {
+        var result = new ArrayList<Message>();
+        if (jsonMessages == null) return result;
+        for (var json : jsonMessages) {
+            try {
+                var node = objectMapper.readTree(json);
+                String role = node.has("role") ? node.get("role").asText() : "user";
+                String content = node.has("content") ? node.get("content").asText() : "";
+                switch (role) {
+                    case "assistant" -> result.add(Message.assistant(content));
+                    case "system" -> result.add(Message.user("[system] " + content));
+                    default -> result.add(Message.user(content));
+                }
+            } catch (Exception e) {
+                log.debug("Failed to deserialize conversation message: {}", e.getMessage());
+            }
+        }
+        return result;
+    }
+
+    // -- Checkpointing plan event listener ------------------------------------
+
+    /**
+     * Decorates a PlanEventListener with checkpoint persistence.
+     * Writes a checkpoint after each step completion and marks final status.
+     */
+    private static final class CheckpointingPlanEventListener
+            implements SequentialPlanExecutor.PlanEventListener {
+
+        private final SequentialPlanExecutor.PlanEventListener delegate;
+        private final PlanCheckpointStore store;
+        private volatile PlanCheckpoint currentCheckpoint;
+        private final AgentSession session;
+
+        CheckpointingPlanEventListener(
+                SequentialPlanExecutor.PlanEventListener delegate,
+                PlanCheckpointStore store,
+                PlanCheckpoint initialCheckpoint,
+                AgentSession session) {
+            this.delegate = delegate;
+            this.store = store;
+            this.currentCheckpoint = initialCheckpoint;
+            this.session = session;
+        }
+
+        @Override
+        public void onStepStarted(PlannedStep step, int stepIndex, int totalSteps) {
+            delegate.onStepStarted(step, stepIndex, totalSteps);
+        }
+
+        @Override
+        public void onStepCompleted(PlannedStep step, int stepIndex, StepResult result) {
+            delegate.onStepCompleted(step, stepIndex, result);
+
+            // Update and persist checkpoint
+            var updatedPlan = currentCheckpoint.plan()
+                    .withStepStatus(step.stepId(),
+                            result.success() ? StepStatus.COMPLETED : StepStatus.FAILED);
+
+            // Serialize current conversation state
+            var conversationJson = serializeSessionMessages(session);
+
+            String hint = result.success()
+                    ? "Step " + (stepIndex + 1) + " completed successfully"
+                    : "Step " + (stepIndex + 1) + " failed: "
+                            + (result.error() != null ? result.error() : "unknown");
+
+            currentCheckpoint = currentCheckpoint.withStepCompleted(
+                    stepIndex, result, updatedPlan, conversationJson, hint, List.of());
+
+            try {
+                store.save(currentCheckpoint);
+            } catch (Exception e) {
+                log.warn("Failed to persist plan checkpoint after step {}: {}",
+                        stepIndex + 1, e.getMessage());
+            }
+        }
+
+        @Override
+        public void onPlanCompleted(TaskPlan plan, boolean success, long totalDurationMs) {
+            delegate.onPlanCompleted(plan, success, totalDurationMs);
+
+            currentCheckpoint = currentCheckpoint.withStatus(
+                    success ? PlanCheckpoint.CheckpointStatus.COMPLETED
+                            : PlanCheckpoint.CheckpointStatus.FAILED);
+            try {
+                store.save(currentCheckpoint);
+            } catch (Exception e) {
+                log.warn("Failed to persist final plan checkpoint: {}", e.getMessage());
+            }
+        }
+
+        private static List<String> serializeSessionMessages(AgentSession session) {
+            // Simple serialization: role:content for each message
+            var result = new ArrayList<String>();
+            for (var msg : session.messages()) {
+                switch (msg) {
+                    case AgentSession.ConversationMessage.User u ->
+                            result.add("{\"role\":\"user\",\"content\":" + escapeJson(u.content()) + "}");
+                    case AgentSession.ConversationMessage.Assistant a ->
+                            result.add("{\"role\":\"assistant\",\"content\":" + escapeJson(a.content()) + "}");
+                    case AgentSession.ConversationMessage.System s ->
+                            result.add("{\"role\":\"system\",\"content\":" + escapeJson(s.content()) + "}");
+                }
+            }
+            return result;
+        }
+
+        private static String escapeJson(String text) {
+            if (text == null) return "null";
+            return "\"" + text.replace("\\", "\\\\")
+                    .replace("\"", "\\\"")
+                    .replace("\n", "\\n")
+                    .replace("\r", "\\r")
+                    .replace("\t", "\\t") + "\"";
+        }
+    }
+
     // -- StreamEventHandler that forwards events as JSON-RPC notifications --
 
     /**
@@ -1562,8 +2035,9 @@ public final class StreamingAgentHandler {
                                     log.info("Cancel monitor: received agent.cancel");
                                     cancellationToken.cancel();
                                     return;
-                                } else if ("permission.response".equals(method)) {
-                                    log.debug("Cancel monitor: routing permission.response");
+                                } else if ("permission.response".equals(method)
+                                        || "resume.response".equals(method)) {
+                                    log.debug("Cancel monitor: routing {}", method);
                                     permissionResponses.offer(message);
                                 } else {
                                     log.debug("Cancel monitor: ignoring '{}'", method);

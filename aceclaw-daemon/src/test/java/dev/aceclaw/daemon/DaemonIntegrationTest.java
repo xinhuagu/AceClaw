@@ -6,6 +6,14 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import dev.aceclaw.core.agent.StreamingAgentLoop;
 import dev.aceclaw.core.agent.ToolRegistry;
+import dev.aceclaw.core.llm.LlmResponse;
+import dev.aceclaw.core.planner.PlanCheckpoint;
+import dev.aceclaw.core.planner.PlanCheckpointStore;
+import dev.aceclaw.core.planner.PlanStatus;
+import dev.aceclaw.core.planner.PlannedStep;
+import dev.aceclaw.core.planner.StepResult;
+import dev.aceclaw.core.planner.StepStatus;
+import dev.aceclaw.core.planner.TaskPlan;
 import dev.aceclaw.memory.CandidateKind;
 import dev.aceclaw.memory.CandidateState;
 import dev.aceclaw.memory.CandidateStateMachine;
@@ -51,6 +59,7 @@ class DaemonIntegrationTest {
 
     private static Path socketPath;
     private static Path workDir;
+    private static Path checkpointDir;
     private static MockLlmClient mockLlm;
     private static SessionManager sessionManager;
     private static PermissionManager permissionManager;
@@ -59,6 +68,7 @@ class DaemonIntegrationTest {
     private static CandidateStore candidateStore;
     private static String antiPatternCandidateId;
     private static String antiPatternRuleId;
+    private static StreamingAgentHandler agentHandlerRef;
 
     @BeforeAll
     static void startDaemon() throws Exception {
@@ -96,6 +106,14 @@ class DaemonIntegrationTest {
         var agentHandler = new StreamingAgentHandler(
                 sessionManager, agentLoop, toolRegistry, permissionManager, objectMapper);
         agentHandler.setLlmConfig(mockLlm, "mock-model", "You are a test agent.");
+        agentHandlerRef = agentHandler;
+
+        // Wire plan checkpoint store for checkpoint/resume integration tests
+        checkpointDir = tempDir.resolve("checkpoints").resolve("plans");
+        Files.createDirectories(checkpointDir);
+        var planCheckpointStore = new FilePlanCheckpointStore(checkpointDir, objectMapper);
+        agentHandler.setPlanCheckpointStore(planCheckpointStore);
+
         candidateStore = createPromotedAntiPatternCandidateStore();
         agentHandler.setCandidateStore(candidateStore);
         seedAntiPatternFeedback(workDir, antiPatternRuleId);
@@ -289,7 +307,9 @@ class DaemonIntegrationTest {
             assertThat(createResponse.has("result")).isTrue();
             var createResult = createResponse.get("result");
             assertThat(createResult.has("sessionId")).isTrue();
-            assertThat(createResult.get("project").asText()).isEqualTo(workDir.toString());
+            // canonicalizeProjectPath calls toRealPath(), which resolves symlinks
+            // (e.g. /var → /private/var on macOS), so compare against the real path
+            assertThat(createResult.get("project").asText()).isEqualTo(workDir.toRealPath().toString());
 
             String sessionId = createResult.get("sessionId").asText();
 
@@ -968,6 +988,259 @@ class DaemonIntegrationTest {
         }
     }
 
+    // -- Plan checkpoint integration tests --
+
+    @Test
+    @Order(20)
+    void testCheckpointCreatedDuringPlanExecution() throws Exception {
+        // Craft a prompt that triggers planning (score >= 5):
+        // "multiple_actions" (+3) + "testing" (+2) = 5
+        String complexPrompt = "First investigate the API, and then write tests for it";
+
+        // Enqueue a valid plan JSON response for sendMessage (LLMTaskPlanner.plan)
+        String planJson = """
+                {
+                  "steps": [
+                    {"name": "Read API", "description": "Read the API source", "requiredTools": ["read_file"]},
+                    {"name": "Write tests", "description": "Write unit tests", "requiredTools": ["write_file"]}
+                  ]
+                }
+                """;
+        mockLlm.enqueueSendMessageResponse(MockLlmClient.sendMessageTextResponse(planJson));
+
+        // Enqueue streaming responses for each plan step execution:
+        // Step 1: read_file tool use + final text
+        mockLlm.enqueueResponse(MockLlmClient.toolUseResponse(
+                "Reading the API.", "toolu_cp_001", "read_file",
+                "{\"file_path\":\"greeting.txt\"}"));
+        mockLlm.enqueueResponse(MockLlmClient.textResponse("Found the API."));
+        // Step 2: simple text (no tool use needed for this test)
+        mockLlm.enqueueResponse(MockLlmClient.textResponse("Tests written successfully."));
+
+        // Create a test file the tool can read
+        Files.writeString(workDir.resolve("greeting.txt"), "API content here");
+
+        try (var channel = connectToSocket()) {
+            String sessionId = createSession(channel, 1);
+
+            var promptParams = objectMapper.createObjectNode();
+            promptParams.put("sessionId", sessionId);
+            promptParams.put("prompt", complexPrompt);
+
+            var result = collectEventsWithResumeHandling(channel, promptParams, 2,
+                    true, false, false);
+
+            // Verify plan was executed
+            boolean hasPlanCreated = result.notifications().stream()
+                    .anyMatch(n -> "stream.plan_created".equals(n.path("method").asText()));
+            assertThat(hasPlanCreated).isTrue();
+
+            boolean hasPlanCompleted = result.notifications().stream()
+                    .anyMatch(n -> "stream.plan_completed".equals(n.path("method").asText()));
+            assertThat(hasPlanCompleted).isTrue();
+
+            // Verify checkpoint files were created on disk
+            var checkpointFiles = Files.list(checkpointDir)
+                    .filter(p -> p.toString().endsWith(".checkpoint.json"))
+                    .toList();
+            assertThat(checkpointFiles).isNotEmpty();
+
+            // Read checkpoint and verify content
+            var cpJson = objectMapper.readTree(checkpointFiles.getFirst().toFile());
+            assertThat(cpJson.has("originalGoal")).isTrue();
+            assertThat(cpJson.get("status").asText()).isEqualTo("COMPLETED");
+
+            assertThat(result.finalResponse().has("result")).isTrue();
+            assertThat(result.finalResponse().path("result").path("planned").asBoolean()).isTrue();
+
+            destroySession(channel, sessionId, 3);
+        }
+    }
+
+    @Test
+    @Order(21)
+    void testResumeDetection_offeredAndDeclined() throws Exception {
+        // Pre-seed a checkpoint file so the daemon finds it on next prompt
+        Path projectDir = workDir.resolve("resume-test-project");
+        Files.createDirectories(projectDir);
+
+        try (var channel = connectToSocket()) {
+            String sessionId = createSession(channel, 1, projectDir);
+
+            // Build and save a checkpoint that matches this session
+            var wsHash = ResumeRouter.hashWorkspace(projectDir);
+            var plan = new TaskPlan("plan-resume-test", "Build feature X", List.of(
+                    new PlannedStep("s1", "Research", "Find APIs", List.of("read_file"), null, StepStatus.COMPLETED),
+                    new PlannedStep("s2", "Implement", "Write code", List.of("write_file"), null, StepStatus.PENDING),
+                    new PlannedStep("s3", "Test", "Run tests", List.of("bash"), null, StepStatus.PENDING)
+            ), new PlanStatus.Executing(1, 3), Instant.now());
+
+            var checkpoint = new PlanCheckpoint(
+                    "plan-resume-test", sessionId, wsHash, "Build feature X", plan,
+                    List.of(new StepResult(true, "Found 3 APIs", null, 1000, 100, 50)),
+                    0, List.of(),
+                    PlanCheckpoint.CheckpointStatus.ACTIVE, "Need to implement",
+                    List.of("api.java"), Instant.now(), Instant.now());
+
+            var store = new FilePlanCheckpointStore(checkpointDir, objectMapper);
+            store.save(checkpoint);
+
+            // Enqueue a simple text response for when the normal flow continues
+            // (after user declines resume)
+            mockLlm.enqueueResponse(MockLlmClient.textResponse("Starting fresh."));
+
+            var promptParams = objectMapper.createObjectNode();
+            promptParams.put("sessionId", sessionId);
+            promptParams.put("prompt", "Continue working");
+
+            // Send request and handle resume.offer by DECLINING
+            var result = collectEventsWithResumeHandling(channel, promptParams, 2,
+                    false, false, false);
+
+            // Verify resume.detected notification was sent
+            boolean hasResumeDetected = result.notifications().stream()
+                    .anyMatch(n -> "resume.detected".equals(n.path("method").asText()));
+            assertThat(hasResumeDetected).isTrue();
+
+            // Verify resume.offer notification was sent
+            boolean hasResumeOffer = result.notifications().stream()
+                    .anyMatch(n -> "resume.offer".equals(n.path("method").asText()));
+            assertThat(hasResumeOffer).isTrue();
+
+            // Verify resume.fallback was sent (user declined)
+            boolean hasResumeFallback = result.notifications().stream()
+                    .anyMatch(n -> "resume.fallback".equals(n.path("method").asText()));
+            assertThat(hasResumeFallback).isTrue();
+
+            // Verify the checkpoint is now marked as FAILED (user declined)
+            var loaded = store.load("plan-resume-test");
+            assertThat(loaded).isPresent();
+            assertThat(loaded.get().status()).isEqualTo(PlanCheckpoint.CheckpointStatus.FAILED);
+
+            // Response should be the normal flow (not resumed)
+            assertThat(result.finalResponse().has("result")).isTrue();
+            assertThat(result.finalResponse().path("result").has("resumed")).isFalse();
+
+            destroySession(channel, sessionId, 3);
+        }
+    }
+
+    @Test
+    @Order(22)
+    void testResumeDetection_offeredAndAccepted() throws Exception {
+        Path projectDir = workDir.resolve("resume-accept-project");
+        Files.createDirectories(projectDir);
+
+        try (var channel = connectToSocket()) {
+            String sessionId = createSession(channel, 1, projectDir);
+
+            var wsHash = ResumeRouter.hashWorkspace(projectDir);
+            var plan = new TaskPlan("plan-resume-accept", "Implement login", List.of(
+                    new PlannedStep("s1", "Research", "Find auth libs", List.of("read_file"), null, StepStatus.COMPLETED),
+                    new PlannedStep("s2", "Implement", "Write auth code", List.of("write_file"), null, StepStatus.PENDING)
+            ), new PlanStatus.Executing(1, 2), Instant.now());
+
+            var checkpoint = new PlanCheckpoint(
+                    "plan-resume-accept", sessionId, wsHash, "Implement login", plan,
+                    List.of(new StepResult(true, "Found libs", null, 500, 80, 40)),
+                    0, List.of(),
+                    PlanCheckpoint.CheckpointStatus.ACTIVE, "Ready to code",
+                    List.of(), Instant.now(), Instant.now());
+
+            var store = new FilePlanCheckpointStore(checkpointDir, objectMapper);
+            store.save(checkpoint);
+
+            // Enqueue streaming response for the resumed step execution
+            // (Step 2: "Implement" - the remaining step)
+            mockLlm.enqueueResponse(MockLlmClient.textResponse("Auth code implemented."));
+
+            var promptParams = objectMapper.createObjectNode();
+            promptParams.put("sessionId", sessionId);
+            promptParams.put("prompt", "Continue working on login");
+
+            // Send request and ACCEPT the resume offer
+            var result = collectEventsWithResumeHandling(channel, promptParams, 2,
+                    false, false, true);
+
+            // Verify resume.detected was sent
+            boolean hasResumeDetected = result.notifications().stream()
+                    .anyMatch(n -> "resume.detected".equals(n.path("method").asText()));
+            assertThat(hasResumeDetected).isTrue();
+
+            // Verify resume.bound_task was sent (plan was bound to session)
+            boolean hasBoundTask = result.notifications().stream()
+                    .anyMatch(n -> "resume.bound_task".equals(n.path("method").asText()));
+            assertThat(hasBoundTask).isTrue();
+
+            // Verify resume.injected was sent
+            boolean hasInjected = result.notifications().stream()
+                    .anyMatch(n -> "resume.injected".equals(n.path("method").asText()));
+            assertThat(hasInjected).isTrue();
+
+            // Verify result indicates resumed plan
+            assertThat(result.finalResponse().has("result")).isTrue();
+            assertThat(result.finalResponse().path("result").path("resumed").asBoolean()).isTrue();
+            assertThat(result.finalResponse().path("result").path("planned").asBoolean()).isTrue();
+
+            // Old checkpoint should be RESUMED
+            var oldCp = store.load("plan-resume-accept");
+            assertThat(oldCp).isPresent();
+            assertThat(oldCp.get().status()).isEqualTo(PlanCheckpoint.CheckpointStatus.RESUMED);
+
+            destroySession(channel, sessionId, 3);
+        }
+    }
+
+    @Test
+    @Order(23)
+    void testNoResumeAcrossWorkspaces() throws Exception {
+        Path projectA = workDir.resolve("project-no-resume-A");
+        Path projectB = workDir.resolve("project-no-resume-B");
+        Files.createDirectories(projectA);
+        Files.createDirectories(projectB);
+
+        try (var channel = connectToSocket()) {
+            String sessionId = createSession(channel, 1, projectA);
+
+            // Seed a checkpoint for projectB (different workspace)
+            var wsHashB = ResumeRouter.hashWorkspace(projectB);
+            var plan = new TaskPlan("plan-wrong-ws", "Other project task", List.of(
+                    new PlannedStep("s1", "Done", "Done", List.of(), null, StepStatus.COMPLETED),
+                    new PlannedStep("s2", "Pending", "Pending", List.of(), null, StepStatus.PENDING)
+            ), new PlanStatus.Executing(1, 2), Instant.now());
+
+            var checkpoint = new PlanCheckpoint(
+                    "plan-wrong-ws", "other-session", wsHashB, "Other project task", plan,
+                    List.of(new StepResult(true, "done", null, 100, 50, 25)),
+                    0, List.of(),
+                    PlanCheckpoint.CheckpointStatus.ACTIVE, null,
+                    List.of(), Instant.now(), Instant.now());
+
+            var store = new FilePlanCheckpointStore(checkpointDir, objectMapper);
+            store.save(checkpoint);
+
+            // Simple text response (no planning, no resume)
+            mockLlm.enqueueResponse(MockLlmClient.textResponse("Working in project A."));
+
+            var promptParams = objectMapper.createObjectNode();
+            promptParams.put("sessionId", sessionId);
+            promptParams.put("prompt", "Hello");
+
+            var result = sendPromptAndCollectEvents(channel, promptParams, 2);
+
+            // Should NOT see any resume notifications (different workspace)
+            boolean hasResumeDetected = result.notifications().stream()
+                    .anyMatch(n -> "resume.detected".equals(n.path("method").asText()));
+            assertThat(hasResumeDetected).isFalse();
+
+            boolean hasResumeOffer = result.notifications().stream()
+                    .anyMatch(n -> "resume.offer".equals(n.path("method").asText()));
+            assertThat(hasResumeOffer).isFalse();
+
+            destroySession(channel, sessionId, 3);
+        }
+    }
+
     // -- Helper methods --
 
     private SocketChannel connectToSocket() throws IOException {
@@ -1130,6 +1403,61 @@ class DaemonIntegrationTest {
             buffer.flip();
             channelLineBuffer.append(StandardCharsets.UTF_8.decode(buffer));
         }
+    }
+
+    /**
+     * Sends an agent.prompt request and collects events, handling both permission.request
+     * and resume.offer notifications. This enables integration testing of the full
+     * checkpoint/resume flow.
+     *
+     * @param acceptResume whether to accept resume.offer (true) or decline (false)
+     */
+    private PromptResult collectEventsWithResumeHandling(
+            SocketChannel channel, JsonNode promptParams, int requestId,
+            boolean approvePermissions, boolean rememberPermissions,
+            boolean acceptResume) throws Exception {
+
+        sendRequest(channel, "agent.prompt", promptParams, requestId);
+
+        var notifications = new ArrayList<JsonNode>();
+        var timeoutDeadline = System.currentTimeMillis() + 10_000; // 10s timeout for plan tests
+
+        while (System.currentTimeMillis() < timeoutDeadline) {
+            var msg = readMessage(channel);
+            if (msg == null) {
+                throw new IOException("Connection closed while waiting for response");
+            }
+
+            // Final response
+            if (msg.has("id") && !msg.get("id").isNull()) {
+                return new PromptResult(notifications, msg);
+            }
+
+            String method = msg.path("method").asText("");
+
+            // Handle permission.request
+            if ("permission.request".equals(method)) {
+                var permRequestId = msg.path("params").path("requestId").asText();
+                var responseParams = objectMapper.createObjectNode();
+                responseParams.put("requestId", permRequestId);
+                responseParams.put("approved", approvePermissions);
+                responseParams.put("remember", rememberPermissions);
+                sendNotification(channel, "permission.response", responseParams);
+            }
+
+            // Handle resume.offer
+            if ("resume.offer".equals(method)) {
+                var planId = msg.path("params").path("planId").asText();
+                var responseParams = objectMapper.createObjectNode();
+                responseParams.put("planId", planId);
+                responseParams.put("accept", acceptResume);
+                sendNotification(channel, "resume.response", responseParams);
+            }
+
+            notifications.add(msg);
+        }
+
+        throw new AssertionError("Timed out waiting for response");
     }
 
     /**

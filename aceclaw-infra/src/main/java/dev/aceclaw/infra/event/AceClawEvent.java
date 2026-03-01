@@ -18,10 +18,11 @@ import java.time.Instant;
  *   <li>{@link SystemEvent} — daemon-level events (startup, shutdown, config)</li>
  *   <li>{@link SchedulerEvent} — cron scheduler events (triggered, completed, failed, skipped)</li>
  *   <li>{@link PlanEvent} — task plan lifecycle events (created, step started/completed, plan completed)</li>
+ *   <li>{@link ResumeEvent} — plan checkpoint resume lifecycle events (detected, bound, injected, fallback)</li>
  * </ul>
  */
 public sealed interface AceClawEvent
-        permits AgentEvent, ToolEvent, SessionEvent, HealthEvent, SystemEvent, SchedulerEvent, PlanEvent {
+        permits AgentEvent, ToolEvent, SessionEvent, HealthEvent, SystemEvent, SchedulerEvent, PlanEvent, ResumeEvent {
 
     /** When this event occurred. */
     Instant timestamp();
