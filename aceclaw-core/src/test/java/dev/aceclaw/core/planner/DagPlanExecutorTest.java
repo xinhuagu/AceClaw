@@ -305,9 +305,19 @@ class DagPlanExecutorTest {
     }
 
     @Test
-    void hasParallelizableSteps_falseForSingleLinearChain() {
+    void hasParallelizableSteps_falseForSingleStep() {
         var plan = new TaskPlan("p", "goal", List.of(
                 new PlannedStep("a", "A", "a", List.of(), null, Set.of(), StepStatus.PENDING)
+        ), new PlanStatus.Draft(), Instant.now());
+        assertFalse(plan.hasParallelizableSteps());
+    }
+
+    @Test
+    void hasParallelizableSteps_falseForLinearChain() {
+        var plan = new TaskPlan("p", "goal", List.of(
+                new PlannedStep("a", "A", "a", List.of(), null, Set.of(), StepStatus.PENDING),
+                new PlannedStep("b", "B", "b", List.of(), null, Set.of("a"), StepStatus.PENDING),
+                new PlannedStep("c", "C", "c", List.of(), null, Set.of("b"), StepStatus.PENDING)
         ), new PlanStatus.Draft(), Instant.now());
         assertFalse(plan.hasParallelizableSteps());
     }

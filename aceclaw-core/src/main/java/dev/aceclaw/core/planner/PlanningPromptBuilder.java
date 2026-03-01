@@ -27,6 +27,7 @@ public final class PlanningPromptBuilder {
             - Example: {"name": "Write tests", "dependsOn": ["Implement feature"], \
               "description": "Write unit tests for the new feature", "requiredTools": ["write_file"], \
               "fallbackApproach": null}
+            - Each step name MUST be unique — names are used for dependency resolution.
             - Order steps logically: research first, then implement, then verify.
             - Keep steps focused: one logical unit of work per step.
             - Use 2-15 steps. Fewer for simpler tasks, more for complex ones.

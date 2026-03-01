@@ -9,6 +9,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Objects;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -86,7 +87,10 @@ public final class TaskPlanParser {
             // Second pass: resolve name-based deps to stepIds
             var nameToId = new HashMap<String, String>();
             for (var raw : rawSteps) {
-                nameToId.put(raw.name, raw.stepId);
+                var existing = nameToId.putIfAbsent(raw.name, raw.stepId);
+                if (existing != null) {
+                    log.warn("Duplicate step name '{}', only the first occurrence will be used for dependency resolution", raw.name);
+                }
             }
 
             var steps = new ArrayList<PlannedStep>();
@@ -211,7 +215,15 @@ public final class TaskPlanParser {
             List<String> requiredTools,
             String fallbackApproach,
             Set<String> dependsOnNames
-    ) {}
+    ) {
+        RawStep {
+            Objects.requireNonNull(stepId, "stepId");
+            name = name != null ? name : "Unnamed step";
+            description = description != null ? description : "";
+            requiredTools = requiredTools != null ? List.copyOf(requiredTools) : List.of();
+            dependsOnNames = dependsOnNames != null ? Set.copyOf(dependsOnNames) : Set.of();
+        }
+    }
 
     private static RawStep parseRawStep(JsonNode stepNode) {
         String name = getTextOrDefault(stepNode, "name", "Unnamed step");

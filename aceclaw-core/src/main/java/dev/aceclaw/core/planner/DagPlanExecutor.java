@@ -262,16 +262,28 @@ public final class DagPlanExecutor implements PlanExecutor {
                 int stepIndex = indexOfStep(plan, step.stepId());
 
                 scope.fork(() -> {
-                    var result = executeSingleStep(
-                            step, stepIndex, plan, previousResults,
-                            stepLoop, new ArrayList<>(), handler, cancellationToken);
-                    batchResults.put(step.stepId(), result);
-                    return result;
+                    try {
+                        var result = executeSingleStep(
+                                step, stepIndex, plan, previousResults,
+                                stepLoop, new ArrayList<>(), handler, cancellationToken);
+                        batchResults.put(step.stepId(), result);
+                        return result;
+                    } catch (Exception e) {
+                        log.warn("Parallel step '{}' threw unexpected exception: {}",
+                                step.name(), e.getMessage());
+                        var failResult = new StepResult(
+                                false, null, e.getMessage(), 0, 0, 0);
+                        batchResults.put(step.stepId(), failResult);
+                        if (listener != null) {
+                            listener.onStepCompleted(step, stepIndex, failResult);
+                        }
+                        return failResult;
+                    }
                 });
             }
 
             scope.join();
-            // Don't call throwIfFailed — we handle failures individually per step
+            scope.throwIfFailed(e -> new LlmException("Parallel step execution failed", 0, e));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new LlmException("Parallel execution interrupted", 0, e);

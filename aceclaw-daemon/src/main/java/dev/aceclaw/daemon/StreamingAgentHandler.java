@@ -432,10 +432,18 @@ public final class StreamingAgentHandler {
 
         PlanExecutor executor;
         if (plan.hasParallelizableSteps()) {
+            // Each parallel step gets its own loop instance (runTurn is stateful).
+            // CancellationToken is shared intentionally — cancelling one cancels all
+            // parallel branches (global cancel semantics).
             AgentLoopFactory factory = () -> new StreamingAgentLoop(
                     getLlmClient(), createPermissionAwareRegistry(cancelContext, sessionId),
                     getModelForSession(sessionId), getSystemPrompt(sessionId),
-                    maxTokens, thinkingBudget, null, AgentLoopConfig.EMPTY);
+                    maxTokens, thinkingBudget, null,
+                    AgentLoopConfig.builder()
+                            .sessionId(sessionId)
+                            .metricsCollector(metricsCollector)
+                            .maxIterations(maxIterations)
+                            .build());
             executor = new DagPlanExecutor(effectiveListener, factory);
             log.info("Using DAG parallel executor for plan with {} steps", plan.steps().size());
         } else {
@@ -1769,6 +1777,7 @@ public final class StreamingAgentHandler {
         private volatile PlanCheckpoint currentCheckpoint;
         private final AgentSession session;
         private final int stepIndexOffset;
+        private final Object checkpointLock = new Object();
 
         CheckpointingPlanEventListener(
                 PlanEventListener delegate,
@@ -1792,32 +1801,35 @@ public final class StreamingAgentHandler {
         public void onStepCompleted(PlannedStep step, int stepIndex, StepResult result) {
             delegate.onStepCompleted(step, stepIndex, result);
 
-            // Apply offset: stepIndex from executor is 0-based relative to the
-            // (possibly partial) plan. For resumed plans, offset maps it back to
-            // the absolute index in the original full plan.
-            int absoluteIndex = stepIndex + stepIndexOffset;
+            // Synchronized: DAG executor may call from parallel threads
+            synchronized (checkpointLock) {
+                // Apply offset: stepIndex from executor is 0-based relative to the
+                // (possibly partial) plan. For resumed plans, offset maps it back to
+                // the absolute index in the original full plan.
+                int absoluteIndex = stepIndex + stepIndexOffset;
 
-            // Update and persist checkpoint
-            var updatedPlan = currentCheckpoint.plan()
-                    .withStepStatus(step.stepId(),
-                            result.success() ? StepStatus.COMPLETED : StepStatus.FAILED);
+                // Update and persist checkpoint
+                var updatedPlan = currentCheckpoint.plan()
+                        .withStepStatus(step.stepId(),
+                                result.success() ? StepStatus.COMPLETED : StepStatus.FAILED);
 
-            // Serialize current conversation state
-            var conversationJson = serializeSessionMessages(session);
+                // Serialize current conversation state
+                var conversationJson = serializeSessionMessages(session);
 
-            String hint = result.success()
-                    ? "Step " + (absoluteIndex + 1) + " completed successfully"
-                    : "Step " + (absoluteIndex + 1) + " failed: "
-                            + (result.error() != null ? result.error() : "unknown");
+                String hint = result.success()
+                        ? "Step " + (absoluteIndex + 1) + " completed successfully"
+                        : "Step " + (absoluteIndex + 1) + " failed: "
+                                + (result.error() != null ? result.error() : "unknown");
 
-            currentCheckpoint = currentCheckpoint.withStepCompleted(
-                    absoluteIndex, result, updatedPlan, conversationJson, hint, List.of());
+                currentCheckpoint = currentCheckpoint.withStepCompleted(
+                        absoluteIndex, result, updatedPlan, conversationJson, hint, List.of());
 
-            try {
-                store.save(currentCheckpoint);
-            } catch (Exception e) {
-                log.warn("Failed to persist plan checkpoint after step {}: {}",
-                        stepIndex + 1, e.getMessage());
+                try {
+                    store.save(currentCheckpoint);
+                } catch (Exception e) {
+                    log.warn("Failed to persist plan checkpoint after step {}: {}",
+                            stepIndex + 1, e.getMessage());
+                }
             }
         }
 
@@ -1825,13 +1837,15 @@ public final class StreamingAgentHandler {
         public void onPlanCompleted(TaskPlan plan, boolean success, long totalDurationMs) {
             delegate.onPlanCompleted(plan, success, totalDurationMs);
 
-            currentCheckpoint = currentCheckpoint.withStatus(
-                    success ? PlanCheckpoint.CheckpointStatus.COMPLETED
-                            : PlanCheckpoint.CheckpointStatus.FAILED);
-            try {
-                store.save(currentCheckpoint);
-            } catch (Exception e) {
-                log.warn("Failed to persist final plan checkpoint: {}", e.getMessage());
+            synchronized (checkpointLock) {
+                currentCheckpoint = currentCheckpoint.withStatus(
+                        success ? PlanCheckpoint.CheckpointStatus.COMPLETED
+                                : PlanCheckpoint.CheckpointStatus.FAILED);
+                try {
+                    store.save(currentCheckpoint);
+                } catch (Exception e) {
+                    log.warn("Failed to persist final plan checkpoint: {}", e.getMessage());
+                }
             }
         }
 

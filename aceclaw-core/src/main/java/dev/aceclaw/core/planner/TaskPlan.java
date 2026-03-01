@@ -84,11 +84,28 @@ public record TaskPlan(
 
     /**
      * Returns true if the plan has steps that can benefit from parallel execution.
-     * This is the case when any step has explicit dependencies or multiple root steps exist.
+     * Simulates topological execution layers and checks if any layer has 2+ steps.
      */
     public boolean hasParallelizableSteps() {
-        boolean hasDeps = steps.stream().anyMatch(s -> !s.dependsOn().isEmpty());
-        long rootCount = steps.stream().filter(PlannedStep::isRoot).count();
-        return hasDeps || rootCount > 1;
+        if (steps.size() <= 1) return false;
+
+        // Simulate layer-by-layer execution to check for any parallel frontier
+        var completedIds = new java.util.HashSet<String>();
+        var remaining = new java.util.HashSet<String>();
+        for (var s : steps) remaining.add(s.stepId());
+
+        while (!remaining.isEmpty()) {
+            var ready = steps.stream()
+                    .filter(s -> remaining.contains(s.stepId()))
+                    .filter(s -> completedIds.containsAll(s.dependsOn()))
+                    .toList();
+            if (ready.isEmpty()) break; // all remaining are blocked (cycle)
+            if (ready.size() >= 2) return true;
+            for (var s : ready) {
+                completedIds.add(s.stepId());
+                remaining.remove(s.stepId());
+            }
+        }
+        return false;
     }
 }
