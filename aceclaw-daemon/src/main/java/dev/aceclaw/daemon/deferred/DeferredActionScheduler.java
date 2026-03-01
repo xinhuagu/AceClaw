@@ -112,8 +112,8 @@ public final class DeferredActionScheduler {
             EventBus eventBus,
             int tickSeconds,
             ConcurrentHashMap<String, ReentrantLock> sessionTurnLocks) {
-        this.store = store;
-        this.sessionManager = sessionManager;
+        this.store = Objects.requireNonNull(store, "store");
+        this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager");
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry;
         this.model = model;
@@ -122,7 +122,7 @@ public final class DeferredActionScheduler {
         this.thinkingBudget = thinkingBudget;
         this.eventBus = eventBus;
         this.tickSeconds = tickSeconds > 0 ? tickSeconds : 5;
-        this.sessionTurnLocks = sessionTurnLocks;
+        this.sessionTurnLocks = Objects.requireNonNull(sessionTurnLocks, "sessionTurnLocks");
     }
 
     /**
@@ -264,6 +264,7 @@ public final class DeferredActionScheduler {
      * @return true if the action was found and cancelled
      */
     public boolean cancel(String actionId, String reason) {
+        Objects.requireNonNull(actionId, "actionId");
         var opt = store.get(actionId);
         if (opt.isEmpty()) return false;
 
@@ -431,7 +432,7 @@ public final class DeferredActionScheduler {
 
         publishEvent(new DeferEvent.ActionTriggered(
                 action.actionId(), action.sessionId(), Instant.now()));
-        log.info("Executing deferred action '{}' (attempt {}/{})",
+        log.info("Executing deferred action '{}' (attempt {}, max retries {})",
                 action.actionId(), runningAction.attempts(), runningAction.maxRetries());
 
         long startNanos = System.nanoTime();
@@ -518,8 +519,9 @@ public final class DeferredActionScheduler {
      * Converts session conversation messages to LLM messages.
      */
     private static List<Message> toMessages(List<AgentSession.ConversationMessage> history) {
+        var safe = history != null ? history : List.<AgentSession.ConversationMessage>of();
         var result = new ArrayList<Message>();
-        for (var msg : history) {
+        for (var msg : safe) {
             switch (msg) {
                 case AgentSession.ConversationMessage.User u ->
                         result.add(Message.user(u.content()));
