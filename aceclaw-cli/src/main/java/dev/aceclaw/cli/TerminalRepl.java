@@ -140,6 +140,8 @@ public final class TerminalRepl {
     private volatile Status promptStatus;
     /** Last consumed scheduler event sequence from daemon. */
     private volatile long schedulerEventSeq;
+    /** Last consumed deferred event sequence from daemon. */
+    private volatile long deferEventSeq;
 
     private sealed interface UiEvent permits UiNoticeEvent, UiPrintAboveEvent {}
 
@@ -251,6 +253,7 @@ public final class TerminalRepl {
             try {
                 schedulerEventConnection = client.openTaskConnection();
                 schedulerEventSeq = bootstrapSchedulerEventSeq(schedulerEventConnection);
+                deferEventSeq = bootstrapDeferEventSeq(schedulerEventConnection);
             } catch (Exception e) {
                 schedulerEventConnection = null;
                 log.debug("Failed to initialize scheduler event polling: {}", e.getMessage());
@@ -390,6 +393,7 @@ public final class TerminalRepl {
                         }
 
                         pollAndRenderSchedulerEvents(schedulerEventConn, reader);
+                        pollAndRenderDeferredEvents(schedulerEventConn, reader);
                         pollCronStatus(schedulerEventConn);
                     }
                 });
@@ -582,6 +586,125 @@ public final class TerminalRepl {
                 String reason = event.path("reason").asText("");
                 yield WARNING + "[cron skipped] " + RESET + jobId
                         + (reason.isBlank() ? "" : " - " + reason);
+            }
+            default -> null;
+        };
+    }
+
+    private long bootstrapDeferEventSeq(DaemonConnection conn)
+            throws IOException, DaemonClient.DaemonClientException {
+        var params = client.objectMapper().createObjectNode();
+        params.put("afterSeq", Long.MAX_VALUE);
+        params.put("limit", 1);
+        try {
+            JsonNode result = conn.sendRequest("deferred.events.poll", params);
+            return Math.max(0L, result.path("nextSeq").asLong(0L));
+        } catch (Exception e) {
+            log.debug("deferred.events.poll not available (daemon may not support it): {}", e.getMessage());
+            return 0L;
+        }
+    }
+
+    private void pollAndRenderDeferredEvents(DaemonConnection conn, LineReader reader) {
+        if (conn == null) return;
+        try {
+            var params = client.objectMapper().createObjectNode();
+            params.put("afterSeq", deferEventSeq);
+            params.put("limit", 20);
+            JsonNode result = conn.sendRequest("deferred.events.poll", params);
+            deferEventSeq = Math.max(deferEventSeq, result.path("nextSeq").asLong(deferEventSeq));
+            JsonNode events = result.path("events");
+            if (!events.isArray() || events.isEmpty()) {
+                return;
+            }
+
+            for (JsonNode event : events) {
+                String type = event.path("type").asText("");
+                if ("completed".equals(type)) {
+                    String fullOutput = renderDeferredEventNote(event);
+                    if (fullOutput != null) {
+                        enqueueUiPrintAbove(fullOutput);
+                    }
+                    String actionId = event.path("actionId").asText("unknown");
+                    long durationMs = event.path("durationMs").asLong(-1L);
+                    String shortNote = SUCCESS + "deferred completed" + RESET + " [" + actionId + "]"
+                            + (durationMs > 0 ? " in " + durationMs + "ms" : "");
+                    enqueueUiNotice(shortNote);
+                } else {
+                    String note = renderDeferredEventNote(event);
+                    if (note != null) {
+                        enqueueUiNotice(note);
+                    }
+                }
+            }
+            requestUiRender();
+        } catch (Exception e) {
+            log.debug("Failed to poll deferred events: {}", e.getMessage());
+        }
+    }
+
+    private String renderDeferredEventNote(JsonNode event) {
+        String type = event.path("type").asText("");
+        String actionId = event.path("actionId").asText("unknown");
+        return switch (type) {
+            case "scheduled" -> {
+                String goal = event.path("goal").asText("");
+                String runAt = event.path("runAt").asText("");
+                String goalSnippet = goal.length() > 60 ? goal.substring(0, 57) + "..." : goal;
+                yield MUTED + "[deferred scheduled] " + actionId
+                        + " \"" + goalSnippet + "\""
+                        + (runAt.isBlank() ? "" : " @ " + runAt) + RESET;
+            }
+            case "triggered" -> {
+                String ts = event.path("timestamp").asText("");
+                yield MUTED + "[deferred running] " + actionId
+                        + (ts.isBlank() ? "" : " @ " + ts) + RESET;
+            }
+            case "completed" -> {
+                var sb = new StringBuilder();
+                sb.append(MUTED).append("--- ").append(SUCCESS).append("deferred completed")
+                        .append(RESET).append(MUTED).append(" [").append(actionId).append("] ---")
+                        .append(RESET).append("\n");
+
+                String summary = sanitizeCronSummary(event.path("summary").asText(""));
+                if (!summary.isBlank()) {
+                    var sw = new StringWriter();
+                    var pw = new PrintWriter(sw);
+                    new TerminalMarkdownRenderer().render(summary, pw);
+                    pw.flush();
+                    sb.append(sw);
+                } else {
+                    long durationMs = event.path("durationMs").asLong(-1L);
+                    if (durationMs > 0) {
+                        sb.append(MUTED).append("(completed in ").append(durationMs).append("ms)").append(RESET).append("\n");
+                    }
+                    sb.append(WARNING)
+                            .append("No textual summary returned. ")
+                            .append("The action may have completed via tool calls only.")
+                            .append(RESET)
+                            .append("\n");
+                }
+                yield sb.toString();
+            }
+            case "failed" -> {
+                String err = event.path("error").asText("unknown error");
+                int attempt = event.path("attempt").asInt(0);
+                int maxAttempts = event.path("maxAttempts").asInt(0);
+                yield ERROR + "[deferred failed] " + RESET + actionId + " - " + err
+                        + (maxAttempts > 0 ? " (attempt " + attempt + "/" + maxAttempts + ")" : "");
+            }
+            case "expired" -> {
+                yield WARNING + "[deferred expired] " + RESET + actionId;
+            }
+            case "cancelled" -> {
+                String reason = event.path("reason").asText("");
+                yield WARNING + "[deferred cancelled] " + RESET + actionId
+                        + (reason.isBlank() ? "" : " - " + reason);
+            }
+            case "queued" -> {
+                String reason = event.path("reason").asText("");
+                yield MUTED + "[deferred queued] " + actionId
+                        + (reason.isBlank() ? "" : " - " + reason) + RESET;
             }
             default -> null;
         };

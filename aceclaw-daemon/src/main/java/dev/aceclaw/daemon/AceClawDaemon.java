@@ -11,7 +11,12 @@ import dev.aceclaw.daemon.cron.CronExpression;
 import dev.aceclaw.daemon.cron.CronJob;
 import dev.aceclaw.daemon.cron.JobStore;
 import dev.aceclaw.daemon.cron.CronTool;
+import dev.aceclaw.daemon.deferred.DeferCheckTool;
+import dev.aceclaw.daemon.deferred.DeferredActionScheduler;
+import dev.aceclaw.daemon.deferred.DeferredActionStore;
+import dev.aceclaw.daemon.deferred.DeferredEventFeed;
 import dev.aceclaw.daemon.heartbeat.HeartbeatRunner;
+import dev.aceclaw.infra.event.DeferEvent;
 import dev.aceclaw.infra.event.EventBus;
 import dev.aceclaw.infra.event.SchedulerEvent;
 import dev.aceclaw.infra.health.*;
@@ -68,6 +73,7 @@ public final class AceClawDaemon {
     private final JobStore cronJobStore;
     private final EventBus eventBus;
     private final SchedulerEventFeed schedulerEventFeed;
+    private final DeferredEventFeed deferredEventFeed;
     private final HealthMonitor healthMonitor;
     private final RequestRouter router;
     private final ConnectionBridge connectionBridge;
@@ -80,6 +86,9 @@ public final class AceClawDaemon {
     private String bootModel;
     private String bootSystemPrompt;
     private CronScheduler cronScheduler;
+    private DeferredActionScheduler deferredActionScheduler;
+    private DeferredActionStore deferredActionStore;
+    private DeferCheckTool deferCheckTool;
 
     private volatile boolean running;
 
@@ -100,6 +109,8 @@ public final class AceClawDaemon {
         eventBus.start();
         this.schedulerEventFeed = new SchedulerEventFeed();
         eventBus.subscribe(SchedulerEvent.class, schedulerEventFeed::append);
+        this.deferredEventFeed = new DeferredEventFeed();
+        eventBus.subscribe(DeferEvent.class, deferredEventFeed::append);
 
         // Health monitor (aggregates per-component health checks)
         this.healthMonitor = new HealthMonitor(eventBus);
@@ -195,6 +206,17 @@ public final class AceClawDaemon {
         toolRegistry.register(new WebFetchTool(workingDir));
         toolRegistry.register(new CronTool(
                 cronJobStore, () -> cronScheduler != null && cronScheduler.isRunning()));
+
+        // Deferred action store and tool (registered now, scheduler wired later after handler creation)
+        this.deferredActionStore = new DeferredActionStore(homeDir);
+        try {
+            this.deferredActionStore.load();
+        } catch (java.io.IOException e) {
+            log.warn("Failed to preload deferred action store: {}", e.getMessage());
+        }
+        // DeferCheckTool registered with null scheduler; scheduler wired after handler creation
+        this.deferCheckTool = new DeferCheckTool(null);
+        toolRegistry.register(deferCheckTool);
 
         // Memory management tool (agent can actively save/search/list memories)
         if (memoryStore != null) {
@@ -460,6 +482,20 @@ public final class AceClawDaemon {
             }
 
             log.info("Self-improvement engine wired (with strategy refinement + candidate pipeline)");
+        }
+
+        // Wire deferred action scheduler (needs agentHandler's turn locks)
+        if (config.deferredActionEnabled()) {
+            this.deferredActionScheduler = new DeferredActionScheduler(
+                    deferredActionStore, sessionManager,
+                    llmClient, toolRegistry, model, systemPrompt,
+                    config.maxTokens(), config.thinkingBudget(),
+                    eventBus, config.deferredActionTickSeconds(),
+                    agentHandler.sessionTurnLocks());
+            agentHandler.setDeferredActionScheduler(deferredActionScheduler);
+            deferCheckTool.setScheduler(deferredActionScheduler);
+            log.info("Deferred action scheduler wired (tick every {}s)",
+                    config.deferredActionTickSeconds());
         }
 
         agentHandler.register(router);
@@ -839,6 +875,119 @@ public final class AceClawDaemon {
             return result;
         });
 
+        // Deferred event feed polling for foreground CLI notifications.
+        router.register("deferred.events.poll", params -> {
+            long afterSeq = 0L;
+            int limit = 20;
+            if (params != null) {
+                if (params.has("afterSeq")) {
+                    afterSeq = Math.max(0L, params.get("afterSeq").asLong());
+                }
+                if (params.has("limit")) {
+                    limit = params.get("limit").asInt(20);
+                }
+            }
+
+            var polled = deferredEventFeed.poll(afterSeq, limit);
+            var result = objectMapper.createObjectNode();
+            result.put("nextSeq", polled.nextSequence());
+            var events = objectMapper.createArrayNode();
+            for (var entry : polled.entries()) {
+                var node = objectMapper.createObjectNode();
+                node.put("seq", entry.sequence());
+                var event = entry.event();
+                node.put("actionId", event.actionId());
+                node.put("sessionId", event.sessionId());
+                node.put("timestamp", event.timestamp().toString());
+                switch (event) {
+                    case DeferEvent.ActionScheduled e -> {
+                        node.put("type", "scheduled");
+                        node.put("goal", e.goal());
+                        node.put("runAt", e.runAt().toString());
+                    }
+                    case DeferEvent.ActionTriggered _ -> {
+                        node.put("type", "triggered");
+                    }
+                    case DeferEvent.ActionCompleted e -> {
+                        node.put("type", "completed");
+                        node.put("durationMs", e.durationMs());
+                        node.put("summary", e.summary());
+                    }
+                    case DeferEvent.ActionFailed e -> {
+                        node.put("type", "failed");
+                        node.put("error", e.error());
+                        node.put("attempt", e.attempt());
+                        node.put("maxAttempts", e.maxAttempts());
+                    }
+                    case DeferEvent.ActionExpired _ -> {
+                        node.put("type", "expired");
+                    }
+                    case DeferEvent.ActionCancelled e -> {
+                        node.put("type", "cancelled");
+                        node.put("reason", e.reason());
+                    }
+                    case DeferEvent.ActionQueued e -> {
+                        node.put("type", "queued");
+                        node.put("reason", e.reason());
+                    }
+                }
+                events.add(node);
+            }
+            result.set("events", events);
+            return result;
+        });
+
+        // Deferred action RPC routes
+        router.register("deferred.status", params -> {
+            var result = objectMapper.createObjectNode();
+            boolean deferredRunning = deferredActionScheduler != null && deferredActionScheduler.isRunning();
+            result.put("schedulerRunning", deferredRunning);
+
+            var actionsArray = objectMapper.createArrayNode();
+            if (deferredActionStore != null) {
+                for (var action : deferredActionStore.all()) {
+                    var an = objectMapper.createObjectNode();
+                    an.put("actionId", action.actionId());
+                    an.put("sessionId", action.sessionId());
+                    an.put("goal", action.goal());
+                    an.put("state", action.state().name());
+                    an.put("createdAt", action.createdAt().toString());
+                    an.put("runAt", action.runAt().toString());
+                    an.put("expiresAt", action.expiresAt().toString());
+                    an.put("attempts", action.attempts());
+                    an.put("maxRetries", action.maxRetries());
+                    if (action.lastError() != null) {
+                        an.put("lastError", action.lastError());
+                    }
+                    if (action.lastOutput() != null) {
+                        an.put("lastOutput", action.lastOutput());
+                    }
+                    actionsArray.add(an);
+                }
+            }
+            result.set("actions", actionsArray);
+            return result;
+        });
+
+        router.register("deferred.cancel", params -> {
+            String actionId = params != null && params.has("actionId")
+                    ? params.get("actionId").asText() : null;
+            if (actionId == null || actionId.isBlank()) {
+                throw new IllegalArgumentException("actionId is required");
+            }
+            String reason = params.has("reason") ? params.get("reason").asText() : "user-cancelled";
+
+            if (deferredActionScheduler == null) {
+                throw new IllegalStateException("Deferred action scheduler is not enabled");
+            }
+
+            boolean cancelled = deferredActionScheduler.cancel(actionId, reason);
+            var result = objectMapper.createObjectNode();
+            result.put("cancelled", cancelled);
+            result.put("actionId", actionId);
+            return result;
+        });
+
         // Store references for boot execution
         this.bootLlmClient = llmClient;
         this.bootToolRegistry = toolRegistry;
@@ -1070,6 +1219,23 @@ public final class AceClawDaemon {
             }
         } else {
             log.debug("Cron scheduler disabled via config");
+        }
+
+        // 5.5. Start deferred action scheduler
+        if (config.deferredActionEnabled() && deferredActionScheduler != null) {
+            try {
+                deferredActionScheduler.start();
+
+                shutdownManager.register(new ShutdownManager.ShutdownParticipant() {
+                    @Override public String name() { return "Deferred Action Scheduler"; }
+                    @Override public int priority() { return 87; }
+                    @Override public void onShutdown() { deferredActionScheduler.stop(); }
+                });
+            } catch (Exception e) {
+                log.error("Deferred action scheduler startup failed (daemon will continue): {}", e.getMessage(), e);
+            }
+        } else if (!config.deferredActionEnabled()) {
+            log.debug("Deferred action scheduler disabled via config");
         }
 
         // 6. Start heartbeat runner (after cron scheduler, syncs HEARTBEAT.md into cron jobs)

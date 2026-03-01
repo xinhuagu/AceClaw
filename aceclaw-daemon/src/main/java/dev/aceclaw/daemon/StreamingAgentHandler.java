@@ -72,8 +72,10 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Handles {@code agent.prompt} JSON-RPC requests with streaming support.
@@ -106,7 +108,9 @@ public final class StreamingAgentHandler {
             Map.entry("edit_file", PermissionLevel.WRITE),
             Map.entry("bash", PermissionLevel.EXECUTE),
             Map.entry("browser", PermissionLevel.EXECUTE),
-            Map.entry("applescript", PermissionLevel.EXECUTE)
+            Map.entry("applescript", PermissionLevel.EXECUTE),
+            Map.entry("cron", PermissionLevel.READ),
+            Map.entry("defer_check", PermissionLevel.READ)
     );
 
     private final SessionManager sessionManager;
@@ -114,12 +118,18 @@ public final class StreamingAgentHandler {
     private final ToolRegistry toolRegistry;
     private final PermissionManager permissionManager;
     private final ObjectMapper objectMapper;
-    private final java.util.concurrent.ConcurrentHashMap<String, ToolMetricsCollector> sessionMetrics =
-            new java.util.concurrent.ConcurrentHashMap<>();
-    private final java.util.concurrent.ConcurrentHashMap<String, List<String>> sessionInjectedCandidateIds =
-            new java.util.concurrent.ConcurrentHashMap<>();
-    private final java.util.concurrent.ConcurrentHashMap<String, AntiPatternGateOverride> antiPatternGateOverrides =
-            new java.util.concurrent.ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, ToolMetricsCollector> sessionMetrics =
+            new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, List<String>> sessionInjectedCandidateIds =
+            new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, AntiPatternGateOverride> antiPatternGateOverrides =
+            new ConcurrentHashMap<>();
+
+    /** Per-session turn locks for coordinating with DeferredActionScheduler. */
+    private final ConcurrentHashMap<String, ReentrantLock> sessionTurnLocks =
+            new ConcurrentHashMap<>();
+
+    private dev.aceclaw.daemon.deferred.DeferredActionScheduler deferredActionScheduler;
 
     /**
      * Creates a streaming agent handler.
@@ -194,11 +204,19 @@ public final class StreamingAgentHandler {
                 maxTokens, thinkingBudget, compactor, agentConfig);
 
         // Wire stream event handler to SkillTool for sub-agent event forwarding
+        // and session ID to DeferCheckTool
         for (var tool : toolRegistry.all()) {
             if (tool instanceof SkillTool st) {
                 st.setCurrentHandler(eventHandler);
             }
+            if (tool instanceof dev.aceclaw.daemon.deferred.DeferCheckTool dct) {
+                dct.setCurrentSessionId(sessionId);
+            }
         }
+
+        // Acquire per-session turn lock (coordinates with DeferredActionScheduler)
+        var turnLock = sessionTurnLocks.computeIfAbsent(sessionId, _ -> new ReentrantLock());
+        turnLock.lock();
 
         // Start the cancel monitor thread to read from the socket
         cancelContext.startMonitor();
@@ -246,10 +264,26 @@ public final class StreamingAgentHandler {
             throw new IllegalStateException(userMessage);
         } finally {
             cancelContext.stopMonitor();
-            // Clear handler to avoid stale references between requests
+            // Release turn lock before draining deferred actions
+            turnLock.unlock();
+
+            // Drain any deferred actions that were queued while this turn ran
+            if (deferredActionScheduler != null) {
+                try {
+                    deferredActionScheduler.notifyTurnComplete(sessionId);
+                } catch (Exception e) {
+                    log.warn("Failed to drain deferred actions for session {}: {}",
+                            sessionId, e.getMessage());
+                }
+            }
+
+            // Clear handler and session references to avoid stale state between requests
             for (var tool : toolRegistry.all()) {
                 if (tool instanceof SkillTool st) {
                     st.setCurrentHandler(null);
+                }
+                if (tool instanceof dev.aceclaw.daemon.deferred.DeferCheckTool dct) {
+                    dct.setCurrentSessionId(null);
                 }
             }
         }
@@ -910,6 +944,20 @@ public final class StreamingAgentHandler {
     public void setCandidateInjectionConfig(int maxCount, int maxTokens) {
         this.candidateInjectionMaxCount = Math.max(0, maxCount);
         this.candidateInjectionMaxTokens = Math.max(0, maxTokens);
+    }
+
+    /**
+     * Sets the deferred action scheduler for post-turn notification.
+     */
+    public void setDeferredActionScheduler(dev.aceclaw.daemon.deferred.DeferredActionScheduler scheduler) {
+        this.deferredActionScheduler = scheduler;
+    }
+
+    /**
+     * Returns the per-session turn locks (shared with DeferredActionScheduler).
+     */
+    public ConcurrentHashMap<String, ReentrantLock> sessionTurnLocks() {
+        return sessionTurnLocks;
     }
 
     /**

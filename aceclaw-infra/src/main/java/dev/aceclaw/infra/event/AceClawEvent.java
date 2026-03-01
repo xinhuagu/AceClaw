@@ -19,10 +19,11 @@ import java.time.Instant;
  *   <li>{@link SchedulerEvent} — cron scheduler events (triggered, completed, failed, skipped)</li>
  *   <li>{@link PlanEvent} — task plan lifecycle events (created, step started/completed, plan completed)</li>
  *   <li>{@link ResumeEvent} — plan checkpoint resume lifecycle events (detected, bound, injected, fallback)</li>
+ *   <li>{@link DeferEvent} — deferred action lifecycle events (scheduled, triggered, completed, failed)</li>
  * </ul>
  */
 public sealed interface AceClawEvent
-        permits AgentEvent, ToolEvent, SessionEvent, HealthEvent, SystemEvent, SchedulerEvent, PlanEvent, ResumeEvent {
+        permits AgentEvent, ToolEvent, SessionEvent, HealthEvent, SystemEvent, SchedulerEvent, PlanEvent, ResumeEvent, DeferEvent {
 
     /** When this event occurred. */
     Instant timestamp();

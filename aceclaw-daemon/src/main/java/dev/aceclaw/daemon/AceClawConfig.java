@@ -97,6 +97,8 @@ public final class AceClawConfig {
     private static final double DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_TIMEOUT_RATE = 0.20;
     private static final double DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_PERMISSION_BLOCK_RATE = 0.20;
     private static final int DEFAULT_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS = 168;
+    private static final boolean DEFAULT_DEFERRED_ACTION_ENABLED = true;
+    private static final int DEFAULT_DEFERRED_ACTION_TICK_SECONDS = 5;
 
     /** Claude CLI credentials directory. */
     private static final Path CLAUDE_CLI_DIR = Path.of(System.getProperty("user.home"), ".claude");
@@ -157,6 +159,8 @@ public final class AceClawConfig {
     private double skillAutoReleaseRollbackMaxTimeoutRate;
     private double skillAutoReleaseRollbackMaxPermissionBlockRate;
     private int skillAutoReleaseHealthLookbackHours;
+    private boolean deferredActionEnabled;
+    private int deferredActionTickSeconds;
     private Map<String, List<HookMatcherFormat>> hooks;
 
     private AceClawConfig() {
@@ -208,6 +212,8 @@ public final class AceClawConfig {
         this.skillAutoReleaseRollbackMaxPermissionBlockRate =
                 DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_PERMISSION_BLOCK_RATE;
         this.skillAutoReleaseHealthLookbackHours = DEFAULT_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS;
+        this.deferredActionEnabled = DEFAULT_DEFERRED_ACTION_ENABLED;
+        this.deferredActionTickSeconds = DEFAULT_DEFERRED_ACTION_TICK_SECONDS;
         this.providerModels = new java.util.HashMap<>();
     }
 
@@ -921,6 +927,22 @@ public final class AceClawConfig {
     }
 
     /**
+     * Returns whether the deferred action scheduler is enabled.
+     * Defaults to true.
+     */
+    public boolean deferredActionEnabled() {
+        return deferredActionEnabled;
+    }
+
+    /**
+     * Returns the deferred action scheduler tick interval in seconds.
+     * Defaults to 5.
+     */
+    public int deferredActionTickSeconds() {
+        return deferredActionTickSeconds;
+    }
+
+    /**
      * Returns the hooks configuration map (event name to list of hook matchers).
      * Returns null if no hooks are configured.
      */
@@ -1263,6 +1285,12 @@ public final class AceClawConfig {
                 && fileConfig.skillAutoReleaseHealthLookbackHours > 0) {
             this.skillAutoReleaseHealthLookbackHours = fileConfig.skillAutoReleaseHealthLookbackHours;
         }
+        if (fileConfig.deferredActionEnabled != null) {
+            this.deferredActionEnabled = fileConfig.deferredActionEnabled;
+        }
+        if (fileConfig.deferredActionTickSeconds > 0) {
+            this.deferredActionTickSeconds = fileConfig.deferredActionTickSeconds;
+        }
     }
 
     /**
@@ -1322,6 +1350,8 @@ public final class AceClawConfig {
         public Double skillAutoReleaseRollbackMaxTimeoutRate;
         public Double skillAutoReleaseRollbackMaxPermissionBlockRate;
         public Integer skillAutoReleaseHealthLookbackHours;
+        public Boolean deferredActionEnabled;
+        public int deferredActionTickSeconds;
         public String defaultProfile;
         public Map<String, ConfigFileFormat> profiles;
         public Map<String, String> providerModels;
