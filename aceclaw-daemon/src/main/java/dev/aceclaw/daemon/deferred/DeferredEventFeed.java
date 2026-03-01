@@ -36,8 +36,8 @@ public final class DeferredEventFeed {
 
     public void append(DeferEvent event) {
         Objects.requireNonNull(event, "event");
-        long seq = sequence.incrementAndGet();
         synchronized (lock) {
+            long seq = sequence.incrementAndGet();
             entries.addLast(new Entry(seq, event));
             while (entries.size() > maxEvents) {
                 entries.removeFirst();
@@ -68,5 +68,9 @@ public final class DeferredEventFeed {
 
     public record Entry(long sequence, DeferEvent event) {}
 
-    public record PollResult(long nextSequence, List<Entry> entries) {}
+    public record PollResult(long nextSequence, List<Entry> entries) {
+        public PollResult {
+            entries = entries != null ? List.copyOf(entries) : List.of();
+        }
+    }
 }

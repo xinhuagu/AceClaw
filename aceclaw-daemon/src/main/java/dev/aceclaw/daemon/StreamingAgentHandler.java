@@ -217,10 +217,10 @@ public final class StreamingAgentHandler {
         // Acquire per-session turn lock (coordinates with DeferredActionScheduler)
         var turnLock = sessionTurnLocks.computeIfAbsent(sessionId, _ -> new ReentrantLock());
         turnLock.lock();
-
-        // Start the cancel monitor thread to read from the socket
-        cancelContext.startMonitor();
         try {
+            // Start the cancel monitor thread to read from the socket
+            cancelContext.startMonitor();
+
             // Check for resumable plan checkpoint before planning or execution
             if (planCheckpointStore != null) {
                 var resumeResult = tryResumeFromCheckpoint(

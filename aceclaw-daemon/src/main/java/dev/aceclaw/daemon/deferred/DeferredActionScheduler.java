@@ -26,6 +26,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Objects;
 import java.util.Queue;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -182,6 +183,9 @@ public final class DeferredActionScheduler {
      * @throws IllegalArgumentException if limits are exceeded
      */
     public DeferredAction schedule(String sessionId, int delaySeconds, String goal, int maxRetries) {
+        Objects.requireNonNull(sessionId, "sessionId");
+        Objects.requireNonNull(goal, "goal");
+
         // Validate limits
         if (delaySeconds < MIN_DELAY_SECONDS || delaySeconds > MAX_DELAY_SECONDS) {
             throw new IllegalArgumentException(
@@ -325,15 +329,22 @@ public final class DeferredActionScheduler {
                         action.sessionId(), _ -> new ReentrantLock());
 
                 if (turnLock.tryLock()) {
-                    try {
-                        // Session is idle — execute on a virtual thread (release lock first)
-                    } finally {
-                        turnLock.unlock();
-                    }
-                    // Execute outside the lock (the action itself will acquire it)
+                    // Session is idle — execute on a virtual thread while holding the lock.
+                    // The virtual thread inherits the lock context; we pass it explicitly
+                    // so executeAction can release it when done.
                     final var actionToRun = action;
-                    Thread.ofVirtual().name("deferred-exec-" + action.actionId()).start(
-                            () -> executeAction(actionToRun));
+                    final var heldLock = turnLock;
+                    Thread.ofVirtual().name("deferred-exec-" + action.actionId()).start(() -> {
+                        // Re-acquire the lock on the virtual thread (handoff from tick thread)
+                        heldLock.lock();
+                        try {
+                            executeAction(actionToRun);
+                        } finally {
+                            heldLock.unlock();
+                        }
+                    });
+                    // Release the tryLock from tick thread — the virtual thread will acquire its own
+                    turnLock.unlock();
                 } else {
                     // Session is busy — queue for drain on notifyTurnComplete
                     queuedActions.computeIfAbsent(action.sessionId(), _ -> new ConcurrentLinkedQueue<>())

@@ -133,6 +133,7 @@ public final class DeferredActionStore {
      * Returns all actions for a given session (snapshot).
      */
     public List<DeferredAction> bySession(String sessionId) {
+        java.util.Objects.requireNonNull(sessionId, "sessionId");
         lock.readLock().lock();
         try {
             return actions.values().stream()
@@ -159,6 +160,7 @@ public final class DeferredActionStore {
      * Finds an action by idempotency key.
      */
     public Optional<DeferredAction> findByIdempotencyKey(String idempotencyKey) {
+        java.util.Objects.requireNonNull(idempotencyKey, "idempotencyKey");
         lock.readLock().lock();
         try {
             return actions.values().stream()
@@ -212,6 +214,7 @@ public final class DeferredActionStore {
      * Returns the number of PENDING actions for a given session.
      */
     public int pendingCountForSession(String sessionId) {
+        java.util.Objects.requireNonNull(sessionId, "sessionId");
         lock.readLock().lock();
         try {
             return (int) actions.values().stream()

@@ -648,7 +648,7 @@ public final class TerminalRepl {
         String actionId = event.path("actionId").asText("unknown");
         return switch (type) {
             case "scheduled" -> {
-                String goal = event.path("goal").asText("");
+                String goal = sanitizeCronSummary(event.path("goal").asText(""));
                 String runAt = event.path("runAt").asText("");
                 String goalSnippet = goal.length() > 60 ? goal.substring(0, 57) + "..." : goal;
                 yield MUTED + "[deferred scheduled] " + actionId
@@ -687,7 +687,7 @@ public final class TerminalRepl {
                 yield sb.toString();
             }
             case "failed" -> {
-                String err = event.path("error").asText("unknown error");
+                String err = sanitizeCronSummary(event.path("error").asText("unknown error"));
                 int attempt = event.path("attempt").asInt(0);
                 int maxAttempts = event.path("maxAttempts").asInt(0);
                 yield ERROR + "[deferred failed] " + RESET + actionId + " - " + err
@@ -697,12 +697,12 @@ public final class TerminalRepl {
                 yield WARNING + "[deferred expired] " + RESET + actionId;
             }
             case "cancelled" -> {
-                String reason = event.path("reason").asText("");
+                String reason = sanitizeCronSummary(event.path("reason").asText(""));
                 yield WARNING + "[deferred cancelled] " + RESET + actionId
                         + (reason.isBlank() ? "" : " - " + reason);
             }
             case "queued" -> {
-                String reason = event.path("reason").asText("");
+                String reason = sanitizeCronSummary(event.path("reason").asText(""));
                 yield MUTED + "[deferred queued] " + actionId
                         + (reason.isBlank() ? "" : " - " + reason) + RESET;
             }
