@@ -166,6 +166,10 @@ public final class TaskStreamReader implements Runnable {
                     sink.onStreamError(params.get("error").asText());
                 }
             }
+            case "stream.heartbeat" -> {
+                String phase = params != null ? params.path("phase").asText("active") : "active";
+                handle.markActivity("heartbeat:" + phase);
+            }
             case "stream.cancelled" -> {
                 handle.markActivity("cancelled");
                 sink.onStreamCancelled();

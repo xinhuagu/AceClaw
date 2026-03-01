@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.StructuredTaskScope;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Streaming variant of the ReAct execution engine.
@@ -390,34 +391,70 @@ public final class StreamingAgentLoop {
         return builder.build();
     }
 
+    /** Interval between heartbeat signals during tool execution. */
+    private static final long TOOL_HEARTBEAT_INTERVAL_MS = 15_000;
+
     /**
      * Executes tool calls, using virtual threads for parallel execution.
+     * A heartbeat thread sends periodic signals while tools are running.
      */
     private List<ContentBlock.ToolResult> executeTools(
             List<ContentBlock.ToolUse> toolUseBlocks,
             StreamEventHandler handler,
             ToolFailureAdvisor failureAdvisor) {
         Objects.requireNonNull(failureAdvisor, "failureAdvisor");
-        if (toolUseBlocks.size() == 1) {
-            return List.of(executeSingleTool(toolUseBlocks.getFirst(), handler, failureAdvisor));
+
+        var heartbeatDone = new AtomicBoolean(false);
+        var heartbeat = Thread.ofVirtual()
+                .name("tool-heartbeat")
+                .start(() -> heartbeatLoop(handler, heartbeatDone, "tool_execution"));
+
+        try {
+            if (toolUseBlocks.size() == 1) {
+                return List.of(executeSingleTool(toolUseBlocks.getFirst(), handler, failureAdvisor));
+            }
+
+            try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+                var subtasks = toolUseBlocks.stream()
+                        .map(toolUse -> scope.fork(() -> executeSingleTool(toolUse, handler, failureAdvisor)))
+                        .toList();
+
+                scope.join();
+
+                return subtasks.stream()
+                        .map(StructuredTaskScope.Subtask::get)
+                        .toList();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.error("Tool execution interrupted");
+                return toolUseBlocks.stream()
+                        .map(tu -> new ContentBlock.ToolResult(tu.id(), "Tool execution interrupted", true))
+                        .toList();
+            }
+        } finally {
+            heartbeatDone.set(true);
+            try {
+                heartbeat.join(2000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
+    }
 
-        try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
-            var subtasks = toolUseBlocks.stream()
-                    .map(toolUse -> scope.fork(() -> executeSingleTool(toolUse, handler, failureAdvisor)))
-                    .toList();
-
-            scope.join();
-
-            return subtasks.stream()
-                    .map(StructuredTaskScope.Subtask::get)
-                    .toList();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.error("Tool execution interrupted");
-            return toolUseBlocks.stream()
-                    .map(tu -> new ContentBlock.ToolResult(tu.id(), "Tool execution interrupted", true))
-                    .toList();
+    /**
+     * Sends periodic heartbeat events until the done flag is set.
+     */
+    private static void heartbeatLoop(StreamEventHandler handler, AtomicBoolean done, String phase) {
+        while (!done.get()) {
+            try {
+                Thread.sleep(TOOL_HEARTBEAT_INTERVAL_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            if (!done.get()) {
+                handler.onHeartbeat(new StreamEvent.Heartbeat(phase));
+            }
         }
     }
 

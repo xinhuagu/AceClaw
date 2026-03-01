@@ -51,6 +51,12 @@ public interface StreamEventHandler {
     default void onSubAgentEnd(String agentId) {}
 
     /**
+     * Called periodically to signal the agent is still active during long
+     * operations (e.g. tool execution, LLM streaming).
+     */
+    default void onHeartbeat(StreamEvent.Heartbeat event) {}
+
+    /**
      * Called when a tool execution finishes.
      *
      * @param toolUseId  tool-use block id from the model response

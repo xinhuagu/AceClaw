@@ -81,6 +81,7 @@ class SequentialPlanExecutorTest {
                     case StreamEvent.MessageDelta e -> handler.onMessageDelta(e);
                     case StreamEvent.StreamComplete e -> handler.onComplete(e);
                     case StreamEvent.StreamError e -> handler.onError(e);
+                    case StreamEvent.Heartbeat e -> handler.onHeartbeat(e);
                 }
             }
         }

@@ -1329,6 +1329,17 @@ public final class StreamingAgentHandler {
         }
 
         @Override
+        public void onHeartbeat(StreamEvent.Heartbeat event) {
+            try {
+                var params = objectMapper.createObjectNode();
+                params.put("phase", event.phase());
+                context.sendNotification("stream.heartbeat", params);
+            } catch (IOException e) {
+                log.debug("Failed to send heartbeat notification: {}", e.getMessage());
+            }
+        }
+
+        @Override
         public void onError(StreamEvent.StreamError event) {
             try {
                 var params = objectMapper.createObjectNode();

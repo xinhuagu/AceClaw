@@ -22,14 +22,27 @@ import java.util.stream.Stream;
  *
  * <p>Parses the Server-Sent Events line stream from the Anthropic Messages API
  * and dispatches typed events to the registered {@link StreamEventHandler}.
+ *
+ * <p>A watchdog virtual thread monitors stream liveness. If no SSE line is
+ * received within {@link #STREAM_READ_TIMEOUT_MS}, the session is cancelled
+ * and the underlying HTTP response body is closed, unblocking the iterator.
  */
 final class AnthropicStreamSession implements StreamSession {
 
     private static final Logger log = LoggerFactory.getLogger(AnthropicStreamSession.class);
 
+    /** Maximum silence between SSE lines before considering the stream hung. */
+    static final long STREAM_READ_TIMEOUT_MS = 120_000;
+
+    /** How often the watchdog checks for timeout. */
+    private static final long WATCHDOG_CHECK_INTERVAL_MS = 5_000;
+
     private final HttpResponse<Stream<String>> response;
     private final AnthropicMapper mapper;
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
+
+    /** Timestamp of the last SSE line received (any line, including empty/ping). */
+    private volatile long lastLineAtMs;
 
     // Accumulates partial input_json_delta fragments per content block index
     private final Map<Integer, StringBuilder> toolInputAccumulators = new HashMap<>();
@@ -46,11 +59,18 @@ final class AnthropicStreamSession implements StreamSession {
     @Override
     public void onEvent(StreamEventHandler handler) {
         String currentEventType = null;
+        lastLineAtMs = System.currentTimeMillis();
+
+        // Start watchdog to detect hung streams
+        var watchdog = Thread.ofVirtual()
+                .name("sse-watchdog")
+                .start(() -> watchdogLoop());
 
         try (Stream<String> lines = response.body()) {
             var iterator = lines.iterator();
             while (iterator.hasNext() && !cancelled.get()) {
                 String line = iterator.next();
+                lastLineAtMs = System.currentTimeMillis();
 
                 if (line.isEmpty()) {
                     // Empty line marks the end of an SSE event block
@@ -78,12 +98,51 @@ final class AnthropicStreamSession implements StreamSession {
                         : new LlmException("Stream processing error", e);
                 handler.onError(new StreamEvent.StreamError(llmEx));
             }
+        } finally {
+            // Ensure watchdog exits
+            cancelled.set(true);
+            try {
+                watchdog.join(2000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
     @Override
     public void cancel() {
-        cancelled.set(true);
+        if (cancelled.compareAndSet(false, true)) {
+            // Close the response body stream to unblock iterator.hasNext()
+            try {
+                response.body().close();
+            } catch (Exception e) {
+                log.debug("Failed to close response body on cancel: {}", e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Watchdog loop: periodically checks if the stream has gone silent.
+     * If no SSE line arrives within {@link #STREAM_READ_TIMEOUT_MS}, cancels the session.
+     */
+    private void watchdogLoop() {
+        while (!cancelled.get()) {
+            try {
+                Thread.sleep(WATCHDOG_CHECK_INTERVAL_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            if (cancelled.get()) {
+                return;
+            }
+            long silenceMs = System.currentTimeMillis() - lastLineAtMs;
+            if (silenceMs >= STREAM_READ_TIMEOUT_MS) {
+                log.warn("SSE stream read timeout: no data for {}ms, cancelling", silenceMs);
+                cancel();
+                return;
+            }
+        }
     }
 
     private void dispatchEvent(String eventType, String data, StreamEventHandler handler) {
