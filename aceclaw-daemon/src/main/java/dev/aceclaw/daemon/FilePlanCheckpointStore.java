@@ -135,6 +135,7 @@ public final class FilePlanCheckpointStore implements PlanCheckpointStore {
                         .filter(p -> p.getFileName().toString().endsWith(CHECKPOINT_SUFFIX))
                         .toList();
                 for (var path : toDelete) {
+                    boolean existedBefore = Files.exists(path);
                     readCheckpoint(path).ifPresent(cp -> {
                         if (cp.updatedAt().isBefore(threshold)) {
                             try {
@@ -144,8 +145,8 @@ public final class FilePlanCheckpointStore implements PlanCheckpointStore {
                             }
                         }
                     });
-                    // Check if file was deleted (readCheckpoint might fail for corrupt files)
-                    if (!Files.exists(path)) {
+                    // Only count as deleted if the file existed before and is now gone
+                    if (existedBefore && !Files.exists(path)) {
                         deleted++;
                     }
                 }
@@ -267,6 +268,12 @@ public final class FilePlanCheckpointStore implements PlanCheckpointStore {
         }
 
         PlanCheckpoint toDomain() {
+            CheckpointStatus domainStatus;
+            try {
+                domainStatus = CheckpointStatus.valueOf(status);
+            } catch (IllegalArgumentException | NullPointerException e) {
+                domainStatus = CheckpointStatus.INTERRUPTED; // safe fallback for corrupt data
+            }
             return new PlanCheckpoint(
                     planId,
                     sessionId,
@@ -277,7 +284,7 @@ public final class FilePlanCheckpointStore implements PlanCheckpointStore {
                     completedStepResults.stream().map(StepResultDto::toDomain).toList(),
                     lastCompletedStepIndex,
                     conversationSnapshot,
-                    CheckpointStatus.valueOf(status),
+                    domainStatus,
                     resumeHint,
                     artifacts,
                     Instant.parse(createdAt),

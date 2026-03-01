@@ -46,6 +46,8 @@ public record PlanCheckpoint(
         Objects.requireNonNull(originalGoal, "originalGoal");
         Objects.requireNonNull(plan, "plan");
         Objects.requireNonNull(status, "status");
+        Objects.requireNonNull(createdAt, "createdAt");
+        Objects.requireNonNull(updatedAt, "updatedAt");
         completedStepResults = completedStepResults != null
                 ? List.copyOf(completedStepResults) : List.of();
         conversationSnapshot = conversationSnapshot != null

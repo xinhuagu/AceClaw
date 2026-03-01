@@ -1040,9 +1040,12 @@ class DaemonIntegrationTest {
             assertThat(hasPlanCompleted).isTrue();
 
             // Verify checkpoint files were created on disk
-            var checkpointFiles = Files.list(checkpointDir)
-                    .filter(p -> p.toString().endsWith(".checkpoint.json"))
-                    .toList();
+            List<Path> checkpointFiles;
+            try (var files = Files.list(checkpointDir)) {
+                checkpointFiles = files
+                        .filter(p -> p.toString().endsWith(".checkpoint.json"))
+                        .toList();
+            }
             assertThat(checkpointFiles).isNotEmpty();
 
             // Read checkpoint and verify content

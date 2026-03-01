@@ -1616,6 +1616,10 @@ public final class StreamingAgentHandler {
         for (var json : jsonMessages) {
             try {
                 var node = objectMapper.readTree(json);
+                if (node == null) {
+                    log.debug("Null JSON node for conversation message, skipping");
+                    continue;
+                }
                 String role = node.has("role") ? node.get("role").asText() : "user";
                 String content = node.has("content") ? node.get("content").asText() : "";
                 switch (role) {

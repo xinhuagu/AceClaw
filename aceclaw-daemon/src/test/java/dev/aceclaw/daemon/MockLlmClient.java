@@ -3,6 +3,7 @@ package dev.aceclaw.daemon;
 import dev.aceclaw.core.llm.*;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -41,7 +42,7 @@ public final class MockLlmClient implements LlmClient {
      * Used by flows that call sendMessage (e.g. plan generation via LLMTaskPlanner).
      */
     public void enqueueSendMessageResponse(LlmResponse response) {
-        sendMessageResponses.add(response);
+        sendMessageResponses.add(Objects.requireNonNull(response, "response"));
     }
 
     /**
@@ -70,7 +71,7 @@ public final class MockLlmClient implements LlmClient {
 
     @Override
     public LlmResponse sendMessage(LlmRequest request) throws LlmException {
-        capturedSendRequests.add(request);
+        capturedSendRequests.add(Objects.requireNonNull(request, "request"));
         var next = sendMessageResponses.poll();
         if (next == null) {
             throw new LlmException("No more mock sendMessage responses queued", 500);
@@ -156,6 +157,7 @@ public final class MockLlmClient implements LlmClient {
      * Used by plan generation (LLMTaskPlanner) which calls sendMessage.
      */
     public static LlmResponse sendMessageTextResponse(String text) {
+        Objects.requireNonNull(text, "text");
         return new LlmResponse(
                 "msg-mock-send",
                 "mock-model",
