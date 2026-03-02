@@ -2192,6 +2192,7 @@ public final class StreamingAgentHandler {
          * Returns a future that will be completed when the matching response arrives.
          */
         CompletableFuture<JsonNode> registerPermissionRequest(String requestId) {
+            Objects.requireNonNull(requestId, "requestId");
             var future = new CompletableFuture<JsonNode>();
             pendingPermissions.put(requestId, future);
             // If stopMonitor already ran, cancel immediately so the tool thread
@@ -2206,6 +2207,7 @@ public final class StreamingAgentHandler {
          * Unregisters and cancels a pending permission request if it has not been completed.
          */
         void unregisterPermissionRequest(String requestId) {
+            Objects.requireNonNull(requestId, "requestId");
             var future = pendingPermissions.remove(requestId);
             if (future != null && !future.isDone()) {
                 future.cancel(false);
@@ -2306,11 +2308,10 @@ public final class StreamingAgentHandler {
                                         if (future != null) {
                                             future.complete(message);
                                         } else {
-                                            log.warn("Cancel monitor: no pending request for requestId={}, routing to fallback", rid);
-                                            unmatchedResponses.offer(message);
+                                            log.warn("Cancel monitor: no pending request for requestId={}, dropping stale permission.response", rid);
                                         }
                                     } else {
-                                        unmatchedResponses.offer(message);
+                                        log.warn("Cancel monitor: permission.response missing requestId, dropping message");
                                     }
                                 } else if ("resume.response".equals(method)) {
                                     log.debug("Cancel monitor: routing resume.response to fallback");

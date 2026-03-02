@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
@@ -40,6 +41,9 @@ class PermissionRoutingTest {
             ConcurrentHashMap<String, CompletableFuture<JsonNode>> pendingPermissions,
             LinkedBlockingQueue<JsonNode> unmatchedResponses,
             JsonNode message) {
+        Objects.requireNonNull(pendingPermissions, "pendingPermissions");
+        Objects.requireNonNull(unmatchedResponses, "unmatchedResponses");
+        Objects.requireNonNull(message, "message");
         String method = message.has("method") ? message.get("method").asText("") : "";
 
         if ("permission.response".equals(method)) {
@@ -50,12 +54,10 @@ class PermissionRoutingTest {
                 var future = pendingPermissions.remove(rid);
                 if (future != null) {
                     future.complete(message);
-                } else {
-                    unmatchedResponses.offer(message);
                 }
-            } else {
-                unmatchedResponses.offer(message);
+                // Unmatched permission.response is dropped (not queued)
             }
+            // permission.response without requestId is dropped
         } else if ("resume.response".equals(method)) {
             unmatchedResponses.offer(message);
         }
@@ -63,6 +65,7 @@ class PermissionRoutingTest {
     }
 
     private ObjectNode makePermissionResponse(String requestId, boolean approved, boolean remember) {
+        Objects.requireNonNull(requestId, "requestId");
         var root = objectMapper.createObjectNode();
         root.put("method", "permission.response");
         var params = root.putObject("params");
@@ -112,21 +115,21 @@ class PermissionRoutingTest {
     }
 
     @Test
-    void unmatchedResponseGoesToFallbackQueue() {
+    void unmatchedPermissionResponseIsDropped() {
         var pendingPermissions = new ConcurrentHashMap<String, CompletableFuture<JsonNode>>();
         var unmatchedResponses = new LinkedBlockingQueue<JsonNode>();
 
         var future = new CompletableFuture<JsonNode>();
         pendingPermissions.put("perm-aaa", future);
 
-        // Dispatch a permission.response with unknown requestId
+        // Dispatch a permission.response with unknown requestId — should be dropped, not queued
         dispatchResponse(pendingPermissions, unmatchedResponses,
                 makePermissionResponse("perm-unknown", true, false));
 
         assertFalse(future.isDone());
-        var fallback = unmatchedResponses.poll();
-        assertNotNull(fallback);
-        assertEquals("perm-unknown", fallback.get("params").get("requestId").asText());
+        // Stale permission.response must NOT pollute the fallback queue
+        assertNull(unmatchedResponses.poll());
+        // Original future still pending
         assertEquals(1, pendingPermissions.size());
     }
 
