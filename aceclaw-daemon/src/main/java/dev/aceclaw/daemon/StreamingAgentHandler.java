@@ -74,9 +74,13 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -830,7 +834,7 @@ public final class StreamingAgentHandler {
      * Creates a ToolRegistry where each tool is wrapped with permission checking and hooks.
      * Tools that need user approval will use the StreamContext to ask the client.
      */
-    private ToolRegistry createPermissionAwareRegistry(StreamContext context, String sessionId) {
+    private ToolRegistry createPermissionAwareRegistry(CancelAwareStreamContext context, String sessionId) {
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(sessionId, "sessionId");
         var registry = new ToolRegistry();
@@ -2161,7 +2165,8 @@ public final class StreamingAgentHandler {
         private final ObjectMapper objectMapper;
         private final SocketChannel channel;
         private final StringBuilder lineBuilder;
-        private final BlockingQueue<JsonNode> permissionResponses = new LinkedBlockingQueue<>();
+        private final ConcurrentHashMap<String, CompletableFuture<JsonNode>> pendingPermissions = new ConcurrentHashMap<>();
+        private final BlockingQueue<JsonNode> unmatchedResponses = new LinkedBlockingQueue<>();
         private volatile boolean stopped = false;
         private volatile Thread monitorThread;
         private volatile Selector selector;
@@ -2179,6 +2184,31 @@ public final class StreamingAgentHandler {
             } else {
                 this.channel = null;
                 this.lineBuilder = null;
+            }
+        }
+
+        /**
+         * Registers a pending permission request keyed by requestId.
+         * Returns a future that will be completed when the matching response arrives.
+         */
+        CompletableFuture<JsonNode> registerPermissionRequest(String requestId) {
+            var future = new CompletableFuture<JsonNode>();
+            pendingPermissions.put(requestId, future);
+            // If stopMonitor already ran, cancel immediately so the tool thread
+            // gets CancellationException instead of waiting the full timeout.
+            if (stopped) {
+                future.cancel(false);
+            }
+            return future;
+        }
+
+        /**
+         * Unregisters and cancels a pending permission request if it has not been completed.
+         */
+        void unregisterPermissionRequest(String requestId) {
+            var future = pendingPermissions.remove(requestId);
+            if (future != null && !future.isDone()) {
+                future.cancel(false);
             }
         }
 
@@ -2203,6 +2233,9 @@ public final class StreamingAgentHandler {
          */
         void stopMonitor() {
             stopped = true;
+            // Cancel all pending permission futures so waiting threads unblock
+            pendingPermissions.forEach((_, future) -> future.cancel(false));
+            pendingPermissions.clear();
             var sel = selector;
             if (sel != null) {
                 sel.wakeup();
@@ -2263,10 +2296,25 @@ public final class StreamingAgentHandler {
                                     log.info("Cancel monitor: received agent.cancel");
                                     cancellationToken.cancel();
                                     return;
-                                } else if ("permission.response".equals(method)
-                                        || "resume.response".equals(method)) {
-                                    log.debug("Cancel monitor: routing {}", method);
-                                    permissionResponses.offer(message);
+                                } else if ("permission.response".equals(method)) {
+                                    log.debug("Cancel monitor: routing permission.response");
+                                    var respParams = message.get("params");
+                                    var rid = respParams != null && respParams.has("requestId")
+                                            ? respParams.get("requestId").asText() : null;
+                                    if (rid != null) {
+                                        var future = pendingPermissions.remove(rid);
+                                        if (future != null) {
+                                            future.complete(message);
+                                        } else {
+                                            log.warn("Cancel monitor: no pending request for requestId={}, routing to fallback", rid);
+                                            unmatchedResponses.offer(message);
+                                        }
+                                    } else {
+                                        unmatchedResponses.offer(message);
+                                    }
+                                } else if ("resume.response".equals(method)) {
+                                    log.debug("Cancel monitor: routing resume.response to fallback");
+                                    unmatchedResponses.offer(message);
                                 } else {
                                     log.debug("Cancel monitor: ignoring '{}'", method);
                                 }
@@ -2301,8 +2349,8 @@ public final class StreamingAgentHandler {
         }
 
         /**
-         * Reads the next permission response from the queue.
-         * Polls with a timeout and checks for cancellation between polls.
+         * Reads the next unmatched response from the fallback queue.
+         * Used by ResumeRouter and other non-permission reads.
          * Returns null if cancelled or the monitor thread is no longer running.
          */
         @Override
@@ -2317,10 +2365,10 @@ public final class StreamingAgentHandler {
                 long now = System.currentTimeMillis();
                 long remaining = deadline - now;
                 if (remaining <= 0) {
-                    throw new SocketTimeoutException("permission response timeout after " + timeoutMs + "ms");
+                    throw new SocketTimeoutException("response timeout after " + timeoutMs + "ms");
                 }
                 try {
-                    JsonNode msg = permissionResponses.poll(Math.min(500, remaining), TimeUnit.MILLISECONDS);
+                    JsonNode msg = unmatchedResponses.poll(Math.min(500, remaining), TimeUnit.MILLISECONDS);
                     if (msg != null) {
                         return msg;
                     }
@@ -2349,7 +2397,7 @@ public final class StreamingAgentHandler {
 
         private final Tool delegate;
         private final PermissionManager permissionManager;
-        private final StreamContext context;
+        private final CancelAwareStreamContext context;
         private final ObjectMapper objectMapper;
         private final HookExecutor hookExecutor;
         private final String sessionId;
@@ -2360,7 +2408,7 @@ public final class StreamingAgentHandler {
         private final CandidateStore candidateStore;
 
         PermissionAwareTool(Tool delegate, PermissionManager permissionManager,
-                            StreamContext context, ObjectMapper objectMapper,
+                            CancelAwareStreamContext context, ObjectMapper objectMapper,
                             HookExecutor hookExecutor, String sessionId, String cwd,
                             AntiPatternPreExecutionGate antiPatternGate,
                             java.util.function.Supplier<AntiPatternGateOverrideStatus> antiPatternOverrideSupplier,
@@ -2492,11 +2540,11 @@ public final class StreamingAgentHandler {
                 }
 
                 case PermissionDecision.NeedsUserApproval approval -> {
-                    // Send permission request to the client
+                    // Send permission request to the client and await via per-request future
                     var requestId = "perm-" + UUID.randomUUID().toString().substring(0, 8);
                     long timeoutMs = CancelAwareStreamContext.PERMISSION_RESPONSE_TIMEOUT_MS;
-                    long deadline = System.currentTimeMillis() + timeoutMs;
 
+                    var future = context.registerPermissionRequest(requestId);
                     try {
                         var params = objectMapper.createObjectNode();
                         params.put("tool", delegate.name());
@@ -2504,66 +2552,57 @@ public final class StreamingAgentHandler {
                         params.put("requestId", requestId);
                         context.sendNotification("permission.request", params);
 
-                        while (true) {
-                            long remainingMs = deadline - System.currentTimeMillis();
-                            if (remainingMs <= 0) {
-                                throw new SocketTimeoutException(
-                                        "permission response timeout after " + timeoutMs + "ms");
-                            }
+                        // Each thread waits on its own future — no cross-delivery possible
+                        var responseMsg = future.get(timeoutMs, TimeUnit.MILLISECONDS);
 
-                            // Wait for the client's response
-                            var responseMsg = context.readMessage(remainingMs);
-                            if (responseMsg == null) {
-                                return new ToolResult("Permission denied: client disconnected", true);
-                            }
-
-                            // Parse the permission response
-                            var responseParams = responseMsg.get("params");
-                            if (responseParams == null) {
-                                return new ToolResult("Permission denied: invalid response from client", true);
-                            }
-
-                            var responseRequestId = responseParams.has("requestId")
-                                    ? responseParams.get("requestId").asText() : "";
-                            if (!requestId.equals(responseRequestId)) {
-                                log.warn("Tool {} ignoring stale permission response: expected={}, got={}",
-                                        delegate.name(), requestId, responseRequestId);
-                                continue;
-                            }
-                            boolean approved = responseParams.has("approved")
-                                    && responseParams.get("approved").asBoolean(false);
-                            boolean remember = responseParams.has("remember")
-                                    && responseParams.get("remember").asBoolean(false);
-
-                            if (!approved) {
-                                log.info("Tool {} denied by user (requestId={})", delegate.name(), responseRequestId);
-                                return new ToolResult("Permission denied by user", true);
-                            }
-
-                            // If user chose "remember", grant session-level approval
-                            if (remember) {
-                                permissionManager.approveForSession(delegate.name());
-                            }
-
-                            log.info("Tool {} approved by user (requestId={}, remember={})",
-                                    delegate.name(), responseRequestId, remember);
-                            var result = executeWithPostHooks(finalInputJson);
-                            maybeRecordFalsePositiveAndRollback(overrideStatus, evaluatedGateDecision, result);
-                            return result;
+                        // Parse the permission response
+                        var responseParams = responseMsg.get("params");
+                        if (responseParams == null) {
+                            return new ToolResult("Permission denied: invalid response from client", true);
                         }
 
-                    } catch (SocketTimeoutException e) {
+                        boolean approved = responseParams.has("approved")
+                                && responseParams.get("approved").asBoolean(false);
+                        boolean remember = responseParams.has("remember")
+                                && responseParams.get("remember").asBoolean(false);
+
+                        if (!approved) {
+                            log.info("Tool {} denied by user (requestId={})", delegate.name(), requestId);
+                            return new ToolResult("Permission denied by user", true);
+                        }
+
+                        // If user chose "remember", grant session-level approval
+                        if (remember) {
+                            permissionManager.approveForSession(delegate.name());
+                        }
+
+                        log.info("Tool {} approved by user (requestId={}, remember={})",
+                                delegate.name(), requestId, remember);
+                        var result = executeWithPostHooks(finalInputJson);
+                        maybeRecordFalsePositiveAndRollback(overrideStatus, evaluatedGateDecision, result);
+                        return result;
+
+                    } catch (TimeoutException e) {
                         log.info("Tool {} permission response timed out (requestId={})",
                                 delegate.name(), requestId);
-                        long timeoutSeconds = TimeUnit.MILLISECONDS.toSeconds(
-                                CancelAwareStreamContext.PERMISSION_RESPONSE_TIMEOUT_MS);
+                        long timeoutSeconds = TimeUnit.MILLISECONDS.toSeconds(timeoutMs);
                         return new ToolResult(
                                 "Permission pending timeout: no response from client within "
                                         + timeoutSeconds + "s", true);
+                    } catch (CancellationException e) {
+                        log.info("Tool {} permission request cancelled (requestId={})",
+                                delegate.name(), requestId);
+                        return new ToolResult("Permission denied: request cancelled", true);
+                    } catch (ExecutionException e) {
+                        log.error("Failed to receive permission response for tool {}: {}",
+                                delegate.name(), e.getMessage());
+                        return new ToolResult("Permission check failed: " + e.getMessage(), true);
                     } catch (IOException e) {
                         log.error("Failed to communicate permission request for tool {}: {}",
                                 delegate.name(), e.getMessage());
                         return new ToolResult("Permission check failed: " + e.getMessage(), true);
+                    } finally {
+                        context.unregisterPermissionRequest(requestId);
                     }
                 }
             }
