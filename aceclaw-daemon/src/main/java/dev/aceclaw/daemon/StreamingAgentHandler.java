@@ -2583,6 +2583,11 @@ public final class StreamingAgentHandler {
                         maybeRecordFalsePositiveAndRollback(overrideStatus, evaluatedGateDecision, result);
                         return result;
 
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        log.info("Tool {} permission request interrupted (requestId={})",
+                                delegate.name(), requestId);
+                        return new ToolResult("Permission denied: request interrupted", true);
                     } catch (TimeoutException e) {
                         log.info("Tool {} permission response timed out (requestId={})",
                                 delegate.name(), requestId);
