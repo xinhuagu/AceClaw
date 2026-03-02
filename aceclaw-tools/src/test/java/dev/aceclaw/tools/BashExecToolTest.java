@@ -106,6 +106,70 @@ class BashExecToolTest {
     }
 
     @Test
+    void grepNoMatchIsNotError() throws Exception {
+        // grep exit code 1 = no match — should NOT be isError
+        var input = MAPPER.writeValueAsString(
+                MAPPER.createObjectNode().put("command", "grep 'NONEXISTENT_xyz_42' /dev/null"));
+
+        var result = tool.execute(input);
+
+        assertThat(result.isError()).isFalse();
+        assertThat(result.output()).contains("no match found");
+    }
+
+    @Test
+    void grepRealErrorIsStillError() throws Exception {
+        // grep exit code 2 = real error (e.g. invalid option)
+        var input = MAPPER.writeValueAsString(
+                MAPPER.createObjectNode().put("command", "grep --invalid-option-xyz foo"));
+
+        var result = tool.execute(input);
+
+        assertThat(result.isError()).isTrue();
+        assertThat(result.output()).contains("exit code: 2");
+    }
+
+    @Test
+    void diffExitCode1IsNotError() throws Exception {
+        // diff exit code 1 = files differ
+        var input = MAPPER.writeValueAsString(
+                MAPPER.createObjectNode().put("command",
+                        "diff <(echo 'a') <(echo 'b')"));
+
+        var result = tool.execute(input);
+
+        assertThat(result.isError()).isFalse();
+        assertThat(result.output()).contains("no match found");
+    }
+
+    @Test
+    void isBenignExit1CommandDetectsGrep() {
+        assertThat(BashExecTool.isBenignExit1Command("grep -n 'pattern' file.txt")).isTrue();
+        assertThat(BashExecTool.isBenignExit1Command("/usr/bin/grep -r foo .")).isTrue();
+        assertThat(BashExecTool.isBenignExit1Command("egrep pattern file")).isTrue();
+        assertThat(BashExecTool.isBenignExit1Command("fgrep literal file")).isTrue();
+        assertThat(BashExecTool.isBenignExit1Command("diff a.txt b.txt")).isTrue();
+    }
+
+    @Test
+    void isBenignExit1CommandRejectsOtherCommands() {
+        assertThat(BashExecTool.isBenignExit1Command("python script.py")).isFalse();
+        assertThat(BashExecTool.isBenignExit1Command("exit 1")).isFalse();
+        assertThat(BashExecTool.isBenignExit1Command("ls /nonexistent")).isFalse();
+        assertThat(BashExecTool.isBenignExit1Command(null)).isFalse();
+        assertThat(BashExecTool.isBenignExit1Command("")).isFalse();
+    }
+
+    @Test
+    void isBenignExit1CommandHandlesPipelines() {
+        // In a pipeline, the shell returns the last command's exit code
+        assertThat(BashExecTool.isBenignExit1Command("cat file.txt | grep pattern")).isTrue();
+        assertThat(BashExecTool.isBenignExit1Command("echo hello | grep -v world")).isTrue();
+        // Last command is not grep — should be false
+        assertThat(BashExecTool.isBenignExit1Command("grep pattern file | wc -l")).isFalse();
+    }
+
+    @Test
     void inputSchemaHasRequiredCommand() {
         var schema = tool.inputSchema();
 

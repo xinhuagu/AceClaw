@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -34,6 +35,16 @@ public final class BashExecTool implements Tool {
     private static final int MAX_OUTPUT_CHARS = 30_000;
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    /**
+     * Commands where exit code 1 means "no match" or "difference found", not an error.
+     * <ul>
+     *   <li>grep/egrep/fgrep: exit 1 = no lines matched, exit 2+ = real error</li>
+     *   <li>diff: exit 1 = files differ, exit 2+ = real error</li>
+     * </ul>
+     */
+    private static final Set<String> BENIGN_EXIT1_COMMANDS = Set.of(
+            "grep", "egrep", "fgrep", "diff");
 
         static final boolean IS_WINDOWS = System.getProperty("os.name", "")
             .toLowerCase(Locale.ROOT).startsWith("win");
@@ -129,12 +140,42 @@ public final class BashExecTool implements Tool {
         var truncated = truncateOutput(output);
 
         if (exitCode != 0) {
+            boolean benign = exitCode == 1 && isBenignExit1Command(command);
+            if (benign) {
+                return new ToolResult(
+                        truncated + "\n\n(exit code: 1 — no match found)",
+                        false);
+            }
             return new ToolResult(
                     truncated + "\n\n(exit code: " + exitCode + ")",
                     true);
         }
 
         return new ToolResult(truncated, false);
+    }
+
+    /**
+     * Checks whether the command starts with a program whose exit code 1 is benign.
+     * Handles pipes (checks the first command segment) and full paths (e.g. /usr/bin/grep).
+     */
+    static boolean isBenignExit1Command(String command) {
+        if (command == null || command.isBlank()) return false;
+
+        // For pipelines, check the last command (its exit code is what the shell returns)
+        String segment = command.strip();
+        int pipeIdx = segment.lastIndexOf('|');
+        if (pipeIdx >= 0 && pipeIdx < segment.length() - 1) {
+            segment = segment.substring(pipeIdx + 1).strip();
+        }
+
+        // Extract the first token (the program name)
+        String firstToken = segment.split("\\s+", 2)[0];
+
+        // Strip path prefix (e.g. /usr/bin/grep → grep)
+        int slashIdx = firstToken.lastIndexOf('/');
+        String baseName = slashIdx >= 0 ? firstToken.substring(slashIdx + 1) : firstToken;
+
+        return BENIGN_EXIT1_COMMANDS.contains(baseName);
     }
 
     private static String truncateOutput(String output) {
