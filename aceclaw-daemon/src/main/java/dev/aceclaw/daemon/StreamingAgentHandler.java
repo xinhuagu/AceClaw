@@ -2194,7 +2194,11 @@ public final class StreamingAgentHandler {
         CompletableFuture<JsonNode> registerPermissionRequest(String requestId) {
             Objects.requireNonNull(requestId, "requestId");
             var future = new CompletableFuture<JsonNode>();
-            pendingPermissions.put(requestId, future);
+            var previous = pendingPermissions.putIfAbsent(requestId, future);
+            if (previous != null) {
+                future.cancel(false);
+                throw new IllegalStateException("Duplicate permission requestId: " + requestId);
+            }
             // If stopMonitor already ran, cancel immediately so the tool thread
             // gets CancellationException instead of waiting the full timeout.
             if (stopped) {
@@ -2542,7 +2546,7 @@ public final class StreamingAgentHandler {
 
                 case PermissionDecision.NeedsUserApproval approval -> {
                     // Send permission request to the client and await via per-request future
-                    var requestId = "perm-" + UUID.randomUUID().toString().substring(0, 8);
+                    var requestId = "perm-" + UUID.randomUUID();
                     long timeoutMs = CancelAwareStreamContext.PERMISSION_RESPONSE_TIMEOUT_MS;
 
                     var future = context.registerPermissionRequest(requestId);
