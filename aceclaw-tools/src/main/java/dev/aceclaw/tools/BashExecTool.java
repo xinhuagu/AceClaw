@@ -142,9 +142,10 @@ public final class BashExecTool implements Tool {
         if (exitCode != 0) {
             boolean benign = exitCode == 1 && isBenignExit1Command(command);
             if (benign) {
-                return new ToolResult(
-                        truncated + "\n\n(exit code: 1 — no match found)",
-                        false);
+                String hint = isDiffCommand(command)
+                        ? "(exit code: 1 — files differ)"
+                        : "(exit code: 1 — no match found)";
+                return new ToolResult(truncated + "\n\n" + hint, false);
             }
             return new ToolResult(
                     truncated + "\n\n(exit code: " + exitCode + ")",
@@ -176,6 +177,22 @@ public final class BashExecTool implements Tool {
         String baseName = slashIdx >= 0 ? firstToken.substring(slashIdx + 1) : firstToken;
 
         return BENIGN_EXIT1_COMMANDS.contains(baseName);
+    }
+
+    /**
+     * Returns true if the effective command (last in pipeline) is {@code diff}.
+     */
+    private static boolean isDiffCommand(String command) {
+        if (command == null || command.isBlank()) return false;
+        String segment = command.strip();
+        int pipeIdx = segment.lastIndexOf('|');
+        if (pipeIdx >= 0 && pipeIdx < segment.length() - 1) {
+            segment = segment.substring(pipeIdx + 1).strip();
+        }
+        String firstToken = segment.split("\\s+", 2)[0];
+        int slashIdx = firstToken.lastIndexOf('/');
+        String baseName = slashIdx >= 0 ? firstToken.substring(slashIdx + 1) : firstToken;
+        return "diff".equals(baseName);
     }
 
     private static String truncateOutput(String output) {

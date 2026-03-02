@@ -147,7 +147,7 @@ class BashExecToolTest {
         var result = tool.execute(input);
 
         assertThat(result.isError()).isFalse();
-        assertThat(result.output()).contains("no match found");
+        assertThat(result.output()).contains("files differ");
     }
 
     @Test

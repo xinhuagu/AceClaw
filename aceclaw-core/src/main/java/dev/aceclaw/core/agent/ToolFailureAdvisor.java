@@ -84,7 +84,7 @@ final class ToolFailureAdvisor {
                 "certificate", "connection reset")) {
             return FailureCategory.NETWORK;
         }
-        if (containsAny(text, "no match found", "no lines matched", "exit code: 1 —")) {
+        if (containsAny(text, "no match found", "no lines matched", "files differ", "exit code: 1 —")) {
             return FailureCategory.NO_MATCH;
         }
         return FailureCategory.UNKNOWN;

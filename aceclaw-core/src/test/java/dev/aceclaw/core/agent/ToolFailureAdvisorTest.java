@@ -53,6 +53,8 @@ class ToolFailureAdvisorTest {
                 .isEqualTo(ToolFailureAdvisor.FailureCategory.NO_MATCH);
         assertThat(ToolFailureAdvisor.classify("no lines matched"))
                 .isEqualTo(ToolFailureAdvisor.FailureCategory.NO_MATCH);
+        assertThat(ToolFailureAdvisor.classify("(exit code: 1 — files differ)"))
+                .isEqualTo(ToolFailureAdvisor.FailureCategory.NO_MATCH);
     }
 
     @Test
