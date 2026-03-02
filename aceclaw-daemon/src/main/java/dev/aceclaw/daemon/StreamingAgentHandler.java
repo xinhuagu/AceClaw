@@ -2167,6 +2167,7 @@ public final class StreamingAgentHandler {
         private final StringBuilder lineBuilder;
         private final ConcurrentHashMap<String, CompletableFuture<JsonNode>> pendingPermissions = new ConcurrentHashMap<>();
         private final BlockingQueue<JsonNode> unmatchedResponses = new LinkedBlockingQueue<>();
+        private final Object permissionLifecycleLock = new Object();
         private volatile boolean stopped = false;
         private volatile Thread monitorThread;
         private volatile Selector selector;
@@ -2194,30 +2195,30 @@ public final class StreamingAgentHandler {
         CompletableFuture<JsonNode> registerPermissionRequest(String requestId) {
             Objects.requireNonNull(requestId, "requestId");
             var future = new CompletableFuture<JsonNode>();
-            // Early exit if already shutting down — no point registering
-            if (stopped) {
-                future.cancel(false);
-                return future;
-            }
-            var previous = pendingPermissions.putIfAbsent(requestId, future);
-            if (previous != null) {
-                future.cancel(false);
-                throw new IllegalStateException("Duplicate permission requestId: " + requestId);
-            }
-            // Double-check: stopMonitor may have run between the stopped check and putIfAbsent.
-            // Remove our entry atomically and cancel if shutdown raced us.
-            if (stopped && pendingPermissions.remove(requestId, future)) {
-                future.cancel(false);
+            synchronized (permissionLifecycleLock) {
+                if (stopped) {
+                    future.cancel(false);
+                    return future;
+                }
+                var previous = pendingPermissions.putIfAbsent(requestId, future);
+                if (previous != null) {
+                    future.cancel(false);
+                    throw new IllegalStateException("Duplicate permission requestId: " + requestId);
+                }
             }
             return future;
         }
 
         /**
          * Unregisters and cancels a pending permission request if it has not been completed.
+         * Safe to call even if the monitor already removed and completed the future.
          */
         void unregisterPermissionRequest(String requestId) {
             Objects.requireNonNull(requestId, "requestId");
-            var future = pendingPermissions.remove(requestId);
+            CompletableFuture<JsonNode> future;
+            synchronized (permissionLifecycleLock) {
+                future = pendingPermissions.remove(requestId);
+            }
             if (future != null && !future.isDone()) {
                 future.cancel(false);
             }
@@ -2245,8 +2246,10 @@ public final class StreamingAgentHandler {
         void stopMonitor() {
             stopped = true;
             // Cancel all pending permission futures so waiting threads unblock
-            pendingPermissions.forEach((_, future) -> future.cancel(false));
-            pendingPermissions.clear();
+            synchronized (permissionLifecycleLock) {
+                pendingPermissions.forEach((_, future) -> future.cancel(false));
+                pendingPermissions.clear();
+            }
             var sel = selector;
             if (sel != null) {
                 sel.wakeup();
