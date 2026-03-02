@@ -4,8 +4,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.Tool;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.DisabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -106,10 +109,12 @@ class BashExecToolTest {
     }
 
     @Test
+    @DisabledOnOs(OS.WINDOWS)
     void grepNoMatchIsNotError() throws Exception {
         // grep exit code 1 = no match — should NOT be isError
+        Files.writeString(workDir.resolve("empty.txt"), "nothing here\n");
         var input = MAPPER.writeValueAsString(
-                MAPPER.createObjectNode().put("command", "grep 'NONEXISTENT_xyz_42' /dev/null"));
+                MAPPER.createObjectNode().put("command", "grep 'NONEXISTENT_xyz_42' empty.txt"));
 
         var result = tool.execute(input);
 
@@ -118,6 +123,7 @@ class BashExecToolTest {
     }
 
     @Test
+    @DisabledOnOs(OS.WINDOWS)
     void grepRealErrorIsStillError() throws Exception {
         // grep exit code 2 = real error (e.g. invalid option)
         var input = MAPPER.writeValueAsString(
@@ -130,11 +136,13 @@ class BashExecToolTest {
     }
 
     @Test
+    @DisabledOnOs(OS.WINDOWS)
     void diffExitCode1IsNotError() throws Exception {
-        // diff exit code 1 = files differ
+        // diff exit code 1 = files differ — use temp files for portability (no process substitution)
+        Files.writeString(workDir.resolve("a.txt"), "a\n");
+        Files.writeString(workDir.resolve("b.txt"), "b\n");
         var input = MAPPER.writeValueAsString(
-                MAPPER.createObjectNode().put("command",
-                        "diff <(echo 'a') <(echo 'b')"));
+                MAPPER.createObjectNode().put("command", "diff a.txt b.txt"));
 
         var result = tool.execute(input);
 

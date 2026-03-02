@@ -156,7 +156,7 @@ public final class BashExecTool implements Tool {
 
     /**
      * Checks whether the command starts with a program whose exit code 1 is benign.
-     * Handles pipes (checks the first command segment) and full paths (e.g. /usr/bin/grep).
+     * Handles pipes (checks the last command segment, whose exit code the shell returns) and full paths (e.g. /usr/bin/grep).
      */
     static boolean isBenignExit1Command(String command) {
         if (command == null || command.isBlank()) return false;
