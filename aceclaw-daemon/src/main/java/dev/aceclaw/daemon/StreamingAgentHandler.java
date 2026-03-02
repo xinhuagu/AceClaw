@@ -2194,14 +2194,19 @@ public final class StreamingAgentHandler {
         CompletableFuture<JsonNode> registerPermissionRequest(String requestId) {
             Objects.requireNonNull(requestId, "requestId");
             var future = new CompletableFuture<JsonNode>();
+            // Early exit if already shutting down — no point registering
+            if (stopped) {
+                future.cancel(false);
+                return future;
+            }
             var previous = pendingPermissions.putIfAbsent(requestId, future);
             if (previous != null) {
                 future.cancel(false);
                 throw new IllegalStateException("Duplicate permission requestId: " + requestId);
             }
-            // If stopMonitor already ran, cancel immediately so the tool thread
-            // gets CancellationException instead of waiting the full timeout.
-            if (stopped) {
+            // Double-check: stopMonitor may have run between the stopped check and putIfAbsent.
+            // Remove our entry atomically and cancel if shutdown raced us.
+            if (stopped && pendingPermissions.remove(requestId, future)) {
                 future.cancel(false);
             }
             return future;
@@ -2550,6 +2555,9 @@ public final class StreamingAgentHandler {
                     long timeoutMs = CancelAwareStreamContext.PERMISSION_RESPONSE_TIMEOUT_MS;
 
                     var future = context.registerPermissionRequest(requestId);
+                    if (future.isCancelled()) {
+                        return new ToolResult("Permission denied: request cancelled", true);
+                    }
                     try {
                         var params = objectMapper.createObjectNode();
                         params.put("tool", delegate.name());
