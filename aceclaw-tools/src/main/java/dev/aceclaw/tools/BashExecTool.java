@@ -157,14 +157,33 @@ public final class BashExecTool implements Tool {
 
     /**
      * Checks whether the command starts with a program whose exit code 1 is benign.
-     * Handles pipes (checks the last command segment, whose exit code the shell returns) and full paths (e.g. /usr/bin/grep).
+     * Handles pipes (checks the last command segment, whose exit code the shell returns),
+     * full paths (e.g. /usr/bin/grep), and Windows paths with backslash separators.
      */
     static boolean isBenignExit1Command(String command) {
-        if (command == null || command.isBlank()) return false;
+        String baseName = extractLastCommandBaseName(command);
+        return baseName != null && BENIGN_EXIT1_COMMANDS.contains(baseName);
+    }
 
-        // For pipelines, check the last command (its exit code is what the shell returns)
+    /**
+     * Returns true if the effective command (last in pipeline) is {@code diff}.
+     */
+    private static boolean isDiffCommand(String command) {
+        return "diff".equals(extractLastCommandBaseName(command));
+    }
+
+    /**
+     * Extracts the base program name from the last command in a pipeline.
+     * Handles quote-aware pipe splitting, Unix/Windows path prefixes, and .exe suffixes.
+     *
+     * @return the lowercase base name (e.g. "grep"), or null if command is blank
+     */
+    static String extractLastCommandBaseName(String command) {
+        if (command == null || command.isBlank()) return null;
+
+        // Find the last unquoted pipe to isolate the final pipeline segment
         String segment = command.strip();
-        int pipeIdx = segment.lastIndexOf('|');
+        int pipeIdx = lastUnquotedPipeIndex(segment);
         if (pipeIdx >= 0 && pipeIdx < segment.length() - 1) {
             segment = segment.substring(pipeIdx + 1).strip();
         }
@@ -172,27 +191,56 @@ public final class BashExecTool implements Tool {
         // Extract the first token (the program name)
         String firstToken = segment.split("\\s+", 2)[0];
 
-        // Strip path prefix (e.g. /usr/bin/grep → grep)
-        int slashIdx = firstToken.lastIndexOf('/');
+        // Strip path prefix — handle both Unix (/) and Windows (\) separators
+        int slashIdx = Math.max(firstToken.lastIndexOf('/'), firstToken.lastIndexOf('\\'));
         String baseName = slashIdx >= 0 ? firstToken.substring(slashIdx + 1) : firstToken;
 
-        return BENIGN_EXIT1_COMMANDS.contains(baseName);
+        // Strip .exe suffix (Windows)
+        if (baseName.toLowerCase(Locale.ROOT).endsWith(".exe") && baseName.length() > 4) {
+            baseName = baseName.substring(0, baseName.length() - 4);
+        }
+
+        return baseName.toLowerCase(Locale.ROOT);
     }
 
     /**
-     * Returns true if the effective command (last in pipeline) is {@code diff}.
+     * Finds the index of the last unquoted, non-escaped {@code |} that is not
+     * part of a {@code ||} operator. Returns -1 if no pipeline pipe is found.
      */
-    private static boolean isDiffCommand(String command) {
-        if (command == null || command.isBlank()) return false;
-        String segment = command.strip();
-        int pipeIdx = segment.lastIndexOf('|');
-        if (pipeIdx >= 0 && pipeIdx < segment.length() - 1) {
-            segment = segment.substring(pipeIdx + 1).strip();
+    private static int lastUnquotedPipeIndex(String s) {
+        boolean inSingle = false;
+        boolean inDouble = false;
+        boolean escaped = false;
+        int lastPipe = -1;
+
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (c == '\\') {
+                escaped = true;
+                continue;
+            }
+            if (c == '\'' && !inDouble) {
+                inSingle = !inSingle;
+                continue;
+            }
+            if (c == '"' && !inSingle) {
+                inDouble = !inDouble;
+                continue;
+            }
+            if (c == '|' && !inSingle && !inDouble) {
+                // Skip || (logical OR, not pipeline)
+                if (i + 1 < s.length() && s.charAt(i + 1) == '|') {
+                    i++; // skip next |
+                    continue;
+                }
+                lastPipe = i;
+            }
         }
-        String firstToken = segment.split("\\s+", 2)[0];
-        int slashIdx = firstToken.lastIndexOf('/');
-        String baseName = slashIdx >= 0 ? firstToken.substring(slashIdx + 1) : firstToken;
-        return "diff".equals(baseName);
+        return lastPipe;
     }
 
     private static String truncateOutput(String output) {

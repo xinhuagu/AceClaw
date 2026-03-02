@@ -160,6 +160,13 @@ class BashExecToolTest {
     }
 
     @Test
+    void isBenignExit1CommandHandlesWindowsPaths() {
+        assertThat(BashExecTool.isBenignExit1Command("C:\\Git\\usr\\bin\\grep.exe -r foo .")).isTrue();
+        assertThat(BashExecTool.isBenignExit1Command("C:\\Windows\\diff.exe a b")).isTrue();
+        assertThat(BashExecTool.isBenignExit1Command("C:\\Python\\python.exe script.py")).isFalse();
+    }
+
+    @Test
     void isBenignExit1CommandRejectsOtherCommands() {
         assertThat(BashExecTool.isBenignExit1Command("python script.py")).isFalse();
         assertThat(BashExecTool.isBenignExit1Command("exit 1")).isFalse();
@@ -175,6 +182,15 @@ class BashExecToolTest {
         assertThat(BashExecTool.isBenignExit1Command("echo hello | grep -v world")).isTrue();
         // Last command is not grep — should be false
         assertThat(BashExecTool.isBenignExit1Command("grep pattern file | wc -l")).isFalse();
+    }
+
+    @Test
+    void isBenignExit1CommandIgnoresQuotedPipes() {
+        // Pipe inside quotes is not a pipeline — grep is the only command
+        assertThat(BashExecTool.isBenignExit1Command("grep 'a|b' file.txt")).isTrue();
+        assertThat(BashExecTool.isBenignExit1Command("grep \"foo|bar\" file.txt")).isTrue();
+        // || is logical OR, not pipeline — grep is still the base command
+        assertThat(BashExecTool.isBenignExit1Command("grep pattern file || echo fallback")).isTrue();
     }
 
     @Test
