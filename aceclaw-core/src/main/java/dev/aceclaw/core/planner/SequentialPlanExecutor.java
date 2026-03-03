@@ -77,6 +77,12 @@ public final class SequentialPlanExecutor implements PlanExecutor {
     public SequentialPlanExecutor(PlanEventListener listener, AdaptiveReplanner replanner,
                                   WatchdogTimer watchdog, Duration perStepWallTime,
                                   Duration totalPlanWallTime) {
+        if (perStepWallTime != null && perStepWallTime.isNegative()) {
+            throw new IllegalArgumentException("perStepWallTime must be non-negative");
+        }
+        if (totalPlanWallTime != null && totalPlanWallTime.isNegative()) {
+            throw new IllegalArgumentException("totalPlanWallTime must be non-negative");
+        }
         this.listener = listener;
         this.replanner = replanner;
         this.watchdog = watchdog;
@@ -195,6 +201,25 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                         result.durationMs(), result.tokensUsed());
 
             } catch (LlmException e) {
+                // If the failure was caused by budget/watchdog cancellation,
+                // skip fallback and replan — no point in extra LLM work.
+                if (cancellationToken != null && cancellationToken.isCancelled()) {
+                    String reason = (watchdog != null && watchdog.isExhausted())
+                            ? watchdog.exhaustionReason() : "Cancelled by user";
+                    log.info("Step {}/{} cancelled mid-execution ({})", i + 1,
+                            plan.steps().size(), reason);
+                    var cancelResult = new StepResult(false, null, reason,
+                            System.currentTimeMillis() - stepStart, 0, 0);
+                    stepResults.add(cancelResult);
+                    mutablePlan = mutablePlan.withStepStatus(step.stepId(), StepStatus.FAILED)
+                            .withStatus(new PlanStatus.Failed(reason, step.stepId()));
+                    if (listener != null) {
+                        listener.onStepCompleted(step, i, cancelResult);
+                    }
+                    allSuccess = false;
+                    break stepLoop;
+                }
+
                 log.warn("Step {}/{} failed: {} - {}", i + 1, plan.steps().size(),
                         step.name(), e.getMessage());
 
