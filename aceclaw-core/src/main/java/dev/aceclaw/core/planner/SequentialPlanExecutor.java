@@ -2,6 +2,7 @@ package dev.aceclaw.core.planner;
 
 import dev.aceclaw.core.agent.CancellationToken;
 import dev.aceclaw.core.agent.StreamingAgentLoop;
+import dev.aceclaw.core.agent.WatchdogTimer;
 import dev.aceclaw.core.llm.LlmException;
 import dev.aceclaw.core.llm.Message;
 import dev.aceclaw.core.llm.StreamEventHandler;
@@ -48,6 +49,9 @@ public final class SequentialPlanExecutor implements PlanExecutor {
 
     private final PlanEventListener listener;
     private final AdaptiveReplanner replanner;
+    private final WatchdogTimer watchdog;
+    private final Duration perStepWallTime;
+    private final Duration totalPlanWallTime;
 
     public SequentialPlanExecutor() {
         this(null, null);
@@ -58,8 +62,26 @@ public final class SequentialPlanExecutor implements PlanExecutor {
     }
 
     public SequentialPlanExecutor(PlanEventListener listener, AdaptiveReplanner replanner) {
+        this(listener, replanner, null, null, null);
+    }
+
+    /**
+     * Creates an executor with watchdog-based budget enforcement for multi-step plans.
+     *
+     * @param listener        optional event listener for plan execution events
+     * @param replanner       optional adaptive replanner for step failure recovery
+     * @param watchdog        optional watchdog timer to reset per-step wall-clock budgets
+     * @param perStepWallTime optional per-step wall-clock budget (resets watchdog before each step)
+     * @param totalPlanWallTime optional total plan wall-clock budget
+     */
+    public SequentialPlanExecutor(PlanEventListener listener, AdaptiveReplanner replanner,
+                                  WatchdogTimer watchdog, Duration perStepWallTime,
+                                  Duration totalPlanWallTime) {
         this.listener = listener;
         this.replanner = replanner;
+        this.watchdog = watchdog;
+        this.perStepWallTime = perStepWallTime;
+        this.totalPlanWallTime = totalPlanWallTime;
     }
 
     @Override
@@ -88,6 +110,24 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                 log.info("Plan execution cancelled before step {}/{}", i + 1, plan.steps().size());
                 wasCancelled = true;
                 break;
+            }
+
+            // Enforce total plan wall-clock budget
+            if (totalPlanWallTime != null) {
+                long elapsed = System.currentTimeMillis() - planStart;
+                if (elapsed >= totalPlanWallTime.toMillis()) {
+                    log.info("Total plan time budget exhausted ({} ms >= {} ms) before step {}/{}",
+                            elapsed, totalPlanWallTime.toMillis(), i + 1, plan.steps().size());
+                    mutablePlan = mutablePlan.withStatus(
+                            new PlanStatus.Failed("plan_time_budget", null));
+                    allSuccess = false;
+                    break stepLoop;
+                }
+            }
+
+            // Reset per-step wall-clock budget on the shared watchdog timer
+            if (watchdog != null && perStepWallTime != null) {
+                watchdog.resetWallClock(perStepWallTime);
             }
 
             var step = plan.steps().get(i);

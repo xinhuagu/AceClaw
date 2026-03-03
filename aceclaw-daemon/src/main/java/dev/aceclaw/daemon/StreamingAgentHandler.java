@@ -235,7 +235,7 @@ public final class StreamingAgentHandler {
             if (planCheckpointStore != null) {
                 var resumeResult = tryResumeFromCheckpoint(
                         sessionId, session, cancelContext, eventHandler,
-                        permissionAwareLoop, cancellationToken, metricsCollector);
+                        permissionAwareLoop, cancellationToken, metricsCollector, watchdog);
                 if (resumeResult != null) {
                     sendBudgetExhaustedNotificationIfNeeded(watchdog, cancelContext, sessionId);
                     return resumeResult;
@@ -251,7 +251,7 @@ public final class StreamingAgentHandler {
                     log.info("Complex task detected (score={}, signals={}), generating plan",
                             complexityScore.score(), complexityScore.signals());
                     var planResult = executePlannedPrompt(prompt, session, sessionId, cancelContext,
-                            eventHandler, permissionAwareLoop, cancellationToken, metricsCollector);
+                            eventHandler, permissionAwareLoop, cancellationToken, metricsCollector, watchdog);
                     sendBudgetExhaustedNotificationIfNeeded(watchdog, cancelContext, sessionId);
                     return planResult;
                 }
@@ -314,7 +314,7 @@ public final class StreamingAgentHandler {
             String prompt, AgentSession session, String sessionId,
             StreamContext cancelContext, StreamEventHandler eventHandler,
             StreamingAgentLoop permissionAwareLoop, CancellationToken cancellationToken,
-            ToolMetricsCollector metricsCollector) throws Exception {
+            ToolMetricsCollector metricsCollector, WatchdogTimer watchdog) throws Exception {
 
         // 1. Generate plan
         var planner = new LLMTaskPlanner(getLlmClient(), getModelForSession(sessionId));
@@ -454,7 +454,12 @@ public final class StreamingAgentHandler {
         }
 
         AdaptiveReplanner replanner = createReplannerIfEnabled(sessionId);
-        var executor = new SequentialPlanExecutor(effectiveListener, replanner);
+        var perStepWall = maxPlanStepWallTimeSec > 0
+                ? Duration.ofSeconds(maxPlanStepWallTimeSec) : null;
+        var totalPlanWall = maxPlanTotalWallTimeSec > 0
+                ? Duration.ofSeconds(maxPlanTotalWallTimeSec) : null;
+        var executor = new SequentialPlanExecutor(effectiveListener, replanner,
+                watchdog, perStepWall, totalPlanWall);
         var planResult = executor.execute(plan, permissionAwareLoop, conversationHistory,
                 eventHandler, cancellationToken);
 
@@ -921,6 +926,8 @@ public final class StreamingAgentHandler {
     private boolean adaptiveReplanEnabled = true;
     private int maxAgentTurns = 50;
     private int maxAgentWallTimeSec = 600;
+    private int maxPlanStepWallTimeSec = 300;
+    private int maxPlanTotalWallTimeSec = 3600;
     private PlanCheckpointStore planCheckpointStore;
 
     /**
@@ -1063,6 +1070,17 @@ public final class StreamingAgentHandler {
     public void setWatchdogConfig(int maxAgentTurns, int maxAgentWallTimeSec) {
         this.maxAgentTurns = Math.max(0, maxAgentTurns);
         this.maxAgentWallTimeSec = Math.max(0, maxAgentWallTimeSec);
+    }
+
+    /**
+     * Sets the per-step and total wall-clock budgets for multi-step plan execution.
+     *
+     * @param stepSec  max wall-clock seconds per plan step (0 = disabled)
+     * @param totalSec max wall-clock seconds for the entire plan (0 = disabled)
+     */
+    public void setPlanBudgetConfig(int stepSec, int totalSec) {
+        this.maxPlanStepWallTimeSec = Math.max(0, stepSec);
+        this.maxPlanTotalWallTimeSec = Math.max(0, totalSec);
     }
 
     /**
@@ -1458,7 +1476,7 @@ public final class StreamingAgentHandler {
             String sessionId, AgentSession session,
             StreamContext cancelContext, StreamEventHandler eventHandler,
             StreamingAgentLoop permissionAwareLoop, CancellationToken cancellationToken,
-            ToolMetricsCollector metricsCollector) throws Exception {
+            ToolMetricsCollector metricsCollector, WatchdogTimer watchdog) throws Exception {
 
         var resumeRouter = new ResumeRouter(planCheckpointStore);
         var routeDecision = resumeRouter.route(sessionId, session.projectPath());
@@ -1489,7 +1507,7 @@ public final class StreamingAgentHandler {
 
         if (userAccepted && cp.hasRemainingSteps()) {
             return executeResumedPlan(cp, session, sessionId, cancelContext,
-                    eventHandler, permissionAwareLoop, cancellationToken, metricsCollector);
+                    eventHandler, permissionAwareLoop, cancellationToken, metricsCollector, watchdog);
         }
 
         // User declined or no remaining steps
@@ -1550,7 +1568,7 @@ public final class StreamingAgentHandler {
             PlanCheckpoint cp, AgentSession session, String sessionId,
             StreamContext cancelContext, StreamEventHandler eventHandler,
             StreamingAgentLoop permissionAwareLoop, CancellationToken cancellationToken,
-            ToolMetricsCollector metricsCollector) throws Exception {
+            ToolMetricsCollector metricsCollector, WatchdogTimer watchdog) throws Exception {
 
         // 1. Mark old checkpoint as RESUMED
         planCheckpointStore.markResumed(cp.planId());
@@ -1715,7 +1733,12 @@ public final class StreamingAgentHandler {
 
         // 10. Execute remaining steps
         AdaptiveReplanner resumeReplanner = createReplannerIfEnabled(sessionId);
-        var executor = new SequentialPlanExecutor(checkpointingListener, resumeReplanner);
+        var perStepWall = maxPlanStepWallTimeSec > 0
+                ? Duration.ofSeconds(maxPlanStepWallTimeSec) : null;
+        var totalPlanWall = maxPlanTotalWallTimeSec > 0
+                ? Duration.ofSeconds(maxPlanTotalWallTimeSec) : null;
+        var executor = new SequentialPlanExecutor(checkpointingListener, resumeReplanner,
+                watchdog, perStepWall, totalPlanWall);
         var planResult = executor.execute(partialPlan, permissionAwareLoop,
                 conversationHistory, eventHandler, cancellationToken);
 

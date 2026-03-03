@@ -46,7 +46,7 @@ public final class WatchdogTimer implements AutoCloseable {
     private final Instant startedAt;
     private final AtomicReference<String> exhaustionReason = new AtomicReference<>(null);
     private final AtomicInteger cumulativeTurns = new AtomicInteger(0);
-    private final ScheduledFuture<?> timerFuture;
+    private volatile ScheduledFuture<?> timerFuture;
 
     /**
      * Creates a new watchdog timer.
@@ -67,6 +67,42 @@ public final class WatchdogTimer implements AutoCloseable {
                     token.cancel();
                 }
             }, this.maxWallTime.toMillis(), TimeUnit.MILLISECONDS);
+        } else {
+            this.timerFuture = null;
+        }
+    }
+
+    /**
+     * Resets the wall-clock timer with a new duration.
+     *
+     * <p>Cancels the current scheduled timer (if any) and schedules a fresh one
+     * with the given duration. This allows per-step wall-clock budgets during
+     * multi-step plan execution.
+     *
+     * <p>No-op if the watchdog is already exhausted (turn or time budget spent).
+     * The cumulative turn budget is intentionally NOT reset — only the wall-clock
+     * timer is affected.
+     *
+     * @param newWallTime the new wall-clock duration for the timer
+     */
+    public void resetWallClock(Duration newWallTime) {
+        if (exhaustionReason.get() != null) {
+            return; // already exhausted, no point restarting
+        }
+
+        // Cancel existing timer
+        var existing = this.timerFuture;
+        if (existing != null) {
+            existing.cancel(false);
+        }
+
+        Duration effective = newWallTime != null ? newWallTime : Duration.ZERO;
+        if (!effective.isZero() && !effective.isNegative()) {
+            this.timerFuture = SCHEDULER.schedule(() -> {
+                if (this.exhaustionReason.compareAndSet(null, "time_budget")) {
+                    token.cancel();
+                }
+            }, effective.toMillis(), TimeUnit.MILLISECONDS);
         } else {
             this.timerFuture = null;
         }

@@ -1,10 +1,13 @@
 package dev.aceclaw.core.planner;
 
+import dev.aceclaw.core.agent.CancellationToken;
 import dev.aceclaw.core.agent.StreamingAgentLoop;
 import dev.aceclaw.core.agent.ToolRegistry;
+import dev.aceclaw.core.agent.WatchdogTimer;
 import dev.aceclaw.core.llm.*;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -324,5 +327,60 @@ class SequentialPlanExecutorReplanTest {
         assertFalse(result.success());
         assertTrue(escalateCalled.get(), "onPlanEscalated should have been called");
         assertTrue(escalateReason.toString().contains("Cannot recover"));
+    }
+
+    @Test
+    void execute_withWatchdog_resetsPerStep() throws LlmException {
+        var client = new ReplanAwareMockLlmClient();
+        // 3 steps, all succeed
+        client.enqueueStreamTextResponse("step 1 done");
+        client.enqueueStreamTextResponse("step 2 done");
+        client.enqueueStreamTextResponse("step 3 done");
+
+        var plan = createTestPlan(3);
+        var loop = createLoop(client);
+        var cancellationToken = new CancellationToken();
+
+        // Create a watchdog with a very short initial wall-clock (50ms).
+        // Without per-step reset, step 2+ would be cancelled.
+        // With per-step reset (5 seconds each), all steps should complete.
+        try (var watchdog = new WatchdogTimer(0, Duration.ofMillis(50), cancellationToken)) {
+            var executor = new SequentialPlanExecutor(
+                    null, null, watchdog, Duration.ofSeconds(5), Duration.ofHours(1));
+
+            var result = executor.execute(plan, loop, new ArrayList<>(), noOpHandler, cancellationToken);
+
+            assertTrue(result.success(), "All steps should succeed with per-step wall-clock reset");
+            assertEquals(3, result.stepResults().size());
+            // Watchdog should NOT be exhausted since each step gets a fresh 5s budget
+            assertFalse(watchdog.isExhausted(),
+                    "Watchdog should not be exhausted when per-step resets are active");
+        }
+    }
+
+    @Test
+    void execute_totalPlanTimeout() throws LlmException {
+        var client = new ReplanAwareMockLlmClient();
+        // 3 steps, all succeed
+        client.enqueueStreamTextResponse("step 1 done");
+        client.enqueueStreamTextResponse("step 2 done");
+        client.enqueueStreamTextResponse("step 3 done");
+
+        var plan = createTestPlan(3);
+        var loop = createLoop(client);
+
+        // Total plan wall time of 1ms -- should expire immediately
+        var executor = new SequentialPlanExecutor(
+                null, null, null, null, Duration.ofMillis(1));
+
+        // Add a small sleep so the 1ms budget is definitely exceeded
+        try { Thread.sleep(5); } catch (InterruptedException ignored) {}
+
+        var result = executor.execute(plan, loop, new ArrayList<>(), noOpHandler, null);
+
+        assertFalse(result.success(), "Plan should fail due to total time budget");
+        assertInstanceOf(PlanStatus.Failed.class, result.plan().status());
+        var failed = (PlanStatus.Failed) result.plan().status();
+        assertEquals("plan_time_budget", failed.reason());
     }
 }
