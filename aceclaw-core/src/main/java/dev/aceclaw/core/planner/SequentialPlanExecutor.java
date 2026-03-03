@@ -13,6 +13,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Executes plan steps sequentially through the agent loop.
@@ -98,6 +99,8 @@ public final class SequentialPlanExecutor implements PlanExecutor {
             StreamEventHandler handler,
             CancellationToken cancellationToken) throws LlmException {
 
+        Objects.requireNonNull(plan, "plan");
+        Objects.requireNonNull(agentLoop, "agentLoop");
         if (watchdog != null && cancellationToken == null) {
             throw new IllegalArgumentException(
                     "cancellationToken is required when watchdog budgeting is enabled");
@@ -254,6 +257,23 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                         continue;
 
                     } catch (LlmException fallbackEx) {
+                        // Same cancellation guard as primary catch
+                        if (cancellationToken != null && cancellationToken.isCancelled()) {
+                            String reason = (watchdog != null && watchdog.isExhausted())
+                                    ? watchdog.exhaustionReason() : "Cancelled by user";
+                            log.info("Step {}/{} cancelled during fallback ({})",
+                                    i + 1, plan.steps().size(), reason);
+                            var cancelResult = new StepResult(false, null, reason,
+                                    System.currentTimeMillis() - stepStart, 0, 0);
+                            stepResults.add(cancelResult);
+                            mutablePlan = mutablePlan.withStepStatus(step.stepId(), StepStatus.FAILED)
+                                    .withStatus(new PlanStatus.Failed(reason, step.stepId()));
+                            if (listener != null) {
+                                listener.onStepCompleted(step, i, cancelResult);
+                            }
+                            allSuccess = false;
+                            break stepLoop;
+                        }
                         log.warn("Fallback also failed for step {}: {}",
                                 i + 1, fallbackEx.getMessage());
                     }
