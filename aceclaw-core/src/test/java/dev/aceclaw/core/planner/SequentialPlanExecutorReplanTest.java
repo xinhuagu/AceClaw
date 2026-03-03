@@ -369,12 +369,23 @@ class SequentialPlanExecutorReplanTest {
         var plan = createTestPlan(3);
         var loop = createLoop(client);
 
-        // Total plan wall time of 1ms -- should expire immediately
-        var executor = new SequentialPlanExecutor(
-                null, null, null, null, Duration.ofMillis(1));
+        // Listener that introduces delay after step completion, ensuring
+        // the total plan budget (5ms) is exceeded before the next step starts.
+        var delayListener = new SequentialPlanExecutor.PlanEventListener() {
+            @Override
+            public void onStepStarted(PlannedStep step, int stepIndex, int totalSteps) {}
+            @Override
+            public void onStepCompleted(PlannedStep step, int stepIndex, StepResult result) {
+                try { Thread.sleep(20); } catch (InterruptedException ignored) {}
+            }
+            @Override
+            public void onPlanCompleted(TaskPlan p, boolean success, long totalDurationMs) {}
+        };
 
-        // Add a small sleep so the 1ms budget is definitely exceeded
-        try { Thread.sleep(5); } catch (InterruptedException ignored) {}
+        // Total plan wall time of 5ms — step 1 runs, the 20ms listener delay pushes
+        // elapsed past 5ms, so step 2 is blocked by the budget check.
+        var executor = new SequentialPlanExecutor(
+                delayListener, null, null, null, Duration.ofMillis(5));
 
         var result = executor.execute(plan, loop, new ArrayList<>(), noOpHandler, null);
 

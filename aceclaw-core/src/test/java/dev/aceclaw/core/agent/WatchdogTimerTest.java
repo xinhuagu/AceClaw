@@ -209,6 +209,28 @@ class WatchdogTimerTest {
     }
 
     @Test
+    void resetWallClock_checkBudgetUsesResetBaseline() throws InterruptedException {
+        var token = new CancellationToken();
+        // Create with short original wall-clock (100ms)
+        try (var watchdog = new WatchdogTimer(0, Duration.ofMillis(100), token)) {
+            // Reset to a generous 5s budget BEFORE the 100ms timer fires.
+            // This cancels the old timer and updates the baseline.
+            watchdog.resetWallClock(Duration.ofSeconds(5));
+
+            // Now wait past the original 100ms budget.
+            // Without the fix, checkBudget's belt-and-suspenders would compare
+            // elapsed (>100ms from startedAt) against old maxWallTime (100ms) and fire.
+            // With the fix, it compares elapsed (~100ms from resetAt) against 5s and doesn't fire.
+            Thread.sleep(150);
+
+            watchdog.checkBudget(0);
+            assertFalse(watchdog.isExhausted(),
+                    "checkBudget must use reset baseline, not original startedAt/maxWallTime");
+            assertFalse(token.isCancelled());
+        }
+    }
+
+    @Test
     void resetWallClock_noOpWhenAlreadyExhausted() throws InterruptedException {
         var token = new CancellationToken();
         try (var watchdog = new WatchdogTimer(1, Duration.ZERO, token)) {

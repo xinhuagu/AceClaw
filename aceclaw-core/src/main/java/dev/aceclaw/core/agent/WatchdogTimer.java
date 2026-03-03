@@ -41,12 +41,15 @@ public final class WatchdogTimer implements AutoCloseable {
     }
 
     private final int maxTurns;
-    private final Duration maxWallTime;
     private final CancellationToken token;
     private final Instant startedAt;
     private final AtomicReference<String> exhaustionReason = new AtomicReference<>(null);
     private final AtomicInteger cumulativeTurns = new AtomicInteger(0);
     private volatile ScheduledFuture<?> timerFuture;
+
+    /** Effective wall-clock budget and reset point, updated by {@link #resetWallClock}. */
+    private volatile Duration effectiveWallTime;
+    private volatile Instant wallTimeResetAt;
 
     /**
      * Creates a new watchdog timer.
@@ -57,16 +60,19 @@ public final class WatchdogTimer implements AutoCloseable {
      */
     public WatchdogTimer(int maxTurns, Duration maxWallTime, CancellationToken token) {
         this.maxTurns = Math.max(0, maxTurns);
-        this.maxWallTime = maxWallTime != null ? maxWallTime : Duration.ZERO;
         this.token = Objects.requireNonNull(token, "token");
         this.startedAt = Instant.now();
 
-        if (!this.maxWallTime.isZero() && !this.maxWallTime.isNegative()) {
+        Duration initial = maxWallTime != null ? maxWallTime : Duration.ZERO;
+        this.effectiveWallTime = initial;
+        this.wallTimeResetAt = this.startedAt;
+
+        if (!initial.isZero() && !initial.isNegative()) {
             this.timerFuture = SCHEDULER.schedule(() -> {
                 if (this.exhaustionReason.compareAndSet(null, "time_budget")) {
                     token.cancel();
                 }
-            }, this.maxWallTime.toMillis(), TimeUnit.MILLISECONDS);
+            }, initial.toMillis(), TimeUnit.MILLISECONDS);
         } else {
             this.timerFuture = null;
         }
@@ -96,7 +102,17 @@ public final class WatchdogTimer implements AutoCloseable {
             existing.cancel(false);
         }
 
+        // Re-check: the old timer may have fired between our initial guard and cancel
+        if (exhaustionReason.get() != null) {
+            this.timerFuture = null;
+            return;
+        }
+
         Duration effective = newWallTime != null ? newWallTime : Duration.ZERO;
+        // Update the effective wall-clock baseline so checkBudget uses the new values
+        this.effectiveWallTime = effective;
+        this.wallTimeResetAt = Instant.now();
+
         if (!effective.isZero() && !effective.isNegative()) {
             this.timerFuture = SCHEDULER.schedule(() -> {
                 if (this.exhaustionReason.compareAndSet(null, "time_budget")) {
@@ -134,10 +150,12 @@ public final class WatchdogTimer implements AutoCloseable {
             return;
         }
 
-        // Belt-and-suspenders: check wall-clock even if timer hasn't fired
-        if (!maxWallTime.isZero() && !maxWallTime.isNegative()) {
-            long elapsedMs = Duration.between(startedAt, Instant.now()).toMillis();
-            if (elapsedMs >= maxWallTime.toMillis()) {
+        // Belt-and-suspenders: check wall-clock even if timer hasn't fired.
+        // Uses effectiveWallTime/wallTimeResetAt so this respects resetWallClock() calls.
+        Duration wallTime = this.effectiveWallTime;
+        if (wallTime != null && !wallTime.isZero() && !wallTime.isNegative()) {
+            long elapsedMs = Duration.between(this.wallTimeResetAt, Instant.now()).toMillis();
+            if (elapsedMs >= wallTime.toMillis()) {
                 if (exhaustionReason.compareAndSet(null, "time_budget")) {
                     token.cancel();
                 }
