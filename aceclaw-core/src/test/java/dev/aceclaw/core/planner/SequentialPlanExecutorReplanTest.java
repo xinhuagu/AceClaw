@@ -1,10 +1,13 @@
 package dev.aceclaw.core.planner;
 
+import dev.aceclaw.core.agent.CancellationToken;
 import dev.aceclaw.core.agent.StreamingAgentLoop;
 import dev.aceclaw.core.agent.ToolRegistry;
+import dev.aceclaw.core.agent.WatchdogTimer;
 import dev.aceclaw.core.llm.*;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -324,5 +327,185 @@ class SequentialPlanExecutorReplanTest {
         assertFalse(result.success());
         assertTrue(escalateCalled.get(), "onPlanEscalated should have been called");
         assertTrue(escalateReason.toString().contains("Cannot recover"));
+    }
+
+    @Test
+    void execute_withWatchdog_resetsPerStep() throws LlmException {
+        var client = new ReplanAwareMockLlmClient();
+        // 3 steps, all succeed
+        client.enqueueStreamTextResponse("step 1 done");
+        client.enqueueStreamTextResponse("step 2 done");
+        client.enqueueStreamTextResponse("step 3 done");
+
+        var plan = createTestPlan(3);
+        var loop = createLoop(client);
+        var cancellationToken = new CancellationToken();
+
+        // Create a watchdog with a very short initial wall-clock (50ms).
+        // Without per-step reset, step 2+ would be cancelled.
+        // With per-step reset (5 seconds each), all steps should complete.
+        try (var watchdog = new WatchdogTimer(0, Duration.ofMillis(50), cancellationToken)) {
+            var executor = new SequentialPlanExecutor(
+                    null, null, watchdog, Duration.ofSeconds(5), Duration.ofHours(1));
+
+            var result = executor.execute(plan, loop, new ArrayList<>(), noOpHandler, cancellationToken);
+
+            assertTrue(result.success(), "All steps should succeed with per-step wall-clock reset");
+            assertEquals(3, result.stepResults().size());
+            // Watchdog should NOT be exhausted since each step gets a fresh 5s budget
+            assertFalse(watchdog.isExhausted(),
+                    "Watchdog should not be exhausted when per-step resets are active");
+        }
+    }
+
+    @Test
+    void execute_totalPlanTimeout() throws LlmException {
+        var client = new ReplanAwareMockLlmClient();
+        // 3 steps, all succeed
+        client.enqueueStreamTextResponse("step 1 done");
+        client.enqueueStreamTextResponse("step 2 done");
+        client.enqueueStreamTextResponse("step 3 done");
+
+        var plan = createTestPlan(3);
+        var loop = createLoop(client);
+
+        // Listener that introduces delay after step completion, ensuring
+        // the total plan budget (5ms) is exceeded before the next step starts.
+        var delayListener = new SequentialPlanExecutor.PlanEventListener() {
+            @Override
+            public void onStepStarted(PlannedStep step, int stepIndex, int totalSteps) {}
+            @Override
+            public void onStepCompleted(PlannedStep step, int stepIndex, StepResult result) {
+                try {
+                    Thread.sleep(20);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            @Override
+            public void onPlanCompleted(TaskPlan p, boolean success, long totalDurationMs) {}
+        };
+
+        // Total plan wall time of 5ms — step 1 runs, the 20ms listener delay pushes
+        // elapsed past 5ms, so step 2 is blocked by the budget check.
+        var executor = new SequentialPlanExecutor(
+                delayListener, null, null, null, Duration.ofMillis(5));
+
+        var result = executor.execute(plan, loop, new ArrayList<>(), noOpHandler, null);
+
+        assertFalse(result.success(), "Plan should fail due to total time budget");
+        assertInstanceOf(PlanStatus.Failed.class, result.plan().status());
+        var failed = (PlanStatus.Failed) result.plan().status();
+        assertEquals("plan_time_budget", failed.reason());
+    }
+
+    @Test
+    void execute_totalPlanTimeout_postLoopCheck() throws LlmException {
+        var client = new ReplanAwareMockLlmClient();
+        // Single step that succeeds
+        client.enqueueStreamTextResponse("step 1 done");
+
+        var steps = List.of(
+                new PlannedStep("s1", "Step 1", "Do it", List.of("read_file"), null, StepStatus.PENDING));
+        var plan = new TaskPlan("plan-1", "Goal", steps, new PlanStatus.Draft(), Instant.now());
+        var loop = createLoop(client);
+
+        // Listener that introduces a 20ms delay AFTER the only step completes.
+        // This ensures total elapsed exceeds the 5ms budget by the time the
+        // post-loop check runs, even though the pre-step check passed.
+        var delayListener = new SequentialPlanExecutor.PlanEventListener() {
+            @Override
+            public void onStepStarted(PlannedStep step, int stepIndex, int totalSteps) {}
+            @Override
+            public void onStepCompleted(PlannedStep step, int stepIndex, StepResult result) {
+                try {
+                    Thread.sleep(20);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            @Override
+            public void onPlanCompleted(TaskPlan p, boolean success, long totalDurationMs) {}
+        };
+
+        var executor = new SequentialPlanExecutor(
+                delayListener, null, null, null, Duration.ofMillis(5));
+
+        var result = executor.execute(plan, loop, new ArrayList<>(), noOpHandler, null);
+
+        // The single step completed, but the post-loop check should catch the overrun
+        assertFalse(result.success(), "Plan should fail due to post-loop total time budget check");
+        assertInstanceOf(PlanStatus.Failed.class, result.plan().status());
+        var failed = (PlanStatus.Failed) result.plan().status();
+        assertEquals("plan_time_budget", failed.reason());
+        // The step itself did complete
+        assertEquals(1, result.stepResults().size());
+        assertTrue(result.stepResults().get(0).success());
+    }
+
+    @Test
+    void execute_withWatchdog_requiresCancellationToken() {
+        var token = new CancellationToken();
+        try (var watchdog = new WatchdogTimer(0, Duration.ZERO, token)) {
+            var executor = new SequentialPlanExecutor(
+                    null, null, watchdog, Duration.ofSeconds(5), null);
+            var plan = createTestPlan(1);
+            var loop = createLoop(new ReplanAwareMockLlmClient());
+
+            assertThrows(IllegalArgumentException.class,
+                    () -> executor.execute(plan, loop, new ArrayList<>(), noOpHandler, null),
+                    "Should throw when watchdog is set but cancellationToken is null");
+        }
+    }
+
+    @Test
+    void execute_watchdogResetCappedToRemainingTotalBudget() throws LlmException {
+        var client = new ReplanAwareMockLlmClient();
+        // 2 steps
+        client.enqueueStreamTextResponse("step 1 done");
+        client.enqueueStreamTextResponse("step 2 done");
+
+        var plan = createTestPlan(2);
+        var cancellationToken = new CancellationToken();
+
+        // perStepWallTime = 1 hour, totalPlanWallTime = 80ms.
+        // Step 1's watchdog reset is capped to min(1h, ~80ms) ≈ 80ms.
+        // The listener introduces a 100ms delay after step 1, exceeding the total budget.
+        // The capped watchdog fires during the delay (at ~80ms), cancelling the token.
+        // Without capping, the watchdog would wait 1 hour and the overrun would only
+        // be caught at the pre-step check -- the key difference is that capping lets
+        // the watchdog enforce the total deadline during step execution too.
+        var delayListener = new SequentialPlanExecutor.PlanEventListener() {
+            @Override
+            public void onStepStarted(PlannedStep step, int stepIndex, int totalSteps) {}
+            @Override
+            public void onStepCompleted(PlannedStep step, int stepIndex, StepResult result) {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            @Override
+            public void onPlanCompleted(TaskPlan p, boolean success, long totalDurationMs) {}
+        };
+
+        var loop = createLoop(client);
+        try (var watchdog = new WatchdogTimer(0, Duration.ofHours(1), cancellationToken)) {
+            var executor = new SequentialPlanExecutor(
+                    delayListener, null, watchdog, Duration.ofHours(1), Duration.ofMillis(80));
+
+            var result = executor.execute(plan, loop, new ArrayList<>(), noOpHandler, cancellationToken);
+
+            // Plan must fail -- the capped watchdog fires during the listener delay,
+            // and the executor correctly reports the watchdog reason, not "Cancelled by user".
+            assertFalse(result.success(), "Plan should fail when total budget is exceeded");
+            assertTrue(cancellationToken.isCancelled(),
+                    "Token should be cancelled by capped watchdog timer");
+            assertInstanceOf(PlanStatus.Failed.class, result.plan().status());
+            var failed = (PlanStatus.Failed) result.plan().status();
+            assertEquals("time_budget", failed.reason(),
+                    "Should report watchdog exhaustion reason, not 'Cancelled by user'");
+        }
     }
 }

@@ -100,6 +100,8 @@ public final class AceClawConfig {
     private static final int DEFAULT_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS = 168;
     private static final int DEFAULT_MAX_AGENT_TURNS = 50;
     private static final int DEFAULT_MAX_AGENT_WALL_TIME_SEC = 600;
+    private static final int DEFAULT_MAX_PLAN_STEP_WALL_TIME_SEC = 300;
+    private static final int DEFAULT_MAX_PLAN_TOTAL_WALL_TIME_SEC = 3600;
     private static final boolean DEFAULT_DEFERRED_ACTION_ENABLED = true;
     private static final int DEFAULT_DEFERRED_ACTION_TICK_SECONDS = 5;
 
@@ -165,6 +167,8 @@ public final class AceClawConfig {
     private int skillAutoReleaseHealthLookbackHours;
     private int maxAgentTurns;
     private int maxAgentWallTimeSec;
+    private int maxPlanStepWallTimeSec;
+    private int maxPlanTotalWallTimeSec;
     private boolean deferredActionEnabled;
     private int deferredActionTickSeconds;
     private Map<String, List<HookMatcherFormat>> hooks;
@@ -221,6 +225,8 @@ public final class AceClawConfig {
         this.skillAutoReleaseHealthLookbackHours = DEFAULT_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS;
         this.maxAgentTurns = DEFAULT_MAX_AGENT_TURNS;
         this.maxAgentWallTimeSec = DEFAULT_MAX_AGENT_WALL_TIME_SEC;
+        this.maxPlanStepWallTimeSec = DEFAULT_MAX_PLAN_STEP_WALL_TIME_SEC;
+        this.maxPlanTotalWallTimeSec = DEFAULT_MAX_PLAN_TOTAL_WALL_TIME_SEC;
         this.deferredActionEnabled = DEFAULT_DEFERRED_ACTION_ENABLED;
         this.deferredActionTickSeconds = DEFAULT_DEFERRED_ACTION_TICK_SECONDS;
         this.providerModels = new java.util.HashMap<>();
@@ -306,6 +312,22 @@ public final class AceClawConfig {
                 config.maxAgentWallTimeSec = Math.max(0, Integer.parseInt(envMaxAgentWallTime));
             } catch (NumberFormatException e) {
                 log.warn("Invalid ACECLAW_MAX_AGENT_WALL_TIME_SEC: {}", envMaxAgentWallTime);
+            }
+        }
+        var envMaxPlanStepWallTime = System.getenv("ACECLAW_MAX_PLAN_STEP_WALL_TIME_SEC");
+        if (envMaxPlanStepWallTime != null && !envMaxPlanStepWallTime.isBlank()) {
+            try {
+                config.maxPlanStepWallTimeSec = Math.max(0, Integer.parseInt(envMaxPlanStepWallTime));
+            } catch (NumberFormatException e) {
+                log.warn("Invalid ACECLAW_MAX_PLAN_STEP_WALL_TIME_SEC: {}", envMaxPlanStepWallTime);
+            }
+        }
+        var envMaxPlanTotalWallTime = System.getenv("ACECLAW_MAX_PLAN_TOTAL_WALL_TIME_SEC");
+        if (envMaxPlanTotalWallTime != null && !envMaxPlanTotalWallTime.isBlank()) {
+            try {
+                config.maxPlanTotalWallTimeSec = Math.max(0, Integer.parseInt(envMaxPlanTotalWallTime));
+            } catch (NumberFormatException e) {
+                log.warn("Invalid ACECLAW_MAX_PLAN_TOTAL_WALL_TIME_SEC: {}", envMaxPlanTotalWallTime);
             }
         }
         var envAdaptiveContinuation = System.getenv("ACECLAW_ADAPTIVE_CONTINUATION");
@@ -995,6 +1017,23 @@ public final class AceClawConfig {
     }
 
     /**
+     * Returns the maximum wall-clock time in seconds per plan step.
+     * The watchdog timer is reset before each step. 0 = disabled.
+     * Defaults to 300 (5 minutes).
+     */
+    public int maxPlanStepWallTimeSec() {
+        return maxPlanStepWallTimeSec;
+    }
+
+    /**
+     * Returns the maximum total wall-clock time in seconds for an entire plan execution.
+     * 0 = disabled. Defaults to 3600 (1 hour).
+     */
+    public int maxPlanTotalWallTimeSec() {
+        return maxPlanTotalWallTimeSec;
+    }
+
+    /**
      * Returns the hooks configuration map (event name to list of hook matchers).
      * Returns null if no hooks are configured.
      */
@@ -1346,6 +1385,12 @@ public final class AceClawConfig {
         if (fileConfig.maxAgentWallTimeSec != null && fileConfig.maxAgentWallTimeSec >= 0) {
             this.maxAgentWallTimeSec = fileConfig.maxAgentWallTimeSec;
         }
+        if (fileConfig.maxPlanStepWallTimeSec != null && fileConfig.maxPlanStepWallTimeSec >= 0) {
+            this.maxPlanStepWallTimeSec = fileConfig.maxPlanStepWallTimeSec;
+        }
+        if (fileConfig.maxPlanTotalWallTimeSec != null && fileConfig.maxPlanTotalWallTimeSec >= 0) {
+            this.maxPlanTotalWallTimeSec = fileConfig.maxPlanTotalWallTimeSec;
+        }
         if (fileConfig.deferredActionEnabled != null) {
             this.deferredActionEnabled = fileConfig.deferredActionEnabled;
         }
@@ -1414,6 +1459,8 @@ public final class AceClawConfig {
         public Integer skillAutoReleaseHealthLookbackHours;
         public Integer maxAgentTurns;
         public Integer maxAgentWallTimeSec;
+        public Integer maxPlanStepWallTimeSec;
+        public Integer maxPlanTotalWallTimeSec;
         public Boolean deferredActionEnabled;
         public int deferredActionTickSeconds;
         public String defaultProfile;
