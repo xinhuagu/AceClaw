@@ -394,4 +394,44 @@ class SequentialPlanExecutorReplanTest {
         var failed = (PlanStatus.Failed) result.plan().status();
         assertEquals("plan_time_budget", failed.reason());
     }
+
+    @Test
+    void execute_totalPlanTimeout_postLoopCheck() throws LlmException {
+        var client = new ReplanAwareMockLlmClient();
+        // Single step that succeeds
+        client.enqueueStreamTextResponse("step 1 done");
+
+        var steps = List.of(
+                new PlannedStep("s1", "Step 1", "Do it", List.of("read_file"), null, StepStatus.PENDING));
+        var plan = new TaskPlan("plan-1", "Goal", steps, new PlanStatus.Draft(), Instant.now());
+        var loop = createLoop(client);
+
+        // Listener that introduces a 20ms delay AFTER the only step completes.
+        // This ensures total elapsed exceeds the 5ms budget by the time the
+        // post-loop check runs, even though the pre-step check passed.
+        var delayListener = new SequentialPlanExecutor.PlanEventListener() {
+            @Override
+            public void onStepStarted(PlannedStep step, int stepIndex, int totalSteps) {}
+            @Override
+            public void onStepCompleted(PlannedStep step, int stepIndex, StepResult result) {
+                try { Thread.sleep(20); } catch (InterruptedException ignored) {}
+            }
+            @Override
+            public void onPlanCompleted(TaskPlan p, boolean success, long totalDurationMs) {}
+        };
+
+        var executor = new SequentialPlanExecutor(
+                delayListener, null, null, null, Duration.ofMillis(5));
+
+        var result = executor.execute(plan, loop, new ArrayList<>(), noOpHandler, null);
+
+        // The single step completed, but the post-loop check should catch the overrun
+        assertFalse(result.success(), "Plan should fail due to post-loop total time budget check");
+        assertInstanceOf(PlanStatus.Failed.class, result.plan().status());
+        var failed = (PlanStatus.Failed) result.plan().status();
+        assertEquals("plan_time_budget", failed.reason());
+        // The step itself did complete
+        assertEquals(1, result.stepResults().size());
+        assertTrue(result.stepResults().get(0).success());
+    }
 }

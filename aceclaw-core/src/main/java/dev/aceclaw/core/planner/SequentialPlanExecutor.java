@@ -286,6 +286,17 @@ public final class SequentialPlanExecutor implements PlanExecutor {
         long totalDuration = System.currentTimeMillis() - planStart;
         int totalTokens = stepResults.stream().mapToInt(StepResult::tokensUsed).sum();
 
+        // Post-loop: check if total plan budget was exceeded during the last step
+        if (!wasCancelled && allSuccess && totalPlanWallTime != null) {
+            if (totalDuration >= totalPlanWallTime.toMillis()) {
+                log.info("Total plan time budget exceeded after final step ({} ms >= {} ms)",
+                        totalDuration, totalPlanWallTime.toMillis());
+                mutablePlan = mutablePlan.withStatus(
+                        new PlanStatus.Failed("plan_time_budget", null));
+                allSuccess = false;
+            }
+        }
+
         if (wasCancelled) {
             mutablePlan = mutablePlan.withStatus(
                     new PlanStatus.Failed("Cancelled by user", null));
