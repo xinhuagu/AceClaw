@@ -92,6 +92,11 @@ public final class SequentialPlanExecutor implements PlanExecutor {
             StreamEventHandler handler,
             CancellationToken cancellationToken) throws LlmException {
 
+        if (watchdog != null && cancellationToken == null) {
+            throw new IllegalArgumentException(
+                    "cancellationToken is required when watchdog budgeting is enabled");
+        }
+
         long planStart = System.currentTimeMillis();
         var allMessages = new ArrayList<>(
                 conversationHistory != null ? conversationHistory : Collections.<Message>emptyList());

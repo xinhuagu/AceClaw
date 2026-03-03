@@ -376,7 +376,11 @@ class SequentialPlanExecutorReplanTest {
             public void onStepStarted(PlannedStep step, int stepIndex, int totalSteps) {}
             @Override
             public void onStepCompleted(PlannedStep step, int stepIndex, StepResult result) {
-                try { Thread.sleep(20); } catch (InterruptedException ignored) {}
+                try {
+                    Thread.sleep(20);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
             }
             @Override
             public void onPlanCompleted(TaskPlan p, boolean success, long totalDurationMs) {}
@@ -414,7 +418,11 @@ class SequentialPlanExecutorReplanTest {
             public void onStepStarted(PlannedStep step, int stepIndex, int totalSteps) {}
             @Override
             public void onStepCompleted(PlannedStep step, int stepIndex, StepResult result) {
-                try { Thread.sleep(20); } catch (InterruptedException ignored) {}
+                try {
+                    Thread.sleep(20);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
             }
             @Override
             public void onPlanCompleted(TaskPlan p, boolean success, long totalDurationMs) {}
@@ -433,5 +441,20 @@ class SequentialPlanExecutorReplanTest {
         // The step itself did complete
         assertEquals(1, result.stepResults().size());
         assertTrue(result.stepResults().get(0).success());
+    }
+
+    @Test
+    void execute_withWatchdog_requiresCancellationToken() {
+        var token = new CancellationToken();
+        try (var watchdog = new WatchdogTimer(0, Duration.ZERO, token)) {
+            var executor = new SequentialPlanExecutor(
+                    null, null, watchdog, Duration.ofSeconds(5), null);
+            var plan = createTestPlan(1);
+            var loop = createLoop(new ReplanAwareMockLlmClient());
+
+            assertThrows(IllegalArgumentException.class,
+                    () -> executor.execute(plan, loop, new ArrayList<>(), noOpHandler, null),
+                    "Should throw when watchdog is set but cancellationToken is null");
+        }
     }
 }
