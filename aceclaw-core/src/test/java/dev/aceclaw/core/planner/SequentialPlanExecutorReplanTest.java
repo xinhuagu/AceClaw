@@ -457,4 +457,51 @@ class SequentialPlanExecutorReplanTest {
                     "Should throw when watchdog is set but cancellationToken is null");
         }
     }
+
+    @Test
+    void execute_watchdogResetCappedToRemainingTotalBudget() throws LlmException {
+        var client = new ReplanAwareMockLlmClient();
+        // 2 steps
+        client.enqueueStreamTextResponse("step 1 done");
+        client.enqueueStreamTextResponse("step 2 done");
+
+        var plan = createTestPlan(2);
+        var cancellationToken = new CancellationToken();
+
+        // perStepWallTime = 1 hour, totalPlanWallTime = 80ms.
+        // Step 1's watchdog reset is capped to min(1h, ~80ms) ≈ 80ms.
+        // The listener introduces a 100ms delay after step 1, exceeding the total budget.
+        // The capped watchdog fires during the delay (at ~80ms), cancelling the token.
+        // Without capping, the watchdog would wait 1 hour and the overrun would only
+        // be caught at the pre-step check -- the key difference is that capping lets
+        // the watchdog enforce the total deadline during step execution too.
+        var delayListener = new SequentialPlanExecutor.PlanEventListener() {
+            @Override
+            public void onStepStarted(PlannedStep step, int stepIndex, int totalSteps) {}
+            @Override
+            public void onStepCompleted(PlannedStep step, int stepIndex, StepResult result) {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            @Override
+            public void onPlanCompleted(TaskPlan p, boolean success, long totalDurationMs) {}
+        };
+
+        var loop = createLoop(client);
+        try (var watchdog = new WatchdogTimer(0, Duration.ofHours(1), cancellationToken)) {
+            var executor = new SequentialPlanExecutor(
+                    delayListener, null, watchdog, Duration.ofHours(1), Duration.ofMillis(80));
+
+            var result = executor.execute(plan, loop, new ArrayList<>(), noOpHandler, cancellationToken);
+
+            // Plan must fail -- the capped watchdog or the pre-step budget check
+            // prevents step 2 from completing.
+            assertFalse(result.success(), "Plan should fail when total budget is exceeded");
+            assertTrue(cancellationToken.isCancelled(),
+                    "Token should be cancelled by capped watchdog timer");
+        }
+    }
 }

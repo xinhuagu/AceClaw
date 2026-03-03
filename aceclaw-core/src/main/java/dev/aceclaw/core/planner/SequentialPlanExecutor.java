@@ -130,9 +130,21 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                 }
             }
 
-            // Reset per-step wall-clock budget on the shared watchdog timer
+            // Reset per-step wall-clock budget on the shared watchdog timer.
+            // Cap to remaining total-plan budget so the watchdog fires at the true
+            // overall deadline rather than letting a step overrun the total budget.
             if (watchdog != null && perStepWallTime != null) {
-                watchdog.resetWallClock(perStepWallTime);
+                Duration effectiveStepWall = perStepWallTime;
+                if (totalPlanWallTime != null) {
+                    long remainingMs = totalPlanWallTime.toMillis()
+                            - (System.currentTimeMillis() - planStart);
+                    if (remainingMs > 0) {
+                        effectiveStepWall = Duration.ofMillis(
+                                Math.min(perStepWallTime.toMillis(), remainingMs));
+                    }
+                    // remainingMs <= 0 is caught by the pre-step budget check above
+                }
+                watchdog.resetWallClock(effectiveStepWall);
             }
 
             var step = plan.steps().get(i);
