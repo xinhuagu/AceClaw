@@ -84,6 +84,9 @@ final class ToolFailureAdvisor {
                 "certificate", "connection reset")) {
             return FailureCategory.NETWORK;
         }
+        if (containsAny(text, "no match found", "no lines matched", "files differ", "exit code: 1 —")) {
+            return FailureCategory.NO_MATCH;
+        }
         return FailureCategory.UNKNOWN;
     }
 
@@ -98,6 +101,7 @@ final class ToolFailureAdvisor {
             case CAPABILITY_MISMATCH ->
                     "Inspect input capabilities/format first, then switch to a tool that natively supports it.";
             case NETWORK -> "Retry with backoff, reduce remote dependency, or pivot to local/offline approach.";
+            case NO_MATCH -> "No results found is normal; try different search terms or broaden the pattern.";
             case UNKNOWN -> "Avoid blind retry; inspect exact error and pivot to an alternative approach.";
         };
         return ("Repeated non-progressing failures detected: tool=%s class=%s count=%d. " +
@@ -120,7 +124,7 @@ final class ToolFailureAdvisor {
     private static boolean isBlockEligible(FailureCategory category) {
         return switch (category) {
             case DEPENDENCY_OR_ENV, CAPABILITY_MISMATCH, PATH, UNKNOWN -> true;
-            case PERMISSION, TIMEOUT, NETWORK -> false;
+            case PERMISSION, TIMEOUT, NETWORK, NO_MATCH -> false;
         };
     }
 
@@ -131,6 +135,7 @@ final class ToolFailureAdvisor {
         DEPENDENCY_OR_ENV,
         CAPABILITY_MISMATCH,
         NETWORK,
+        NO_MATCH,
         UNKNOWN
     }
 

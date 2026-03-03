@@ -62,7 +62,6 @@ public final class ForegroundOutputSink implements OutputSink {
             out.print(THINKING + delta + RESET);
             out.flush();
             wasThinking = true;
-            statusRenderer.refresh();
         }
     }
 
@@ -104,7 +103,6 @@ public final class ForegroundOutputSink implements OutputSink {
                     out.flush();
                 }
             }
-            statusRenderer.refresh();
         }
     }
 

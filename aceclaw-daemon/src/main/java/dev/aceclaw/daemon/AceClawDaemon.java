@@ -351,13 +351,22 @@ public final class AceClawDaemon {
         log.info("System prompt: {} chars (~{} tokens), effective conversation window: {} tokens",
                 systemPrompt.length(), systemPromptTokens, compactionConfig.effectiveWindowTokens());
 
-        // 7. Streaming agent loop (with compaction support)
+        // 7. Streaming agent loop (with compaction support + context budget)
         var loopConfig = dev.aceclaw.core.agent.AgentLoopConfig.builder()
                 .maxIterations(config.maxTurns())
                 .build();
         var agentLoop = new StreamingAgentLoop(
                 llmClient, toolRegistry, model, systemPrompt,
-                config.maxTokens(), config.thinkingBudget(), compactor, loopConfig);
+                config.maxTokens(), config.thinkingBudget(),
+                contextWindow, compactor, loopConfig);
+
+        // Log startup token budget breakdown
+        int toolDefTokens = ContextEstimator.estimateToolDefinitions(toolRegistry.toDefinitions());
+        int availableTokens = contextWindow - config.maxTokens();
+        log.info("Context budget: system={}t, tools={}t, total_fixed={}t, available={}t (window={}t, output={}t)",
+                systemPromptTokens, toolDefTokens,
+                systemPromptTokens + toolDefTokens, availableTokens,
+                contextWindow, config.maxTokens());
 
         // 8. Streaming agent handler
         var agentHandler = new StreamingAgentHandler(

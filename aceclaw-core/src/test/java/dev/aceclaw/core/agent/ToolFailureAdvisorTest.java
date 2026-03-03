@@ -46,6 +46,32 @@ class ToolFailureAdvisorTest {
     }
 
     @Test
+    void classifiesNoMatchCategory() {
+        assertThat(ToolFailureAdvisor.classify("(exit code: 1 — no match found)"))
+                .isEqualTo(ToolFailureAdvisor.FailureCategory.NO_MATCH);
+        assertThat(ToolFailureAdvisor.classify("no match found"))
+                .isEqualTo(ToolFailureAdvisor.FailureCategory.NO_MATCH);
+        assertThat(ToolFailureAdvisor.classify("no lines matched"))
+                .isEqualTo(ToolFailureAdvisor.FailureCategory.NO_MATCH);
+        assertThat(ToolFailureAdvisor.classify("(exit code: 1 — files differ)"))
+                .isEqualTo(ToolFailureAdvisor.FailureCategory.NO_MATCH);
+    }
+
+    @Test
+    void doesNotBlockNoMatchEvenWhenRepeated() {
+        var advisor = new ToolFailureAdvisor();
+        String err = "\n\n(exit code: 1 — no match found)";
+
+        advisor.onFailure("bash", err);
+        advisor.onFailure("bash", err);
+        var third = advisor.onFailure("bash", err);
+
+        assertThat(third.blockTool()).isFalse();
+        assertThat(third.category()).isEqualTo(ToolFailureAdvisor.FailureCategory.NO_MATCH);
+        assertThat(advisor.preflightBlockMessage("bash")).isNull();
+    }
+
+    @Test
     void doesNotBlockTimeoutClassEvenWhenRepeated() {
         var advisor = new ToolFailureAdvisor();
         String err = "Command timed out after 120 seconds";

@@ -36,6 +36,48 @@ public final class ContextEstimator {
     private ContextEstimator() {} // utility class
 
     /**
+     * Structured breakdown of a pre-flight context budget check.
+     *
+     * @param systemPromptTokens  estimated tokens for the system prompt
+     * @param toolDefinitionTokens estimated tokens for all tool definitions
+     * @param messageTokens       estimated tokens for conversation messages
+     * @param totalEstimated      total estimated tokens (sum of all above)
+     * @param availableTokens     available tokens (contextWindow - maxOutputTokens)
+     * @param overBudget          true if totalEstimated exceeds availableTokens
+     */
+    public record BudgetCheck(
+            int systemPromptTokens, int toolDefinitionTokens, int messageTokens,
+            int totalEstimated, int availableTokens, boolean overBudget
+    ) {
+        /** Returns the excess tokens if over budget, or 0 if within budget. */
+        public int excessTokens() { return Math.max(0, totalEstimated - availableTokens); }
+    }
+
+    /**
+     * Performs a pre-flight budget check to determine if the full LLM request
+     * fits within the available context window.
+     *
+     * @param systemPrompt       the system prompt (may be null)
+     * @param tools              tool definitions (may be empty or null)
+     * @param messages           conversation messages (may be empty or null)
+     * @param contextWindowTokens total context window size in tokens
+     * @param maxOutputTokens    tokens reserved for output generation
+     * @return a structured budget breakdown
+     */
+    public static BudgetCheck checkBudget(
+            String systemPrompt, List<ToolDefinition> tools,
+            List<Message> messages, int contextWindowTokens, int maxOutputTokens) {
+        int sysTokens = estimateTokens(systemPrompt);
+        var safeTools = tools != null ? tools : List.<ToolDefinition>of();
+        int toolTokens = estimateToolDefinitions(safeTools);
+        var safeMsgs = messages != null ? messages : List.<Message>of();
+        int msgTokens = estimateMessageTokens(safeMsgs);
+        int total = sysTokens + toolTokens + msgTokens;
+        int available = Math.max(0, contextWindowTokens - maxOutputTokens);
+        return new BudgetCheck(sysTokens, toolTokens, msgTokens, total, available, total > available);
+    }
+
+    /**
      * Estimates the token count for a plain text string.
      *
      * @param text the text to estimate (may be null)
