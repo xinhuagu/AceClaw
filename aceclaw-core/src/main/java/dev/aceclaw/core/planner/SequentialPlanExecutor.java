@@ -110,8 +110,17 @@ public final class SequentialPlanExecutor implements PlanExecutor {
 
         stepLoop:
         for (int i = 0; i < plan.steps().size(); i++) {
-            // Check cancellation between steps
+            // Check cancellation between steps.
+            // Distinguish watchdog exhaustion from genuine user cancellation.
             if (cancellationToken != null && cancellationToken.isCancelled()) {
+                if (watchdog != null && watchdog.isExhausted()) {
+                    log.info("Plan cancelled by watchdog ({}) before step {}/{}",
+                            watchdog.exhaustionReason(), i + 1, plan.steps().size());
+                    mutablePlan = mutablePlan.withStatus(
+                            new PlanStatus.Failed(watchdog.exhaustionReason(), null));
+                    allSuccess = false;
+                    break stepLoop;
+                }
                 log.info("Plan execution cancelled before step {}/{}", i + 1, plan.steps().size());
                 wasCancelled = true;
                 break;
@@ -141,8 +150,11 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                     if (remainingMs > 0) {
                         effectiveStepWall = Duration.ofMillis(
                                 Math.min(perStepWallTime.toMillis(), remainingMs));
+                    } else {
+                        // Deadline crossed between the pre-step check and here;
+                        // use minimal duration so watchdog fires immediately.
+                        effectiveStepWall = Duration.ofMillis(1);
                     }
-                    // remainingMs <= 0 is caught by the pre-step budget check above
                 }
                 watchdog.resetWallClock(effectiveStepWall);
             }
@@ -315,6 +327,8 @@ public final class SequentialPlanExecutor implements PlanExecutor {
         }
 
         if (wasCancelled) {
+            // wasCancelled is only set when the token was cancelled by someone
+            // other than the watchdog (watchdog exhaustion is handled in-loop).
             mutablePlan = mutablePlan.withStatus(
                     new PlanStatus.Failed("Cancelled by user", null));
             allSuccess = false;

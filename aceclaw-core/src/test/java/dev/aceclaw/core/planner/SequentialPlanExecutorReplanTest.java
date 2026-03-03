@@ -497,11 +497,15 @@ class SequentialPlanExecutorReplanTest {
 
             var result = executor.execute(plan, loop, new ArrayList<>(), noOpHandler, cancellationToken);
 
-            // Plan must fail -- the capped watchdog or the pre-step budget check
-            // prevents step 2 from completing.
+            // Plan must fail -- the capped watchdog fires during the listener delay,
+            // and the executor correctly reports the watchdog reason, not "Cancelled by user".
             assertFalse(result.success(), "Plan should fail when total budget is exceeded");
             assertTrue(cancellationToken.isCancelled(),
                     "Token should be cancelled by capped watchdog timer");
+            assertInstanceOf(PlanStatus.Failed.class, result.plan().status());
+            var failed = (PlanStatus.Failed) result.plan().status();
+            assertEquals("time_budget", failed.reason(),
+                    "Should report watchdog exhaustion reason, not 'Cancelled by user'");
         }
     }
 }
