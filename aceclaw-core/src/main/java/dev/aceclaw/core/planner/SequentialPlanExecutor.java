@@ -78,6 +78,10 @@ public final class SequentialPlanExecutor implements PlanExecutor {
     public SequentialPlanExecutor(PlanEventListener listener, AdaptiveReplanner replanner,
                                   WatchdogTimer watchdog, Duration perStepWallTime,
                                   Duration totalPlanWallTime) {
+        if (perStepWallTime != null && watchdog == null) {
+            throw new IllegalArgumentException(
+                    "watchdog is required when perStepWallTime is configured");
+        }
         if (perStepWallTime != null && perStepWallTime.isNegative()) {
             throw new IllegalArgumentException("perStepWallTime must be non-negative");
         }
@@ -204,6 +208,8 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                         result.durationMs(), result.tokensUsed());
 
             } catch (LlmException e) {
+                String stepFailureMessage = e.getMessage();
+
                 // If the failure was caused by budget/watchdog cancellation,
                 // skip fallback and replan — no point in extra LLM work.
                 if (cancellationToken != null && cancellationToken.isCancelled()) {
@@ -276,6 +282,7 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                         }
                         log.warn("Fallback also failed for step {}: {}",
                                 i + 1, fallbackEx.getMessage());
+                        stepFailureMessage = fallbackEx.getMessage();
                     }
                 }
 
@@ -283,7 +290,7 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                 var failResult = new StepResult(
                         false,
                         null,
-                        e.getMessage(),
+                        stepFailureMessage,
                         System.currentTimeMillis() - stepStart,
                         0, 0);
                 stepResults.add(failResult);
@@ -302,7 +309,7 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                             ? plan.steps().subList(i + 1, plan.steps().size())
                             : List.<PlannedStep>of();
                     var trigger = new ReplanTrigger(plan.originalGoal(), step, i,
-                            e.getMessage(), completedSummaries, remaining, replanAttempt);
+                            stepFailureMessage, completedSummaries, remaining, replanAttempt);
 
                     try {
                         var replanResult = replanner.replan(trigger);
@@ -343,14 +350,14 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                     } catch (LlmException replanEx) {
                         log.warn("Replan LLM call failed: {}", replanEx.getMessage());
                         mutablePlan = mutablePlan.withStatus(
-                                new PlanStatus.Failed(e.getMessage(), step.stepId()));
+                                new PlanStatus.Failed(stepFailureMessage, step.stepId()));
                         allSuccess = false;
                         break stepLoop;
                     }
                 } else {
                     // No replanner -- original behavior: mark failed and break
                     mutablePlan = mutablePlan.withStatus(
-                            new PlanStatus.Failed(e.getMessage(), step.stepId()));
+                            new PlanStatus.Failed(stepFailureMessage, step.stepId()));
                     allSuccess = false;
                     break stepLoop;
                 }
