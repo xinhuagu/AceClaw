@@ -43,6 +43,7 @@ public final class StreamingAgentLoop {
     private final String systemPrompt;
     private final int maxTokens;
     private final int thinkingBudget;
+    private final int contextWindowTokens;
     private final MessageCompactor compactor;
     private final AgentLoopConfig config;
 
@@ -54,7 +55,7 @@ public final class StreamingAgentLoop {
      */
     public StreamingAgentLoop(LlmClient llmClient, ToolRegistry toolRegistry,
                               String model, String systemPrompt) {
-        this(llmClient, toolRegistry, model, systemPrompt, 16384, 10240, null, AgentLoopConfig.EMPTY);
+        this(llmClient, toolRegistry, model, systemPrompt, 16384, 10240, 0, null, AgentLoopConfig.EMPTY);
     }
 
     /**
@@ -63,7 +64,7 @@ public final class StreamingAgentLoop {
     public StreamingAgentLoop(LlmClient llmClient, ToolRegistry toolRegistry,
                               String model, String systemPrompt,
                               int maxTokens, int thinkingBudget) {
-        this(llmClient, toolRegistry, model, systemPrompt, maxTokens, thinkingBudget, null, AgentLoopConfig.EMPTY);
+        this(llmClient, toolRegistry, model, systemPrompt, maxTokens, thinkingBudget, 0, null, AgentLoopConfig.EMPTY);
     }
 
     /**
@@ -73,7 +74,7 @@ public final class StreamingAgentLoop {
                               String model, String systemPrompt,
                               int maxTokens, int thinkingBudget,
                               MessageCompactor compactor) {
-        this(llmClient, toolRegistry, model, systemPrompt, maxTokens, thinkingBudget, compactor, AgentLoopConfig.EMPTY);
+        this(llmClient, toolRegistry, model, systemPrompt, maxTokens, thinkingBudget, 0, compactor, AgentLoopConfig.EMPTY);
     }
 
     /**
@@ -92,12 +93,34 @@ public final class StreamingAgentLoop {
                               String model, String systemPrompt,
                               int maxTokens, int thinkingBudget,
                               MessageCompactor compactor, AgentLoopConfig config) {
-        this.llmClient = llmClient;
-        this.toolRegistry = toolRegistry;
-        this.model = model;
+        this(llmClient, toolRegistry, model, systemPrompt, maxTokens, thinkingBudget, 0, compactor, config);
+    }
+
+    /**
+     * Creates a streaming agent loop with full configuration including context window budget.
+     *
+     * @param llmClient           the LLM client for streaming requests
+     * @param toolRegistry        registry of available tools
+     * @param model               model identifier
+     * @param systemPrompt        system prompt for the LLM (may be null)
+     * @param maxTokens           maximum tokens to generate per request
+     * @param thinkingBudget      tokens reserved for extended thinking (0 = disabled)
+     * @param contextWindowTokens total context window size (0 = no budget check)
+     * @param compactor           optional message compactor (null = no compaction)
+     * @param config              optional integrations config
+     */
+    public StreamingAgentLoop(LlmClient llmClient, ToolRegistry toolRegistry,
+                              String model, String systemPrompt,
+                              int maxTokens, int thinkingBudget,
+                              int contextWindowTokens,
+                              MessageCompactor compactor, AgentLoopConfig config) {
+        this.llmClient = Objects.requireNonNull(llmClient, "llmClient");
+        this.toolRegistry = Objects.requireNonNull(toolRegistry, "toolRegistry");
+        this.model = Objects.requireNonNull(model, "model");
         this.systemPrompt = systemPrompt;
         this.maxTokens = maxTokens;
         this.thinkingBudget = thinkingBudget;
+        this.contextWindowTokens = contextWindowTokens;
         this.compactor = compactor;
         this.config = config != null ? config : AgentLoopConfig.EMPTY;
     }
@@ -395,6 +418,37 @@ public final class StreamingAgentLoop {
         }
 
         var toolDefs = toolRegistry.toDefinitions();
+
+        // Pre-flight context budget check: if contextWindowTokens is configured,
+        // verify the total request fits within the available window.
+        // If over budget, truncate tool descriptions as a soft guardrail.
+        if (contextWindowTokens > 0) {
+            var budget = ContextEstimator.checkBudget(
+                    systemPrompt, toolDefs, messages, contextWindowTokens, maxTokens);
+            if (budget.overBudget()) {
+                log.warn("Pre-flight budget exceeded: system={}t, tools={}t, messages={}t, " +
+                                "total={}t, available={}t (excess={}t)",
+                        budget.systemPromptTokens(), budget.toolDefinitionTokens(),
+                        budget.messageTokens(), budget.totalEstimated(),
+                        budget.availableTokens(), budget.excessTokens());
+
+                if (!toolDefs.isEmpty()) {
+                    // Compute a character budget for tool descriptions:
+                    // available tokens minus system prompt and messages, converted to chars
+                    int toolTokenBudget = budget.availableTokens()
+                            - budget.systemPromptTokens() - budget.messageTokens();
+                    int toolDescCharBudget = Math.max(0, toolTokenBudget * 4);
+                    if (toolDescCharBudget == 0) {
+                        log.warn("No budget remaining for tool descriptions; " +
+                                "system prompt and messages alone exceed context window");
+                    }
+                    toolDefs = toolRegistry.toDefinitions(toolDescCharBudget);
+
+                    log.info("Tool descriptions truncated to fit {} chars", toolDescCharBudget);
+                }
+            }
+        }
+
         if (!toolDefs.isEmpty()) {
             builder.tools(toolDefs);
         }
