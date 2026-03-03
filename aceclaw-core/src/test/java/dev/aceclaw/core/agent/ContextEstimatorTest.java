@@ -129,10 +129,34 @@ class ContextEstimatorTest {
     }
 
     @Test
+    void toDefinitions_tinyOverage_neverExpandsDescription() {
+        // When excess is smaller than the marker length ("\n[TRUNCATED]" = 12 chars),
+        // truncation must not make the description longer than the original.
+        var registry = new ToolRegistry();
+        registry.register(simpleTool("edge", "A".repeat(210)));
+
+        // Budget is 1 char less than the description — tiny overage
+        var defs = registry.toDefinitions(209);
+        var edge = defs.stream().filter(d -> d.name().equals("edge")).findFirst().orElseThrow();
+
+        assertTrue(edge.description().length() <= 210,
+                "Truncated description must not be longer than original");
+    }
+
+    @Test
     void toDefinitions_emptyRegistry() {
         var registry = new ToolRegistry();
         var defs = registry.toDefinitions(100);
         assertTrue(defs.isEmpty());
+    }
+
+    @Test
+    void checkBudget_negativeAvailable_clampedToZero() {
+        // If contextWindow < maxOutputTokens (misconfiguration), available should be 0, not negative
+        var budget = ContextEstimator.checkBudget("prompt", List.of(), List.of(), 100, 200);
+
+        assertEquals(0, budget.availableTokens());
+        assertTrue(budget.overBudget());
     }
 
     // -- Helper methods --

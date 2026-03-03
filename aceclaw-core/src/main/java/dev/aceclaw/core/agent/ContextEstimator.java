@@ -73,7 +73,7 @@ public final class ContextEstimator {
         var safeMsgs = messages != null ? messages : List.<Message>of();
         int msgTokens = estimateMessageTokens(safeMsgs);
         int total = sysTokens + toolTokens + msgTokens;
-        int available = contextWindowTokens - maxOutputTokens;
+        int available = Math.max(0, contextWindowTokens - maxOutputTokens);
         return new BudgetCheck(sysTokens, toolTokens, msgTokens, total, available, total > available);
     }
 

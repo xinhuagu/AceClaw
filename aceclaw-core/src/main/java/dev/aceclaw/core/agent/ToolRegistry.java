@@ -102,11 +102,16 @@ public final class ToolRegistry {
             int firstParaEnd = desc.indexOf("\n\n");
             int minLen = firstParaEnd > 0 ? firstParaEnd : Math.min(desc.length(), 200);
 
+            String marker = "\n[TRUNCATED]";
             int cutLen = Math.max(targetLen, minLen);
+            // Ensure truncation still reduces net length after marker append
+            cutLen = Math.min(cutLen, Math.max(0, desc.length() - marker.length()));
             if (cutLen < desc.length()) {
-                String truncated = desc.substring(0, cutLen) + "\n[TRUNCATED]";
-                remaining -= (desc.length() - truncated.length());
-                descriptions[idx] = truncated;
+                String truncated = desc.substring(0, cutLen) + marker;
+                if (truncated.length() < desc.length()) {
+                    remaining -= (desc.length() - truncated.length());
+                    descriptions[idx] = truncated;
+                }
             }
         }
 

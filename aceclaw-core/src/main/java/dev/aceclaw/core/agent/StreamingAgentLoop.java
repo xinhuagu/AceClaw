@@ -114,9 +114,9 @@ public final class StreamingAgentLoop {
                               int maxTokens, int thinkingBudget,
                               int contextWindowTokens,
                               MessageCompactor compactor, AgentLoopConfig config) {
-        this.llmClient = llmClient;
-        this.toolRegistry = toolRegistry;
-        this.model = model;
+        this.llmClient = Objects.requireNonNull(llmClient, "llmClient");
+        this.toolRegistry = Objects.requireNonNull(toolRegistry, "toolRegistry");
+        this.model = Objects.requireNonNull(model, "model");
         this.systemPrompt = systemPrompt;
         this.maxTokens = maxTokens;
         this.thinkingBudget = thinkingBudget;
@@ -422,7 +422,7 @@ public final class StreamingAgentLoop {
         // Pre-flight context budget check: if contextWindowTokens is configured,
         // verify the total request fits within the available window.
         // If over budget, truncate tool descriptions as a soft guardrail.
-        if (contextWindowTokens > 0 && !toolDefs.isEmpty()) {
+        if (contextWindowTokens > 0) {
             var budget = ContextEstimator.checkBudget(
                     systemPrompt, toolDefs, messages, contextWindowTokens, maxTokens);
             if (budget.overBudget()) {
@@ -432,14 +432,16 @@ public final class StreamingAgentLoop {
                         budget.messageTokens(), budget.totalEstimated(),
                         budget.availableTokens(), budget.excessTokens());
 
-                // Compute a character budget for tool descriptions:
-                // available tokens minus system prompt and messages, converted to chars
-                int toolTokenBudget = budget.availableTokens()
-                        - budget.systemPromptTokens() - budget.messageTokens();
-                int toolDescCharBudget = Math.max(0, toolTokenBudget * 4);
-                toolDefs = toolRegistry.toDefinitions(toolDescCharBudget);
+                if (!toolDefs.isEmpty()) {
+                    // Compute a character budget for tool descriptions:
+                    // available tokens minus system prompt and messages, converted to chars
+                    int toolTokenBudget = budget.availableTokens()
+                            - budget.systemPromptTokens() - budget.messageTokens();
+                    int toolDescCharBudget = Math.max(0, toolTokenBudget * 4);
+                    toolDefs = toolRegistry.toDefinitions(toolDescCharBudget);
 
-                log.info("Tool descriptions truncated to fit {}K char budget", toolDescCharBudget / 1000);
+                    log.info("Tool descriptions truncated to fit {} chars", toolDescCharBudget);
+                }
             }
         }
 
