@@ -438,6 +438,10 @@ public final class StreamingAgentLoop {
                     int toolTokenBudget = budget.availableTokens()
                             - budget.systemPromptTokens() - budget.messageTokens();
                     int toolDescCharBudget = Math.max(0, toolTokenBudget * 4);
+                    if (toolDescCharBudget == 0) {
+                        log.warn("No budget remaining for tool descriptions; " +
+                                "system prompt and messages alone exceed context window");
+                    }
                     toolDefs = toolRegistry.toDefinitions(toolDescCharBudget);
 
                     log.info("Tool descriptions truncated to fit {} chars", toolDescCharBudget);
