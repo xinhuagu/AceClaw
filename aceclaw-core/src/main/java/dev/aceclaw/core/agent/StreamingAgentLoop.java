@@ -193,6 +193,17 @@ public final class StreamingAgentLoop {
                             allMessages, lastInputTokens, compactionResult, eventHandler);
                 }
 
+                // Progress stall detection: inject pivot prompt if no progress in recent iterations
+                var progressDetector = config.progressDetector();
+                if (progressDetector != null && progressDetector.isStalled()) {
+                    String pivotPrompt = progressDetector.buildPivotPrompt();
+                    allMessages.add(Message.user(pivotPrompt));
+                    newMessages.add(Message.user(pivotPrompt));
+                    log.warn("Progress stall detected ({} iterations), injecting pivot prompt",
+                            progressDetector.noProgressCount());
+                    progressDetector.reset();
+                }
+
                 log.debug("Streaming ReAct iteration {} (messages: {})", iteration + 1, allMessages.size());
 
                 var request = buildRequest(allMessages);
@@ -531,11 +542,26 @@ public final class StreamingAgentLoop {
         Objects.requireNonNull(failureAdvisor, "failureAdvisor");
         long toolStart = System.currentTimeMillis();
 
+        // Doom loop pre-check: block identical failing calls before they execute
+        var doomLoopDetector = config.doomLoopDetector();
+        if (doomLoopDetector != null) {
+            var verdict = doomLoopDetector.preCheck(toolUse.name(), toolUse.inputJson());
+            if (verdict instanceof DoomLoopDetector.Verdict.Block block) {
+                log.warn("Doom loop blocked: tool={}, failCount={}", toolUse.name(), block.failCount());
+                long toolDuration = System.currentTimeMillis() - toolStart;
+                String finalOutput = truncateToolResult(block.reason(), MAX_TOOL_RESULT_CHARS);
+                handler.onToolCompleted(toolUse.id(), toolUse.name(), toolDuration, true, summarizeError(finalOutput));
+                recordDoomLoopResult(toolUse, true, block.reason());
+                return new ContentBlock.ToolResult(toolUse.id(), finalOutput, true);
+            }
+        }
+
         String preflightBlock = failureAdvisor.preflightBlockMessage(toolUse.name());
         if (preflightBlock != null && !preflightBlock.isBlank()) {
             long toolDuration = System.currentTimeMillis() - toolStart;
             String finalOutput = truncateToolResult(preflightBlock, MAX_TOOL_RESULT_CHARS);
             handler.onToolCompleted(toolUse.id(), toolUse.name(), toolDuration, true, summarizeError(finalOutput));
+            recordDoomLoopResult(toolUse, true, preflightBlock);
             return new ContentBlock.ToolResult(toolUse.id(), finalOutput, true);
         }
 
@@ -608,6 +634,8 @@ public final class StreamingAgentLoop {
                 errorPreview = summarizeError(finalOutput);
             }
             handler.onToolCompleted(toolUse.id(), tool.name(), toolDuration, result.isError(), errorPreview);
+            recordDoomLoopResult(toolUse, result.isError(), result.isError() ? finalOutput : null);
+            recordProgressResult(toolUse, result.isError(), output);
             return new ContentBlock.ToolResult(toolUse.id(), finalOutput, result.isError());
         } catch (Exception e) {
             long toolDuration = System.currentTimeMillis() - toolStart;
@@ -617,6 +645,8 @@ public final class StreamingAgentLoop {
             recordMetrics(tool.name(), false, toolDuration);
             String finalOutput = withFailureAdviceAndTruncation("Tool error: " + e.getMessage(), tool.name(), failureAdvisor);
             handler.onToolCompleted(toolUse.id(), tool.name(), toolDuration, true, summarizeError(finalOutput));
+            recordDoomLoopResult(toolUse, true, finalOutput);
+            recordProgressResult(toolUse, true, finalOutput);
             return new ContentBlock.ToolResult(toolUse.id(), finalOutput, true);
         }
     }
@@ -657,6 +687,28 @@ public final class StreamingAgentLoop {
                 + "\n\n... (truncated: " + output.length() + " chars total, showing first "
                 + headChars + " and last " + tailChars + ") ...\n\n"
                 + output.substring(output.length() - tailChars);
+    }
+
+    private void recordDoomLoopResult(ContentBlock.ToolUse toolUse, boolean isError, String errorText) {
+        var detector = config.doomLoopDetector();
+        if (detector != null) {
+            try {
+                detector.recordResult(toolUse.name(), toolUse.inputJson(), isError, errorText);
+            } catch (Exception e) {
+                log.warn("Failed to record doom loop result for tool {}: {}", toolUse.name(), e.getMessage());
+            }
+        }
+    }
+
+    private void recordProgressResult(ContentBlock.ToolUse toolUse, boolean isError, String output) {
+        var detector = config.progressDetector();
+        if (detector != null) {
+            try {
+                detector.recordToolResult(toolUse.name(), toolUse.inputJson(), isError, output);
+            } catch (Exception e) {
+                log.warn("Failed to record progress result for tool {}: {}", toolUse.name(), e.getMessage());
+            }
+        }
     }
 
     private void publishEvent(dev.aceclaw.infra.event.AceClawEvent event) {

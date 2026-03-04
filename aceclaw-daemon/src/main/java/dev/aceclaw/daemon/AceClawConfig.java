@@ -98,8 +98,8 @@ public final class AceClawConfig {
     private static final double DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_TIMEOUT_RATE = 0.20;
     private static final double DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_PERMISSION_BLOCK_RATE = 0.20;
     private static final int DEFAULT_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS = 168;
-    private static final int DEFAULT_MAX_AGENT_TURNS = 50;
-    private static final int DEFAULT_MAX_AGENT_WALL_TIME_SEC = 600;
+    private static final int DEFAULT_MAX_AGENT_TURNS = 200;
+    private static final int DEFAULT_MAX_AGENT_WALL_TIME_SEC = 3600;
     private static final int DEFAULT_MAX_PLAN_STEP_WALL_TIME_SEC = 300;
     private static final int DEFAULT_MAX_PLAN_TOTAL_WALL_TIME_SEC = 3600;
     private static final boolean DEFAULT_DEFERRED_ACTION_ENABLED = true;
