@@ -124,6 +124,10 @@ public final class DeferredActionScheduler {
             log.error("Failed to load deferred actions: {}", e.getMessage(), e);
         }
 
+        // Crash recovery: actions stuck in RUNNING from a previous crash are
+        // reset to PENDING so they get re-dispatched by the next tick
+        recoverStuckRunningActions();
+
         scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             var t = new Thread(r, "deferred-scheduler");
             t.setDaemon(true);
@@ -280,6 +284,26 @@ public final class DeferredActionScheduler {
     // -- internal --------------------------------------------------------
 
     /**
+     * Crash recovery: resets any actions stuck in RUNNING state back to PENDING.
+     * Called once at startup after loading from disk. Actions in RUNNING state at
+     * startup indicate a previous crash during execution.
+     */
+    private void recoverStuckRunningActions() {
+        var stuck = store.all().stream()
+                .filter(a -> a.state() == DeferredActionState.RUNNING)
+                .toList();
+
+        if (stuck.isEmpty()) return;
+
+        for (var action : stuck) {
+            store.put(action.withState(DeferredActionState.PENDING));
+            log.warn("Crash recovery: reset deferred action '{}' from RUNNING to PENDING", action.actionId());
+        }
+        saveQuietly();
+        log.info("Crash recovery: reset {} stuck RUNNING action(s) to PENDING", stuck.size());
+    }
+
+    /**
      * Scheduler tick: scans PENDING actions for due/expired.
      * Due actions execute immediately on isolated virtual threads with a snapshot
      * of the session's conversation history — no turn lock contention.
@@ -308,8 +332,10 @@ public final class DeferredActionScheduler {
                 if (!action.isDue(now)) continue;
 
                 // Mark as RUNNING in tick() (single-threaded) before spawning
-                // to prevent duplicate dispatch on the next tick
-                var dispatchedAction = action.withAttempt().withState(DeferredActionState.RUNNING);
+                // to prevent duplicate dispatch on the next tick.
+                // Do NOT call withAttempt() here — withFailure() increments attempts,
+                // so incrementing here too would double-count each failure.
+                var dispatchedAction = action.withState(DeferredActionState.RUNNING);
                 store.put(dispatchedAction);
                 saveQuietly();
 

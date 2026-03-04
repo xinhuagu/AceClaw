@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
@@ -35,6 +36,8 @@ public final class DeferredActionStore {
     private final Path actionsFile;
     private final ObjectMapper mapper;
     private final ReadWriteLock lock = new ReentrantReadWriteLock();
+    /** Serializes file I/O in save() to prevent last-write-wins data loss. */
+    private final ReentrantLock saveLock = new ReentrantLock();
 
     /** In-memory cache of actions, keyed by action id. */
     private final Map<String, DeferredAction> actions = new LinkedHashMap<>();
@@ -75,34 +78,39 @@ public final class DeferredActionStore {
      * Persists the current in-memory actions to disk atomically.
      */
     public void save() throws IOException {
-        lock.readLock().lock();
-        List<DeferredAction> snapshot;
+        // Serialize the entire snapshot-read + file-write sequence to prevent
+        // concurrent saves from causing last-write-wins data loss
+        saveLock.lock();
         try {
-            snapshot = new ArrayList<>(actions.values());
-        } finally {
-            lock.readLock().unlock();
-        }
+            lock.readLock().lock();
+            List<DeferredAction> snapshot;
+            try {
+                snapshot = new ArrayList<>(actions.values());
+            } finally {
+                lock.readLock().unlock();
+            }
 
-        Files.createDirectories(deferredDir);
-        // Use unique temp file per save call to prevent concurrent writes from
-        // corrupting each other when multiple deferred action workers save in parallel
-        Path tempFile = Files.createTempFile(deferredDir, "actions-", ".tmp");
-        try {
-            mapper.writeValue(tempFile.toFile(), snapshot);
+            Files.createDirectories(deferredDir);
+            Path tempFile = Files.createTempFile(deferredDir, "actions-", ".tmp");
             try {
-                Files.move(tempFile, actionsFile, StandardCopyOption.REPLACE_EXISTING,
-                        StandardCopyOption.ATOMIC_MOVE);
-            } catch (AtomicMoveNotSupportedException e) {
-                Files.move(tempFile, actionsFile, StandardCopyOption.REPLACE_EXISTING);
+                mapper.writeValue(tempFile.toFile(), snapshot);
+                try {
+                    Files.move(tempFile, actionsFile, StandardCopyOption.REPLACE_EXISTING,
+                            StandardCopyOption.ATOMIC_MOVE);
+                } catch (AtomicMoveNotSupportedException e) {
+                    Files.move(tempFile, actionsFile, StandardCopyOption.REPLACE_EXISTING);
+                }
+            } finally {
+                try {
+                    Files.deleteIfExists(tempFile);
+                } catch (IOException ignored) {
+                    // Best-effort cleanup
+                }
             }
+            log.debug("Saved {} deferred action(s) to {}", snapshot.size(), actionsFile);
         } finally {
-            try {
-                Files.deleteIfExists(tempFile);
-            } catch (IOException ignored) {
-                // Best-effort cleanup
-            }
+            saveLock.unlock();
         }
-        log.debug("Saved {} deferred action(s) to {}", snapshot.size(), actionsFile);
     }
 
     /**
