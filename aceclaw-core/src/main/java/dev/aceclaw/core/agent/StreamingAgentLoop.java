@@ -8,6 +8,7 @@ import dev.aceclaw.infra.event.ToolEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -36,6 +37,12 @@ public final class StreamingAgentLoop {
 
     /** Maximum characters allowed in a single tool result before truncation. */
     private static final int MAX_TOOL_RESULT_CHARS = 30_000;
+
+    /** Number of extra turns granted per auto-extension. */
+    private static final int EXTENSION_TURNS = 15;
+
+    /** Extra wall-clock time granted per auto-extension. */
+    private static final Duration EXTENSION_WALL_TIME = Duration.ofSeconds(300);
 
     private final LlmClient llmClient;
     private final ToolRegistry toolRegistry;
@@ -176,7 +183,30 @@ public final class StreamingAgentLoop {
                 if (watchdog != null) {
                     watchdog.checkBudget(iteration);
                 }
-                // If budget exhausted, token is cancelled -> Checkpoint 1 exits cleanly
+                // If hard budget exhausted, token is cancelled -> Checkpoint 1 exits cleanly
+
+                // Budget warning: inject once when approaching soft limit
+                if (watchdog != null && watchdog.isApproachingLimit() && !watchdog.isWarningInjected()) {
+                    String warning = buildBudgetWarning(watchdog);
+                    allMessages.add(Message.user(warning));
+                    newMessages.add(Message.user(warning));
+                    watchdog.markWarningInjected();
+                    log.info("Budget warning injected: {}", watchdog.remainingBudgetSummary());
+                }
+
+                // Soft limit: check progress, extend or stop
+                if (watchdog != null && watchdog.isSoftLimitReached() && !watchdog.isExhausted()) {
+                    var pd = config.progressDetector();
+                    if (pd != null && !pd.isStalled()) {
+                        watchdog.extendSoft(EXTENSION_TURNS, EXTENSION_WALL_TIME);
+                        log.info("Budget auto-extended: extension #{}", watchdog.extensionCount());
+                    } else {
+                        log.warn("Soft budget reached with no progress, stopping");
+                        if (cancellationToken != null) {
+                            cancellationToken.cancel();
+                        }
+                    }
+                }
 
                 // Checkpoint 1: before LLM call
                 if (cancellationToken != null && cancellationToken.isCancelled()) {
@@ -349,6 +379,18 @@ public final class StreamingAgentLoop {
         String reason = watchdog != null ? watchdog.exhaustionReason() : null;
         return new Turn(newMessages, StopReason.END_TURN, totalUsage, compactionResult,
                 false, budgetExhausted, reason);
+    }
+
+    /**
+     * Builds a budget warning message to inject into the conversation when approaching
+     * the soft limit, so the LLM can prioritize remaining work.
+     */
+    private static String buildBudgetWarning(WatchdogTimer watchdog) {
+        return "[SYSTEM: Budget warning] You are approaching your execution budget. "
+                + "Remaining: " + watchdog.remainingBudgetSummary() + ". "
+                + "Prioritize completing the most important remaining work. "
+                + "If you are making progress, the budget will be extended automatically. "
+                + "If stuck, wrap up with a summary of what was accomplished and what remains.";
     }
 
     /**

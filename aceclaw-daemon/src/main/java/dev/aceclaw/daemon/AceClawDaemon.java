@@ -381,7 +381,9 @@ public final class AceClawDaemon {
                 config.adaptiveContinuationMaxWallClockSeconds());
         agentHandler.setPlannerConfig(config.plannerEnabled(), config.plannerThreshold());
         agentHandler.setAdaptiveReplanEnabled(config.adaptiveReplanEnabled());
-        agentHandler.setWatchdogConfig(config.maxAgentTurns(), config.maxAgentWallTimeSec());
+        agentHandler.setWatchdogConfig(
+                config.maxAgentTurns(), config.maxAgentWallTimeSec(),
+                config.maxAgentHardTurns(), config.maxAgentHardWallTimeSec());
         agentHandler.setPlanBudgetConfig(
                 config.maxPlanStepWallTimeSec(),
                 config.maxPlanTotalWallTimeSec());
