@@ -15,6 +15,8 @@ import dev.aceclaw.infra.event.EventBus;
  * @param metricsCollector   collector for per-tool execution statistics (null = disabled)
  * @param maxIterations      maximum ReAct iterations per turn (null/<=0 uses default)
  * @param watchdog           optional watchdog timer for turn/time budget enforcement (null = disabled)
+ * @param doomLoopDetector   optional session-scoped doom loop detector (null = disabled)
+ * @param progressDetector   optional session-scoped progress detector (null = disabled)
  */
 public record AgentLoopConfig(
         String sessionId,
@@ -23,14 +25,16 @@ public record AgentLoopConfig(
         CompactionMemoryHandler memoryHandler,
         ToolMetricsCollector metricsCollector,
         Integer maxIterations,
-        WatchdogTimer watchdog
+        WatchdogTimer watchdog,
+        DoomLoopDetector doomLoopDetector,
+        ProgressDetector progressDetector
 ) {
 
     /** Default maximum ReAct iterations per turn when no override is provided. */
     public static final int DEFAULT_MAX_ITERATIONS = 25;
 
     /** Empty config with all integrations disabled. */
-    public static final AgentLoopConfig EMPTY = new AgentLoopConfig(null, null, null, null, null, null, null);
+    public static final AgentLoopConfig EMPTY = new AgentLoopConfig(null, null, null, null, null, null, null, null, null);
 
     /**
      * Resolves the effective max iterations for this loop config.
@@ -54,6 +58,8 @@ public record AgentLoopConfig(
         private ToolMetricsCollector metricsCollector;
         private Integer maxIterations;
         private WatchdogTimer watchdog;
+        private DoomLoopDetector doomLoopDetector;
+        private ProgressDetector progressDetector;
 
         private Builder() {}
 
@@ -92,9 +98,20 @@ public record AgentLoopConfig(
             return this;
         }
 
+        public Builder doomLoopDetector(DoomLoopDetector doomLoopDetector) {
+            this.doomLoopDetector = doomLoopDetector;
+            return this;
+        }
+
+        public Builder progressDetector(ProgressDetector progressDetector) {
+            this.progressDetector = progressDetector;
+            return this;
+        }
+
         public AgentLoopConfig build() {
             return new AgentLoopConfig(
-                    sessionId, eventBus, permissionChecker, memoryHandler, metricsCollector, maxIterations, watchdog);
+                    sessionId, eventBus, permissionChecker, memoryHandler, metricsCollector,
+                    maxIterations, watchdog, doomLoopDetector, progressDetector);
         }
     }
 }

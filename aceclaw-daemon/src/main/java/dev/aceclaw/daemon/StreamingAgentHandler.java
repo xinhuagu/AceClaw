@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.AgentLoopConfig;
 import dev.aceclaw.core.agent.CancellationAware;
 import dev.aceclaw.core.agent.CancellationToken;
+import dev.aceclaw.core.agent.DoomLoopDetector;
+import dev.aceclaw.core.agent.ProgressDetector;
 import dev.aceclaw.core.agent.WatchdogTimer;
 import dev.aceclaw.core.agent.CompactionResult;
 import dev.aceclaw.core.agent.HookEvent;
@@ -126,6 +128,10 @@ public final class StreamingAgentHandler {
     private final ObjectMapper objectMapper;
     private final ConcurrentHashMap<String, ToolMetricsCollector> sessionMetrics =
             new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, DoomLoopDetector> sessionDoomLoops =
+            new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, ProgressDetector> sessionProgressDetectors =
+            new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, List<String>> sessionInjectedCandidateIds =
             new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, AntiPatternGateOverride> antiPatternGateOverrides =
@@ -205,12 +211,18 @@ public final class StreamingAgentHandler {
                         cancellationToken)
                 : null;
 
+        // Get or create session-scoped doom loop and progress detectors
+        var doomLoop = sessionDoomLoops.computeIfAbsent(sessionId, _ -> new DoomLoopDetector());
+        var progress = sessionProgressDetectors.computeIfAbsent(sessionId, _ -> new ProgressDetector());
+
         // Create a temporary agent loop with the permission-aware registry, compaction and metrics
         var agentConfig = AgentLoopConfig.builder()
                 .sessionId(sessionId)
                 .metricsCollector(metricsCollector)
                 .maxIterations(maxIterations)
                 .watchdog(watchdog)
+                .doomLoopDetector(doomLoop)
+                .progressDetector(progress)
                 .build();
         var permissionAwareLoop = new StreamingAgentLoop(
                 getLlmClient(), permissionAwareRegistry,
@@ -1172,6 +1184,8 @@ public final class StreamingAgentHandler {
         java.util.Objects.requireNonNull(sessionId, "sessionId");
         sessionMetrics.remove(sessionId);
         sessionInjectedCandidateIds.remove(sessionId);
+        sessionDoomLoops.remove(sessionId);
+        sessionProgressDetectors.remove(sessionId);
     }
 
     public record AntiPatternGateOverrideStatus(
