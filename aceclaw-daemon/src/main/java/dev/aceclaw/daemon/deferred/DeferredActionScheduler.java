@@ -352,7 +352,20 @@ public final class DeferredActionScheduler {
                         .name("deferred-exec-" + action.actionId())
                         .unstarted(() -> executeAction(actionToRun));
                 activeWorkers.add(worker);
-                worker.start();
+                try {
+                    worker.start();
+                } catch (Throwable t) {
+                    activeWorkers.remove(worker);
+                    var failed = actionToRun.withFailure("worker-start-failed: " + t.getMessage());
+                    store.put(failed);
+                    saveQuietly();
+                    publishEvent(new DeferEvent.ActionFailed(
+                            actionToRun.actionId(), actionToRun.sessionId(),
+                            String.valueOf(t.getMessage()),
+                            failed.attempts(), failed.maxRetries(), Instant.now()));
+                    log.error("Failed to start worker for deferred action '{}': {}",
+                            actionToRun.actionId(), t.getMessage(), t);
+                }
             }
         } catch (Exception e) {
             log.error("Deferred scheduler tick error: {}", e.getMessage(), e);
