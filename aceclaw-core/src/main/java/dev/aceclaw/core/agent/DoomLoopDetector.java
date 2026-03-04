@@ -12,6 +12,7 @@ import java.time.Instant;
 import java.util.HexFormat;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -131,6 +132,16 @@ public final class DoomLoopDetector {
         }
 
         if (record.count() >= BLOCK_THRESHOLD) {
+            // Transition into cooldown lifecycle: remove from failureMap and seed cooldown
+            // so the block eventually expires even without a success event.
+            failureMap.remove(fp);
+            cooldowns.compute(fp, (_, existing) -> {
+                if (existing == null) {
+                    return new CooldownEntry(1, INITIAL_COOLDOWN, 0);
+                }
+                int newCooldown = Math.min(existing.cooldownIterations() * 2, 32);
+                return new CooldownEntry(existing.blockedCount() + 1, newCooldown, 0);
+            });
             String reason = ("Doom loop detected: tool=%s called with identical arguments failed %d " +
                     "consecutive times. Last error: %s. " +
                     "This call is blocked. Change your approach or arguments before retrying.")
@@ -239,8 +250,14 @@ public final class DoomLoopDetector {
         }
     }
 
+    /** JSON keys that hold file-system paths and should be canonicalized. */
+    private static final Set<String> PATH_KEYS =
+            Set.of("path", "file", "file_path", "filePath", "cwd", "directory");
+
     /**
      * Recursively sorts JSON object keys for deterministic normalization.
+     * Path-valued keys are additionally canonicalized (slash normalization,
+     * removal of {@code /./} segments).
      */
     private static JsonNode sortKeys(JsonNode node) {
         if (node.isObject()) {
@@ -248,7 +265,12 @@ public final class DoomLoopDetector {
             Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
             while (fields.hasNext()) {
                 var entry = fields.next();
-                sorted.put(entry.getKey(), sortKeys(entry.getValue()));
+                JsonNode normalized = sortKeys(entry.getValue());
+                if (PATH_KEYS.contains(entry.getKey()) && normalized.isTextual()) {
+                    normalized = JSON.getNodeFactory().textNode(
+                            normalizePath(normalized.asText()));
+                }
+                sorted.put(entry.getKey(), normalized);
             }
             var objectNode = JSON.createObjectNode();
             sorted.forEach(objectNode::set);
@@ -262,6 +284,18 @@ public final class DoomLoopDetector {
             return arrayNode;
         }
         return node;
+    }
+
+    /**
+     * Normalizes a file-system path for fingerprinting: forward slashes,
+     * collapse consecutive slashes, remove {@code /./} segments.
+     */
+    private static String normalizePath(String raw) {
+        if (raw == null || raw.isBlank()) return "";
+        return raw.replace('\\', '/')
+                .replaceAll("/+", "/")
+                .replace("/./", "/")
+                .strip();
     }
 
     private static String truncate(String text, int maxLen) {

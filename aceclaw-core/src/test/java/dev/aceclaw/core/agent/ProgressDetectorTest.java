@@ -2,6 +2,9 @@ package dev.aceclaw.core.agent;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ProgressDetectorTest {
@@ -154,5 +157,46 @@ class ProgressDetectorTest {
         detector.reset();
         assertThat(detector.isStalled()).isFalse();
         assertThat(detector.noProgressCount()).isEqualTo(0);
+    }
+
+    @Test
+    void concurrentRecordToolResultDoesNotThrow() throws Exception {
+        var detector = new ProgressDetector(100);
+        int threadCount = 8;
+        int callsPerThread = 50;
+        var errors = new AtomicBoolean(false);
+        var latch = new CountDownLatch(threadCount);
+
+        for (int t = 0; t < threadCount; t++) {
+            int threadNum = t;
+            Thread.ofVirtual().start(() -> {
+                try {
+                    for (int i = 0; i < callsPerThread; i++) {
+                        boolean isError = i % 3 == 0;
+                        String tool = switch (threadNum % 4) {
+                            case 0 -> "bash";
+                            case 1 -> "read_file";
+                            case 2 -> "write_file";
+                            default -> "edit_file";
+                        };
+                        detector.recordToolResult(tool,
+                                "{\"path\":\"/tmp/t" + threadNum + "/f" + i + "\"}",
+                                isError, isError ? "error" : "ok");
+                    }
+                } catch (Exception e) {
+                    errors.set(true);
+                } finally {
+                    latch.countDown();
+                }
+            });
+        }
+
+        latch.await();
+        assertThat(errors.get()).isFalse();
+        // noProgressCount should be non-negative regardless of thread interleaving
+        assertThat(detector.noProgressCount()).isGreaterThanOrEqualTo(0);
+        // buildAttemptSummary and buildPivotPrompt should not throw
+        assertThat(detector.buildAttemptSummary()).isNotNull();
+        assertThat(detector.buildPivotPrompt()).isNotNull();
     }
 }

@@ -553,6 +553,7 @@ public final class StreamingAgentLoop {
                     long toolDuration = System.currentTimeMillis() - toolStart;
                     String finalOutput = truncateToolResult(block.reason(), MAX_TOOL_RESULT_CHARS);
                     handler.onToolCompleted(toolUse.id(), toolUse.name(), toolDuration, true, summarizeError(finalOutput));
+                    recordProgressResult(toolUse, true, finalOutput);
                     recordDoomLoopResult(toolUse, true, block.reason());
                     return new ContentBlock.ToolResult(toolUse.id(), finalOutput, true);
                 }
