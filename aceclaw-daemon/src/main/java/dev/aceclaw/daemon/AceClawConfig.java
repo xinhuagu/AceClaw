@@ -40,6 +40,10 @@ import java.util.Map;
  *   <li>{@code ACECLAW_ADAPTIVE_CONTINUATION_NO_PROGRESS_THRESHOLD} → adaptiveContinuationNoProgressThreshold</li>
  *   <li>{@code ACECLAW_ADAPTIVE_CONTINUATION_MAX_TOTAL_TOKENS} → adaptiveContinuationMaxTotalTokens</li>
  *   <li>{@code ACECLAW_ADAPTIVE_CONTINUATION_MAX_WALL_CLOCK_SECONDS} → adaptiveContinuationMaxWallClockSeconds</li>
+ *   <li>{@code ACECLAW_MAX_AGENT_TURNS} → maxAgentTurns (soft turn limit, default 200)</li>
+ *   <li>{@code ACECLAW_MAX_AGENT_WALL_TIME_SEC} → maxAgentWallTimeSec (soft wall limit, default 1800)</li>
+ *   <li>{@code ACECLAW_MAX_AGENT_HARD_TURNS} → maxAgentHardTurns (hard turn ceiling, default 0 = 3x soft)</li>
+ *   <li>{@code ACECLAW_MAX_AGENT_HARD_WALL_TIME_SEC} → maxAgentHardWallTimeSec (hard wall ceiling, default 0 = 3x soft)</li>
  *   <li>{@code ACECLAW_LOG_LEVEL} → logLevel</li>
  *   <li>{@code BRAVE_SEARCH_API_KEY} → braveSearchApiKey</li>
  * </ul>
@@ -99,7 +103,10 @@ public final class AceClawConfig {
     private static final double DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_PERMISSION_BLOCK_RATE = 0.20;
     private static final int DEFAULT_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS = 168;
     private static final int DEFAULT_MAX_AGENT_TURNS = 200;
-    private static final int DEFAULT_MAX_AGENT_WALL_TIME_SEC = 3600;
+    private static final int DEFAULT_MAX_AGENT_WALL_TIME_SEC = 1800;
+    // 0 means "derive from soft limit (3x)" in StreamingAgentHandler
+    private static final int DEFAULT_MAX_AGENT_HARD_TURNS = 0;
+    private static final int DEFAULT_MAX_AGENT_HARD_WALL_TIME_SEC = 0;
     private static final int DEFAULT_MAX_PLAN_STEP_WALL_TIME_SEC = 300;
     private static final int DEFAULT_MAX_PLAN_TOTAL_WALL_TIME_SEC = 3600;
     private static final boolean DEFAULT_DEFERRED_ACTION_ENABLED = true;
@@ -167,6 +174,8 @@ public final class AceClawConfig {
     private int skillAutoReleaseHealthLookbackHours;
     private int maxAgentTurns;
     private int maxAgentWallTimeSec;
+    private int maxAgentHardTurns;
+    private int maxAgentHardWallTimeSec;
     private int maxPlanStepWallTimeSec;
     private int maxPlanTotalWallTimeSec;
     private boolean deferredActionEnabled;
@@ -225,6 +234,8 @@ public final class AceClawConfig {
         this.skillAutoReleaseHealthLookbackHours = DEFAULT_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS;
         this.maxAgentTurns = DEFAULT_MAX_AGENT_TURNS;
         this.maxAgentWallTimeSec = DEFAULT_MAX_AGENT_WALL_TIME_SEC;
+        this.maxAgentHardTurns = DEFAULT_MAX_AGENT_HARD_TURNS;
+        this.maxAgentHardWallTimeSec = DEFAULT_MAX_AGENT_HARD_WALL_TIME_SEC;
         this.maxPlanStepWallTimeSec = DEFAULT_MAX_PLAN_STEP_WALL_TIME_SEC;
         this.maxPlanTotalWallTimeSec = DEFAULT_MAX_PLAN_TOTAL_WALL_TIME_SEC;
         this.deferredActionEnabled = DEFAULT_DEFERRED_ACTION_ENABLED;
@@ -312,6 +323,22 @@ public final class AceClawConfig {
                 config.maxAgentWallTimeSec = Math.max(0, Integer.parseInt(envMaxAgentWallTime));
             } catch (NumberFormatException e) {
                 log.warn("Invalid ACECLAW_MAX_AGENT_WALL_TIME_SEC: {}", envMaxAgentWallTime);
+            }
+        }
+        var envMaxAgentHardTurns = System.getenv("ACECLAW_MAX_AGENT_HARD_TURNS");
+        if (envMaxAgentHardTurns != null && !envMaxAgentHardTurns.isBlank()) {
+            try {
+                config.maxAgentHardTurns = Math.max(0, Integer.parseInt(envMaxAgentHardTurns));
+            } catch (NumberFormatException e) {
+                log.warn("Invalid ACECLAW_MAX_AGENT_HARD_TURNS: {}", envMaxAgentHardTurns);
+            }
+        }
+        var envMaxAgentHardWallTime = System.getenv("ACECLAW_MAX_AGENT_HARD_WALL_TIME_SEC");
+        if (envMaxAgentHardWallTime != null && !envMaxAgentHardWallTime.isBlank()) {
+            try {
+                config.maxAgentHardWallTimeSec = Math.max(0, Integer.parseInt(envMaxAgentHardWallTime));
+            } catch (NumberFormatException e) {
+                log.warn("Invalid ACECLAW_MAX_AGENT_HARD_WALL_TIME_SEC: {}", envMaxAgentHardWallTime);
             }
         }
         var envMaxPlanStepWallTime = System.getenv("ACECLAW_MAX_PLAN_STEP_WALL_TIME_SEC");
@@ -1017,6 +1044,22 @@ public final class AceClawConfig {
     }
 
     /**
+     * Returns the hard ceiling for agent ReAct iterations per request.
+     * 0 = use 3x soft limit. Unconditional stop, absolute safety net.
+     */
+    public int maxAgentHardTurns() {
+        return maxAgentHardTurns;
+    }
+
+    /**
+     * Returns the hard ceiling for wall-clock time in seconds per agent request.
+     * 0 = use 3x soft limit. Unconditional stop, absolute safety net.
+     */
+    public int maxAgentHardWallTimeSec() {
+        return maxAgentHardWallTimeSec;
+    }
+
+    /**
      * Returns the maximum wall-clock time in seconds per plan step.
      * The watchdog timer is reset before each step. 0 = disabled.
      * Defaults to 300 (5 minutes).
@@ -1385,6 +1428,12 @@ public final class AceClawConfig {
         if (fileConfig.maxAgentWallTimeSec != null && fileConfig.maxAgentWallTimeSec >= 0) {
             this.maxAgentWallTimeSec = fileConfig.maxAgentWallTimeSec;
         }
+        if (fileConfig.maxAgentHardTurns != null && fileConfig.maxAgentHardTurns >= 0) {
+            this.maxAgentHardTurns = fileConfig.maxAgentHardTurns;
+        }
+        if (fileConfig.maxAgentHardWallTimeSec != null && fileConfig.maxAgentHardWallTimeSec >= 0) {
+            this.maxAgentHardWallTimeSec = fileConfig.maxAgentHardWallTimeSec;
+        }
         if (fileConfig.maxPlanStepWallTimeSec != null && fileConfig.maxPlanStepWallTimeSec >= 0) {
             this.maxPlanStepWallTimeSec = fileConfig.maxPlanStepWallTimeSec;
         }
@@ -1459,6 +1508,8 @@ public final class AceClawConfig {
         public Integer skillAutoReleaseHealthLookbackHours;
         public Integer maxAgentTurns;
         public Integer maxAgentWallTimeSec;
+        public Integer maxAgentHardTurns;
+        public Integer maxAgentHardWallTimeSec;
         public Integer maxPlanStepWallTimeSec;
         public Integer maxPlanTotalWallTimeSec;
         public Boolean deferredActionEnabled;
