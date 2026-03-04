@@ -28,7 +28,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>After a block is lifted (the agent succeeds with a different approach),
  * the fingerprint enters an exponential cooldown: if it fails again, the
- * cooldown period doubles (2 -> 4 -> 8 iterations).
+ * cooldown period doubles (2 -> 4 -> 8 -> 16 -> 32 iterations, capped at 32).
  *
  * <p>Thread-safe: uses {@link ConcurrentHashMap} for parallel tool execution
  * within {@code StructuredTaskScope}.

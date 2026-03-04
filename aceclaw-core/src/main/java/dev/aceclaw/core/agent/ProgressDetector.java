@@ -6,10 +6,12 @@ import org.slf4j.LoggerFactory;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.ArrayList;
-import java.util.HashSet;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
 /**
@@ -24,6 +26,10 @@ import java.util.regex.Pattern;
  * <p>This complements {@link DoomLoopDetector} which tracks exact argument
  * fingerprints: ProgressDetector catches higher-level stalls where the agent
  * tries slightly different failing approaches.
+ *
+ * <p>Thread-safe: uses {@link AtomicInteger}, {@link ConcurrentHashMap}-backed
+ * set, and synchronized list for safe access from parallel tool execution
+ * within {@code StructuredTaskScope}.
  */
 public final class ProgressDetector {
 
@@ -47,9 +53,9 @@ public final class ProgressDetector {
     }
 
     private final int stallThreshold;
-    private int noProgressCount;
-    private final Set<String> seenPaths = new HashSet<>();
-    private final List<AttemptRecord> recentAttempts = new ArrayList<>();
+    private final AtomicInteger noProgressCounter = new AtomicInteger(0);
+    private final Set<String> seenPaths = ConcurrentHashMap.newKeySet();
+    private final List<AttemptRecord> recentAttempts = Collections.synchronizedList(new ArrayList<>());
 
     /**
      * Creates a ProgressDetector with the default stall threshold.
@@ -89,16 +95,18 @@ public final class ProgressDetector {
             }
         }
 
-        // Track attempt for summary building
+        // Track attempt for summary building (synchronized list handles concurrent adds)
         recentAttempts.add(new AttemptRecord(toolName, summarizeInput(safeInput), isError));
-        if (recentAttempts.size() > 20) {
-            recentAttempts.removeFirst();
+        synchronized (recentAttempts) {
+            if (recentAttempts.size() > 20) {
+                recentAttempts.removeFirst();
+            }
         }
 
         if (progress) {
-            noProgressCount = 0;
+            noProgressCounter.set(0);
         } else {
-            noProgressCount++;
+            noProgressCounter.incrementAndGet();
         }
     }
 
@@ -106,14 +114,14 @@ public final class ProgressDetector {
      * Returns true if no progress signals in the last {@code stallThreshold} tool executions.
      */
     public boolean isStalled() {
-        return noProgressCount >= stallThreshold;
+        return noProgressCounter.get() >= stallThreshold;
     }
 
     /**
      * Returns the number of consecutive tool executions with no progress.
      */
     public int noProgressCount() {
-        return noProgressCount;
+        return noProgressCounter.get();
     }
 
     /**
@@ -124,7 +132,7 @@ public final class ProgressDetector {
     public String buildPivotPrompt() {
         var sb = new StringBuilder();
         sb.append("[SYSTEM: Progress stall detected] You have executed ");
-        sb.append(noProgressCount);
+        sb.append(noProgressCounter.get());
         sb.append(" tool calls without making meaningful forward progress. ");
         sb.append("STOP and reassess your approach.\n\n");
 
@@ -149,12 +157,17 @@ public final class ProgressDetector {
      * Returns a summary of recent tool attempts for context injection.
      */
     public String buildAttemptSummary() {
-        if (recentAttempts.isEmpty()) return "";
+        // Take a snapshot under the lock to avoid ConcurrentModificationException
+        List<AttemptRecord> snapshot;
+        synchronized (recentAttempts) {
+            if (recentAttempts.isEmpty()) return "";
+            snapshot = List.copyOf(recentAttempts);
+        }
 
         var sb = new StringBuilder();
-        int start = Math.max(0, recentAttempts.size() - stallThreshold);
-        for (int i = start; i < recentAttempts.size(); i++) {
-            var attempt = recentAttempts.get(i);
+        int start = Math.max(0, snapshot.size() - stallThreshold);
+        for (int i = start; i < snapshot.size(); i++) {
+            var attempt = snapshot.get(i);
             sb.append("- ");
             sb.append(attempt.toolName());
             if (!attempt.inputSummary().isEmpty()) {
@@ -173,7 +186,7 @@ public final class ProgressDetector {
      * a pivot prompt has been injected.
      */
     public void reset() {
-        noProgressCount = 0;
+        noProgressCounter.set(0);
     }
 
     /**

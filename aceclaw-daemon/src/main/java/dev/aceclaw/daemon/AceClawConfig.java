@@ -1001,7 +1001,7 @@ public final class AceClawConfig {
     /**
      * Returns the maximum number of agent ReAct iterations per request.
      * Enforced by the watchdog timer. 0 = disabled (uses existing maxTurns only).
-     * Defaults to 50.
+     * Defaults to 200.
      */
     public int maxAgentTurns() {
         return maxAgentTurns;
@@ -1010,7 +1010,7 @@ public final class AceClawConfig {
     /**
      * Returns the maximum wall-clock time in seconds per agent request.
      * Enforced by the watchdog timer. 0 = disabled.
-     * Defaults to 600 (10 minutes).
+     * Defaults to 3600 (60 minutes).
      */
     public int maxAgentWallTimeSec() {
         return maxAgentWallTimeSec;

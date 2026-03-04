@@ -543,16 +543,24 @@ public final class StreamingAgentLoop {
         long toolStart = System.currentTimeMillis();
 
         // Doom loop pre-check: block identical failing calls before they execute
+        String doomLoopWarnAdvice = null;
         var doomLoopDetector = config.doomLoopDetector();
         if (doomLoopDetector != null) {
             var verdict = doomLoopDetector.preCheck(toolUse.name(), toolUse.inputJson());
-            if (verdict instanceof DoomLoopDetector.Verdict.Block block) {
-                log.warn("Doom loop blocked: tool={}, failCount={}", toolUse.name(), block.failCount());
-                long toolDuration = System.currentTimeMillis() - toolStart;
-                String finalOutput = truncateToolResult(block.reason(), MAX_TOOL_RESULT_CHARS);
-                handler.onToolCompleted(toolUse.id(), toolUse.name(), toolDuration, true, summarizeError(finalOutput));
-                recordDoomLoopResult(toolUse, true, block.reason());
-                return new ContentBlock.ToolResult(toolUse.id(), finalOutput, true);
+            switch (verdict) {
+                case DoomLoopDetector.Verdict.Block block -> {
+                    log.warn("Doom loop blocked: tool={}, failCount={}", toolUse.name(), block.failCount());
+                    long toolDuration = System.currentTimeMillis() - toolStart;
+                    String finalOutput = truncateToolResult(block.reason(), MAX_TOOL_RESULT_CHARS);
+                    handler.onToolCompleted(toolUse.id(), toolUse.name(), toolDuration, true, summarizeError(finalOutput));
+                    recordDoomLoopResult(toolUse, true, block.reason());
+                    return new ContentBlock.ToolResult(toolUse.id(), finalOutput, true);
+                }
+                case DoomLoopDetector.Verdict.Warn warn -> {
+                    log.info("Doom loop warning: tool={}, failCount={}", toolUse.name(), warn.failCount());
+                    doomLoopWarnAdvice = warn.advice();
+                }
+                case DoomLoopDetector.Verdict.Allow _ -> { /* proceed normally */ }
             }
         }
 
@@ -561,7 +569,8 @@ public final class StreamingAgentLoop {
             long toolDuration = System.currentTimeMillis() - toolStart;
             String finalOutput = truncateToolResult(preflightBlock, MAX_TOOL_RESULT_CHARS);
             handler.onToolCompleted(toolUse.id(), toolUse.name(), toolDuration, true, summarizeError(finalOutput));
-            recordDoomLoopResult(toolUse, true, preflightBlock);
+            // Note: do NOT record into DoomLoopDetector — ToolFailureAdvisor's per-turn
+            // circuit breaker is independent; recording here would inflate session-wide counts.
             return new ContentBlock.ToolResult(toolUse.id(), finalOutput, true);
         }
 
@@ -631,6 +640,11 @@ public final class StreamingAgentLoop {
             String errorPreview = null;
             if (result.isError()) {
                 finalOutput = withFailureAdviceAndTruncation(output, tool.name(), failureAdvisor);
+                if (doomLoopWarnAdvice != null) {
+                    finalOutput = truncateToolResult(
+                            finalOutput + "\n\n[doom-loop-warning] " + doomLoopWarnAdvice,
+                            MAX_TOOL_RESULT_CHARS);
+                }
                 errorPreview = summarizeError(finalOutput);
             }
             handler.onToolCompleted(toolUse.id(), tool.name(), toolDuration, result.isError(), errorPreview);
