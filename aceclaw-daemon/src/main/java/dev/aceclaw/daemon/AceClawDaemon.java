@@ -500,15 +500,13 @@ public final class AceClawDaemon {
             log.info("Self-improvement engine wired (with strategy refinement + candidate pipeline)");
         }
 
-        // Wire deferred action scheduler (needs agentHandler's turn locks)
+        // Wire deferred action scheduler (no turn lock dependency — uses isolated context)
         if (config.deferredActionEnabled()) {
             this.deferredActionScheduler = new DeferredActionScheduler(
                     deferredActionStore, sessionManager,
                     llmClient, toolRegistry, model, systemPrompt,
                     config.maxTokens(), config.thinkingBudget(),
-                    eventBus, config.deferredActionTickSeconds(),
-                    agentHandler.sessionTurnLocks());
-            agentHandler.setDeferredActionScheduler(deferredActionScheduler);
+                    eventBus, config.deferredActionTickSeconds());
             deferCheckTool.setScheduler(deferredActionScheduler);
             log.info("Deferred action scheduler wired (tick every {}s)",
                     config.deferredActionTickSeconds());
@@ -940,10 +938,6 @@ public final class AceClawDaemon {
                     }
                     case DeferEvent.ActionCancelled e -> {
                         node.put("type", "cancelled");
-                        node.put("reason", e.reason());
-                    }
-                    case DeferEvent.ActionQueued e -> {
-                        node.put("type", "queued");
                         node.put("reason", e.reason());
                     }
                 }

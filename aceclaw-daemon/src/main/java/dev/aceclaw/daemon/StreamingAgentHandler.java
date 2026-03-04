@@ -137,11 +137,10 @@ public final class StreamingAgentHandler {
     private final ConcurrentHashMap<String, AntiPatternGateOverride> antiPatternGateOverrides =
             new ConcurrentHashMap<>();
 
-    /** Per-session turn locks for coordinating with DeferredActionScheduler. */
+    /** Per-session turn locks for serializing main turns within a session. */
     private final ConcurrentHashMap<String, ReentrantLock> sessionTurnLocks =
             new ConcurrentHashMap<>();
 
-    private dev.aceclaw.daemon.deferred.DeferredActionScheduler deferredActionScheduler;
 
     /**
      * Creates a streaming agent handler.
@@ -305,18 +304,7 @@ public final class StreamingAgentHandler {
                 watchdog.close();
             }
             cancelContext.stopMonitor();
-            // Release turn lock before draining deferred actions
             turnLock.unlock();
-
-            // Drain any deferred actions that were queued while this turn ran
-            if (deferredActionScheduler != null) {
-                try {
-                    deferredActionScheduler.notifyTurnComplete(sessionId);
-                } catch (Exception e) {
-                    log.warn("Failed to drain deferred actions for session {}: {}",
-                            sessionId, e.getMessage());
-                }
-            }
 
             // Clear handler and session references to avoid stale state between requests
             for (var tool : toolRegistry.all()) {
@@ -1066,20 +1054,6 @@ public final class StreamingAgentHandler {
     public void setCandidateInjectionConfig(int maxCount, int maxTokens) {
         this.candidateInjectionMaxCount = Math.max(0, maxCount);
         this.candidateInjectionMaxTokens = Math.max(0, maxTokens);
-    }
-
-    /**
-     * Sets the deferred action scheduler for post-turn notification.
-     */
-    public void setDeferredActionScheduler(dev.aceclaw.daemon.deferred.DeferredActionScheduler scheduler) {
-        this.deferredActionScheduler = scheduler;
-    }
-
-    /**
-     * Returns the per-session turn locks (shared with DeferredActionScheduler).
-     */
-    public ConcurrentHashMap<String, ReentrantLock> sessionTurnLocks() {
-        return sessionTurnLocks;
     }
 
     /**

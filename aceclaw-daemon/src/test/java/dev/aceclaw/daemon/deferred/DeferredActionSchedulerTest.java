@@ -15,7 +15,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.locks.ReentrantLock;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -374,9 +373,6 @@ class DeferredActionSchedulerTest {
 
         var cancelled = new DeferEvent.ActionCancelled("a1", "s1", "user", Instant.now());
         assertEquals("user", cancelled.reason());
-
-        var queued = new DeferEvent.ActionQueued("a1", "s1", "busy", Instant.now());
-        assertEquals("busy", queued.reason());
     }
 
     // -- Crash recovery tests --
@@ -397,6 +393,78 @@ class DeferredActionSchedulerTest {
         assertEquals(2, store2.size());
         assertEquals(1, store2.allPending().size());
         assertEquals(a1.actionId(), store2.allPending().get(0).actionId());
+    }
+
+    // -- Parallel execution tests --
+
+    @Test
+    void tickExecutesDueActionImmediately() {
+        var scheduler = createScheduler();
+        scheduler.start();
+
+        // Manually create a due action
+        var dueAction = new DeferredAction(
+                UUID.randomUUID().toString(), "sess-1",
+                "key:" + UUID.randomUUID(),
+                Instant.now().minusSeconds(120),
+                Instant.now().minusSeconds(10),
+                Instant.now().plusSeconds(3600),
+                "check something", 3, 0, DeferredActionState.PENDING, null, null);
+        store.put(dueAction);
+
+        // tick() should mark action as RUNNING (spawns virtual thread)
+        scheduler.tick();
+
+        // Give virtual thread a moment to start and mark RUNNING
+        try { Thread.sleep(200); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+
+        scheduler.stop();
+
+        var updated = store.get(dueAction.actionId());
+        assertTrue(updated.isPresent());
+        // Action should have been picked up (either RUNNING, CANCELLED due to null LLM, or FAILED)
+        assertNotEquals(DeferredActionState.PENDING, updated.get().state(),
+                "Due action should no longer be PENDING after tick");
+    }
+
+    @Test
+    void deferredActionDoesNotModifySessionHistory() {
+        var sessionManager = new SessionManager();
+        var session = sessionManager.createSession(tempDir);
+        String sessionId = session.id();
+
+        // Add a message to session
+        session.addMessage(new AgentSession.ConversationMessage.User("hello"));
+        int messageCountBefore = session.messages().size();
+
+        var scheduler = new DeferredActionScheduler(
+                store, sessionManager,
+                null, null,
+                "test-model", "test prompt",
+                4096, 0,
+                null, 5);
+        scheduler.start();
+
+        // Create a due action for this session
+        var dueAction = new DeferredAction(
+                UUID.randomUUID().toString(), sessionId,
+                "key:" + UUID.randomUUID(),
+                Instant.now().minusSeconds(120),
+                Instant.now().minusSeconds(10),
+                Instant.now().plusSeconds(3600),
+                "check build", 3, 0, DeferredActionState.PENDING, null, null);
+        store.put(dueAction);
+
+        scheduler.tick();
+
+        // Give virtual thread time to execute (will fail due to null LLM, but that's OK)
+        try { Thread.sleep(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+
+        scheduler.stop();
+
+        // Session history should NOT have been modified by the deferred action
+        assertEquals(messageCountBefore, session.messages().size(),
+                "Deferred action must not modify session conversation history");
     }
 
     // -- Helpers --
@@ -425,7 +493,6 @@ class DeferredActionSchedulerTest {
                 null, null, // LLM client and tool registry not needed for scheduling tests
                 "test-model", "test prompt",
                 4096, 0,
-                null, 5,
-                new ConcurrentHashMap<>());
+                null, 5);
     }
 }
