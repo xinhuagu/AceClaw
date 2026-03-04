@@ -307,8 +307,19 @@ public final class DeferredActionScheduler {
                 // Check if due
                 if (!action.isDue(now)) continue;
 
+                // Mark as RUNNING in tick() (single-threaded) before spawning
+                // to prevent duplicate dispatch on the next tick
+                var dispatchedAction = action.withAttempt().withState(DeferredActionState.RUNNING);
+                store.put(dispatchedAction);
+                saveQuietly();
+
+                publishEvent(new DeferEvent.ActionTriggered(
+                        action.actionId(), action.sessionId(), Instant.now()));
+                log.info("Dispatching deferred action '{}' (attempt {}, max retries {})",
+                        action.actionId(), dispatchedAction.attempts(), dispatchedAction.maxRetries());
+
                 // Spawn virtual thread immediately — no turn lock needed
-                final var actionToRun = action;
+                final var actionToRun = dispatchedAction;
                 var worker = Thread.ofVirtual()
                         .name("deferred-exec-" + action.actionId())
                         .start(() -> executeAction(actionToRun));
@@ -319,10 +330,16 @@ public final class DeferredActionScheduler {
         }
     }
 
+    /** Tool names with mutable per-request state that must not be shared concurrently. */
+    private static final java.util.Set<String> UNSAFE_TOOL_NAMES = java.util.Set.of("skill", "defer_check");
+
     /**
      * Executes a single deferred action on the current thread (expected: virtual thread).
-     * Uses a read-only snapshot of the session's conversation history — does not modify
-     * the session or acquire any turn lock.
+     * Uses a read-only snapshot of the session's conversation history, an isolated
+     * ToolRegistry (excluding tools with mutable per-request state), and does not
+     * modify the session or acquire any turn lock.
+     *
+     * <p>The action must already be in RUNNING state (set by {@link #tick()}).
      */
     private void executeAction(DeferredAction action) {
         try {
@@ -338,28 +355,26 @@ public final class DeferredActionScheduler {
                 return;
             }
 
-            // Mark as running
-            var runningAction = action.withAttempt().withState(DeferredActionState.RUNNING);
-            store.put(runningAction);
-            saveQuietly();
-
-            publishEvent(new DeferEvent.ActionTriggered(
-                    action.actionId(), action.sessionId(), Instant.now()));
-            log.info("Executing deferred action '{}' (attempt {}, max retries {})",
-                    action.actionId(), runningAction.attempts(), runningAction.maxRetries());
-
             // Snapshot session messages for read-only context (no lock needed)
             var conversationSnapshot = toMessages(List.copyOf(session.messages()));
 
+            // Build an isolated ToolRegistry excluding tools with mutable session state
+            // (SkillTool, DeferCheckTool) to prevent cross-contamination with main turns
+            var isolatedRegistry = new ToolRegistry();
+            for (var tool : toolRegistry.all()) {
+                if (!UNSAFE_TOOL_NAMES.contains(tool.name())) {
+                    isolatedRegistry.register(tool);
+                }
+            }
+
             long startNanos = System.nanoTime();
             try {
-                // Create a temp agent loop (same pattern as CronScheduler)
                 var loopConfig = AgentLoopConfig.builder()
                         .sessionId("deferred-" + action.actionId())
                         .maxIterations(15)
                         .build();
                 var agentLoop = new StreamingAgentLoop(
-                        llmClient, toolRegistry, model, systemPrompt,
+                        llmClient, isolatedRegistry, model, systemPrompt,
                         maxTokens, thinkingBudget, null, loopConfig);
 
                 String deferPrompt = """
@@ -377,7 +392,7 @@ public final class DeferredActionScheduler {
                 long durationMs = Duration.ofNanos(System.nanoTime() - startNanos).toMillis();
 
                 // Result stays in DeferredAction store + EventFeed — not written to session
-                store.put(runningAction.withSuccess(truncate(output, MAX_OUTPUT_CHARS)));
+                store.put(action.withSuccess(truncate(output, MAX_OUTPUT_CHARS)));
                 saveQuietly();
 
                 publishEvent(new DeferEvent.ActionCompleted(
@@ -388,10 +403,10 @@ public final class DeferredActionScheduler {
             } catch (Exception e) {
                 long durationMs = Duration.ofNanos(System.nanoTime() - startNanos).toMillis();
                 log.error("Deferred action '{}' failed (attempt {}/{}): {}",
-                        action.actionId(), runningAction.attempts(), runningAction.maxRetries(),
+                        action.actionId(), action.attempts(), action.maxRetries(),
                         e.getMessage());
 
-                var failedAction = runningAction.withFailure(e.getMessage());
+                var failedAction = action.withFailure(e.getMessage());
                 store.put(failedAction);
                 saveQuietly();
 

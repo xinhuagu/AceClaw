@@ -84,7 +84,9 @@ public final class DeferredActionStore {
         }
 
         Files.createDirectories(deferredDir);
-        Path tempFile = deferredDir.resolve(ACTIONS_FILE + ".tmp");
+        // Use unique temp file per save call to prevent concurrent writes from
+        // corrupting each other when multiple deferred action workers save in parallel
+        Path tempFile = Files.createTempFile(deferredDir, "actions-", ".tmp");
         try {
             mapper.writeValue(tempFile.toFile(), snapshot);
             try {
