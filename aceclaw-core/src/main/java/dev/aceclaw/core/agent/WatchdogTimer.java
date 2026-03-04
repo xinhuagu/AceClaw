@@ -297,7 +297,7 @@ public final class WatchdogTimer implements AutoCloseable {
             this.currentSoftTurns = newSoft;
         }
 
-        // Extend wall time
+        // Extend wall time: add extraTime to remaining soft wall (not replace)
         if (extraTime != null && !extraTime.isZero() && !extraTime.isNegative()) {
             // Cancel existing soft timer
             var existing = this.softTimerFuture;
@@ -307,19 +307,28 @@ public final class WatchdogTimer implements AutoCloseable {
 
             // Reset soft wall flag
             softWallReached.set(false);
-            this.softWallResetAt = Instant.now();
 
-            // Compute new soft wall, capped by remaining hard wall time
-            Duration newSoftWall = extraTime;
+            // Compute remaining soft wall time before reset
+            Instant now = Instant.now();
+            long remainingSoftMs = 0L;
+            Duration prevSoftWall = this.currentSoftWallTime;
+            if (prevSoftWall != null && !prevSoftWall.isZero() && !prevSoftWall.isNegative()) {
+                long elapsedSoftMs = Duration.between(this.softWallResetAt, now).toMillis();
+                remainingSoftMs = Math.max(0L, prevSoftWall.toMillis() - elapsedSoftMs);
+            }
+
+            // New soft wall = remaining + extra, capped by remaining hard wall time
+            Duration newSoftWall = Duration.ofMillis(remainingSoftMs + extraTime.toMillis());
             if (hardWallTime != null && !hardWallTime.isZero()) {
                 long hardRemainingMs = hardWallTime.toMillis()
-                        - Duration.between(startedAt, Instant.now()).toMillis();
+                        - Duration.between(startedAt, now).toMillis();
                 if (hardRemainingMs > 0) {
                     newSoftWall = Duration.ofMillis(Math.min(newSoftWall.toMillis(), hardRemainingMs));
                 } else {
                     newSoftWall = Duration.ZERO;
                 }
             }
+            this.softWallResetAt = now;
             this.currentSoftWallTime = newSoftWall;
 
             if (!newSoftWall.isZero() && !newSoftWall.isNegative()) {

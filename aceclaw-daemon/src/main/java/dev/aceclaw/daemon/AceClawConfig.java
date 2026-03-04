@@ -40,6 +40,10 @@ import java.util.Map;
  *   <li>{@code ACECLAW_ADAPTIVE_CONTINUATION_NO_PROGRESS_THRESHOLD} → adaptiveContinuationNoProgressThreshold</li>
  *   <li>{@code ACECLAW_ADAPTIVE_CONTINUATION_MAX_TOTAL_TOKENS} → adaptiveContinuationMaxTotalTokens</li>
  *   <li>{@code ACECLAW_ADAPTIVE_CONTINUATION_MAX_WALL_CLOCK_SECONDS} → adaptiveContinuationMaxWallClockSeconds</li>
+ *   <li>{@code ACECLAW_MAX_AGENT_TURNS} → maxAgentTurns (soft turn limit, default 50)</li>
+ *   <li>{@code ACECLAW_MAX_AGENT_WALL_TIME_SEC} → maxAgentWallTimeSec (soft wall limit, default 600)</li>
+ *   <li>{@code ACECLAW_MAX_AGENT_HARD_TURNS} → maxAgentHardTurns (hard turn ceiling, default 0 = 3x soft)</li>
+ *   <li>{@code ACECLAW_MAX_AGENT_HARD_WALL_TIME_SEC} → maxAgentHardWallTimeSec (hard wall ceiling, default 0 = 3x soft)</li>
  *   <li>{@code ACECLAW_LOG_LEVEL} → logLevel</li>
  *   <li>{@code BRAVE_SEARCH_API_KEY} → braveSearchApiKey</li>
  * </ul>

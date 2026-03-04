@@ -198,6 +198,7 @@ public final class StreamingAgentLoop {
                 }
 
                 // Soft limit: check progress, extend or stop
+                boolean softBudgetStopped = false;
                 if (watchdog != null && watchdog.isSoftLimitReached() && !watchdog.isExhausted()) {
                     var pd = config.progressDetector();
                     if (pd != null && !pd.isStalled()) {
@@ -205,6 +206,7 @@ public final class StreamingAgentLoop {
                         log.info("Budget auto-extended: extension #{}", watchdog.extensionCount());
                     } else {
                         log.warn("Soft budget reached with no progress, stopping");
+                        softBudgetStopped = true;
                         if (cancellationToken != null) {
                             cancellationToken.cancel();
                         }
@@ -212,10 +214,14 @@ public final class StreamingAgentLoop {
                 }
 
                 // Checkpoint 1: before LLM call
-                if (cancellationToken != null && cancellationToken.isCancelled()) {
+                // Check cancellation token OR soft-budget stop (handles null token case)
+                boolean hardBudgetStopped = watchdog != null && watchdog.isExhausted();
+                if (softBudgetStopped || hardBudgetStopped
+                        || (cancellationToken != null && cancellationToken.isCancelled())) {
                     log.info("Cancellation detected before LLM call (iteration {})", iteration + 1);
                     var turn = buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
-                            totalCacheCreationTokens, totalCacheReadTokens, compactionResult);
+                            totalCacheCreationTokens, totalCacheReadTokens, compactionResult,
+                            softBudgetStopped);
                     publishTurnCompleted(turnNumber, turnStart);
                     return turn;
                 }
@@ -375,11 +381,26 @@ public final class StreamingAgentLoop {
                                     int totalInputTokens, int totalOutputTokens,
                                     int totalCacheCreationTokens, int totalCacheReadTokens,
                                     CompactionResult compactionResult) {
+        return buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
+                totalCacheCreationTokens, totalCacheReadTokens, compactionResult, false);
+    }
+
+    /**
+     * Builds a Turn result for a cancelled agent turn, with optional soft-budget stop info.
+     */
+    private Turn buildCancelledTurn(List<Message> newMessages,
+                                    int totalInputTokens, int totalOutputTokens,
+                                    int totalCacheCreationTokens, int totalCacheReadTokens,
+                                    CompactionResult compactionResult,
+                                    boolean softBudgetStopped) {
         var totalUsage = new Usage(totalInputTokens, totalOutputTokens,
                 totalCacheCreationTokens, totalCacheReadTokens);
         var watchdog = config.watchdog();
-        boolean budgetExhausted = watchdog != null && watchdog.isExhausted();
+        boolean budgetExhausted = (watchdog != null && watchdog.isExhausted()) || softBudgetStopped;
         String reason = watchdog != null ? watchdog.exhaustionReason() : null;
+        if (reason == null && softBudgetStopped) {
+            reason = "soft_budget_no_progress";
+        }
         return new Turn(newMessages, StopReason.END_TURN, totalUsage, compactionResult,
                 false, budgetExhausted, reason);
     }
