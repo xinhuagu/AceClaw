@@ -185,8 +185,11 @@ public final class StreamingAgentLoop {
                 }
                 // If hard budget exhausted, token is cancelled -> Checkpoint 1 exits cleanly
 
-                // Budget warning: inject once when approaching soft limit
-                if (watchdog != null && watchdog.isApproachingLimit() && !watchdog.isWarningInjected()) {
+                // Budget warning: inject once when approaching (but not yet at) the soft limit.
+                // Skip if soft limit is already reached — extension/stop logic handles that below.
+                if (watchdog != null && watchdog.isApproachingLimit()
+                        && !watchdog.isSoftLimitReached()
+                        && !watchdog.isWarningInjected()) {
                     String warning = buildBudgetWarning(watchdog);
                     allMessages.add(Message.user(warning));
                     newMessages.add(Message.user(warning));

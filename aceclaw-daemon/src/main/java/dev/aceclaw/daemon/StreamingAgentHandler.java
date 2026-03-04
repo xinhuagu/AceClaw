@@ -208,7 +208,9 @@ public final class StreamingAgentHandler {
         int effectiveHardTurns = maxAgentHardTurns > 0 ? maxAgentHardTurns : maxAgentTurns * 3;
         int effectiveHardWallTimeSec = maxAgentHardWallTimeSec > 0
                 ? maxAgentHardWallTimeSec : maxAgentWallTimeSec * 3;
-        var watchdog = (maxAgentTurns > 0 || maxAgentWallTimeSec > 0)
+        boolean anyBudgetEnabled = maxAgentTurns > 0 || maxAgentWallTimeSec > 0
+                || effectiveHardTurns > 0 || effectiveHardWallTimeSec > 0;
+        var watchdog = anyBudgetEnabled
                 ? new WatchdogTimer(
                         maxAgentTurns,
                         effectiveHardTurns,
@@ -259,7 +261,7 @@ public final class StreamingAgentHandler {
                         sessionId, session, cancelContext, eventHandler,
                         permissionAwareLoop, cancellationToken, metricsCollector, watchdog);
                 if (resumeResult != null) {
-                    sendBudgetExhaustedNotificationIfNeeded(watchdog, cancelContext, sessionId);
+                    sendBudgetExhaustedNotificationIfNeeded(watchdog, cancelContext, sessionId, cancellationToken);
                     return resumeResult;
                 }
             }
@@ -274,7 +276,7 @@ public final class StreamingAgentHandler {
                             complexityScore.score(), complexityScore.signals());
                     var planResult = executePlannedPrompt(prompt, session, sessionId, cancelContext,
                             eventHandler, permissionAwareLoop, cancellationToken, metricsCollector, watchdog);
-                    sendBudgetExhaustedNotificationIfNeeded(watchdog, cancelContext, sessionId);
+                    sendBudgetExhaustedNotificationIfNeeded(watchdog, cancelContext, sessionId, cancellationToken);
                     return planResult;
                 }
             }
@@ -284,7 +286,7 @@ public final class StreamingAgentHandler {
 
             // Send cancelled / budget-exhausted notifications if applicable
             sendCancelledNotificationIfNeeded(cancellationToken, cancelContext, sessionId);
-            sendBudgetExhaustedNotificationIfNeeded(watchdog, cancelContext, sessionId);
+            sendBudgetExhaustedNotificationIfNeeded(watchdog, cancelContext, sessionId, cancellationToken);
 
             return buildTurnResult(adaptive.turn(), session, sessionId, prompt, cancellationToken, metricsCollector,
                     adaptive);
@@ -810,13 +812,23 @@ public final class StreamingAgentHandler {
      * or the soft limit was reached without progress (causing cancellation).
      */
     private void sendBudgetExhaustedNotificationIfNeeded(WatchdogTimer watchdog,
-                                                          StreamContext context, String sessionId) {
-        if (watchdog != null && watchdog.isExhausted()) {
+                                                          StreamContext context, String sessionId,
+                                                          CancellationToken cancellationToken) {
+        // Fire on hard exhaustion OR soft-limit stall stop (where exhaustionReason is not set
+        // but the token was cancelled by StreamingAgentLoop due to no progress)
+        boolean hardExhausted = watchdog != null && watchdog.isExhausted();
+        boolean softStallStop = watchdog != null && !watchdog.isExhausted()
+                && watchdog.isSoftLimitReached()
+                && cancellationToken != null && cancellationToken.isCancelled();
+        if (hardExhausted || softStallStop) {
             try {
                 var params = objectMapper.createObjectNode();
                 params.put("sessionId", sessionId);
-                params.put("reason", watchdog.exhaustionReason() != null
-                        ? watchdog.exhaustionReason() : "unknown");
+                String reason = watchdog.exhaustionReason();
+                if (reason == null) {
+                    reason = softStallStop ? "soft_limit_stall" : "unknown";
+                }
+                params.put("reason", reason);
                 params.put("elapsedMs", watchdog.elapsedMs());
                 params.put("extensionCount", watchdog.extensionCount());
                 params.put("softLimitReached", watchdog.isSoftLimitReached());
