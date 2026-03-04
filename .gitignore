@@ -46,3 +46,7 @@ research/
 # Environment
 .env
 .env.local
+
+# MCP server config (per-developer, may contain local paths)
+.mcp.json
+scripts/mcp-sux-cobol-server.mjs

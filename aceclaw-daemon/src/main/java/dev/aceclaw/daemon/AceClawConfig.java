@@ -180,6 +180,7 @@ public final class AceClawConfig {
     private int maxPlanTotalWallTimeSec;
     private boolean deferredActionEnabled;
     private int deferredActionTickSeconds;
+    private List<String> subAgentAutoApproveTools;
     private Map<String, List<HookMatcherFormat>> hooks;
 
     private AceClawConfig() {
@@ -240,6 +241,7 @@ public final class AceClawConfig {
         this.maxPlanTotalWallTimeSec = DEFAULT_MAX_PLAN_TOTAL_WALL_TIME_SEC;
         this.deferredActionEnabled = DEFAULT_DEFERRED_ACTION_ENABLED;
         this.deferredActionTickSeconds = DEFAULT_DEFERRED_ACTION_TICK_SECONDS;
+        this.subAgentAutoApproveTools = List.of();
         this.providerModels = new java.util.HashMap<>();
     }
 
@@ -1026,6 +1028,15 @@ public final class AceClawConfig {
     }
 
     /**
+     * Returns extra tool names to auto-approve for sub-agents, configured via
+     * {@code subAgentAutoApproveTools} in config.json. These are merged with
+     * the built-in read-only tool whitelist.
+     */
+    public List<String> subAgentAutoApproveTools() {
+        return subAgentAutoApproveTools;
+    }
+
+    /**
      * Returns the maximum number of agent ReAct iterations per request.
      * Enforced by the watchdog timer. 0 = disabled (uses existing maxTurns only).
      * Defaults to 200.
@@ -1446,6 +1457,16 @@ public final class AceClawConfig {
         if (fileConfig.deferredActionTickSeconds > 0) {
             this.deferredActionTickSeconds = fileConfig.deferredActionTickSeconds;
         }
+        if (fileConfig.subAgentAutoApproveTools != null && !fileConfig.subAgentAutoApproveTools.isEmpty()) {
+            // Project config appends to global config (not replaces)
+            var merged = new ArrayList<>(this.subAgentAutoApproveTools);
+            for (String tool : fileConfig.subAgentAutoApproveTools) {
+                if (tool != null && !tool.isBlank() && !merged.contains(tool)) {
+                    merged.add(tool);
+                }
+            }
+            this.subAgentAutoApproveTools = List.copyOf(merged);
+        }
     }
 
     /**
@@ -1514,6 +1535,7 @@ public final class AceClawConfig {
         public Integer maxPlanTotalWallTimeSec;
         public Boolean deferredActionEnabled;
         public int deferredActionTickSeconds;
+        public List<String> subAgentAutoApproveTools;
         public String defaultProfile;
         public Map<String, ConfigFileFormat> profiles;
         public Map<String, String> providerModels;

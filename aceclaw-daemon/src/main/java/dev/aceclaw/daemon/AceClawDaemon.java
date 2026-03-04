@@ -282,9 +282,20 @@ public final class AceClawDaemon {
         // Sub-agent permission checker: auto-approve READ tools + session-approved, deny rest
         // Note: "memory" excluded — MemoryTool has save/delete (write operations).
         // "skill" included — skill execution is gated by skill config's allowedTools.
-        var readOnlyTools = java.util.Set.of(
+        var builtinReadOnlyTools = java.util.Set.of(
                 "read_file", "glob", "grep", "list_directory",
                 "web_fetch", "web_search", "screen_capture", "skill");
+        // Merge built-in whitelist with extra tools from config
+        var extraTools = config.subAgentAutoApproveTools();
+        java.util.Set<String> readOnlyTools;
+        if (extraTools.isEmpty()) {
+            readOnlyTools = builtinReadOnlyTools;
+        } else {
+            readOnlyTools = new java.util.HashSet<>(builtinReadOnlyTools);
+            readOnlyTools.addAll(extraTools);
+            readOnlyTools = java.util.Set.copyOf(readOnlyTools);
+            log.info("Sub-agent auto-approve tools extended with: {}", extraTools);
+        }
         var subAgentPermChecker = new SubAgentPermissionChecker(
                 readOnlyTools, permissionManager::hasSessionApproval);
 
