@@ -98,10 +98,10 @@ public final class DeferredActionScheduler {
             int tickSeconds) {
         this.store = Objects.requireNonNull(store, "store");
         this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager");
-        this.llmClient = llmClient;
-        this.toolRegistry = toolRegistry;
-        this.model = model;
-        this.systemPrompt = systemPrompt;
+        this.llmClient = Objects.requireNonNull(llmClient, "llmClient");
+        this.toolRegistry = Objects.requireNonNull(toolRegistry, "toolRegistry");
+        this.model = Objects.requireNonNull(model, "model");
+        this.systemPrompt = Objects.requireNonNull(systemPrompt, "systemPrompt");
         this.maxTokens = maxTokens;
         this.thinkingBudget = thinkingBudget;
         this.eventBus = eventBus;
@@ -344,12 +344,15 @@ public final class DeferredActionScheduler {
                 log.info("Dispatching deferred action '{}' (attempt {}, max retries {})",
                         action.actionId(), dispatchedAction.attempts(), dispatchedAction.maxRetries());
 
-                // Spawn virtual thread immediately — no turn lock needed
+                // Spawn virtual thread immediately — no turn lock needed.
+                // Use unstarted() + add to activeWorkers before start() to prevent
+                // a fast-finishing thread from removing itself before being tracked.
                 final var actionToRun = dispatchedAction;
                 var worker = Thread.ofVirtual()
                         .name("deferred-exec-" + action.actionId())
-                        .start(() -> executeAction(actionToRun));
+                        .unstarted(() -> executeAction(actionToRun));
                 activeWorkers.add(worker);
+                worker.start();
             }
         } catch (Exception e) {
             log.error("Deferred scheduler tick error: {}", e.getMessage(), e);
@@ -381,20 +384,21 @@ public final class DeferredActionScheduler {
                 return;
             }
 
-            // Snapshot session messages for read-only context (no lock needed)
-            var conversationSnapshot = toMessages(List.copyOf(session.messages()));
-
-            // Build an isolated ToolRegistry excluding tools with mutable session state
-            // (SkillTool, DeferCheckTool) to prevent cross-contamination with main turns
-            var isolatedRegistry = new ToolRegistry();
-            for (var tool : toolRegistry.all()) {
-                if (!UNSAFE_TOOL_NAMES.contains(tool.name())) {
-                    isolatedRegistry.register(tool);
-                }
-            }
-
             long startNanos = System.nanoTime();
             try {
+                // Snapshot + registry inside try/catch so pre-execution exceptions
+                // are handled by the failure path (preventing stuck RUNNING state)
+                var conversationSnapshot = toMessages(List.copyOf(session.messages()));
+
+                // Build an isolated ToolRegistry excluding tools with mutable session state
+                // (SkillTool, DeferCheckTool) to prevent cross-contamination with main turns
+                var isolatedRegistry = new ToolRegistry();
+                for (var tool : toolRegistry.all()) {
+                    if (!UNSAFE_TOOL_NAMES.contains(tool.name())) {
+                        isolatedRegistry.register(tool);
+                    }
+                }
+
                 var loopConfig = AgentLoopConfig.builder()
                         .sessionId("deferred-" + action.actionId())
                         .maxIterations(15)

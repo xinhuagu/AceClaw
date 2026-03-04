@@ -1,6 +1,8 @@
 package dev.aceclaw.daemon.deferred;
 
+import dev.aceclaw.core.agent.ToolRegistry;
 import dev.aceclaw.daemon.AgentSession;
+import dev.aceclaw.daemon.MockLlmClient;
 import dev.aceclaw.daemon.SessionManager;
 import dev.aceclaw.infra.event.DeferEvent;
 import dev.aceclaw.infra.event.EventBus;
@@ -11,10 +13,8 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -412,19 +412,16 @@ class DeferredActionSchedulerTest {
                 "check something", 3, 0, DeferredActionState.PENDING, null, null);
         store.put(dueAction);
 
-        // tick() should mark action as RUNNING (spawns virtual thread)
+        // tick() marks action as RUNNING synchronously before spawning virtual thread
         scheduler.tick();
 
-        // Give virtual thread a moment to start and mark RUNNING
-        try { Thread.sleep(200); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-
-        scheduler.stop();
-
+        // Action should already be RUNNING after tick() — no need to wait for worker
         var updated = store.get(dueAction.actionId());
         assertTrue(updated.isPresent());
-        // Action should have been picked up (either RUNNING, CANCELLED due to null LLM, or FAILED)
         assertNotEquals(DeferredActionState.PENDING, updated.get().state(),
                 "Due action should no longer be PENDING after tick");
+
+        scheduler.stop();
     }
 
     @Test
@@ -437,12 +434,7 @@ class DeferredActionSchedulerTest {
         session.addMessage(new AgentSession.ConversationMessage.User("hello"));
         int messageCountBefore = session.messages().size();
 
-        var scheduler = new DeferredActionScheduler(
-                store, sessionManager,
-                null, null,
-                "test-model", "test prompt",
-                4096, 0,
-                null, 5);
+        var scheduler = createSchedulerWith(sessionManager);
         scheduler.start();
 
         // Create a due action for this session
@@ -457,9 +449,7 @@ class DeferredActionSchedulerTest {
 
         scheduler.tick();
 
-        // Give virtual thread time to execute (will fail due to null LLM, but that's OK)
-        try { Thread.sleep(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-
+        // stop() joins active worker threads, so this is a deterministic sync point
         scheduler.stop();
 
         // Session history should NOT have been modified by the deferred action
@@ -487,10 +477,13 @@ class DeferredActionSchedulerTest {
         for (int i = 0; i < 20; i++) {
             sessionManager.createSession(tempDir);
         }
+        return createSchedulerWith(sessionManager);
+    }
 
+    private DeferredActionScheduler createSchedulerWith(SessionManager sessionManager) {
         return new DeferredActionScheduler(
                 store, sessionManager,
-                null, null, // LLM client and tool registry not needed for scheduling tests
+                new MockLlmClient(), new ToolRegistry(),
                 "test-model", "test prompt",
                 4096, 0,
                 null, 5);
