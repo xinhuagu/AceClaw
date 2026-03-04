@@ -204,10 +204,18 @@ public final class StreamingAgentHandler {
         // Get or create a session-scoped metrics collector so tool stats accumulate across turns
         var metricsCollector = sessionMetrics.computeIfAbsent(sessionId, _ -> new ToolMetricsCollector());
 
-        // Create watchdog timer for turn/time budget enforcement
-        var watchdog = (maxAgentTurns > 0 || maxAgentWallTimeSec > 0)
-                ? new WatchdogTimer(maxAgentTurns,
+        // Create watchdog timer with soft/hard limits for budget enforcement
+        int effectiveHardTurns = maxAgentHardTurns > 0 ? maxAgentHardTurns : maxAgentTurns * 3;
+        int effectiveHardWallTimeSec = maxAgentHardWallTimeSec > 0
+                ? maxAgentHardWallTimeSec : maxAgentWallTimeSec * 3;
+        boolean anyBudgetEnabled = maxAgentTurns > 0 || maxAgentWallTimeSec > 0
+                || effectiveHardTurns > 0 || effectiveHardWallTimeSec > 0;
+        var watchdog = anyBudgetEnabled
+                ? new WatchdogTimer(
+                        maxAgentTurns,
+                        effectiveHardTurns,
                         maxAgentWallTimeSec > 0 ? Duration.ofSeconds(maxAgentWallTimeSec) : Duration.ZERO,
+                        effectiveHardWallTimeSec > 0 ? Duration.ofSeconds(effectiveHardWallTimeSec) : Duration.ZERO,
                         cancellationToken)
                 : null;
 
@@ -253,7 +261,7 @@ public final class StreamingAgentHandler {
                         sessionId, session, cancelContext, eventHandler,
                         permissionAwareLoop, cancellationToken, metricsCollector, watchdog);
                 if (resumeResult != null) {
-                    sendBudgetExhaustedNotificationIfNeeded(watchdog, cancelContext, sessionId);
+                    sendBudgetExhaustedNotificationIfNeeded(watchdog, cancelContext, sessionId, cancellationToken);
                     return resumeResult;
                 }
             }
@@ -268,7 +276,7 @@ public final class StreamingAgentHandler {
                             complexityScore.score(), complexityScore.signals());
                     var planResult = executePlannedPrompt(prompt, session, sessionId, cancelContext,
                             eventHandler, permissionAwareLoop, cancellationToken, metricsCollector, watchdog);
-                    sendBudgetExhaustedNotificationIfNeeded(watchdog, cancelContext, sessionId);
+                    sendBudgetExhaustedNotificationIfNeeded(watchdog, cancelContext, sessionId, cancellationToken);
                     return planResult;
                 }
             }
@@ -278,7 +286,7 @@ public final class StreamingAgentHandler {
 
             // Send cancelled / budget-exhausted notifications if applicable
             sendCancelledNotificationIfNeeded(cancellationToken, cancelContext, sessionId);
-            sendBudgetExhaustedNotificationIfNeeded(watchdog, cancelContext, sessionId);
+            sendBudgetExhaustedNotificationIfNeeded(watchdog, cancelContext, sessionId, cancellationToken);
 
             return buildTurnResult(adaptive.turn(), session, sessionId, prompt, cancellationToken, metricsCollector,
                     adaptive);
@@ -800,17 +808,30 @@ public final class StreamingAgentHandler {
     }
 
     /**
-     * Sends a stream.budget_exhausted notification to the client if the watchdog budget was exhausted.
+     * Sends a stream.budget_exhausted notification to the client if the watchdog budget was exhausted
+     * or the soft limit was reached without progress (causing cancellation).
      */
     private void sendBudgetExhaustedNotificationIfNeeded(WatchdogTimer watchdog,
-                                                          StreamContext context, String sessionId) {
-        if (watchdog != null && watchdog.isExhausted()) {
+                                                          StreamContext context, String sessionId,
+                                                          CancellationToken cancellationToken) {
+        // Fire on hard exhaustion OR soft-limit stall stop (where exhaustionReason is not set
+        // but the token was cancelled by StreamingAgentLoop due to no progress)
+        boolean hardExhausted = watchdog != null && watchdog.isExhausted();
+        boolean softStallStop = watchdog != null && !watchdog.isExhausted()
+                && watchdog.isSoftLimitReached()
+                && cancellationToken != null && cancellationToken.isCancelled();
+        if (hardExhausted || softStallStop) {
             try {
                 var params = objectMapper.createObjectNode();
                 params.put("sessionId", sessionId);
-                params.put("reason", watchdog.exhaustionReason() != null
-                        ? watchdog.exhaustionReason() : "unknown");
+                String reason = watchdog.exhaustionReason();
+                if (reason == null) {
+                    reason = softStallStop ? "soft_limit_stall" : "unknown";
+                }
+                params.put("reason", reason);
                 params.put("elapsedMs", watchdog.elapsedMs());
+                params.put("extensionCount", watchdog.extensionCount());
+                params.put("softLimitReached", watchdog.isSoftLimitReached());
                 context.sendNotification("stream.budget_exhausted", params);
             } catch (IOException e) {
                 log.warn("Failed to send stream.budget_exhausted notification: {}", e.getMessage());
@@ -942,6 +963,8 @@ public final class StreamingAgentHandler {
     private boolean adaptiveReplanEnabled = true;
     private int maxAgentTurns = 50;
     private int maxAgentWallTimeSec = 600;
+    private int maxAgentHardTurns = 0;
+    private int maxAgentHardWallTimeSec = 0;
     private int maxPlanStepWallTimeSec = 300;
     private int maxPlanTotalWallTimeSec = 3600;
     private PlanCheckpointStore planCheckpointStore;
@@ -1078,14 +1101,19 @@ public final class StreamingAgentHandler {
     }
 
     /**
-     * Sets the watchdog timer configuration for budget enforcement.
+     * Sets the watchdog timer configuration for budget enforcement with soft/hard limits.
      *
-     * @param maxAgentTurns      maximum ReAct iterations per request (0 = disabled)
-     * @param maxAgentWallTimeSec maximum wall-clock seconds per request (0 = disabled)
+     * @param maxAgentTurns          soft turn limit (0 = disabled)
+     * @param maxAgentWallTimeSec    soft wall-clock seconds (0 = disabled)
+     * @param maxAgentHardTurns      hard turn ceiling (0 = use 3x soft)
+     * @param maxAgentHardWallTimeSec hard wall-clock ceiling (0 = use 3x soft)
      */
-    public void setWatchdogConfig(int maxAgentTurns, int maxAgentWallTimeSec) {
+    public void setWatchdogConfig(int maxAgentTurns, int maxAgentWallTimeSec,
+                                   int maxAgentHardTurns, int maxAgentHardWallTimeSec) {
         this.maxAgentTurns = Math.max(0, maxAgentTurns);
         this.maxAgentWallTimeSec = Math.max(0, maxAgentWallTimeSec);
+        this.maxAgentHardTurns = Math.max(0, maxAgentHardTurns);
+        this.maxAgentHardWallTimeSec = Math.max(0, maxAgentHardWallTimeSec);
     }
 
     /**
