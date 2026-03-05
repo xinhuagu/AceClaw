@@ -8,9 +8,6 @@ import org.gradle.api.tasks.Exec
 import org.gradle.api.tasks.testing.Test
 
 allprojects {
-    group = "dev.aceclaw"
-    version = "0.1.0-SNAPSHOT"
-
     repositories {
         mavenCentral()
     }

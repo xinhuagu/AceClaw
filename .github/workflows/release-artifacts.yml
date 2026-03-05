@@ -1,0 +1,31 @@
+name: Release Artifacts
+
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew clean build --no-daemon
+      - name: Verify distribution artifacts exist
+        run: |
+          ls -la aceclaw-cli/build/distributions/
+          test -n "$(ls aceclaw-cli/build/distributions/*.zip 2>/dev/null)" || { echo "No .zip found"; exit 1; }
+          test -n "$(ls aceclaw-cli/build/distributions/*.tar 2>/dev/null)" || { echo "No .tar found"; exit 1; }
+      - uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: true
+          files: |
+            aceclaw-cli/build/distributions/*.zip
+            aceclaw-cli/build/distributions/*.tar

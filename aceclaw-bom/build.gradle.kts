@@ -2,10 +2,6 @@ plugins {
     `java-platform`
 }
 
-group = "dev.aceclaw"
-version = "0.1.0-SNAPSHOT"
-
-
 dependencies {
     constraints {
         // CLI
