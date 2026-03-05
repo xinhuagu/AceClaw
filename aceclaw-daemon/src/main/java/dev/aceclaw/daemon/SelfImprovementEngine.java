@@ -262,23 +262,15 @@ public final class SelfImprovementEngine {
                     if (!transitions.isEmpty()) {
                         log.info("Candidate pipeline: {} transitions applied after turn", transitions.size());
                     }
-                    // Auto-trigger draft generation + validation + release when candidates get promoted
-                    boolean hasNewPromotions = transitions.stream()
-                            .anyMatch(t -> t.toState() == dev.aceclaw.memory.CandidateState.PROMOTED);
-                    if (hasNewPromotions && draftReevaluationTrigger != null) {
-                        try {
-                            log.info("New promotions detected, triggering auto draft generation + validation");
-                            draftReevaluationTrigger.accept(projectPath);
-                        } catch (Exception e) {
-                            log.warn("Auto draft generation/validation failed: {}", e.getMessage());
-                        }
-                    }
-                } else if (draftReevaluationTrigger != null) {
-                    // Fallback: re-validate existing drafts even without transitions
+                }
+                // Always fire draft re-evaluation trigger (not just on new promotions).
+                // Draft generation is idempotent (skips candidates that already have drafts),
+                // and re-validation should happen every turn as new evidence may accumulate.
+                if (draftReevaluationTrigger != null) {
                     try {
                         draftReevaluationTrigger.accept(projectPath);
                     } catch (Exception e) {
-                        log.warn("Draft validation re-evaluation failed: {}", e.getMessage());
+                        log.warn("Auto draft generation/validation failed: {}", e.getMessage());
                     }
                 }
             } catch (Exception e) {

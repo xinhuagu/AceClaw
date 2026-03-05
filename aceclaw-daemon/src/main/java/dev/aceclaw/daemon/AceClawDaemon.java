@@ -521,6 +521,32 @@ public final class AceClawDaemon {
             }
 
             log.info("Self-improvement engine wired (with strategy refinement + candidate pipeline)");
+
+            // Catch-up: generate drafts for any PROMOTED candidates that don't have drafts yet.
+            // This handles candidates promoted before the auto-trigger existed (pre-#175).
+            final var catchupCs = cs;
+            final var catchupValidation = validationGateEngine;
+            final var catchupAutoRelease = autoReleaseController;
+            if (catchupCs != null && !catchupCs.byState(dev.aceclaw.memory.CandidateState.PROMOTED).isEmpty()) {
+                Thread.ofVirtual().name("draft-catchup").start(() -> {
+                    try {
+                        var generator = new SkillDraftGenerator();
+                        var summary = generator.generateFromPromoted(catchupCs, workingDir);
+                        if (summary.createdDrafts() > 0) {
+                            log.info("Draft catch-up: {} new drafts generated for existing promoted candidates",
+                                    summary.createdDrafts());
+                        }
+                        if (catchupValidation != null && summary.createdDrafts() > 0) {
+                            catchupValidation.validateAll(workingDir, "startup-catchup");
+                            if (catchupAutoRelease != null) {
+                                catchupAutoRelease.evaluateAll(workingDir, catchupCs, "startup-catchup");
+                            }
+                        }
+                    } catch (Exception e) {
+                        log.warn("Draft catch-up failed: {}", e.getMessage());
+                    }
+                });
+            }
         }
 
         // Wire deferred action scheduler (no turn lock dependency — uses isolated context)

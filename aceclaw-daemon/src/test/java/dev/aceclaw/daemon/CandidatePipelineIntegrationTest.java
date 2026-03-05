@@ -246,8 +246,9 @@ class CandidatePipelineIntegrationTest {
     }
 
     @Test
-    void noPromotionDoesNotTriggerDraftGeneration() {
-        // Wire engine with trigger that tracks calls
+    void triggerAlwaysFiresEvenWithoutNewPromotions() {
+        // Trigger should always fire after persist() for idempotent re-evaluation,
+        // regardless of whether new promotions occurred in this turn.
         var triggerCalled = new java.util.concurrent.atomic.AtomicBoolean(false);
         var errorDetector = new ErrorDetector(memoryStore);
         var patternDetector = new PatternDetector(memoryStore);
@@ -265,8 +266,8 @@ class CandidatePipelineIntegrationTest {
         );
         engineWithTrigger.persist(insights, "test-session", tempDir);
 
-        // No promotion happened, so trigger should NOT be called
-        assertThat(triggerCalled.get()).isFalse();
+        // Trigger fires on every turn (draft generation is idempotent)
+        assertThat(triggerCalled.get()).isTrue();
     }
 
     private static CandidateStore.CandidateObservation obs(String content, String toolTag,
