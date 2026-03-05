@@ -43,7 +43,7 @@ public final class SessionEndExtractor {
             Pattern.compile("(?i)^not that\\b"),
             Pattern.compile("(?i)\\bshould(n'?t| not)\\b"),
             Pattern.compile("(?i)\\bdo not use\\b"),
-            Pattern.compile("(?i)^use\\s+\\w"),
+            Pattern.compile("(?i)^use\\s+\\w+.*\\b(instead|rather|not|for this)\\b"),
             Pattern.compile("(?i)\\bi (said|told you|already said)\\b"),
             Pattern.compile("(?i)\\bthat('s| is) not\\b"),
             Pattern.compile("(?i)^why did you\\b")

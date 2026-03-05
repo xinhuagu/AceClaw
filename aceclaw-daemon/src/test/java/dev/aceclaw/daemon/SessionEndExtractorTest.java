@@ -163,7 +163,7 @@ class SessionEndExtractorTest {
     void extractsExpandedCorrectionPatterns() {
         var messages = List.<AgentSession.ConversationMessage>of(
                 new AgentSession.ConversationMessage.Assistant("I'll use basic auth"),
-                new AgentSession.ConversationMessage.User("use Bearer auth for this endpoint")
+                new AgentSession.ConversationMessage.User("use Bearer auth instead for this endpoint")
         );
 
         var extracted = SessionEndExtractor.extract(messages);

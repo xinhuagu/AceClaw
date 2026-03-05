@@ -532,9 +532,9 @@ class PatternDetectorTest {
     void expandedCorrectionPatternsDetected() {
         var history = List.<AgentSession.ConversationMessage>of(
                 new AgentSession.ConversationMessage.Assistant("I'll add lodash for array ops"),
-                new AgentSession.ConversationMessage.User("use native Array methods for this"),
-                new AgentSession.ConversationMessage.Assistant("I added lodash anyway for array ops"),
-                new AgentSession.ConversationMessage.User("use native Array methods for transformation")
+                new AgentSession.ConversationMessage.User("don't use lodash for array ops"),
+                new AgentSession.ConversationMessage.Assistant("I added lodash again for array ops"),
+                new AgentSession.ConversationMessage.User("don't use lodash for array transformation")
         );
 
         var turn = new Turn(List.of(Message.assistant("ok")), StopReason.END_TURN, new Usage(0, 0));

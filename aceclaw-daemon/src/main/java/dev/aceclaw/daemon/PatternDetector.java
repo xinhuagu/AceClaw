@@ -41,6 +41,7 @@ public final class PatternDetector {
     private static final int MIN_WORKFLOW_FREQUENCY = 3;
     private static final double PREFERENCE_BASE_CONFIDENCE = 0.5;
     private static final double PREFERENCE_CROSS_SESSION_BOOST = 0.15;
+    private static final int MAX_CROSS_SESSION_MATCH_CANDIDATES = 200;
 
     private final AutoMemoryStore memoryStore;
 
@@ -273,9 +274,11 @@ public final class PatternDetector {
         int count = 0;
         try {
             var priorCorrections = memoryStore.query(
-                    MemoryEntry.Category.CORRECTION, List.of("user-correction"), 0);
+                    MemoryEntry.Category.CORRECTION, List.of("user-correction"),
+                    MAX_CROSS_SESSION_MATCH_CANDIDATES);
             var priorPreferences = memoryStore.query(
-                    MemoryEntry.Category.PREFERENCE, List.of("user-preference"), 0);
+                    MemoryEntry.Category.PREFERENCE, List.of("user-preference"),
+                    MAX_CROSS_SESSION_MATCH_CANDIDATES);
 
             for (var entry : priorCorrections) {
                 if (jaccardSimilarity(correction, entry.content()) >= JACCARD_CORRECTION_THRESHOLD) {
@@ -441,14 +444,20 @@ public final class PatternDetector {
         return lower.startsWith("no,") || lower.startsWith("no ") ||
                 lower.startsWith("wrong") || lower.startsWith("actually") ||
                 lower.contains("should be") || lower.contains("instead of") ||
-                lower.startsWith("don't") || lower.startsWith("please use") ||
+                lower.startsWith("please use") ||
                 lower.startsWith("stop") || lower.startsWith("not that") ||
                 lower.contains("should not") || lower.contains("shouldn't") ||
                 lower.contains("do not use") || lower.contains("don't use") ||
-                lower.startsWith("use ") || lower.contains("i said") ||
+                (lower.startsWith("use ") && containsCorrectionQualifier(lower)) ||
+                lower.contains("i said") ||
                 lower.contains("i told you") || lower.contains("i already said") ||
                 lower.contains("that's not") || lower.contains("that is not") ||
                 lower.startsWith("why did you");
+    }
+
+    private static boolean containsCorrectionQualifier(String lower) {
+        return lower.contains("instead") || lower.contains("rather") ||
+                lower.contains("not") || lower.contains("for this");
     }
 
     private static List<List<String>> groupBySimilarity(List<String> items, double threshold) {
