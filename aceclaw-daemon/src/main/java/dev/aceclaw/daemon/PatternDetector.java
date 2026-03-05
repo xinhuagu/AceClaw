@@ -445,9 +445,9 @@ public final class PatternDetector {
                 lower.startsWith("stop") || lower.startsWith("not that") ||
                 lower.contains("should not") || lower.contains("shouldn't") ||
                 lower.contains("do not use") || lower.contains("don't use") ||
-                lower.startsWith("use ") || lower.startsWith("i said") ||
-                lower.startsWith("i told you") || lower.startsWith("i already said") ||
-                lower.startsWith("that's not") || lower.startsWith("that is not") ||
+                lower.startsWith("use ") || lower.contains("i said") ||
+                lower.contains("i told you") || lower.contains("i already said") ||
+                lower.contains("that's not") || lower.contains("that is not") ||
                 lower.startsWith("why did you");
     }
 
