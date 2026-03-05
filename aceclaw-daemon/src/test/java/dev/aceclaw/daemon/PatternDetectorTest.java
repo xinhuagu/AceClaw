@@ -415,6 +415,138 @@ class PatternDetectorTest {
         assertThat(detector.analyze(turn, history, null)).isNotNull();
     }
 
+    // -- Cross-session preference boosting tests --
+
+    @Test
+    void singleCorrectionWithPriorMemoryEmitsPreference(@TempDir Path tempDir) throws Exception {
+        var store = new AutoMemoryStore(tempDir);
+        store.load(tempDir);
+
+        // Add 2 prior CORRECTION entries that match (high Jaccard overlap with current correction)
+        store.add(MemoryEntry.Category.CORRECTION,
+                "no, use Bearer token auth for API requests",
+                List.of("user-correction"), "session:prior1", true, null);
+        store.add(MemoryEntry.Category.CORRECTION,
+                "no, always use Bearer token auth for API",
+                List.of("user-correction"), "session:prior2", true, null);
+
+        var crossDetector = new PatternDetector(store);
+        var history = List.<AgentSession.ConversationMessage>of(
+                new AgentSession.ConversationMessage.Assistant("I'll use API key auth"),
+                new AgentSession.ConversationMessage.User("no, use Bearer token auth for API calls")
+        );
+
+        var turn = new Turn(List.of(Message.assistant("ok")), StopReason.END_TURN, new Usage(0, 0));
+        var insights = crossDetector.analyze(turn, history, Map.of());
+
+        var prefInsights = insights.stream()
+                .filter(i -> i.patternType() == PatternType.USER_PREFERENCE)
+                .toList();
+
+        assertThat(prefInsights).hasSize(1);
+        assertThat(prefInsights.getFirst().confidence()).isGreaterThanOrEqualTo(0.7);
+        assertThat(prefInsights.getFirst().description()).contains("cross-session");
+    }
+
+    @Test
+    void singleCorrectionWithoutPriorMemoryDoesNotEmit(@TempDir Path tempDir) throws Exception {
+        var store = new AutoMemoryStore(tempDir);
+        store.load(tempDir);
+        // No prior entries
+
+        var crossDetector = new PatternDetector(store);
+        var history = List.<AgentSession.ConversationMessage>of(
+                new AgentSession.ConversationMessage.Assistant("I'll use HashMap"),
+                new AgentSession.ConversationMessage.User("no, use ConcurrentHashMap")
+        );
+
+        var turn = new Turn(List.of(Message.assistant("ok")), StopReason.END_TURN, new Usage(0, 0));
+        var insights = crossDetector.analyze(turn, history, Map.of());
+
+        var prefInsights = insights.stream()
+                .filter(i -> i.patternType() == PatternType.USER_PREFERENCE)
+                .toList();
+        assertThat(prefInsights).isEmpty();
+    }
+
+    @Test
+    void singleCorrectionWithOnePriorEmitsBelowThreshold(@TempDir Path tempDir) throws Exception {
+        var store = new AutoMemoryStore(tempDir);
+        store.load(tempDir);
+
+        // Only 1 prior match
+        store.add(MemoryEntry.Category.CORRECTION,
+                "no, use Bearer token auth for API requests",
+                List.of("user-correction"), "session:prior1", true, null);
+
+        var crossDetector = new PatternDetector(store);
+        var history = List.<AgentSession.ConversationMessage>of(
+                new AgentSession.ConversationMessage.Assistant("I'll use API key auth"),
+                new AgentSession.ConversationMessage.User("no, use Bearer token auth for API calls")
+        );
+
+        var turn = new Turn(List.of(Message.assistant("ok")), StopReason.END_TURN, new Usage(0, 0));
+        var insights = crossDetector.analyze(turn, history, Map.of());
+
+        var prefInsights = insights.stream()
+                .filter(i -> i.patternType() == PatternType.USER_PREFERENCE)
+                .toList();
+
+        assertThat(prefInsights).hasSize(1);
+        // 0.5 + 1 * 0.15 = 0.65 — emitted but below 0.7 persistence threshold
+        assertThat(prefInsights.getFirst().confidence()).isBetween(0.6, 0.7);
+    }
+
+    @Test
+    void crossSessionBoostFromExistingPreference(@TempDir Path tempDir) throws Exception {
+        var store = new AutoMemoryStore(tempDir);
+        store.load(tempDir);
+
+        // 1 PREFERENCE + 1 CORRECTION = 2 prior matches
+        store.add(MemoryEntry.Category.PREFERENCE,
+                "use Bearer token auth for API requests",
+                List.of("user-preference"), "session:prior1", true, null);
+        store.add(MemoryEntry.Category.CORRECTION,
+                "no, always use Bearer token auth for API",
+                List.of("user-correction"), "session:prior2", true, null);
+
+        var crossDetector = new PatternDetector(store);
+        var history = List.<AgentSession.ConversationMessage>of(
+                new AgentSession.ConversationMessage.Assistant("I'll use API key auth"),
+                new AgentSession.ConversationMessage.User("no, use Bearer token auth for API calls")
+        );
+
+        var turn = new Turn(List.of(Message.assistant("ok")), StopReason.END_TURN, new Usage(0, 0));
+        var insights = crossDetector.analyze(turn, history, Map.of());
+
+        var prefInsights = insights.stream()
+                .filter(i -> i.patternType() == PatternType.USER_PREFERENCE)
+                .toList();
+
+        assertThat(prefInsights).hasSize(1);
+        // 0.5 + 2 * 0.15 = 0.80 — above 0.7 persistence threshold
+        assertThat(prefInsights.getFirst().confidence()).isGreaterThanOrEqualTo(0.7);
+    }
+
+    @Test
+    void expandedCorrectionPatternsDetected() {
+        var history = List.<AgentSession.ConversationMessage>of(
+                new AgentSession.ConversationMessage.Assistant("I'll add lodash for array ops"),
+                new AgentSession.ConversationMessage.User("use native Array methods for this"),
+                new AgentSession.ConversationMessage.Assistant("I added lodash anyway for array ops"),
+                new AgentSession.ConversationMessage.User("use native Array methods for transformation")
+        );
+
+        var turn = new Turn(List.of(Message.assistant("ok")), StopReason.END_TURN, new Usage(0, 0));
+        var insights = detector.analyze(turn, history, Map.of());
+
+        var prefInsights = insights.stream()
+                .filter(i -> i.patternType() == PatternType.USER_PREFERENCE)
+                .toList();
+
+        assertThat(prefInsights).hasSize(1);
+    }
+
     // -- helpers --
 
     private static Message assistantWithToolUse(String id, String toolName) {

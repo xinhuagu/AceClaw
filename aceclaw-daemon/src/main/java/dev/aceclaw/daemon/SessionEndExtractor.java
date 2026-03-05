@@ -38,7 +38,15 @@ public final class SessionEndExtractor {
             Pattern.compile("(?i)\\binstead of\\b"),
             Pattern.compile("(?i)\\bnot\\s+\\w+[,.]?\\s+use\\b"),
             Pattern.compile("(?i)^please use\\b"),
-            Pattern.compile("(?i)^don'?t use\\b")
+            Pattern.compile("(?i)^don'?t use\\b"),
+            Pattern.compile("(?i)^stop\\b"),
+            Pattern.compile("(?i)^not that\\b"),
+            Pattern.compile("(?i)\\bshould(n'?t| not)\\b"),
+            Pattern.compile("(?i)\\bdo not use\\b"),
+            Pattern.compile("(?i)^use\\s+\\w"),
+            Pattern.compile("(?i)\\bi (said|told you|already said)\\b"),
+            Pattern.compile("(?i)\\bthat('s| is) not\\b"),
+            Pattern.compile("(?i)^why did you\\b")
     );
 
     // Preference indicators (case-insensitive)

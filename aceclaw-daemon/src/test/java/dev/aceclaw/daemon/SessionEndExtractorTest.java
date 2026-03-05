@@ -160,6 +160,38 @@ class SessionEndExtractorTest {
     }
 
     @Test
+    void extractsExpandedCorrectionPatterns() {
+        var messages = List.<AgentSession.ConversationMessage>of(
+                new AgentSession.ConversationMessage.Assistant("I'll use basic auth"),
+                new AgentSession.ConversationMessage.User("use Bearer auth for this endpoint")
+        );
+
+        var extracted = SessionEndExtractor.extract(messages);
+
+        var corrections = extracted.stream()
+                .filter(m -> m.category() == MemoryEntry.Category.CORRECTION)
+                .toList();
+        assertThat(corrections).hasSize(1);
+        assertThat(corrections.getFirst().content()).contains("Bearer auth");
+    }
+
+    @Test
+    void extractsCorrectionWithStopPattern() {
+        var messages = List.<AgentSession.ConversationMessage>of(
+                new AgentSession.ConversationMessage.Assistant("Adding guava dependency"),
+                new AgentSession.ConversationMessage.User("stop adding unnecessary dependencies")
+        );
+
+        var extracted = SessionEndExtractor.extract(messages);
+
+        var corrections = extracted.stream()
+                .filter(m -> m.category() == MemoryEntry.Category.CORRECTION)
+                .toList();
+        assertThat(corrections).hasSize(1);
+        assertThat(corrections.getFirst().content()).contains("stop adding");
+    }
+
+    @Test
     void correctionRequiresPrecedingAssistantMessage() {
         // A "no, ..." at the start of conversation (no preceding assistant) should not match
         var messages = List.<AgentSession.ConversationMessage>of(
