@@ -1,0 +1,89 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump type"
+        required: true
+        default: "patch"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - uses: taiki-e/install-action@git-cliff
+
+      - name: Compute next version
+        id: version
+        run: |
+          NEXT=$(git cliff --bump ${{ inputs.bump }} --bumped-version)
+          echo "next=${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "Next version: ${NEXT}"
+
+      - name: Bump gradle.properties
+        run: |
+          BARE="${{ steps.version.outputs.next }}"
+          BARE="${BARE#v}"
+          sed -i "s/^version=.*/version=${BARE}/" gradle.properties
+
+      - name: Update CHANGELOG.md
+        run: |
+          git cliff --unreleased \
+            --tag ${{ steps.version.outputs.next }} \
+            --prepend CHANGELOG.md
+
+      - name: Generate release body
+        run: |
+          git cliff --unreleased \
+            --tag ${{ steps.version.outputs.next }} \
+            --strip all > /tmp/release-body.md
+
+      - name: Commit and tag
+        run: |
+          git add gradle.properties CHANGELOG.md
+          git commit -m "chore(release): ${{ steps.version.outputs.next }}"
+          git tag -a ${{ steps.version.outputs.next }} \
+            -m "Release ${{ steps.version.outputs.next }}"
+          git push origin HEAD:main --follow-tags
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+
+      - run: ./gradlew clean build --no-daemon
+
+      - name: Verify artifacts
+        run: |
+          ls -la aceclaw-cli/build/distributions/
+          test -n "$(ls aceclaw-cli/build/distributions/*.zip 2>/dev/null)"
+          test -n "$(ls aceclaw-cli/build/distributions/*.tar 2>/dev/null)"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.next }}
+          name: "Release ${{ steps.version.outputs.next }}"
+          body_path: /tmp/release-body.md
+          fail_on_unmatched_files: true
+          files: |
+            aceclaw-cli/build/distributions/*.zip
+            aceclaw-cli/build/distributions/*.tar
