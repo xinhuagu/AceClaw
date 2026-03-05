@@ -428,6 +428,9 @@ public final class AceClawDaemon {
         }
 
         // 10. Self-improvement engine (post-turn learning analysis + strategy refinement + candidate pipeline)
+        // Shared lock serializing all draft generation, validation, and release operations.
+        // Prevents races between per-turn trigger, startup catch-up, and RPC handlers.
+        final var draftPipelineLock = new java.util.concurrent.locks.ReentrantLock();
         CandidateStore candidateStoreRef = null;
         ValidationGateEngine validationGateEngine = null;
         AutoReleaseController autoReleaseController = null;
@@ -486,6 +489,7 @@ public final class AceClawDaemon {
                     errorDetector, patternDetector, failureSignalDetector, memoryStore, strategyRefiner, cs,
                     config.candidatePromotionEnabled(),
                     (validationGateForAuto != null || candidateStoreForAuto != null) ? projectPath -> {
+                        draftPipelineLock.lock();
                         try {
                             // Auto-generate skill drafts from newly promoted candidates
                             if (candidateStoreForAuto != null) {
@@ -505,6 +509,8 @@ public final class AceClawDaemon {
                             }
                         } catch (Exception e) {
                             log.warn("Auto draft generation/validation failed: {}", e.getMessage());
+                        } finally {
+                            draftPipelineLock.unlock();
                         }
                     } : null);
             agentHandler.setSelfImprovementEngine(selfImprovementEngine);
@@ -529,6 +535,7 @@ public final class AceClawDaemon {
             final var catchupAutoRelease = autoReleaseController;
             if (catchupCs != null && !catchupCs.byState(dev.aceclaw.memory.CandidateState.PROMOTED).isEmpty()) {
                 Thread.ofVirtual().name("draft-catchup").start(() -> {
+                    draftPipelineLock.lock();
                     try {
                         var generator = new SkillDraftGenerator();
                         var summary = generator.generateFromPromoted(catchupCs, workingDir);
@@ -544,6 +551,8 @@ public final class AceClawDaemon {
                         }
                     } catch (Exception e) {
                         log.warn("Draft catch-up failed: {}", e.getMessage());
+                    } finally {
+                        draftPipelineLock.unlock();
                     }
                 });
             }
@@ -748,48 +757,63 @@ public final class AceClawDaemon {
             if (candidateStoreForRpc == null) {
                 throw new IllegalStateException("Candidate store is not initialized");
             }
-            var generator = new SkillDraftGenerator();
-            var summary = generator.generateFromPromoted(candidateStoreForRpc, workingDir);
-            var result = objectMapper.createObjectNode();
-            result.put("processedPromotedCandidates", summary.processedPromotedCandidates());
-            result.put("createdDrafts", summary.createdDrafts());
-            result.put("updatedDrafts", summary.updatedDrafts());
-            var paths = objectMapper.createArrayNode();
-            summary.draftPaths().forEach(path -> paths.add(path.replace('\\', '/')));
-            result.set("draftPaths", paths);
-            result.put("auditFile", workingDir.relativize(summary.auditFile()).toString().replace('\\', '/'));
-            if (validationGateForRpc != null) {
-                var validation = validationGateForRpc.validateAll(workingDir, "draft-generated");
-                result.set("validation", toValidationJson(validation, workingDir));
-                if (autoReleaseForRpc != null && candidateStoreForRpc != null) {
-                    var release = autoReleaseForRpc.evaluateAll(workingDir, candidateStoreForRpc, "draft-generated");
-                    result.set("release", toReleaseJson(release));
+            draftPipelineLock.lock();
+            try {
+                var generator = new SkillDraftGenerator();
+                var summary = generator.generateFromPromoted(candidateStoreForRpc, workingDir);
+                var result = objectMapper.createObjectNode();
+                result.put("processedPromotedCandidates", summary.processedPromotedCandidates());
+                result.put("createdDrafts", summary.createdDrafts());
+                result.put("updatedDrafts", summary.updatedDrafts());
+                var paths = objectMapper.createArrayNode();
+                summary.draftPaths().forEach(path -> paths.add(path.replace('\\', '/')));
+                result.set("draftPaths", paths);
+                result.put("auditFile", workingDir.relativize(summary.auditFile()).toString().replace('\\', '/'));
+                if (validationGateForRpc != null) {
+                    var validation = validationGateForRpc.validateAll(workingDir, "draft-generated");
+                    result.set("validation", toValidationJson(validation, workingDir));
+                    if (autoReleaseForRpc != null && candidateStoreForRpc != null) {
+                        var release = autoReleaseForRpc.evaluateAll(workingDir, candidateStoreForRpc, "draft-generated");
+                        result.set("release", toReleaseJson(release));
+                    }
                 }
+                return result;
+            } finally {
+                draftPipelineLock.unlock();
             }
-            return result;
         });
         router.register("skill.draft.validate", params -> {
             if (validationGateForRpc == null) {
                 throw new IllegalStateException("Skill draft validation is disabled");
             }
-            String trigger = params != null && params.has("trigger")
-                    ? params.get("trigger").asText() : "manual";
-            if (params != null && params.has("draftPath")) {
-                Path draftPath = workingDir.resolve(params.get("draftPath").asText()).normalize();
-                var summary = validationGateForRpc.validateSingleDraft(workingDir, draftPath, trigger);
+            draftPipelineLock.lock();
+            try {
+                String trigger = params != null && params.has("trigger")
+                        ? params.get("trigger").asText() : "manual";
+                if (params != null && params.has("draftPath")) {
+                    Path draftPath = workingDir.resolve(params.get("draftPath").asText()).normalize();
+                    var summary = validationGateForRpc.validateSingleDraft(workingDir, draftPath, trigger);
+                    return toValidationJson(summary, workingDir);
+                }
+                var summary = validationGateForRpc.validateAll(workingDir, trigger);
                 return toValidationJson(summary, workingDir);
+            } finally {
+                draftPipelineLock.unlock();
             }
-            var summary = validationGateForRpc.validateAll(workingDir, trigger);
-            return toValidationJson(summary, workingDir);
         });
         router.register("skill.release.evaluate", params -> {
             if (autoReleaseForRpc == null || candidateStoreForRpc == null) {
                 throw new IllegalStateException("Skill auto release is disabled");
             }
-            String trigger = params != null && params.has("trigger")
-                    ? params.get("trigger").asText() : "manual";
-            var summary = autoReleaseForRpc.evaluateAll(workingDir, candidateStoreForRpc, trigger);
-            return toReleaseJson(summary);
+            draftPipelineLock.lock();
+            try {
+                String trigger = params != null && params.has("trigger")
+                        ? params.get("trigger").asText() : "manual";
+                var summary = autoReleaseForRpc.evaluateAll(workingDir, candidateStoreForRpc, trigger);
+                return toReleaseJson(summary);
+            } finally {
+                draftPipelineLock.unlock();
+            }
         });
         router.register("skill.release.pause", params -> {
             if (autoReleaseForRpc == null) {

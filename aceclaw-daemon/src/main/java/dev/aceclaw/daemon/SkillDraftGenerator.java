@@ -9,6 +9,7 @@ import dev.aceclaw.memory.LearningCandidate;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.time.Clock;
 import java.time.Instant;
@@ -73,7 +74,11 @@ public final class SkillDraftGenerator {
             boolean existed = Files.exists(skillFile);
 
             Files.createDirectories(skillDir);
-            Files.writeString(skillFile, renderSkillMarkdown(resolvedName, candidate));
+            // Atomic write: write to temp file then move, so readers never see partial content
+            Path tempFile = skillDir.resolve("SKILL.md.tmp");
+            Files.writeString(tempFile, renderSkillMarkdown(resolvedName, candidate));
+            Files.move(tempFile, skillFile,
+                    StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
 
             if (existed) {
                 updated++;
