@@ -193,6 +193,82 @@ class CandidatePipelineIntegrationTest {
         assertThat(result).contains("retry");
     }
 
+    @Test
+    void autoPromotionTriggersSkillDraftGeneration() throws IOException {
+        var t0 = Instant.parse("2026-02-23T00:00:00Z");
+
+        // Track whether the trigger was called and capture the project path
+        var triggerCalled = new java.util.concurrent.atomic.AtomicBoolean(false);
+        var draftsCreated = new java.util.concurrent.atomic.AtomicInteger(0);
+
+        // Wire engine with candidate store + draft generation trigger
+        var errorDetector = new ErrorDetector(memoryStore);
+        var patternDetector = new PatternDetector(memoryStore);
+        var engineWithTrigger = new SelfImprovementEngine(
+                errorDetector, patternDetector, new FailureSignalDetector(),
+                memoryStore, null, candidateStore, true,
+                projectPath -> {
+                    triggerCalled.set(true);
+                    // Simulate what the daemon lambda does: generate drafts from promoted candidates
+                    var generator = new SkillDraftGenerator();
+                    try {
+                        var summary = generator.generateFromPromoted(candidateStore, projectPath);
+                        draftsCreated.set(summary.createdDrafts());
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+                });
+
+        // Feed enough observations to trigger promotion (evidence >= 2, score >= 0.5)
+        candidateStore.upsert(obs("timeout recovery via retry", "bash", 0.8, t0));
+        candidateStore.upsert(obs("bash timeout recovery via retry approach", "bash", 0.8,
+                t0.plusSeconds(60)));
+
+        // Persist insights to trigger evaluateAll() + draft generation
+        var insights = List.<Insight>of(
+                Insight.ErrorInsight.of("bash", "Command timed out", "Retry with shorter timeout", 0.9)
+        );
+        engineWithTrigger.persist(insights, "test-session", tempDir);
+
+        // Verify: trigger was called because new promotions occurred
+        assertThat(triggerCalled.get()).isTrue();
+
+        // Verify: skill drafts were generated for the promoted candidate
+        assertThat(draftsCreated.get()).isGreaterThanOrEqualTo(1);
+
+        // Verify: draft file exists on disk
+        Path draftsDir = tempDir.resolve(".aceclaw").resolve("skills-drafts");
+        assertThat(draftsDir).exists();
+        var draftFiles = Files.walk(draftsDir)
+                .filter(p -> p.getFileName().toString().equals("SKILL.md"))
+                .toList();
+        assertThat(draftFiles).isNotEmpty();
+    }
+
+    @Test
+    void noPromotionDoesNotTriggerDraftGeneration() {
+        // Wire engine with trigger that tracks calls
+        var triggerCalled = new java.util.concurrent.atomic.AtomicBoolean(false);
+        var errorDetector = new ErrorDetector(memoryStore);
+        var patternDetector = new PatternDetector(memoryStore);
+        var engineWithTrigger = new SelfImprovementEngine(
+                errorDetector, patternDetector, new FailureSignalDetector(),
+                memoryStore, null, candidateStore, true,
+                projectPath -> triggerCalled.set(true));
+
+        // Only one observation — not enough for promotion (needs evidence >= 2)
+        var t0 = Instant.parse("2026-02-23T00:00:00Z");
+        candidateStore.upsert(obs("single observation", "bash", 0.8, t0));
+
+        var insights = List.<Insight>of(
+                Insight.ErrorInsight.of("bash", "Command failed", "Retry", 0.9)
+        );
+        engineWithTrigger.persist(insights, "test-session", tempDir);
+
+        // No promotion happened, so trigger should NOT be called
+        assertThat(triggerCalled.get()).isFalse();
+    }
+
     private static CandidateStore.CandidateObservation obs(String content, String toolTag,
                                                             double score, Instant at) {
         return new CandidateStore.CandidateObservation(

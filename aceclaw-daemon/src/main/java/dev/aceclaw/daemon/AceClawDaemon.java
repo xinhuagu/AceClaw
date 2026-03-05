@@ -485,14 +485,26 @@ public final class AceClawDaemon {
             var selfImprovementEngine = new SelfImprovementEngine(
                     errorDetector, patternDetector, failureSignalDetector, memoryStore, strategyRefiner, cs,
                     config.candidatePromotionEnabled(),
-                    validationGateForAuto != null ? projectPath -> {
+                    (validationGateForAuto != null || candidateStoreForAuto != null) ? projectPath -> {
                         try {
-                            validationGateForAuto.validateAll(projectPath, "evidence-update");
-                            if (autoReleaseForAuto != null && candidateStoreForAuto != null) {
-                                autoReleaseForAuto.evaluateAll(projectPath, candidateStoreForAuto, "evidence-update");
+                            // Auto-generate skill drafts from newly promoted candidates
+                            if (candidateStoreForAuto != null) {
+                                var generator = new SkillDraftGenerator();
+                                var summary = generator.generateFromPromoted(candidateStoreForAuto, projectPath);
+                                if (summary.createdDrafts() > 0 || summary.updatedDrafts() > 0) {
+                                    log.info("Auto skill draft generation: {} created, {} updated",
+                                            summary.createdDrafts(), summary.updatedDrafts());
+                                }
+                            }
+                            // Validate drafts and evaluate for auto-release
+                            if (validationGateForAuto != null) {
+                                validationGateForAuto.validateAll(projectPath, "auto-promotion");
+                                if (autoReleaseForAuto != null && candidateStoreForAuto != null) {
+                                    autoReleaseForAuto.evaluateAll(projectPath, candidateStoreForAuto, "auto-promotion");
+                                }
                             }
                         } catch (Exception e) {
-                            log.warn("Draft auto-revalidation failed: {}", e.getMessage());
+                            log.warn("Auto draft generation/validation failed: {}", e.getMessage());
                         }
                     } : null);
             agentHandler.setSelfImprovementEngine(selfImprovementEngine);
