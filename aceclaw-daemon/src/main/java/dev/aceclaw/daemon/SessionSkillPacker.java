@@ -44,22 +44,74 @@ public final class SessionSkillPacker {
     private static final String AUDIT_DIR = ".aceclaw/metrics/continuous-learning";
     private static final String AUDIT_FILE = "session-skill-pack-audit.jsonl";
 
+    /** Estimated chars per token (same as ContextEstimator). */
+    private static final double CHARS_PER_TOKEN = 4.0;
+
+    /** Tokens reserved for the extraction output + thinking budget. */
+    private static final int OUTPUT_TOKEN_RESERVE = 8_192 + 4_096;
+
+    /** Tokens reserved for the system prompt + overhead. */
+    private static final int SYSTEM_OVERHEAD_TOKENS = 500;
+
+    /**
+     * Default maximum conversation chars when context window is unknown.
+     * ~100K tokens worth of conversation — safe for 128K+ context models.
+     */
+    static final int DEFAULT_MAX_CONVERSATION_CHARS = 400_000;
+
     private final SessionHistoryStore historyStore;
     private final SessionManager sessionManager;
     private final LlmClient llmClient;
     private final String model;
     private final ObjectMapper objectMapper;
+    private final int maxConversationChars;
 
+    /**
+     * Creates a packer with an explicit conversation character budget.
+     *
+     * @param maxConversationChars maximum chars allowed for the user prompt
+     *                             (conversation text + extraction instructions)
+     */
     public SessionSkillPacker(SessionHistoryStore historyStore,
                               SessionManager sessionManager,
                               LlmClient llmClient,
                               String model,
-                              ObjectMapper objectMapper) {
+                              ObjectMapper objectMapper,
+                              int maxConversationChars) {
         this.historyStore = Objects.requireNonNull(historyStore, "historyStore");
         this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager");
         this.llmClient = Objects.requireNonNull(llmClient, "llmClient");
         this.model = Objects.requireNonNull(model, "model");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
+        this.maxConversationChars = maxConversationChars > 0 ? maxConversationChars : DEFAULT_MAX_CONVERSATION_CHARS;
+    }
+
+    /**
+     * Creates a packer using the default conversation budget ({@value #DEFAULT_MAX_CONVERSATION_CHARS} chars).
+     */
+    public SessionSkillPacker(SessionHistoryStore historyStore,
+                              SessionManager sessionManager,
+                              LlmClient llmClient,
+                              String model,
+                              ObjectMapper objectMapper) {
+        this(historyStore, sessionManager, llmClient, model, objectMapper, DEFAULT_MAX_CONVERSATION_CHARS);
+    }
+
+    /**
+     * Derives the maximum conversation character budget from the context window.
+     *
+     * <p>Formula: (contextWindowTokens - outputReserve - systemOverhead) * charsPerToken.
+     * Falls back to {@link #DEFAULT_MAX_CONVERSATION_CHARS} if computation yields
+     * an unreasonably small value.
+     */
+    static int deriveMaxConversationChars(int contextWindowTokens) {
+        if (contextWindowTokens <= 0) {
+            return DEFAULT_MAX_CONVERSATION_CHARS;
+        }
+        int availableTokens = contextWindowTokens - OUTPUT_TOKEN_RESERVE - SYSTEM_OVERHEAD_TOKENS;
+        int derived = (int) (availableTokens * CHARS_PER_TOKEN);
+        // Floor at 20K chars (enough for a small conversation)
+        return Math.max(20_000, derived);
     }
 
     /**
@@ -95,8 +147,8 @@ public final class SessionSkillPacker {
                     "No messages in specified turn range [" + turnStart + ", " + turnEnd + ")");
         }
 
-        // 3. Build extraction prompt and call LLM
-        String userPrompt = SessionSkillPackPrompt.buildExtractionPrompt(messages);
+        // 3. Build extraction prompt (with token budget) and call LLM
+        String userPrompt = SessionSkillPackPrompt.buildExtractionPrompt(messages, maxConversationChars);
         var request = LlmRequest.builder()
                 .model(model)
                 .addMessage(Message.user(userPrompt))

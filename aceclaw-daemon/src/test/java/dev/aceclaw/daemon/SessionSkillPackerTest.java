@@ -32,6 +32,9 @@ class SessionSkillPackerTest {
     private ObjectMapper objectMapper;
     private SessionSkillPacker packer;
 
+    /** Small budget for truncation tests — 5K chars forces truncation on moderate conversations. */
+    private static final int SMALL_BUDGET = 5_000;
+
     @BeforeEach
     void setUp() throws Exception {
         workDir = tempDir.resolve("workspace");
@@ -313,6 +316,132 @@ class SessionSkillPackerTest {
 
         var result = packer.pack(session.id(), null, null, null, workDir);
         assertThat(result.skillName()).isEqualTo("fenced-skill");
+    }
+
+    @Test
+    void longSession_truncatesToFitBudget() throws Exception {
+        // Use a packer with a small budget to force truncation
+        var smallPacker = new SessionSkillPacker(
+                historyStore, sessionManager, mockLlm, "mock-model", objectMapper, SMALL_BUDGET);
+
+        var session = sessionManager.createSession(workDir);
+        // Add initial user goal (should be preserved in head)
+        session.addMessage(new AgentSession.ConversationMessage.User("Build a full-stack app with React and Express"));
+
+        // Add many large assistant messages simulating a long-running session
+        // Each message is ~2K chars, 50 messages = ~100K chars total — well over 5K budget
+        for (int i = 0; i < 50; i++) {
+            String bigContent = "Step " + i + ": " + "x".repeat(2000);
+            session.addMessage(new AgentSession.ConversationMessage.Assistant(bigContent));
+        }
+
+        // Final success message (should be preserved in tail)
+        session.addMessage(new AgentSession.ConversationMessage.User("All done, app is working!"));
+
+        String llmResponse = """
+                {
+                  "name": "long-session-skill",
+                  "description": "Full-stack app build from a long session",
+                  "preconditions": [],
+                  "steps": [{"description": "Build the app", "tool": "bash"}],
+                  "tools": ["bash"],
+                  "success_checks": ["App works"]
+                }
+                """;
+        mockLlm.enqueueSendMessageResponse(sendResponse(llmResponse));
+
+        var result = smallPacker.pack(session.id(), null, null, null, workDir);
+
+        // Should succeed, not blow up
+        assertThat(result.skillName()).isEqualTo("long-session-skill");
+        assertThat(result.stepCount()).isEqualTo(1);
+
+        // Verify the LLM received a truncated prompt, not the full 100K+
+        var captured = mockLlm.capturedSendRequests();
+        assertThat(captured).hasSize(1);
+        var userMsg = (dev.aceclaw.core.llm.Message.UserMessage) captured.get(0).messages().get(0);
+        var userContent = userMsg.content().get(0);
+        assertThat(userContent).isInstanceOf(dev.aceclaw.core.llm.ContentBlock.Text.class);
+        String promptText = ((dev.aceclaw.core.llm.ContentBlock.Text) userContent).text();
+        assertThat(promptText.length()).isLessThan(SMALL_BUDGET + 500); // some overhead tolerance
+        assertThat(promptText).contains("[truncated:");
+        // Head should contain the initial goal
+        assertThat(promptText).contains("Build a full-stack app");
+        // Tail should contain the final message
+        assertThat(promptText).contains("All done, app is working!");
+    }
+
+    @Test
+    void longSession_perMessageTruncation_cutsLargeToolResults() throws Exception {
+        // Use a generous total budget so only per-message truncation fires
+        var session = sessionManager.createSession(workDir);
+        session.addMessage(new AgentSession.ConversationMessage.User("Read the giant log file"));
+
+        // Single message with a 50K char tool result (way over 8K per-message limit)
+        String giantResult = "Line 1: error\n" + "x".repeat(50_000) + "\nLine last: success\n";
+        session.addMessage(new AgentSession.ConversationMessage.Assistant(giantResult));
+
+        session.addMessage(new AgentSession.ConversationMessage.User("Fix the error"));
+
+        String llmResponse = """
+                {
+                  "name": "fix-giant-log",
+                  "description": "Fix error from giant log",
+                  "preconditions": [],
+                  "steps": [{"description": "Read log", "tool": "read_file"}, {"description": "Fix error", "tool": "edit_file"}],
+                  "tools": ["read_file", "edit_file"],
+                  "success_checks": ["Error fixed"]
+                }
+                """;
+        mockLlm.enqueueSendMessageResponse(sendResponse(llmResponse));
+
+        var result = packer.pack(session.id(), null, null, null, workDir);
+        assertThat(result.skillName()).isEqualTo("fix-giant-log");
+
+        // Verify per-message truncation happened
+        var captured = mockLlm.capturedSendRequests();
+        var userMsg2 = (dev.aceclaw.core.llm.Message.UserMessage) captured.get(0).messages().get(0);
+        String promptText = ((dev.aceclaw.core.llm.ContentBlock.Text) userMsg2.content().get(0)).text();
+        // The prompt should NOT contain the full 50K message
+        assertThat(promptText.length()).isLessThan(50_000);
+        // But should contain the truncation marker
+        assertThat(promptText).contains("[truncated:");
+    }
+
+    @Test
+    void headTailTruncate_preservesBothEnds() {
+        String input = "AAAA" + "B".repeat(10_000) + "CCCC";
+        String truncated = SessionSkillPackPrompt.headTailTruncate(input, 1000);
+
+        assertThat(truncated.length()).isLessThanOrEqualTo(1200); // 1000 + marker overhead
+        assertThat(truncated).startsWith("AAAA");
+        assertThat(truncated).endsWith("CCCC");
+        assertThat(truncated).contains("[truncated:");
+    }
+
+    @Test
+    void headTailTruncate_shortTextUnchanged() {
+        assertThat(SessionSkillPackPrompt.headTailTruncate("short", 1000)).isEqualTo("short");
+        assertThat(SessionSkillPackPrompt.headTailTruncate(null, 1000)).isNull();
+    }
+
+    @Test
+    void deriveMaxConversationChars_fromContextWindow() {
+        // 200K context: (200000 - 12288 - 500) * 4 = 748_848
+        int derived200k = SessionSkillPacker.deriveMaxConversationChars(200_000);
+        assertThat(derived200k).isGreaterThan(700_000);
+
+        // 32K context: (32000 - 12288 - 500) * 4 = 76_848
+        int derived32k = SessionSkillPacker.deriveMaxConversationChars(32_000);
+        assertThat(derived32k).isGreaterThan(50_000).isLessThan(100_000);
+
+        // Tiny context (would go negative): floors at 20K
+        int derivedTiny = SessionSkillPacker.deriveMaxConversationChars(10_000);
+        assertThat(derivedTiny).isEqualTo(20_000);
+
+        // Unknown (0): default
+        assertThat(SessionSkillPacker.deriveMaxConversationChars(0))
+                .isEqualTo(SessionSkillPacker.DEFAULT_MAX_CONVERSATION_CHARS);
     }
 
     // -- helpers --

@@ -861,8 +861,9 @@ public final class AceClawDaemon {
         });
 
         // Session skill packer (extract successful workflow from session into skill draft)
+        int packBudget = SessionSkillPacker.deriveMaxConversationChars(contextWindow);
         var skillPacker = new SessionSkillPacker(
-                historyStore, sessionManager, llmClient, model, objectMapper);
+                historyStore, sessionManager, llmClient, model, objectMapper, packBudget);
         router.register("skill.pack", params -> {
             var sessionId = params != null && params.has("sessionId")
                     ? params.get("sessionId").asText() : null;

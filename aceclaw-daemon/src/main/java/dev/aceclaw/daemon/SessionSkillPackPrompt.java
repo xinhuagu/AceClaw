@@ -24,6 +24,19 @@ final class SessionSkillPackPrompt {
 
     private static final int MAX_STEPS = 20;
 
+    /**
+     * Maximum characters per individual message before per-message truncation.
+     * Large tool results or assistant outputs get trimmed before we even measure
+     * the conversation total. 8K chars per message is generous for extraction.
+     */
+    static final int MAX_PER_MESSAGE_CHARS = 8_000;
+
+    /**
+     * Overhead chars reserved for the instruction wrapper (preamble + JSON schema).
+     * The conversation body budget = maxConversationChars - INSTRUCTION_OVERHEAD.
+     */
+    private static final int INSTRUCTION_OVERHEAD = 1_500;
+
     private static final String SYSTEM_PROMPT = """
             You are a workflow extraction assistant. Your job is to analyze a conversation \
             between a user and an AI coding agent, identify the successful execution path, \
@@ -44,16 +57,26 @@ final class SessionSkillPackPrompt {
     /**
      * Builds the user prompt containing the conversation and extraction instructions.
      *
-     * @param messages the conversation messages to analyze
+     * <p>Applies a two-level truncation strategy to fit within the LLM context window:
+     * <ol>
+     *   <li><b>Per-message</b>: each message body is capped at {@link #MAX_PER_MESSAGE_CHARS}
+     *       (head/tail split) to prune large tool outputs.</li>
+     *   <li><b>Total conversation</b>: the assembled conversation block is capped at
+     *       {@code maxConversationChars - INSTRUCTION_OVERHEAD} using 40/60 head/tail split
+     *       so the LLM sees both the initial goal and the final outcome.</li>
+     * </ol>
+     *
+     * @param messages            the conversation messages to analyze
+     * @param maxConversationChars total character budget for the user prompt
+     *                             (conversation + instructions combined)
      * @return the formatted user prompt
      */
-    static String buildExtractionPrompt(List<AgentSession.ConversationMessage> messages) {
+    static String buildExtractionPrompt(List<AgentSession.ConversationMessage> messages,
+                                         int maxConversationChars) {
         Objects.requireNonNull(messages, "messages");
 
-        var sb = new StringBuilder();
-        sb.append("Analyze the following conversation and extract the successful workflow.\n\n");
-        sb.append("=== CONVERSATION START ===\n");
-
+        // Phase 1: per-message truncation — trim large tool results
+        var conversationBody = new StringBuilder();
         for (var msg : messages) {
             String role = switch (msg) {
                 case AgentSession.ConversationMessage.User _ -> "USER";
@@ -65,9 +88,29 @@ final class SessionSkillPackPrompt {
                 case AgentSession.ConversationMessage.Assistant a -> a.content();
                 case AgentSession.ConversationMessage.System s -> s.content();
             };
-            sb.append("[").append(role).append("]: ").append(content != null ? content : "").append("\n\n");
+            String safe = content != null ? content : "";
+            if (safe.length() > MAX_PER_MESSAGE_CHARS) {
+                safe = headTailTruncate(safe, MAX_PER_MESSAGE_CHARS);
+            }
+            conversationBody.append("[").append(role).append("]: ").append(safe).append("\n\n");
         }
 
+        // Phase 2: total conversation truncation
+        int bodyBudget = Math.max(1_000, maxConversationChars - INSTRUCTION_OVERHEAD);
+        String conversation = conversationBody.toString();
+        if (conversation.length() > bodyBudget) {
+            conversation = headTailTruncate(conversation, bodyBudget);
+        }
+
+        // Assemble final prompt
+        var sb = new StringBuilder();
+        sb.append("Analyze the following conversation and extract the successful workflow.\n");
+        if (conversationBody.length() > bodyBudget) {
+            sb.append("NOTE: The conversation was truncated to fit the context window. ")
+              .append("Focus on the beginning (user's goal) and end (final outcome).\n");
+        }
+        sb.append("\n=== CONVERSATION START ===\n");
+        sb.append(conversation);
         sb.append("=== CONVERSATION END ===\n\n");
         sb.append("""
                 Output a JSON object with exactly this structure:
@@ -92,6 +135,22 @@ final class SessionSkillPackPrompt {
                 """);
 
         return sb.toString();
+    }
+
+    /**
+     * Truncates text using a 40% head / 60% tail split, preserving the beginning
+     * (user's goal) and the end (final outcome).
+     */
+    static String headTailTruncate(String text, int maxChars) {
+        if (text == null || text.length() <= maxChars) {
+            return text;
+        }
+        int headChars = (int) (maxChars * 0.4);
+        int tailChars = maxChars - headChars;
+        return text.substring(0, headChars)
+                + "\n\n... [truncated: " + text.length() + " chars total, showing first "
+                + headChars + " and last " + tailChars + "] ...\n\n"
+                + text.substring(text.length() - tailChars);
     }
 
     /**
