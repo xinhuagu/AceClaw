@@ -83,7 +83,7 @@ public final class ConnectionBridge implements UdsListener.ConnectionHandler {
 
             if (response != null) {
                 var json = objectMapper.writeValueAsString(response) + "\n";
-                channel.write(ByteBuffer.wrap(json.getBytes(StandardCharsets.UTF_8)));
+                writeAll(channel, json);
             }
         } catch (JsonProcessingException e) {
             log.warn("Invalid JSON-RPC request: {}", e.getMessage());
@@ -97,9 +97,24 @@ public final class ConnectionBridge implements UdsListener.ConnectionHandler {
         try {
             var error = JsonRpc.ErrorResponse.of(id, code, message);
             var json = objectMapper.writeValueAsString(error) + "\n";
-            channel.write(ByteBuffer.wrap(json.getBytes(StandardCharsets.UTF_8)));
+            writeAll(channel, json);
         } catch (IOException e) {
             log.error("Failed to send error response: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Writes all bytes of a JSON line to the channel, handling short writes.
+     *
+     * <p>On a non-blocking channel (e.g. when the cancel monitor sets the channel
+     * to non-blocking mode), {@code channel.write()} may return fewer bytes than
+     * the buffer contains. This method loops until the entire message is written,
+     * preventing JSON corruption on the wire.
+     */
+    private static void writeAll(SocketChannel channel, String json) throws IOException {
+        var buf = ByteBuffer.wrap(json.getBytes(StandardCharsets.UTF_8));
+        while (buf.hasRemaining()) {
+            channel.write(buf);
         }
     }
 
@@ -141,7 +156,7 @@ public final class ConnectionBridge implements UdsListener.ConnectionHandler {
             var notification = JsonRpc.Notification.of(method, params);
             var json = objectMapper.writeValueAsString(notification) + "\n";
             synchronized (channel) {
-                channel.write(ByteBuffer.wrap(json.getBytes(StandardCharsets.UTF_8)));
+                writeAll(channel, json);
             }
         }
 
