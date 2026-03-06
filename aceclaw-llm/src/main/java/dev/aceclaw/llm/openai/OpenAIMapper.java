@@ -87,7 +87,15 @@ final class OpenAIMapper {
             root.set("stream_options", streamOptions);
         }
 
-        // Extended thinking is silently ignored (not supported by OpenAI)
+        // Extended thinking for models that support it (e.g. Claude on Copilot)
+        if (request.thinkingBudget() > 0) {
+            ObjectNode thinking = objectMapper.createObjectNode();
+            thinking.put("type", "enabled");
+            thinking.put("budget_tokens", request.thinkingBudget());
+            root.set("thinking", thinking);
+            // When thinking is enabled, temperature must be 1.0 and cannot be explicitly set
+            root.remove("temperature");
+        }
 
         return root.toString();
     }

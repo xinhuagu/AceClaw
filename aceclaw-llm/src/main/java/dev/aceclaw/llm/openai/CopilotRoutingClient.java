@@ -85,10 +85,7 @@ public final class CopilotRoutingClient implements LlmClient {
 
     @Override
     public ProviderCapabilities capabilities() {
-        // Return capabilities for the default model.
-        // Both OPENAI and CODEX disable extended thinking and prompt caching,
-        // so the difference is minimal (only supportsImageInput).
-        return isCodexModel(defaultModel) ? ProviderCapabilities.CODEX : ProviderCapabilities.OPENAI;
+        return ProviderCapabilities.forCopilotModel(defaultModel);
     }
 
     private LlmClient selectClient(String model) {

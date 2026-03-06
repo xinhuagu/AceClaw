@@ -129,9 +129,10 @@ public final class LlmClientFactory {
         // The routing client dispatches to the correct endpoint based on model name:
         // - Codex models (e.g. gpt-5.2-codex) → Responses API (/responses)
         // - All other models → Chat Completions API (/chat/completions)
+        var chatCaps = ProviderCapabilities.forCopilotModel(resolvedModel);
         var chatClient = new OpenAICompatClient(
                 tokenProvider, resolvedBaseUrl, "/chat/completions",
-                "copilot", resolvedModel, ProviderCapabilities.OPENAI,
+                "copilot", resolvedModel, chatCaps,
                 COPILOT_API_HEADERS);
         var responsesClient = new OpenAIResponsesClient(
                 tokenProvider, resolvedBaseUrl, "/responses",

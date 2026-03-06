@@ -124,6 +124,30 @@ class OpenAIMapperTest {
         assertThat(tool.get("function").get("description").asText()).isEqualTo("does stuff");
     }
 
+    @Test
+    void thinkingBudget_emitsThinkingBlock() throws Exception {
+        var request = baseRequest()
+                .thinkingBudget(10240)
+                .build();
+        JsonNode root = objectMapper.readTree(mapper.toRequestJson(request, false));
+
+        assertThat(root.has("thinking")).isTrue();
+        assertThat(root.get("thinking").get("type").asText()).isEqualTo("enabled");
+        assertThat(root.get("thinking").get("budget_tokens").asInt()).isEqualTo(10240);
+        // Temperature must be removed when thinking is enabled
+        assertThat(root.has("temperature")).isFalse();
+    }
+
+    @Test
+    void zeroThinkingBudget_omitsThinkingBlock() throws Exception {
+        var request = baseRequest()
+                .thinkingBudget(0)
+                .build();
+        JsonNode root = objectMapper.readTree(mapper.toRequestJson(request, false));
+
+        assertThat(root.has("thinking")).isFalse();
+    }
+
     // --- Response parsing ---
 
     @Test
