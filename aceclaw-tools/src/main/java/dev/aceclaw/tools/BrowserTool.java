@@ -30,6 +30,7 @@ public final class BrowserTool implements Tool, AutoCloseable {
 
     private static final int MAX_OUTPUT_CHARS = 30_000;
     private static final int DEFAULT_TIMEOUT_MS = 30_000;
+    private static final int LAUNCH_TIMEOUT_MS = 15_000;
 
     private final Path workingDir;
 
@@ -106,14 +107,28 @@ public final class BrowserTool implements Tool, AutoCloseable {
             closeQuietly();
 
             playwright = Playwright.create();
-            browser = playwright.chromium().launch(new BrowserType.LaunchOptions()
-                    .setChannel("chrome")
-                    .setHeadless(true));
+
+            // Try system Chrome first, fall back to bundled Chromium if it fails or hangs.
+            // System Chrome can conflict with existing instances (e.g. port 9222 contention).
+            String channel = "chrome";
+            try {
+                browser = playwright.chromium().launch(new BrowserType.LaunchOptions()
+                        .setChannel(channel)
+                        .setHeadless(true)
+                        .setTimeout(LAUNCH_TIMEOUT_MS));
+            } catch (Exception systemChromeErr) {
+                log.warn("System Chrome launch failed ({}), falling back to bundled Chromium",
+                        systemChromeErr.getMessage());
+                channel = "bundled";
+                browser = playwright.chromium().launch(new BrowserType.LaunchOptions()
+                        .setHeadless(true)
+                        .setTimeout(LAUNCH_TIMEOUT_MS));
+            }
             page = browser.newPage();
             page.setDefaultTimeout(DEFAULT_TIMEOUT_MS);
 
-            log.info("Browser launched (headless Chrome)");
-            return new ToolResult("Browser launched successfully (headless Chrome)", false);
+            log.info("Browser launched (headless {})", channel);
+            return new ToolResult("Browser launched successfully (headless " + channel + ")", false);
 
         } catch (Exception e) {
             log.error("Failed to launch browser: {}", e.getMessage());

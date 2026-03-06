@@ -237,12 +237,23 @@ public final class ValidationGateEngine {
         }
         Path auditPath = projectRoot.resolve(AUDIT_DIR).resolve(AUDIT_FILE);
         Files.createDirectories(auditPath.getParent());
+
+        // Load last-known verdict per draft path to avoid duplicate entries
+        var lastVerdicts = loadLastVerdicts(auditPath);
+
         for (var d : decisions) {
+            String previousVerdict = lastVerdicts.get(d.draftPath());
+            String currentVerdict = d.verdict().name().toLowerCase();
+            if (currentVerdict.equals(previousVerdict)) {
+                // Verdict unchanged — skip to avoid unbounded audit growth
+                continue;
+            }
+
             var node = mapper.createObjectNode();
             node.put("timestamp", d.evaluatedAt().toString());
             node.put("trigger", d.trigger());
             node.put("draftPath", d.draftPath());
-            node.put("verdict", d.verdict().name().toLowerCase());
+            node.put("verdict", currentVerdict);
             var reasonArray = mapper.createArrayNode();
             for (var r : d.reasons()) {
                 var rn = mapper.createObjectNode();
@@ -260,6 +271,28 @@ public final class ValidationGateEngine {
                     StandardOpenOption.APPEND
             );
         }
+    }
+
+    /**
+     * Reads the existing audit file and returns the last verdict for each draft path.
+     */
+    private Map<String, String> loadLastVerdicts(Path auditPath) {
+        var lastVerdicts = new LinkedHashMap<String, String>();
+        if (!Files.isRegularFile(auditPath)) {
+            return lastVerdicts;
+        }
+        try {
+            for (var line : Files.readAllLines(auditPath)) {
+                if (line.isBlank()) continue;
+                JsonNode node = mapper.readTree(line);
+                if (node != null && node.has("draftPath") && node.has("verdict")) {
+                    lastVerdicts.put(node.get("draftPath").asText(), node.get("verdict").asText());
+                }
+            }
+        } catch (Exception e) {
+            // If audit file is corrupted, treat as empty — all entries will be written
+        }
+        return lastVerdicts;
     }
 
     private static boolean isUnderDraftsDir(Path projectRoot, Path draftFile) {

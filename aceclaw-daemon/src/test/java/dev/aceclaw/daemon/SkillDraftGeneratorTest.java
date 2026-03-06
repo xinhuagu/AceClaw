@@ -38,7 +38,7 @@ class SkillDraftGeneratorTest {
 
         assertThat(summary.processedPromotedCandidates()).isEqualTo(1);
         assertThat(summary.createdDrafts()).isEqualTo(1);
-        assertThat(summary.updatedDrafts()).isZero();
+        assertThat(summary.skippedDrafts()).isZero();
         assertThat(summary.draftPaths()).hasSize(1);
 
         var skillFile = tempDir.resolve("project-a").resolve(summary.draftPaths().getFirst());
@@ -83,7 +83,7 @@ class SkillDraftGeneratorTest {
     }
 
     @Test
-    void regeneratingExistingDraftIncrementsUpdatedCount() throws Exception {
+    void regeneratingExistingDraftSkipsInsteadOfRewriting() throws Exception {
         var project = tempDir.resolve("project-regen");
         var store = newStore(project);
         var t0 = Instant.parse("2026-02-24T00:00:00Z");
@@ -98,10 +98,10 @@ class SkillDraftGeneratorTest {
         var second = generator.generateFromPromoted(store, project);
 
         assertThat(first.createdDrafts()).isEqualTo(2);
-        assertThat(first.updatedDrafts()).isZero();
+        assertThat(first.skippedDrafts()).isZero();
         assertThat(second.createdDrafts()).isZero();
-        assertThat(second.updatedDrafts()).isEqualTo(2);
-        assertThat(second.draftPaths()).containsExactlyElementsOf(first.draftPaths());
+        assertThat(second.skippedDrafts()).isEqualTo(2);
+        assertThat(second.draftPaths()).isEmpty();
     }
 
     @Test

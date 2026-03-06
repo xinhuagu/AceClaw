@@ -9,6 +9,7 @@ import dev.aceclaw.memory.LearningCandidate;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.time.Clock;
 import java.time.Instant;
@@ -62,7 +63,7 @@ public final class SkillDraftGenerator {
                 .toList();
 
         int created = 0;
-        int updated = 0;
+        int skipped = 0;
         var draftPaths = new ArrayList<String>();
 
         for (var candidate : promoted) {
@@ -70,23 +71,28 @@ public final class SkillDraftGenerator {
             String resolvedName = resolveSkillName(draftsRoot, baseName, candidate.id());
             Path skillDir = draftsRoot.resolve(resolvedName);
             Path skillFile = skillDir.resolve("SKILL.md");
-            boolean existed = Files.exists(skillFile);
+
+            if (Files.exists(skillFile)) {
+                // Draft already exists for this candidate — skip rewrite
+                skipped++;
+                continue;
+            }
 
             Files.createDirectories(skillDir);
-            Files.writeString(skillFile, renderSkillMarkdown(resolvedName, candidate));
+            // Atomic write: write to temp file then move, so readers never see partial content
+            Path tempFile = skillDir.resolve("SKILL.md.tmp");
+            Files.writeString(tempFile, renderSkillMarkdown(resolvedName, candidate));
+            Files.move(tempFile, skillFile,
+                    StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
 
-            if (existed) {
-                updated++;
-            } else {
-                created++;
-            }
+            created++;
             Path relativePath = projectRoot.relativize(skillFile);
             String normalizedPath = relativePath.toString().replace('\\', '/');
             draftPaths.add(normalizedPath);
-            appendAudit(auditPath, candidate, resolvedName, relativePath, existed ? "updated" : "created");
+            appendAudit(auditPath, candidate, resolvedName, relativePath, "created");
         }
 
-        return new GenerationSummary(promoted.size(), created, updated, List.copyOf(draftPaths), auditPath);
+        return new GenerationSummary(promoted.size(), created, skipped, List.copyOf(draftPaths), auditPath);
     }
 
     private void appendAudit(Path auditPath,
@@ -229,7 +235,7 @@ public final class SkillDraftGenerator {
     public record GenerationSummary(
             int processedPromotedCandidates,
             int createdDrafts,
-            int updatedDrafts,
+            int skippedDrafts,
             List<String> draftPaths,
             Path auditFile
     ) {
