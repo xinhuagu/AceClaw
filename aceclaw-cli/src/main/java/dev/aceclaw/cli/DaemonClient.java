@@ -186,6 +186,7 @@ public final class DaemonClient implements AutoCloseable {
     public PackSkillResult packSkill(String sessionId, String name,
                                       Integer turnStart, Integer turnEnd)
             throws IOException, DaemonClientException {
+        Objects.requireNonNull(sessionId, "sessionId");
         var params = objectMapper.createObjectNode();
         params.put("sessionId", sessionId);
         if (name != null) {

@@ -145,12 +145,16 @@ final class SessionSkillPackPrompt {
         if (text == null || text.length() <= maxChars) {
             return text;
         }
-        int headChars = (int) (maxChars * 0.4);
-        int tailChars = maxChars - headChars;
-        return text.substring(0, headChars)
-                + "\n\n... [truncated: " + text.length() + " chars total, showing first "
-                + headChars + " and last " + tailChars + "] ...\n\n"
-                + text.substring(text.length() - tailChars);
+        // Reserve space for the marker so the total output is a hard cap at maxChars.
+        // Marker: "\n\n... [truncated: NNNNNN chars total, showing first NNNN and last NNNN] ...\n\n"
+        // Worst case ~100 chars for the marker text with large numbers.
+        int markerReserve = 120;
+        int contentBudget = Math.max(100, maxChars - markerReserve);
+        int headChars = (int) (contentBudget * 0.4);
+        int tailChars = contentBudget - headChars;
+        String marker = "\n\n... [truncated: " + text.length() + " chars total, showing first "
+                + headChars + " and last " + tailChars + "] ...\n\n";
+        return text.substring(0, headChars) + marker + text.substring(text.length() - tailChars);
     }
 
     /**

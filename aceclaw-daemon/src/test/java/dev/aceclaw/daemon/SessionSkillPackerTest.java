@@ -402,7 +402,7 @@ class SessionSkillPackerTest {
         var userContent = userMsg.content().get(0);
         assertThat(userContent).isInstanceOf(dev.aceclaw.core.llm.ContentBlock.Text.class);
         String promptText = ((dev.aceclaw.core.llm.ContentBlock.Text) userContent).text();
-        assertThat(promptText.length()).isLessThan(SMALL_BUDGET + 500); // some overhead tolerance
+        assertThat(promptText.length()).isLessThanOrEqualTo(SMALL_BUDGET);
         assertThat(promptText).contains("[truncated:");
         // Head should contain the initial goal
         assertThat(promptText).contains("Build a full-stack app");
@@ -452,7 +452,8 @@ class SessionSkillPackerTest {
         String input = "AAAA" + "B".repeat(10_000) + "CCCC";
         String truncated = SessionSkillPackPrompt.headTailTruncate(input, 1000);
 
-        assertThat(truncated.length()).isLessThanOrEqualTo(1200); // 1000 + marker overhead
+        // Hard cap: output must not exceed maxChars
+        assertThat(truncated.length()).isLessThanOrEqualTo(1000);
         assertThat(truncated).startsWith("AAAA");
         assertThat(truncated).endsWith("CCCC");
         assertThat(truncated).contains("[truncated:");
