@@ -334,7 +334,18 @@ public final class StreamingAgentLoop {
                                 .toList();
                         log.debug("Streaming tool use requested: {} tool(s)", toolUseBlocks.size());
 
-                        var toolResults = executeTools(toolUseBlocks, eventHandler, toolFailureAdvisor);
+                        List<ContentBlock.ToolResult> toolResults;
+                        try {
+                            toolResults = executeTools(toolUseBlocks, eventHandler, toolFailureAdvisor);
+                        } catch (Exception e) {
+                            // Safety net: ALWAYS produce tool_result to keep conversation valid.
+                            // Without matching tool_result, the Anthropic API rejects the next request.
+                            log.error("Tool execution failed unexpectedly, generating fallback results", e);
+                            toolResults = toolUseBlocks.stream()
+                                    .map(tu -> new ContentBlock.ToolResult(
+                                            tu.id(), "Tool execution error: " + e.getMessage(), true))
+                                    .toList();
+                        }
                         var toolResultMessage = Message.toolResults(toolResults);
                         allMessages.add(toolResultMessage);
                         newMessages.add(toolResultMessage);
@@ -571,6 +582,14 @@ public final class StreamingAgentLoop {
                 log.error("Tool execution interrupted");
                 return toolUseBlocks.stream()
                         .map(tu -> new ContentBlock.ToolResult(tu.id(), "Tool execution interrupted", true))
+                        .toList();
+            } catch (Exception e) {
+                // Subtask::get() throws IllegalStateException for FAILED/UNAVAILABLE subtasks.
+                // Must return fallback results to prevent orphan tool_use in conversation history.
+                log.error("Parallel tool execution failed: {}", e.getMessage(), e);
+                return toolUseBlocks.stream()
+                        .map(tu -> new ContentBlock.ToolResult(
+                                tu.id(), "Parallel tool execution error: " + e.getMessage(), true))
                         .toList();
             }
         } finally {
