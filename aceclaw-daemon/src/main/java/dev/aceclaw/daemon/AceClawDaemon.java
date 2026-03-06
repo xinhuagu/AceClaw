@@ -865,8 +865,10 @@ public final class AceClawDaemon {
         var skillPacker = new SessionSkillPacker(
                 historyStore, sessionManager, llmClient, model, objectMapper, packBudget);
         router.register("skill.pack", params -> {
-            var sessionId = params != null && params.has("sessionId")
-                    ? params.get("sessionId").asText() : null;
+            if (params == null || !params.has("sessionId")) {
+                throw new IllegalArgumentException("Missing required parameter: sessionId");
+            }
+            var sessionId = params.get("sessionId").asText();
             if (sessionId == null || sessionId.isBlank()) {
                 throw new IllegalArgumentException("Missing required parameter: sessionId");
             }

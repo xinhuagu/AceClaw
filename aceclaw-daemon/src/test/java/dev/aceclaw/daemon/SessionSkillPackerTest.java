@@ -188,6 +188,45 @@ class SessionSkillPackerTest {
     }
 
     @Test
+    void idempotent_differentLlmNameSameSession_reusesExistingDraft() throws Exception {
+        var session = sessionManager.createSession(workDir);
+        session.addMessage(new AgentSession.ConversationMessage.User("Deploy the app"));
+        session.addMessage(new AgentSession.ConversationMessage.Assistant("Deployed!"));
+
+        // First pack: LLM returns name "deploy-app"
+        String llmResponse1 = """
+                {
+                  "name": "deploy-app",
+                  "description": "Deploys the application",
+                  "preconditions": [],
+                  "steps": [{"description": "Run deploy", "tool": "bash"}],
+                  "tools": ["bash"],
+                  "success_checks": ["App running"]
+                }
+                """;
+        mockLlm.enqueueSendMessageResponse(sendResponse(llmResponse1));
+        var result1 = packer.pack(session.id(), null, null, null, workDir);
+
+        // Second pack: LLM returns a DIFFERENT name "app-deployment"
+        String llmResponse2 = """
+                {
+                  "name": "app-deployment",
+                  "description": "Deploys the application",
+                  "preconditions": [],
+                  "steps": [{"description": "Run deploy", "tool": "bash"}],
+                  "tools": ["bash"],
+                  "success_checks": ["App running"]
+                }
+                """;
+        mockLlm.enqueueSendMessageResponse(sendResponse(llmResponse2));
+        var result2 = packer.pack(session.id(), null, null, null, workDir);
+
+        // Should reuse the first draft's name, not create a second directory
+        assertThat(result1.skillName()).isEqualTo(result2.skillName());
+        assertThat(result1.relativePath()).isEqualTo(result2.relativePath());
+    }
+
+    @Test
     void missingSession_throwsError() {
         assertThatThrownBy(() -> packer.pack("nonexistent-session", null, null, null, workDir))
                 .isInstanceOf(IllegalArgumentException.class)

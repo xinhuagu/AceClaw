@@ -9,6 +9,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -229,6 +232,14 @@ public final class SessionSkillPacker {
     }
 
     private String resolveUniqueName(Path draftsRoot, String baseName, String sessionId) throws IOException {
+        // First, scan all existing drafts for one from the same session (idempotency).
+        // This ensures repacking the same session reuses the existing draft even if the
+        // LLM-derived name differs between runs.
+        String existing = findExistingDraftForSession(draftsRoot, sessionId);
+        if (existing != null) {
+            return existing;
+        }
+
         String current = baseName;
         int suffix = 2;
         int attempts = 0;
@@ -237,18 +248,36 @@ public final class SessionSkillPacker {
             if (!Files.exists(skillFile)) {
                 return current;
             }
-            // If the existing draft is from the same session, reuse the name (idempotent)
-            String content = Files.readString(skillFile);
-            if (content.contains("source-session-id: \"" + sessionId + "\"")
-                    || content.contains("source-session-id: " + sessionId)) {
-                return current;
-            }
             current = truncateName(baseName + "-" + suffix, MAX_SKILL_NAME);
             suffix++;
             attempts++;
         }
         throw new IOException("Failed to resolve unique skill name for '" + baseName
                 + "' after " + MAX_SUFFIX_ATTEMPTS + " attempts");
+    }
+
+    /**
+     * Scans all existing draft directories for a SKILL.md that was packed from the given session.
+     *
+     * @return the directory name if found, or null
+     */
+    private static String findExistingDraftForSession(Path draftsRoot, String sessionId) throws IOException {
+        if (!Files.isDirectory(draftsRoot)) {
+            return null;
+        }
+        try (var dirs = Files.list(draftsRoot)) {
+            for (var dir : (Iterable<Path>) dirs::iterator) {
+                if (!Files.isDirectory(dir)) continue;
+                Path skillFile = dir.resolve("SKILL.md");
+                if (!Files.isRegularFile(skillFile)) continue;
+                String content = Files.readString(skillFile);
+                if (content.contains("source-session-id: \"" + sessionId + "\"")
+                        || content.contains("source-session-id: " + sessionId)) {
+                    return dir.getFileName().toString();
+                }
+            }
+        }
+        return null;
     }
 
     private static String renderSkillMarkdown(String skillName,
@@ -284,13 +313,15 @@ public final class SessionSkillPacker {
         sb.append(draft.description() != null ? draft.description() : "").append("\n\n");
 
         // Preconditions
-        if (!draft.preconditions().isEmpty()) {
-            sb.append("## Preconditions\n\n");
+        sb.append("## Preconditions\n\n");
+        if (draft.preconditions().isEmpty()) {
+            sb.append("- None\n");
+        } else {
             for (var pre : draft.preconditions()) {
                 sb.append("- ").append(pre).append("\n");
             }
-            sb.append("\n");
         }
+        sb.append("\n");
 
         // Steps
         sb.append("## Steps\n\n");
@@ -316,13 +347,15 @@ public final class SessionSkillPacker {
         }
 
         // Success checks
-        if (!draft.successChecks().isEmpty()) {
-            sb.append("## Success Checks\n\n");
+        sb.append("## Success Checks\n\n");
+        if (draft.successChecks().isEmpty()) {
+            sb.append("- None\n");
+        } else {
             for (var check : draft.successChecks()) {
                 sb.append("- ").append(check).append("\n");
             }
-            sb.append("\n");
         }
+        sb.append("\n");
 
         // Source
         sb.append("## Source\n\n");
@@ -341,12 +374,15 @@ public final class SessionSkillPacker {
         node.put("sessionId", sessionId);
         node.put("skillName", skillName);
         node.put("path", relativeSkillPath.toString().replace('\\', '/'));
-        Files.writeString(
-                auditPath,
-                objectMapper.writeValueAsString(node) + "\n",
-                StandardOpenOption.CREATE,
-                StandardOpenOption.APPEND
-        );
+        byte[] line = (objectMapper.writeValueAsString(node) + "\n").getBytes(StandardCharsets.UTF_8);
+
+        // Use FileChannel + FileLock to prevent concurrent pack calls from interleaving JSONL lines
+        try (var channel = FileChannel.open(auditPath,
+                StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND)) {
+            try (var ignored = channel.lock()) {
+                channel.write(ByteBuffer.wrap(line));
+            }
+        }
     }
 
     static String toSlug(String input) {
