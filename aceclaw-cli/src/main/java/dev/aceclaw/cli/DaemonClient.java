@@ -172,6 +172,50 @@ public final class DaemonClient implements AutoCloseable {
         return objectMapper;
     }
 
+    /**
+     * Packs a session's successful workflow into a reusable skill draft.
+     *
+     * @param sessionId the session to extract from
+     * @param name      optional skill name override (may be null)
+     * @param turnStart optional start index (may be null)
+     * @param turnEnd   optional end index (may be null)
+     * @return the pack result with skill name, path, and step count
+     * @throws IOException          if I/O fails
+     * @throws DaemonClientException if the RPC call fails
+     */
+    public PackSkillResult packSkill(String sessionId, String name,
+                                      Integer turnStart, Integer turnEnd)
+            throws IOException, DaemonClientException {
+        Objects.requireNonNull(sessionId, "sessionId");
+        var params = objectMapper.createObjectNode();
+        params.put("sessionId", sessionId);
+        if (name != null) {
+            params.put("name", name);
+        }
+        if (turnStart != null) {
+            params.put("turnStart", turnStart);
+        }
+        if (turnEnd != null) {
+            params.put("turnEnd", turnEnd);
+        }
+
+        var result = sendRequest("skill.pack", params);
+        return new PackSkillResult(
+                result.get("skillName").asText(),
+                result.get("path").asText(),
+                result.get("stepCount").asInt()
+        );
+    }
+
+    /**
+     * Result of a session skill pack operation.
+     *
+     * @param skillName the resolved skill name
+     * @param path      relative path to the generated SKILL.md
+     * @param stepCount number of extracted workflow steps
+     */
+    public record PackSkillResult(String skillName, String path, int stepCount) {}
+
     @Override
     public void close() {
         disconnect();
