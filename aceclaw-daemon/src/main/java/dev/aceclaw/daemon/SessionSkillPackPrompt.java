@@ -141,15 +141,20 @@ final class SessionSkillPackPrompt {
      * Truncates text using a 40% head / 60% tail split, preserving the beginning
      * (user's goal) and the end (final outcome).
      */
+    /** Minimum maxChars for truncation — ensures marker + content always fit. */
+    static final int MIN_TRUNCATION_CHARS = 200;
+
     static String headTailTruncate(String text, int maxChars) {
         if (text == null || text.length() <= maxChars) {
             return text;
         }
-        // Reserve space for the marker so the total output is a hard cap at maxChars.
+        // Clamp to a safe floor so the marker always fits even for small budgets.
+        int effectiveMax = Math.max(MIN_TRUNCATION_CHARS, maxChars);
+        // Reserve space for the marker so the total output is a hard cap at effectiveMax.
         // Marker: "\n\n... [truncated: NNNNNN chars total, showing first NNNN and last NNNN] ...\n\n"
         // Worst case ~100 chars for the marker text with large numbers.
         int markerReserve = 120;
-        int contentBudget = Math.max(100, maxChars - markerReserve);
+        int contentBudget = effectiveMax - markerReserve;
         int headChars = (int) (contentBudget * 0.4);
         int tailChars = contentBudget - headChars;
         String marker = "\n\n... [truncated: " + text.length() + " chars total, showing first "

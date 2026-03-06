@@ -466,6 +466,15 @@ class SessionSkillPackerTest {
     }
 
     @Test
+    void headTailTruncate_tinyMaxChars_clampedToFloor() {
+        String input = "A".repeat(500);
+        // maxChars=50 is below MIN_TRUNCATION_CHARS — should clamp to floor, not produce garbage
+        String truncated = SessionSkillPackPrompt.headTailTruncate(input, 50);
+        assertThat(truncated.length()).isLessThanOrEqualTo(SessionSkillPackPrompt.MIN_TRUNCATION_CHARS);
+        assertThat(truncated).contains("[truncated:");
+    }
+
+    @Test
     void deriveMaxConversationChars_fromContextWindow() {
         // 200K context: (200000 - 12288 - 500) * 4 = 748_848
         int derived200k = SessionSkillPacker.deriveMaxConversationChars(200_000);
