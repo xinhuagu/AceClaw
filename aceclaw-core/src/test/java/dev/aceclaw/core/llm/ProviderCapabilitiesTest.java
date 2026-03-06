@@ -34,6 +34,37 @@ class ProviderCapabilitiesTest {
     }
 
     @Test
+    void copilotClaudeConstantHasCorrectCapabilities() {
+        var caps = ProviderCapabilities.COPILOT_CLAUDE;
+        assertTrue(caps.supportsExtendedThinking());
+        assertFalse(caps.supportsPromptCaching());
+        assertTrue(caps.supportsImageInput());
+        assertEquals(200_000, caps.contextWindowTokens());
+    }
+
+    @Test
+    void forCopilotModel_returnsClaudeForClaudeModels() {
+        assertSame(ProviderCapabilities.COPILOT_CLAUDE,
+                ProviderCapabilities.forCopilotModel("claude-sonnet-4.5"));
+        assertSame(ProviderCapabilities.COPILOT_CLAUDE,
+                ProviderCapabilities.forCopilotModel("Claude-Opus-4"));
+    }
+
+    @Test
+    void forCopilotModel_returnsCodexForCodexModels() {
+        assertSame(ProviderCapabilities.CODEX,
+                ProviderCapabilities.forCopilotModel("gpt-5.2-codex"));
+    }
+
+    @Test
+    void forCopilotModel_returnsOpenAIForOtherModels() {
+        assertSame(ProviderCapabilities.OPENAI,
+                ProviderCapabilities.forCopilotModel("gpt-4o"));
+        assertSame(ProviderCapabilities.OPENAI,
+                ProviderCapabilities.forCopilotModel(null));
+    }
+
+    @Test
     void customConstructionWorks() {
         var custom = new ProviderCapabilities(false, false, true, 10, 64_000);
         assertEquals(64_000, custom.contextWindowTokens());

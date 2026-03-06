@@ -35,4 +35,19 @@ public record ProviderCapabilities(
     /** GitHub Copilot Codex models (Responses API): no extended thinking, no caching, no images, 400K context. */
     public static final ProviderCapabilities CODEX =
             new ProviderCapabilities(false, false, false, 0, 400_000);
+
+    /** Claude models on Copilot/OpenAI: extended thinking enabled, 200K context. */
+    public static final ProviderCapabilities COPILOT_CLAUDE =
+            new ProviderCapabilities(true, false, true, 0, 200_000);
+
+    /** Returns capabilities appropriate for a given model on Copilot. */
+    public static ProviderCapabilities forCopilotModel(String model) {
+        if (model != null && model.toLowerCase().contains("claude")) {
+            return COPILOT_CLAUDE;
+        }
+        if (model != null && model.toLowerCase().contains("codex")) {
+            return CODEX;
+        }
+        return OPENAI;
+    }
 }
