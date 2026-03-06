@@ -343,7 +343,10 @@ public final class StreamingAgentLoop {
                             log.error("Tool execution failed unexpectedly, generating fallback results", e);
                             toolResults = toolUseBlocks.stream()
                                     .map(tu -> new ContentBlock.ToolResult(
-                                            tu.id(), "Tool execution error: " + e.getMessage(), true))
+                                            tu.id(),
+                                            truncateToolResult("Tool execution error: " + e.getMessage(),
+                                                    MAX_TOOL_RESULT_CHARS),
+                                            true))
                                     .toList();
                         }
                         var toolResultMessage = Message.toolResults(toolResults);
@@ -589,7 +592,10 @@ public final class StreamingAgentLoop {
                 log.error("Parallel tool execution failed: {}", e.getMessage(), e);
                 return toolUseBlocks.stream()
                         .map(tu -> new ContentBlock.ToolResult(
-                                tu.id(), "Parallel tool execution error: " + e.getMessage(), true))
+                                tu.id(),
+                                truncateToolResult("Parallel tool execution error: " + e.getMessage(),
+                                        MAX_TOOL_RESULT_CHARS),
+                                true))
                         .toList();
             }
         } finally {
