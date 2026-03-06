@@ -495,9 +495,9 @@ public final class AceClawDaemon {
                             if (candidateStoreForAuto != null) {
                                 var generator = new SkillDraftGenerator();
                                 var summary = generator.generateFromPromoted(candidateStoreForAuto, projectPath);
-                                if (summary.createdDrafts() > 0 || summary.updatedDrafts() > 0) {
-                                    log.info("Auto skill draft generation: {} created, {} updated",
-                                            summary.createdDrafts(), summary.updatedDrafts());
+                                if (summary.createdDrafts() > 0) {
+                                    log.info("Auto skill draft generation: {} created, {} skipped",
+                                            summary.createdDrafts(), summary.skippedDrafts());
                                 }
                             }
                             // Validate drafts and evaluate for auto-release
@@ -764,7 +764,7 @@ public final class AceClawDaemon {
                 var result = objectMapper.createObjectNode();
                 result.put("processedPromotedCandidates", summary.processedPromotedCandidates());
                 result.put("createdDrafts", summary.createdDrafts());
-                result.put("updatedDrafts", summary.updatedDrafts());
+                result.put("skippedDrafts", summary.skippedDrafts());
                 var paths = objectMapper.createArrayNode();
                 summary.draftPaths().forEach(path -> paths.add(path.replace('\\', '/')));
                 result.set("draftPaths", paths);

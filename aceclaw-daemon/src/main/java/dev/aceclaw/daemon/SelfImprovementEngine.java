@@ -264,8 +264,8 @@ public final class SelfImprovementEngine {
                     }
                 }
                 // Always fire draft re-evaluation trigger (not just on new promotions).
-                // Draft generation is idempotent (skips candidates that already have drafts),
-                // and re-validation should happen every turn as new evidence may accumulate.
+                // Draft generation skips candidates that already have drafts (create-missing-only).
+                // Validation only appends audit entries when the verdict changes.
                 if (draftReevaluationTrigger != null) {
                     try {
                         draftReevaluationTrigger.accept(projectPath);
