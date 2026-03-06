@@ -860,6 +860,34 @@ public final class AceClawDaemon {
             return toReleaseJson(autoReleaseForRpc.forcePromote(workingDir, skillName, stage, reason, trigger));
         });
 
+        // Session skill packer (extract successful workflow from session into skill draft)
+        var skillPacker = new SessionSkillPacker(
+                historyStore, sessionManager, llmClient, model, objectMapper);
+        router.register("skill.pack", params -> {
+            var sessionId = params != null && params.has("sessionId")
+                    ? params.get("sessionId").asText() : null;
+            if (sessionId == null || sessionId.isBlank()) {
+                throw new IllegalArgumentException("Missing required parameter: sessionId");
+            }
+            String name = params.has("name") && !params.get("name").isNull()
+                    ? params.get("name").asText() : null;
+            Integer turnStart = params.has("turnStart") && !params.get("turnStart").isNull()
+                    ? params.get("turnStart").asInt() : null;
+            Integer turnEnd = params.has("turnEnd") && !params.get("turnEnd").isNull()
+                    ? params.get("turnEnd").asInt() : null;
+
+            try {
+                var packResult = skillPacker.pack(sessionId, name, turnStart, turnEnd, workingDir);
+                var result = objectMapper.createObjectNode();
+                result.put("skillName", packResult.skillName());
+                result.put("path", packResult.relativePath());
+                result.put("stepCount", packResult.stepCount());
+                return result;
+            } catch (dev.aceclaw.core.llm.LlmException e) {
+                throw new RuntimeException("LLM extraction failed: " + e.getMessage(), e);
+            }
+        });
+
         // Scheduler feed polling for foreground CLI notifications.
         router.register("scheduler.cron.status", params -> {
             var result = objectMapper.createObjectNode();
