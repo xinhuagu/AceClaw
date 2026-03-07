@@ -36,7 +36,7 @@ public final class StreamingAgentLoop {
     private static final Logger log = LoggerFactory.getLogger(StreamingAgentLoop.class);
 
     /** Maximum characters allowed in a single tool result before truncation. */
-    private static final int MAX_TOOL_RESULT_CHARS = 30_000;
+    static final int MAX_TOOL_RESULT_CHARS = 30_000;
 
     /** Number of extra turns granted per auto-extension. */
     private static final int EXTENSION_TURNS = 15;
