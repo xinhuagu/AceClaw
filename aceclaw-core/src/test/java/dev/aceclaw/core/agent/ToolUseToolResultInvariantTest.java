@@ -117,6 +117,46 @@ class ToolUseToolResultInvariantTest {
         assertToolUseToolResultInvariant(turn.newMessages());
     }
 
+    /**
+     * Directly exercises the parallel scope {@code catch (Exception e)} at
+     * {@link AgentLoop#executeTools} line 220.
+     *
+     * <p>When a tool throws {@link Error} (not Exception), it escapes
+     * {@code executeSingleTool}'s {@code catch (Exception)}. Inside the
+     * {@link java.util.concurrent.StructuredTaskScope.ShutdownOnFailure},
+     * the subtask enters FAILED state, causing {@code Subtask::get()} to
+     * throw {@link IllegalStateException} — which IS caught by the
+     * parallel scope's {@code catch (Exception e)}.
+     */
+    @Test
+    void agentLoop_parallelToolThrowsError_safetyNetProducesFallbackResults() throws Exception {
+        var tu1 = new ContentBlock.ToolUse("tu-1", "normal_tool", "{}");
+        var tu2 = new ContentBlock.ToolUse("tu-2", "error_tool", "{}");
+        var llm = new FakeLlmClient(List.of(
+                new LlmResponse("r1", "model", List.of(tu1, tu2),
+                        StopReason.TOOL_USE, new Usage(1, 1, 0, 0)),
+                new LlmResponse("r2", "model", List.of(new ContentBlock.Text("Recovered")),
+                        StopReason.END_TURN, new Usage(1, 1, 0, 0))
+        ));
+
+        var registry = new ToolRegistry();
+        registry.register(new StubTool("normal_tool", "ok"));
+        registry.register(new ErrorThrowingTool("error_tool"));
+
+        var loop = new AgentLoop(llm, registry, "model", null);
+        var turn = loop.runTurn("go", List.of());
+
+        assertToolUseToolResultInvariant(turn.newMessages());
+        // Verify the fallback results contain error info
+        var toolResultMsg = (Message.UserMessage) turn.newMessages().get(2);
+        var results = toolResultMsg.content().stream()
+                .filter(b -> b instanceof ContentBlock.ToolResult)
+                .map(b -> (ContentBlock.ToolResult) b)
+                .toList();
+        assertThat(results).hasSize(2);
+        assertThat(results).allMatch(ContentBlock.ToolResult::isError);
+    }
+
     @Test
     void agentLoop_maxIterationsReached_invariantStillHolds() throws Exception {
         // LLM always returns tool_use, maxIterations=2 caps the loop
@@ -237,6 +277,28 @@ class ToolUseToolResultInvariantTest {
         }
         @Override public ToolResult execute(String inputJson) {
             return new ToolResult(output, false);
+        }
+    }
+
+    /**
+     * A tool that throws {@link Error} (not Exception) to bypass
+     * {@code executeSingleTool}'s {@code catch (Exception)} and force
+     * the structured scope's catch path.
+     */
+    private static class ErrorThrowingTool implements Tool {
+        private final String toolName;
+
+        ErrorThrowingTool(String toolName) {
+            this.toolName = toolName;
+        }
+
+        @Override public String name() { return toolName; }
+        @Override public String description() { return "throws Error"; }
+        @Override public JsonNode inputSchema() {
+            return JSON.createObjectNode().put("type", "object");
+        }
+        @Override public ToolResult execute(String inputJson) {
+            throw new Error("Simulated fatal tool failure");
         }
     }
 }

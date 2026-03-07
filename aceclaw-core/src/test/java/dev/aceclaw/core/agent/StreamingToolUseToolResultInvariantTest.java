@@ -103,6 +103,44 @@ class StreamingToolUseToolResultInvariantTest {
         assertToolUseToolResultInvariant(turn.newMessages());
     }
 
+    /**
+     * Directly exercises the parallel scope {@code catch (Exception e)} at
+     * {@link StreamingAgentLoop#executeTools} line 589.
+     *
+     * <p>When a tool throws {@link Error} (not Exception), it escapes
+     * {@code executeSingleTool}'s {@code catch (Exception)}. Inside the
+     * {@link java.util.concurrent.StructuredTaskScope.ShutdownOnFailure},
+     * the subtask enters FAILED state, causing {@code Subtask::get()} to
+     * throw {@link IllegalStateException} — which IS caught by the
+     * parallel scope's {@code catch (Exception e)}.
+     */
+    @Test
+    void streamingLoop_parallelToolThrowsError_safetyNetProducesFallbackResults() throws Exception {
+        var responses = List.of(
+                toolUseStreamResponse("tu-1", "normal_tool", "{}",
+                        "tu-2", "error_tool", "{}"),
+                textStreamResponse("Recovered")
+        );
+        var llm = new FakeStreamingLlmClient(responses);
+
+        var registry = new ToolRegistry();
+        registry.register(new StubTool("normal_tool", "ok"));
+        registry.register(new ErrorThrowingTool("error_tool"));
+
+        var loop = new StreamingAgentLoop(llm, registry, "model", null);
+        var turn = loop.runTurn("go", List.of(), new StreamEventHandler() {});
+
+        assertToolUseToolResultInvariant(turn.newMessages());
+        // Verify the fallback results contain error info
+        var toolResultMsg = (Message.UserMessage) turn.newMessages().get(2);
+        var results = toolResultMsg.content().stream()
+                .filter(b -> b instanceof ContentBlock.ToolResult)
+                .map(b -> (ContentBlock.ToolResult) b)
+                .toList();
+        assertThat(results).hasSize(2);
+        assertThat(results).allMatch(ContentBlock.ToolResult::isError);
+    }
+
     @Test
     void streamingLoop_maxIterationsReached_invariantStillHolds() throws Exception {
         // LLM always returns tool_use, maxIterations=2 caps the loop
@@ -309,6 +347,28 @@ class StreamingToolUseToolResultInvariantTest {
         }
         @Override public ToolResult execute(String inputJson) {
             return new ToolResult(output, false);
+        }
+    }
+
+    /**
+     * A tool that throws {@link Error} (not Exception) to bypass
+     * {@code executeSingleTool}'s {@code catch (Exception)} and force
+     * the structured scope's catch path.
+     */
+    private static class ErrorThrowingTool implements Tool {
+        private final String toolName;
+
+        ErrorThrowingTool(String toolName) {
+            this.toolName = toolName;
+        }
+
+        @Override public String name() { return toolName; }
+        @Override public String description() { return "throws Error"; }
+        @Override public JsonNode inputSchema() {
+            return JSON.createObjectNode().put("type", "object");
+        }
+        @Override public ToolResult execute(String inputJson) {
+            throw new Error("Simulated fatal tool failure");
         }
     }
 }
