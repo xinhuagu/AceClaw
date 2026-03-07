@@ -134,7 +134,16 @@ public final class AgentLoop {
                         var toolUseBlocks = response.toolUseBlocks();
                         log.debug("Tool use requested: {} tool(s)", toolUseBlocks.size());
 
-                        var toolResults = executeTools(toolUseBlocks);
+                        List<ContentBlock.ToolResult> toolResults;
+                        try {
+                            toolResults = executeTools(toolUseBlocks);
+                        } catch (Exception e) {
+                            log.error("Tool execution failed unexpectedly, generating fallback results", e);
+                            toolResults = toolUseBlocks.stream()
+                                    .map(tu -> new ContentBlock.ToolResult(
+                                            tu.id(), "Tool execution error: " + e.getMessage(), true))
+                                    .toList();
+                        }
                         var toolResultMessage = Message.toolResults(toolResults);
                         allMessages.add(toolResultMessage);
                         newMessages.add(toolResultMessage);
@@ -203,6 +212,12 @@ public final class AgentLoop {
             log.error("Tool execution interrupted");
             return toolUseBlocks.stream()
                     .map(tu -> new ContentBlock.ToolResult(tu.id(), "Tool execution interrupted", true))
+                    .toList();
+        } catch (Exception e) {
+            log.error("Parallel tool execution failed: {}", e.getMessage(), e);
+            return toolUseBlocks.stream()
+                    .map(tu -> new ContentBlock.ToolResult(
+                            tu.id(), "Parallel tool execution error: " + e.getMessage(), true))
                     .toList();
         }
     }
