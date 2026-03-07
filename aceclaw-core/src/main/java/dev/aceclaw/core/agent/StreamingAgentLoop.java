@@ -36,7 +36,7 @@ public final class StreamingAgentLoop {
     private static final Logger log = LoggerFactory.getLogger(StreamingAgentLoop.class);
 
     /** Maximum characters allowed in a single tool result before truncation. */
-    static final int MAX_TOOL_RESULT_CHARS = 30_000;
+    static final int MAX_TOOL_RESULT_CHARS = ToolResultTruncation.MAX_TOOL_RESULT_CHARS;
 
     /** Number of extra turns granted per auto-extension. */
     private static final int EXTENSION_TURNS = 15;
@@ -784,15 +784,7 @@ public final class StreamingAgentLoop {
      * Truncates a tool result to fit within the given character limit.
      */
     static String truncateToolResult(String output, int maxChars) {
-        if (output == null || output.length() <= maxChars) {
-            return output;
-        }
-        int headChars = (int) (maxChars * 0.4);
-        int tailChars = maxChars - headChars;
-        return output.substring(0, headChars)
-                + "\n\n... (truncated: " + output.length() + " chars total, showing first "
-                + headChars + " and last " + tailChars + ") ...\n\n"
-                + output.substring(output.length() - tailChars);
+        return ToolResultTruncation.truncate(output, maxChars);
     }
 
     private void recordDoomLoopResult(ContentBlock.ToolUse toolUse, boolean isError, String errorText) {

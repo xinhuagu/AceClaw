@@ -142,9 +142,9 @@ public final class AgentLoop {
                             toolResults = toolUseBlocks.stream()
                                     .map(tu -> new ContentBlock.ToolResult(
                                             tu.id(),
-                                            StreamingAgentLoop.truncateToolResult(
+                                            ToolResultTruncation.truncate(
                                                     "Tool execution error: " + e.getMessage(),
-                                                    StreamingAgentLoop.MAX_TOOL_RESULT_CHARS),
+                                                    ToolResultTruncation.MAX_TOOL_RESULT_CHARS),
                                             true))
                                     .toList();
                         }
@@ -222,9 +222,9 @@ public final class AgentLoop {
             return toolUseBlocks.stream()
                     .map(tu -> new ContentBlock.ToolResult(
                             tu.id(),
-                            StreamingAgentLoop.truncateToolResult(
+                            ToolResultTruncation.truncate(
                                     "Parallel tool execution error: " + e.getMessage(),
-                                    StreamingAgentLoop.MAX_TOOL_RESULT_CHARS),
+                                    ToolResultTruncation.MAX_TOOL_RESULT_CHARS),
                             true))
                     .toList();
         }
