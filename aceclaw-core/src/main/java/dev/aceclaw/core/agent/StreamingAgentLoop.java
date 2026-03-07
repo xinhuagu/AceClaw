@@ -36,7 +36,7 @@ public final class StreamingAgentLoop {
     private static final Logger log = LoggerFactory.getLogger(StreamingAgentLoop.class);
 
     /** Maximum characters allowed in a single tool result before truncation. */
-    private static final int MAX_TOOL_RESULT_CHARS = 30_000;
+    static final int MAX_TOOL_RESULT_CHARS = ToolResultTruncation.MAX_TOOL_RESULT_CHARS;
 
     /** Number of extra turns granted per auto-extension. */
     private static final int EXTENSION_TURNS = 15;
@@ -334,7 +334,21 @@ public final class StreamingAgentLoop {
                                 .toList();
                         log.debug("Streaming tool use requested: {} tool(s)", toolUseBlocks.size());
 
-                        var toolResults = executeTools(toolUseBlocks, eventHandler, toolFailureAdvisor);
+                        List<ContentBlock.ToolResult> toolResults;
+                        try {
+                            toolResults = executeTools(toolUseBlocks, eventHandler, toolFailureAdvisor);
+                        } catch (Exception e) {
+                            // Safety net: ALWAYS produce tool_result to keep conversation valid.
+                            // Without matching tool_result, the Anthropic API rejects the next request.
+                            log.error("Tool execution failed unexpectedly, generating fallback results", e);
+                            toolResults = toolUseBlocks.stream()
+                                    .map(tu -> new ContentBlock.ToolResult(
+                                            tu.id(),
+                                            truncateToolResult("Tool execution error: " + e.getMessage(),
+                                                    MAX_TOOL_RESULT_CHARS),
+                                            true))
+                                    .toList();
+                        }
                         var toolResultMessage = Message.toolResults(toolResults);
                         allMessages.add(toolResultMessage);
                         newMessages.add(toolResultMessage);
@@ -572,6 +586,17 @@ public final class StreamingAgentLoop {
                 return toolUseBlocks.stream()
                         .map(tu -> new ContentBlock.ToolResult(tu.id(), "Tool execution interrupted", true))
                         .toList();
+            } catch (Exception e) {
+                // Subtask::get() throws IllegalStateException for FAILED/UNAVAILABLE subtasks.
+                // Must return fallback results to prevent orphan tool_use in conversation history.
+                log.error("Parallel tool execution failed: {}", e.getMessage(), e);
+                return toolUseBlocks.stream()
+                        .map(tu -> new ContentBlock.ToolResult(
+                                tu.id(),
+                                truncateToolResult("Parallel tool execution error: " + e.getMessage(),
+                                        MAX_TOOL_RESULT_CHARS),
+                                true))
+                        .toList();
             }
         } finally {
             heartbeatDone.set(true);
@@ -759,15 +784,7 @@ public final class StreamingAgentLoop {
      * Truncates a tool result to fit within the given character limit.
      */
     static String truncateToolResult(String output, int maxChars) {
-        if (output == null || output.length() <= maxChars) {
-            return output;
-        }
-        int headChars = (int) (maxChars * 0.4);
-        int tailChars = maxChars - headChars;
-        return output.substring(0, headChars)
-                + "\n\n... (truncated: " + output.length() + " chars total, showing first "
-                + headChars + " and last " + tailChars + ") ...\n\n"
-                + output.substring(output.length() - tailChars);
+        return ToolResultTruncation.truncate(output, maxChars);
     }
 
     private void recordDoomLoopResult(ContentBlock.ToolUse toolUse, boolean isError, String errorText) {
