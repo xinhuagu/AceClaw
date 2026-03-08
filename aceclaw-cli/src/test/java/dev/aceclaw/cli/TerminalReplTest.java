@@ -1,5 +1,7 @@
 package dev.aceclaw.cli;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -265,6 +267,46 @@ class TerminalReplTest {
         assertThat(clamped.toAnsi()).isNotBlank();
         // padded to clearWidth
         assertThat(clamped.columnLength()).isEqualTo(80);
+    }
+
+    /**
+     * Regression test for issue #185: renderSchedulerEventNote for a completed
+     * cron event with a markdown table summary should not produce trailing blank
+     * lines that push the prompt down via printAbove.
+     */
+    @Test
+    void renderSchedulerEventNote_completedWithTableSummary_noTrailingBlankLines() throws Exception {
+        var mapper = new ObjectMapper();
+        ObjectNode event = mapper.createObjectNode();
+        event.put("type", "completed");
+        event.put("jobId", "test-job");
+        event.put("summary", """
+                ## Results
+
+                | Status | Count |
+                |--------|-------|
+                | OK     | 5     |
+                | FAIL   | 0     |
+                """);
+
+        String result = (String) invokePrivate(repl, "renderSchedulerEventNote",
+                new Class<?>[]{com.fasterxml.jackson.databind.JsonNode.class}, event);
+
+        assertThat(result).isNotNull();
+        // The rendered note should not end with multiple blank lines
+        String[] lines = result.split("\n");
+        // Count trailing empty lines
+        int trailingEmpty = 0;
+        for (int i = lines.length - 1; i >= 0; i--) {
+            if (lines[i].isBlank()) {
+                trailingEmpty++;
+            } else {
+                break;
+            }
+        }
+        assertThat(trailingEmpty)
+                .as("Completed cron event should not have excessive trailing blank lines")
+                .isLessThanOrEqualTo(1);
     }
 
     private static TerminalRepl newReplForProject(Path project) {

@@ -113,6 +113,39 @@ class TerminalMarkdownRendererTest {
         assertThat(expectedWidth).as("Should have found table lines").isGreaterThan(0);
     }
 
+    /**
+     * Regression test for issue #185: markdown-rendered tables should not produce
+     * excessive trailing blank lines that push the prompt down in printAbove.
+     */
+    @Test
+    void renderedTable_doesNotEndWithExcessiveTrailingNewlines() {
+        String md = """
+                ## Summary
+
+                | Metric | Value |
+                |--------|-------|
+                | Users  | 100   |
+                | Errors | 0     |
+                """;
+
+        String result = renderer.renderToString(md);
+
+        // Strip trailing whitespace (mimics the .stripTrailing() fix in TerminalRepl)
+        String stripped = result.stripTrailing();
+        // After stripping, re-adding a single \n is fine — but the raw output
+        // should not have more than 2 trailing newlines (one after the table is normal).
+        int trailingNewlines = result.length() - result.stripTrailing().length();
+        assertThat(trailingNewlines)
+                .as("Rendered table + heading should not produce excessive trailing newlines")
+                .isLessThanOrEqualTo(2);
+
+        // The stripped version, when split without -1, should not produce trailing empty entries
+        String[] lines = stripped.split("\n");
+        assertThat(lines[lines.length - 1])
+                .as("Last line after split should not be empty")
+                .isNotEmpty();
+    }
+
     @Test
     void rendersNullAndEmptyGracefully() {
         assertThat(renderer.renderToString(null)).isEmpty();
