@@ -79,16 +79,18 @@ public final class PermissionBridge {
         Objects.requireNonNull(request, "request");
         var future = new CompletableFuture<PermissionAnswer>();
         futures.put(request.requestId(), future);
-        pending.put(request);
-        var listener = requestListener;
-        if (listener != null) {
-            try {
-                listener.onPermissionRequested(request);
-            } catch (Exception e) {
-                log.debug("Permission request listener failed: {}", e.getMessage());
-            }
-        }
+        boolean enqueued = false;
         try {
+            pending.put(request);
+            enqueued = true;
+            var listener = requestListener;
+            if (listener != null) {
+                try {
+                    listener.onPermissionRequested(request);
+                } catch (Exception e) {
+                    log.debug("Permission request listener failed: {}", e.getMessage());
+                }
+            }
             if (timeout <= 0) {
                 return future.get();
             }
@@ -98,7 +100,9 @@ public final class PermissionBridge {
             throw new IllegalStateException("Permission request failed unexpectedly", e);
         } finally {
             futures.remove(request.requestId());
-            pending.remove(request);
+            if (enqueued) {
+                pending.remove(request);
+            }
         }
     }
 

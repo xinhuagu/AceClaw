@@ -73,6 +73,7 @@ public final class TerminalRepl {
     private static final Duration TASK_TIMEOUT_AFTER = Duration.ofSeconds(180);
     private static final Duration LEARNING_STATUS_REFRESH = Duration.ofSeconds(5);
     private static final Duration CRON_STATUS_REFRESH = Duration.ofSeconds(5);
+    private static final long PERMISSION_MODAL_TIMEOUT_MS = TaskStreamReader.CLIENT_PERMISSION_WAIT_TIMEOUT_MS;
     private static final boolean PROMPT_STATUS_PANEL_ENABLED =
             Boolean.parseBoolean(System.getenv().getOrDefault("ACECLAW_PROMPT_STATUS_PANEL", "true"));
     private static final boolean CRON_STATUS_EXPANDED =
@@ -154,6 +155,7 @@ public final class TerminalRepl {
     private record UiNotice(Instant at, String text) {}
     private record ForegroundPause(TaskHandle handle, ForegroundOutputSink sink,
                                    BackgroundOutputBuffer buffer) {}
+    private record PermissionDecision(boolean approved, boolean remember, boolean timedOut) {}
 
     private record CronJobStatus(
             String id,
@@ -972,29 +974,15 @@ public final class TerminalRepl {
                     WARNING, RESET);
             out.flush();
 
-            boolean approved = false;
-            boolean remember = false;
-
-            try {
-                String answer = reader.readLine("");
-                if (answer != null) {
-                    answer = answer.trim().toLowerCase();
-                    switch (answer) {
-                        case "y", "yes" -> approved = true;
-                        case "a", "always" -> {
-                            approved = true;
-                            remember = true;
-                        }
-                        default -> approved = false;
-                    }
-                }
-            } catch (UserInterruptException | EndOfFileException e) {
-                approved = false;
-            }
+            var answer = readPermissionAnswer(reader);
+            boolean approved = answer.approved();
+            boolean remember = answer.remember();
 
             out.println(PERMISSION + " " + BOX_LIGHT_BOTTOM_LEFT + hlineLight(boxWidth) + RESET);
 
-            if (approved) {
+            if (answer.timedOut()) {
+                out.printf("%sTimed out%s%n", WARNING, RESET);
+            } else if (approved) {
                 out.printf("%s%s Approved%s%s%n", APPROVED, CHECKMARK,
                         remember ? " (always)" : "", RESET);
             } else {
@@ -1014,6 +1002,74 @@ public final class TerminalRepl {
             endPermissionModal(req);
             resumeForegroundRendering(pausedForeground);
             requestUiRender();
+        }
+    }
+
+    private PermissionDecision readPermissionAnswer(LineReader reader) {
+        var terminal = activeTerminal != null ? activeTerminal : reader.getTerminal();
+        if (terminal == null) {
+            return new PermissionDecision(false, false, true);
+        }
+
+        Attributes savedAttrs = terminal.getAttributes();
+        Attributes rawAttrs = new Attributes(savedAttrs);
+        rawAttrs.setLocalFlag(Attributes.LocalFlag.ICANON, false);
+        rawAttrs.setLocalFlag(Attributes.LocalFlag.ECHO, false);
+        rawAttrs.setControlChar(Attributes.ControlChar.VMIN, 0);
+        rawAttrs.setControlChar(Attributes.ControlChar.VTIME, 1);
+
+        long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(PERMISSION_MODAL_TIMEOUT_MS);
+        terminal.setAttributes(rawAttrs);
+        try {
+            while (true) {
+                long remainingNanos = deadlineNanos - System.nanoTime();
+                if (remainingNanos <= 0) {
+                    return new PermissionDecision(false, false, true);
+                }
+
+                int timeoutMs = (int) Math.max(1L, Math.min(250L,
+                        TimeUnit.NANOSECONDS.toMillis(remainingNanos)));
+                int ch = terminal.reader().peek(timeoutMs);
+                if (ch == -2) {
+                    continue;
+                }
+                if (ch < 0) {
+                    return new PermissionDecision(false, false, false);
+                }
+
+                terminal.reader().read(1);
+                switch (Character.toLowerCase((char) ch)) {
+                    case 'y':
+                        discardBufferedPermissionInput(terminal);
+                        return new PermissionDecision(true, false, false);
+                    case 'a':
+                        discardBufferedPermissionInput(terminal);
+                        return new PermissionDecision(true, true, false);
+                    case 'n':
+                    case 'q':
+                    case 3:
+                        discardBufferedPermissionInput(terminal);
+                        return new PermissionDecision(false, false, false);
+                    case '\r':
+                    case '\n':
+                        continue;
+                    default:
+                        terminal.puts(InfoCmp.Capability.bell);
+                        terminal.flush();
+                }
+            }
+        } catch (IOException e) {
+            log.debug("Permission modal input failed: {}", e.getMessage());
+            return new PermissionDecision(false, false, false);
+        } finally {
+            terminal.setAttributes(savedAttrs);
+            ensureCursorVisible();
+        }
+    }
+
+    private void discardBufferedPermissionInput(Terminal terminal) throws IOException {
+        while (terminal.reader().peek(1) >= 0) {
+            terminal.reader().read(1);
         }
     }
 

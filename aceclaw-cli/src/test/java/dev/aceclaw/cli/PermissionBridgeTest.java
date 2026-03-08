@@ -137,6 +137,32 @@ class PermissionBridgeTest {
         assertThat(bridge.pendingCount()).isZero();
     }
 
+    @Test
+    void interruptedBeforeEnqueue_cleansUpFuture() throws Exception {
+        var bridge = new PermissionBridge();
+        var req = new PermissionBridge.PermissionRequest("1", "bash", "run script", "req-interrupted");
+
+        var pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<?> future = pool.submit(() -> {
+                Thread.currentThread().interrupt();
+                assertThatThrownBy(() -> bridge.requestPermission(req))
+                        .isInstanceOf(InterruptedException.class);
+            });
+
+            future.get(2, TimeUnit.SECONDS);
+
+            assertThat(bridge.pendingCount()).isZero();
+            assertThat(bridge.pendingSnapshot()).isEmpty();
+
+            bridge.submitAnswer("req-interrupted", new PermissionBridge.PermissionAnswer(true, false));
+            assertThat(bridge.consumeResolvedAnswer("req-interrupted")).isNull();
+        } finally {
+            releasePendingRequests(bridge);
+            pool.shutdownNow();
+        }
+    }
+
     private static void releasePendingRequests(PermissionBridge bridge) {
         for (var req : bridge.pendingSnapshot()) {
             bridge.submitAnswer(req.requestId(), new PermissionBridge.PermissionAnswer(false, false));

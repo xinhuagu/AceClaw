@@ -23,14 +23,24 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class CandidateStoreTest {
 
+    private static final Duration DEFAULT_RECENT_WINDOW = Duration.ofDays(30);
+    private static final double DEFAULT_MERGE_THRESHOLD = 0.50;
+    private static final Duration DEFAULT_RETENTION = Duration.ofDays(90);
+    private static final Duration DEFAULT_DECAY_HALF_LIFE = Duration.ofDays(30);
+    private static final Duration DEFAULT_DECAY_GRACE = Duration.ofDays(7);
+    private static final Duration DEFAULT_MAINTENANCE_INTERVAL = Duration.ofHours(24);
+    private static final Instant TEST_NOW = Instant.parse("2026-02-24T12:00:00Z");
+
     @TempDir
     Path tempDir;
 
     private CandidateStore store;
+    private MutableClock clock;
 
     @BeforeEach
     void setUp() throws Exception {
-        store = new CandidateStore(tempDir);
+        clock = new MutableClock(TEST_NOW);
+        store = newStore(tempDir, CandidateStateMachine.Config.defaults(), clock);
         store.load();
     }
 
@@ -161,8 +171,7 @@ class CandidateStoreTest {
         var t0 = Instant.parse("2026-02-22T00:00:00Z");
         // Use low gates for testing
         var smConfig = new CandidateStateMachine.Config(2, 0.5, 0.5, 1, java.util.Set.of());
-        var testStore = new CandidateStore(tempDir.resolve("eval-test"),
-                Duration.ofDays(30), 0.50, smConfig);
+        var testStore = newStore(tempDir.resolve("eval-test"), smConfig, new MutableClock(TEST_NOW));
         testStore.load();
 
         // Create a candidate that should be promoted (evidence=2, score=0.8)
@@ -208,8 +217,7 @@ class CandidateStoreTest {
                 2, 0.5, 1.0, 1,
                 Duration.ofDays(30), Duration.ofDays(7), 2, 0.6, 2, Duration.ZERO,
                 java.util.Set.of());
-        var testStore = new CandidateStore(tempDir.resolve("repromote-test"),
-                Duration.ofDays(30), 0.50, smConfig);
+        var testStore = newStore(tempDir.resolve("repromote-test"), smConfig, new MutableClock(TEST_NOW));
         testStore.load();
 
         testStore.upsert(observation("timeout recovery strategy", "src:a", t0));
@@ -244,8 +252,7 @@ class CandidateStoreTest {
                 2, 0.5, 1.0, 1,
                 Duration.ofDays(30), Duration.ofDays(7), 2, 0.6, 2, Duration.ZERO,
                 java.util.Set.of());
-        var testStore = new CandidateStore(tempDir.resolve("anti-pattern-gate"),
-                Duration.ofDays(30), 0.50, smConfig);
+        var testStore = newStore(tempDir.resolve("anti-pattern-gate"), smConfig, new MutableClock(TEST_NOW));
         testStore.load();
 
         testStore.upsert(new CandidateStore.CandidateObservation(
@@ -275,8 +282,7 @@ class CandidateStoreTest {
                 2, 0.5, 1.0, 1,
                 Duration.ofDays(30), Duration.ofDays(7), 2, 0.6, 2, Duration.ZERO,
                 java.util.Set.of());
-        var testStore = new CandidateStore(tempDir.resolve("anti-pattern-repromote"),
-                Duration.ofDays(30), 0.50, smConfig);
+        var testStore = newStore(tempDir.resolve("anti-pattern-repromote"), smConfig, new MutableClock(TEST_NOW));
         testStore.load();
 
         testStore.upsert(observation("timeout recovery strategy", "src:a", t0));
@@ -413,8 +419,7 @@ class CandidateStoreTest {
                 1, 0.1, 1.0, 1,
                 Duration.ofDays(14), Duration.ofDays(7), 1, 0.2, 1, Duration.ZERO,
                 Set.of());
-        var testStore = new CandidateStore(tempDir.resolve("outcome-writeback"),
-                Duration.ofDays(30), 0.50, smConfig);
+        var testStore = newStore(tempDir.resolve("outcome-writeback"), smConfig, new MutableClock(TEST_NOW));
         testStore.load();
         testStore.upsert(observation("outcome strategy", "src:a", t0));
         testStore.evaluateAll();
@@ -535,6 +540,20 @@ class CandidateStoreTest {
                 source,
                 at
         );
+    }
+
+    private static CandidateStore newStore(Path root, CandidateStateMachine.Config smConfig, Clock clock)
+            throws IOException {
+        return new CandidateStore(
+                root,
+                DEFAULT_RECENT_WINDOW,
+                DEFAULT_MERGE_THRESHOLD,
+                smConfig,
+                DEFAULT_RETENTION,
+                DEFAULT_DECAY_HALF_LIFE,
+                DEFAULT_DECAY_GRACE,
+                DEFAULT_MAINTENANCE_INTERVAL,
+                clock);
     }
 
     private static final class MutableClock extends Clock {
