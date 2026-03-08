@@ -240,13 +240,16 @@ class ResumeRouterTest {
         assertTrue(prompt.contains("[PLAN_RESUME_CONTEXT]"));
         assertTrue(prompt.contains("[/PLAN_RESUME_CONTEXT]"));
         assertTrue(prompt.contains("planId: plan-1"));
-        assertTrue(prompt.contains("originalGoal: Build feature X"));
-        assertTrue(prompt.contains("completedSteps: 2/4"));
+        assertTrue(prompt.contains("goal: Build feature X"));
+        assertTrue(prompt.contains("progress: 2/4"));
         assertTrue(prompt.contains("Step 1:"));
         assertTrue(prompt.contains("[OK]"));
-        assertTrue(prompt.contains("nextStep: 3"));
-        assertTrue(prompt.contains("resumeHint: Need to test"));
-        assertTrue(prompt.contains("artifactsProduced: api.java"));
+        assertTrue(prompt.contains("nextStep:"));
+        assertTrue(prompt.contains("index: 3"));
+        assertTrue(prompt.contains("doNotRepeat:"));
+        assertTrue(prompt.contains("Need to test"));
+        assertTrue(prompt.contains("artifacts:"));
+        assertTrue(prompt.contains("api.java"));
         assertTrue(prompt.contains("Continue from step 3"));
     }
 
@@ -260,8 +263,8 @@ class ResumeRouterTest {
                 null, List.of(), Instant.now(), Instant.now());
 
         var prompt = ResumeRouter.buildResumePrompt(cp);
-        assertTrue(prompt.contains("completedSteps: 1/1"));
+        assertTrue(prompt.contains("progress: 1/1"));
         // Should not crash even with no remaining steps
-        assertFalse(prompt.contains("nextStep:"));
+        assertFalse(prompt.contains("nextStep:\n"));
     }
 }

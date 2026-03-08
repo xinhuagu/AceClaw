@@ -26,6 +26,8 @@ import java.util.Objects;
  */
 public final class ResumeRouter {
 
+    static final int DEFAULT_RESUME_PROMPT_MAX_CHARS = 6_000;
+
     private static final Logger log = LoggerFactory.getLogger(ResumeRouter.class);
 
     private final PlanCheckpointStore checkpointStore;
@@ -101,7 +103,15 @@ public final class ResumeRouter {
      * Uses a clearly delimited block so the LLM can parse the context.
      */
     public static String buildResumePrompt(PlanCheckpoint checkpoint) {
+        return buildResumePrompt(checkpoint, DEFAULT_RESUME_PROMPT_MAX_CHARS);
+    }
+
+    /**
+     * Builds a resume context prompt for injecting into the agent loop with a hard size cap.
+     */
+    public static String buildResumePrompt(PlanCheckpoint checkpoint, int maxChars) {
         Objects.requireNonNull(checkpoint, "checkpoint");
+        int effectiveMaxChars = Math.max(512, maxChars);
         int nextStep = checkpoint.nextStepIndex() + 1; // 1-based for display
         int total = checkpoint.plan().steps().size();
         var nextStepObj = checkpoint.hasRemainingSteps()
@@ -110,13 +120,11 @@ public final class ResumeRouter {
 
         var sb = new StringBuilder();
         sb.append("[PLAN_RESUME_CONTEXT]\n");
+        sb.append("goal: ").append(singleLine(checkpoint.originalGoal())).append('\n');
         sb.append("planId: ").append(checkpoint.planId()).append('\n');
-        sb.append("originalGoal: ").append(checkpoint.originalGoal()).append('\n');
-        sb.append("completedSteps: ").append(checkpoint.lastCompletedStepIndex() + 1)
-                .append("/").append(total).append('\n');
-
-        // Summarize completed steps
-        sb.append("completedStepSummary:\n");
+        sb.append("progress: ").append(checkpoint.lastCompletedStepIndex() + 1)
+                .append("/").append(total).append(" steps completed\n");
+        sb.append("doneSteps:\n");
         for (int i = 0; i <= checkpoint.lastCompletedStepIndex()
                 && i < checkpoint.plan().steps().size(); i++) {
             var step = checkpoint.plan().steps().get(i);
@@ -125,35 +133,43 @@ public final class ResumeRouter {
             sb.append("  - Step ").append(i + 1).append(": ").append(step.name());
             if (result != null && result.success()) {
                 String out = result.output();
-                String summary = out != null && out.length() > 80
-                        ? out.substring(0, 80) + "..." : (out != null ? out : "done");
-                sb.append(" [OK] ").append(summary);
+                String summary = out != null && out.length() > 120
+                        ? out.substring(0, 120) + "..." : (out != null ? out : "done");
+                sb.append(" [OK] ").append(singleLine(summary));
             } else if (result != null) {
-                sb.append(" [FAILED] ").append(
-                        result.error() != null ? result.error() : "unknown");
+                sb.append(" [FAILED] ").append(singleLine(
+                        result.error() != null ? result.error() : "unknown"));
             }
             sb.append('\n');
         }
 
         if (nextStepObj != null) {
-            sb.append("nextStep: ").append(nextStep).append(" - ")
-                    .append(nextStepObj.name()).append('\n');
-            sb.append("nextStepDescription: ").append(nextStepObj.description()).append('\n');
+            sb.append("nextStep:\n");
+            sb.append("  - index: ").append(nextStep).append('\n');
+            sb.append("  - name: ").append(singleLine(nextStepObj.name())).append('\n');
+            sb.append("  - description: ").append(singleLine(nextStepObj.description())).append('\n');
         }
 
         if (checkpoint.resumeHint() != null && !checkpoint.resumeHint().isBlank()) {
-            sb.append("resumeHint: ").append(checkpoint.resumeHint()).append('\n');
+            sb.append("doNotRepeat:\n");
+            sb.append("  - ").append(singleLine(checkpoint.resumeHint())).append('\n');
         }
 
         if (!checkpoint.artifacts().isEmpty()) {
-            sb.append("artifactsProduced: ")
-                    .append(String.join(", ", checkpoint.artifacts())).append('\n');
+            sb.append("artifacts:\n");
+            for (var artifact : checkpoint.artifacts()) {
+                sb.append("  - ").append(singleLine(artifact)).append('\n');
+            }
         }
 
         sb.append("action: Continue from step ").append(nextStep)
-                .append(" without restarting. All prior steps are complete.\n");
+                .append(" without restarting completed work.\n");
         sb.append("[/PLAN_RESUME_CONTEXT]");
-        return sb.toString();
+        String prompt = sb.toString();
+        if (prompt.length() <= effectiveMaxChars) {
+            return prompt;
+        }
+        return TierTruncator.truncateContent(prompt, effectiveMaxChars);
     }
 
     /**
@@ -178,5 +194,12 @@ public final class ResumeRouter {
 
     private static Comparator<PlanCheckpoint> recencyComparator() {
         return Comparator.comparing(PlanCheckpoint::updatedAt).reversed();
+    }
+
+    private static String singleLine(String value) {
+        if (value == null || value.isBlank()) {
+            return "";
+        }
+        return value.replace('\n', ' ').strip();
     }
 }

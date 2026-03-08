@@ -257,4 +257,22 @@ class MemoryTierLoaderTest {
         assertThat(workspaceSection.get().content()).contains("Root instructions.");
         assertThat(workspaceSection.get().content()).contains("Config instructions.");
     }
+
+    @Test
+    void formatTierSectionsUsesQueryAwareAutoMemory() throws IOException {
+        var store = new AutoMemoryStore(aceclawHome);
+        store.load(workspacePath);
+        store.add(MemoryEntry.Category.PATTERN, "Use pytest fixtures for python integration tests",
+                List.of("python", "pytest"), "test", false, workspacePath);
+        store.add(MemoryEntry.Category.PATTERN, "Use Gradle test fixtures for Java integration tests",
+                List.of("java", "gradle"), "test", false, workspacePath);
+
+        var result = MemoryTierLoader.loadAll(aceclawHome, workspacePath, store, null);
+        var sections = MemoryTierLoader.formatTierSections(
+                result, store, workspacePath, 1, null, "debug python pytest setup");
+        var assembled = MemoryTierLoader.joinTierSections(sections);
+
+        assertThat(assembled).contains("pytest fixtures");
+        assertThat(assembled).doesNotContain("Gradle test fixtures");
+    }
 }

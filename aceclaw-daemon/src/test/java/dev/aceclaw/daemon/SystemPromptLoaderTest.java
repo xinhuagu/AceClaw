@@ -1,6 +1,7 @@
 package dev.aceclaw.daemon;
 
 import dev.aceclaw.memory.AutoMemoryStore;
+import dev.aceclaw.memory.CandidatePromptAssembler;
 import dev.aceclaw.memory.DailyJournal;
 import dev.aceclaw.memory.MemoryEntry;
 import org.junit.jupiter.api.BeforeEach;
@@ -11,6 +12,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -220,5 +222,55 @@ class SystemPromptLoaderTest {
         assertThat(prompt).contains("Session started");
         assertThat(prompt).contains("test-model");
         assertThat(prompt).contains("test-provider");
+    }
+
+    @Test
+    void requestAssemblyUsesSelectiveRulesAndGlobalBudget() throws IOException {
+        var rulesDir = workDir.resolve(".aceclaw/rules");
+        Files.createDirectories(rulesDir);
+        Files.writeString(rulesDir.resolve("java-rule.md"), """
+                ---
+                paths:
+                  - "**/*.java"
+                ---
+
+                Prefer AssertJ assertions.
+                """);
+        Files.writeString(rulesDir.resolve("python-rule.md"), """
+                ---
+                paths:
+                  - "**/*.py"
+                ---
+
+                Prefer pytest fixtures.
+                """);
+
+        var store = new AutoMemoryStore(tempDir.resolve(".aceclaw-home"));
+        store.load(workDir);
+        store.add(MemoryEntry.Category.PATTERN, "Use AssertJ for Java assertions",
+                List.of("java", "assertj"), "test", false, workDir);
+
+        String longSkills = "# Available Skills\n\n" + "skill-line\n".repeat(10_000);
+        var assembly = SystemPromptLoader.assembleRequest(
+                workDir,
+                store,
+                null,
+                null,
+                "test-model",
+                "test-provider",
+                new SystemPromptBudget(8_000, 28_000),
+                Set.of("bash"),
+                false,
+                null,
+                CandidatePromptAssembler.Config.disabled(),
+                longSkills,
+                "update src/main/App.java tests",
+                List.of("src/main/App.java"));
+
+        assertThat(assembly.prompt()).contains("Prefer AssertJ assertions");
+        assertThat(assembly.prompt()).doesNotContain("Prefer pytest fixtures");
+        assertThat(assembly.prompt()).contains("Use AssertJ for Java assertions");
+        assertThat(assembly.prompt().length()).isLessThanOrEqualTo(28_000);
+        assertThat(assembly.truncatedSectionKeys()).isNotEmpty();
     }
 }

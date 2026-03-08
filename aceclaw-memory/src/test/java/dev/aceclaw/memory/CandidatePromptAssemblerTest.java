@@ -196,6 +196,24 @@ class CandidatePromptAssemblerTest {
         assertThat(assembled.candidateIds()).isNotEmpty();
     }
 
+    @Test
+    void queryHintBiasesCandidateOrdering() throws Exception {
+        upsertAndPromote("retry flaky bash command with exponential backoff", "bash", 0.82);
+        upsertAndPromote("stabilize pytest fixture ordering for python tests", "python", 0.81);
+
+        var assembled = CandidatePromptAssembler.assembleWithMetadata(
+                store,
+                CandidatePromptAssembler.Config.defaults(),
+                "debug flaky python pytest fixture setup",
+                List.of("tests/test_app.py"));
+
+        int pythonIdx = assembled.section().indexOf("pytest fixture ordering");
+        int bashIdx = assembled.section().indexOf("flaky bash command");
+        assertThat(pythonIdx).isGreaterThanOrEqualTo(0);
+        assertThat(bashIdx).isGreaterThanOrEqualTo(0);
+        assertThat(pythonIdx).isLessThan(bashIdx);
+    }
+
     private void upsertAndPromote(String content, String toolTag, double score) {
         upsertAndPromoteAt(content, toolTag, score, null);
     }

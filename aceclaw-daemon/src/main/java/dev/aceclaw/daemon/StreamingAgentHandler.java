@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.AgentLoopConfig;
 import dev.aceclaw.core.agent.CancellationAware;
 import dev.aceclaw.core.agent.CancellationToken;
+import dev.aceclaw.core.agent.CompactionConfig;
+import dev.aceclaw.core.agent.ContextEstimator;
 import dev.aceclaw.core.agent.DoomLoopDetector;
 import dev.aceclaw.core.agent.ProgressDetector;
 import dev.aceclaw.core.agent.WatchdogTimer;
@@ -39,6 +41,7 @@ import dev.aceclaw.memory.AutoMemoryStore;
 import dev.aceclaw.memory.CandidatePromptAssembler;
 import dev.aceclaw.memory.CandidateStore;
 import dev.aceclaw.memory.DailyJournal;
+import dev.aceclaw.memory.MarkdownMemoryStore;
 import dev.aceclaw.memory.MemoryEntry;
 import dev.aceclaw.security.PermissionDecision;
 import dev.aceclaw.security.PermissionLevel;
@@ -74,6 +77,7 @@ import java.util.Locale;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CancellationException;
@@ -222,6 +226,9 @@ public final class StreamingAgentHandler {
         var doomLoop = sessionDoomLoops.computeIfAbsent(sessionId, _ -> new DoomLoopDetector());
         var progress = sessionProgressDetectors.computeIfAbsent(sessionId, _ -> new ProgressDetector());
 
+        var promptAssembly = assembleSystemPromptForRequest(sessionId, session, prompt);
+        var effectiveCompactor = createRequestCompactor(sessionId, promptAssembly.prompt());
+
         // Create a temporary agent loop with the permission-aware registry, compaction and metrics
         var agentConfig = AgentLoopConfig.builder()
                 .sessionId(sessionId)
@@ -233,8 +240,8 @@ public final class StreamingAgentHandler {
                 .build();
         var permissionAwareLoop = new StreamingAgentLoop(
                 getLlmClient(), permissionAwareRegistry,
-                getModelForSession(sessionId), getSystemPrompt(sessionId),
-                maxTokens, thinkingBudget, compactor, agentConfig);
+                getModelForSession(sessionId), promptAssembly.prompt(),
+                maxTokens, thinkingBudget, contextWindowTokens, effectiveCompactor, agentConfig);
 
         // Wire stream event handler to SkillTool for sub-agent event forwarding
         // and session ID to DeferCheckTool
@@ -938,7 +945,14 @@ public final class StreamingAgentHandler {
     private MessageCompactor compactor;
     private AutoMemoryStore memoryStore;
     private DailyJournal dailyJournal;
+    private MarkdownMemoryStore markdownStore;
     private Path workingDir;
+    private String provider;
+    private SystemPromptBudget systemPromptBudget = SystemPromptBudget.DEFAULT;
+    private Set<String> registeredToolNames = Set.of();
+    private boolean hasBraveApiKey;
+    private String skillDescriptions = "";
+    private int contextWindowTokens;
     private SelfImprovementEngine selfImprovementEngine;
     private HookExecutor hookExecutor;
     private CandidateStore candidateStore;
@@ -971,9 +985,14 @@ public final class StreamingAgentHandler {
      * Sets the token configuration for permission-aware agent loop creation.
      */
     public void setTokenConfig(int maxTokens, int thinkingBudget, int maxIterations) {
+        setTokenConfig(maxTokens, thinkingBudget, maxIterations, 0);
+    }
+
+    public void setTokenConfig(int maxTokens, int thinkingBudget, int maxIterations, int contextWindowTokens) {
         this.maxTokens = maxTokens;
         this.thinkingBudget = thinkingBudget;
         this.maxIterations = Math.max(1, maxIterations);
+        this.contextWindowTokens = Math.max(0, contextWindowTokens);
     }
 
     public void setAdaptiveContinuationConfig(boolean enabled,
@@ -1011,6 +1030,20 @@ public final class StreamingAgentHandler {
      */
     public void setDailyJournal(DailyJournal dailyJournal) {
         this.dailyJournal = dailyJournal;
+    }
+
+    public void setContextAssemblyConfig(MarkdownMemoryStore markdownStore,
+                                         String provider,
+                                         SystemPromptBudget systemPromptBudget,
+                                         Set<String> registeredToolNames,
+                                         boolean hasBraveApiKey,
+                                         String skillDescriptions) {
+        this.markdownStore = markdownStore;
+        this.provider = provider;
+        this.systemPromptBudget = systemPromptBudget != null ? systemPromptBudget : SystemPromptBudget.DEFAULT;
+        this.registeredToolNames = registeredToolNames != null ? Set.copyOf(registeredToolNames) : Set.of();
+        this.hasBraveApiKey = hasBraveApiKey;
+        this.skillDescriptions = skillDescriptions != null ? skillDescriptions : "";
     }
 
     /**
@@ -1246,6 +1279,58 @@ public final class StreamingAgentHandler {
         return model;
     }
 
+    private SystemPromptLoader.RequestAssembly assembleSystemPromptForRequest(
+            String sessionId, AgentSession session, String prompt) {
+        if (session == null || session.projectPath() == null) {
+            return new SystemPromptLoader.RequestAssembly(getSystemPrompt(sessionId), List.of(), List.of(), List.of());
+        }
+        var activePaths = inferActiveFilePaths(prompt, session.messages(), session.projectPath());
+        var config = new CandidatePromptAssembler.Config(
+                candidateInjectionEnabled,
+                candidateInjectionMaxCount,
+                candidateInjectionMaxTokens,
+                Set.of());
+        var assembly = SystemPromptLoader.assembleRequest(
+                session.projectPath(),
+                memoryStore,
+                dailyJournal,
+                markdownStore,
+                getModelForSession(sessionId),
+                provider,
+                systemPromptBudget,
+                registeredToolNames,
+                hasBraveApiKey,
+                candidateStore,
+                config,
+                skillDescriptions,
+                prompt,
+                activePaths);
+        if (assembly.injectedCandidateIds().isEmpty()) {
+            sessionInjectedCandidateIds.remove(sessionId);
+        } else {
+            sessionInjectedCandidateIds.put(sessionId, assembly.injectedCandidateIds());
+        }
+        return assembly;
+    }
+
+    private MessageCompactor createRequestCompactor(String sessionId, String requestSystemPrompt) {
+        if (getLlmClient() == null) {
+            return compactor;
+        }
+        if (contextWindowTokens <= 0) {
+            return compactor;
+        }
+        int systemPromptTokens = ContextEstimator.estimateTokens(requestSystemPrompt);
+        var config = new CompactionConfig(
+                contextWindowTokens,
+                maxTokens,
+                systemPromptTokens,
+                0.85,
+                0.60,
+                5);
+        return new MessageCompactor(getLlmClient(), getModelForSession(sessionId), config);
+    }
+
     private String getSystemPrompt(String sessionId) {
         if (candidateStore == null || !candidateInjectionEnabled) {
             sessionInjectedCandidateIds.remove(sessionId);
@@ -1334,6 +1419,57 @@ public final class StreamingAgentHandler {
 
     String getSystemPromptForTest(String sessionId) {
         return getSystemPrompt(sessionId);
+    }
+
+    static List<String> inferActiveFilePaths(String prompt,
+                                             List<AgentSession.ConversationMessage> history,
+                                             Path projectPath) {
+        var candidates = new java.util.LinkedHashSet<String>();
+        capturePaths(candidates, prompt, projectPath);
+        if (history != null) {
+            int start = Math.max(0, history.size() - 6);
+            for (int i = start; i < history.size(); i++) {
+                String text = switch (history.get(i)) {
+                    case AgentSession.ConversationMessage.User u -> u.content();
+                    case AgentSession.ConversationMessage.Assistant a -> a.content();
+                    case AgentSession.ConversationMessage.System s -> s.content();
+                };
+                capturePaths(candidates, text, projectPath);
+                if (candidates.size() >= 12) {
+                    break;
+                }
+            }
+        }
+        return List.copyOf(candidates.stream().limit(12).toList());
+    }
+
+    private static final java.util.regex.Pattern FILE_PATH_PATTERN = java.util.regex.Pattern.compile(
+            "(?<![A-Za-z0-9_./-])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+|[A-Za-z0-9_.-]+\\.[A-Za-z0-9]{1,8}");
+
+    private static void capturePaths(java.util.Set<String> sink, String text, Path projectPath) {
+        if (text == null || text.isBlank()) {
+            return;
+        }
+        var matcher = FILE_PATH_PATTERN.matcher(text);
+        while (matcher.find() && sink.size() < 12) {
+            String raw = matcher.group();
+            if (raw == null || raw.isBlank()) {
+                continue;
+            }
+            String normalized = raw.replace('\\', '/');
+            if (projectPath != null) {
+                try {
+                    var absolute = Path.of(normalized);
+                    if (absolute.isAbsolute() && absolute.normalize().startsWith(projectPath.normalize())) {
+                        normalized = projectPath.normalize().relativize(absolute.normalize()).toString()
+                                .replace('\\', '/');
+                    }
+                } catch (Exception ignored) {
+                    // Best-effort path extraction only.
+                }
+            }
+            sink.add(normalized);
+        }
     }
 
     void recordInjectedCandidateOutcomesForTest(String sessionId,

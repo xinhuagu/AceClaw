@@ -165,7 +165,7 @@ public final class MemoryTierLoader {
      */
     public static List<TierSection> formatTierSections(LoadResult result, AutoMemoryStore memoryStore,
                                                          Path workspacePath, int maxAutoMemoryEntries) {
-        return formatTierSections(result, memoryStore, workspacePath, maxAutoMemoryEntries, null);
+        return formatTierSections(result, memoryStore, workspacePath, maxAutoMemoryEntries, null, null);
     }
 
     /**
@@ -182,13 +182,32 @@ public final class MemoryTierLoader {
     public static List<TierSection> formatTierSections(LoadResult result, AutoMemoryStore memoryStore,
                                                          Path workspacePath, int maxAutoMemoryEntries,
                                                          Path markdownMemoryDir) {
+        return formatTierSections(result, memoryStore, workspacePath, maxAutoMemoryEntries,
+                markdownMemoryDir, null);
+    }
+
+    /**
+     * Returns the tier sections as an ordered list (for external budget application),
+     * with query-aware auto-memory retrieval and the markdown memory directory path injected.
+     *
+     * @param result              the load result from {@link #loadAll}
+     * @param memoryStore         the auto-memory store for formatting (may be null)
+     * @param workspacePath       the workspace path (for memory store formatting)
+     * @param maxAutoMemoryEntries maximum auto-memory entries to include
+     * @param markdownMemoryDir   the markdown memory directory path (may be null)
+     * @param queryHint           optional query hint for relevance-ranked auto-memory retrieval
+     * @return ordered list of formatted tier sections
+     */
+    public static List<TierSection> formatTierSections(LoadResult result, AutoMemoryStore memoryStore,
+                                                         Path workspacePath, int maxAutoMemoryEntries,
+                                                         Path markdownMemoryDir, String queryHint) {
         if (result.tiersLoaded() == 0) return List.of();
 
         var formatted = new ArrayList<TierSection>();
 
         for (var section : result.tieredSections()) {
             String content = formatSingleTier(section, memoryStore, workspacePath,
-                    maxAutoMemoryEntries, markdownMemoryDir);
+                    maxAutoMemoryEntries, markdownMemoryDir, queryHint);
             if (content != null && !content.isEmpty()) {
                 formatted.add(new TierSection(section.tier(), content));
             }
@@ -215,7 +234,7 @@ public final class MemoryTierLoader {
 
     private static String formatSingleTier(TierSection section, AutoMemoryStore memoryStore,
                                             Path workspacePath, int maxAutoMemoryEntries,
-                                            Path markdownMemoryDir) {
+                                            Path markdownMemoryDir, String queryHint) {
         var sb = new StringBuilder();
         switch (section.tier()) {
             case MemoryTier.Soul _ -> {
@@ -247,7 +266,8 @@ public final class MemoryTierLoader {
             }
             case MemoryTier.AutoMemory _ -> {
                 if (memoryStore != null && memoryStore.size() > 0) {
-                    String memorySection = memoryStore.formatForPrompt(workspacePath, maxAutoMemoryEntries);
+                    String memorySection = memoryStore.formatForPrompt(
+                            workspacePath, maxAutoMemoryEntries, queryHint);
                     if (!memorySection.isEmpty()) {
                         sb.append(memorySection);
                     }

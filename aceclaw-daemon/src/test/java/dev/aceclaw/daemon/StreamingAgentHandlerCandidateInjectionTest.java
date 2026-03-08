@@ -76,4 +76,20 @@ class StreamingAgentHandlerCandidateInjectionTest {
         assertThat(updated.failureCount()).isGreaterThan(0);
         assertThat(updated.evidenceCount()).isGreaterThan(1);
     }
+
+    @Test
+    void inferActiveFilePathsCollectsPromptAndRecentHistory() {
+        List<AgentSession.ConversationMessage> history = List.of(
+                new AgentSession.ConversationMessage.User("Review docs/guide.md before editing anything."),
+                new AgentSession.ConversationMessage.Assistant("I last updated src/test/AppTest.java.")
+        );
+
+        var paths = StreamingAgentHandler.inferActiveFilePaths(
+                "Edit src/main/App.java and check docs/guide.md",
+                history,
+                tempDir);
+
+        assertThat(paths).contains("src/main/App.java", "docs/guide.md");
+        assertThat(paths).anyMatch(path -> path.contains("AppTest.java"));
+    }
 }

@@ -346,11 +346,9 @@ public final class AceClawDaemon {
 
         // 5b. Inject skill descriptions into system prompt so the LLM knows
         //     what each skill does and when to invoke it proactively.
-        if (!skillRegistry.isEmpty()) {
-            String skillDescriptions = skillRegistry.formatDescriptions();
-            if (!skillDescriptions.isEmpty()) {
-                systemPrompt = systemPrompt + "\n\n" + skillDescriptions;
-            }
+        String skillDescriptions = skillRegistry.isEmpty() ? "" : skillRegistry.formatDescriptions();
+        if (!skillDescriptions.isEmpty()) {
+            systemPrompt = systemPrompt + "\n\n" + skillDescriptions;
         }
 
         // 6. Context compaction (accounting for actual system prompt size)
@@ -383,7 +381,14 @@ public final class AceClawDaemon {
         var agentHandler = new StreamingAgentHandler(
                 sessionManager, agentLoop, toolRegistry, permissionManager, objectMapper);
         agentHandler.setLlmConfig(llmClient, model, systemPrompt);
-        agentHandler.setTokenConfig(config.maxTokens(), config.thinkingBudget(), config.maxTurns());
+        agentHandler.setTokenConfig(config.maxTokens(), config.thinkingBudget(), config.maxTurns(), contextWindow);
+        agentHandler.setContextAssemblyConfig(
+                markdownStore,
+                config.provider(),
+                promptBudget,
+                toolNames,
+                config.braveSearchApiKey() != null,
+                skillDescriptions);
         agentHandler.setAdaptiveContinuationConfig(
                 config.adaptiveContinuationEnabled(),
                 config.adaptiveContinuationMaxSegments(),

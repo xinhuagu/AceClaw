@@ -15,6 +15,8 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -38,6 +40,8 @@ public final class SystemPromptLoader {
     /** Global aceclaw config directory. */
     private static final Path GLOBAL_CONFIG_DIR = Path.of(
             System.getProperty("user.home"), ".aceclaw");
+    private static final String DYNAMIC_TOOL_GUIDANCE_PLACEHOLDER =
+            "<!-- Dynamic tool guidance (priority, tool-specific guidelines, fallback chain) injected by ToolGuidanceGenerator -->";
 
     /**
      * Loads the full system prompt for the given project directory.
@@ -181,6 +185,87 @@ public final class SystemPromptLoader {
         return prompt;
     }
 
+    /**
+     * Assembles a request-aware system prompt with global budget enforcement.
+     *
+     * <p>Unlike {@link #load(Path, AutoMemoryStore, DailyJournal, MarkdownMemoryStore, String, String,
+     * SystemPromptBudget, Set, boolean, CandidateStore, CandidatePromptAssembler.Config)},
+     * this path uses the live user request to rank auto-memory, selectively inject rules,
+     * and keep all sections under a single budget plan.
+     */
+    public static RequestAssembly assembleRequest(
+            Path projectPath,
+            AutoMemoryStore memoryStore,
+            DailyJournal journal,
+            MarkdownMemoryStore markdownStore,
+            String model,
+            String provider,
+            SystemPromptBudget budget,
+            Set<String> registeredToolNames,
+            boolean hasBraveApiKey,
+            CandidateStore candidateStore,
+            CandidatePromptAssembler.Config candidateConfig,
+            String skillDescriptions,
+            String queryHint,
+            List<String> activeFilePaths) {
+        var tierResult = MemoryTierLoader.loadAll(
+                GLOBAL_CONFIG_DIR, projectPath, memoryStore, journal, markdownStore);
+        Path markdownMemoryDir = markdownStore != null ? markdownStore.memoryDir() : null;
+        var tierSections = MemoryTierLoader.formatTierSections(
+                tierResult, memoryStore, projectPath, 50, markdownMemoryDir, queryHint);
+
+        var plan = new ContextAssemblyPlan();
+        for (var section : tierSections) {
+            boolean highPriority = section.tier().priority() >= 60;
+            if (highPriority) {
+                plan.addSection("memory:" + section.tier().displayName(), section.content(),
+                        section.tier().priority(), section.tier().priority() >= 90);
+            }
+        }
+
+        plan.addSection("base", basePrompt().replace(DYNAMIC_TOOL_GUIDANCE_PLACEHOLDER, ""), 95, true);
+
+        String rulesSection = RuleEngine.loadRules(projectPath).formatForPrompt(
+                activeFilePaths != null ? activeFilePaths : List.of());
+        plan.addSection("rules", rulesSection, 88, false);
+
+        if (registeredToolNames != null && !registeredToolNames.isEmpty()) {
+            plan.addSection("tool-guidance",
+                    ToolGuidanceGenerator.generate(registeredToolNames, hasBraveApiKey),
+                    82, false);
+        }
+
+        plan.addSection("environment", buildEnvironmentContext(projectPath, model, provider), 72, false);
+        plan.addSection("git", buildGitContext(projectPath), 40, false);
+
+        for (var section : tierSections) {
+            boolean lowPriority = section.tier().priority() < 60;
+            if (lowPriority) {
+                plan.addSection("memory:" + section.tier().displayName(), section.content(),
+                        section.tier().priority(), false);
+            }
+        }
+
+        plan.addSection("skills", normalizeSection(skillDescriptions), 58, false);
+
+        List<String> injectedCandidateIds = List.of();
+        if (candidateStore != null && candidateConfig != null && candidateConfig.enabled()) {
+            var candidateAssembly = CandidatePromptAssembler.assembleWithMetadata(
+                    candidateStore, candidateConfig, queryHint,
+                    activeFilePaths != null ? activeFilePaths : List.of());
+            plan.addSection("candidates", candidateAssembly.section(), 54, false);
+            injectedCandidateIds = candidateAssembly.candidateIds();
+        }
+
+        var result = plan.build(budget);
+        if (result.truncatedSectionKeys().contains("candidates")) {
+            injectedCandidateIds = List.of();
+        }
+        return new RequestAssembly(result.prompt(), injectedCandidateIds,
+                activeFilePaths != null ? List.copyOf(activeFilePaths) : List.of(),
+                result.truncatedSectionKeys());
+    }
+
     public static String load(Path projectPath, AutoMemoryStore memoryStore,
                               DailyJournal journal, MarkdownMemoryStore markdownStore,
                               String model, String provider, SystemPromptBudget budget) {
@@ -267,11 +352,29 @@ public final class SystemPromptLoader {
         return sb.toString();
     }
 
+    public record RequestAssembly(
+            String prompt,
+            List<String> injectedCandidateIds,
+            List<String> activeFilePaths,
+            List<String> truncatedSectionKeys) {
+        public RequestAssembly {
+            prompt = prompt != null ? prompt : "";
+            injectedCandidateIds = injectedCandidateIds != null ? List.copyOf(injectedCandidateIds) : List.of();
+            activeFilePaths = activeFilePaths != null ? List.copyOf(activeFilePaths) : List.of();
+            truncatedSectionKeys = truncatedSectionKeys != null ? List.copyOf(truncatedSectionKeys) : List.of();
+        }
+    }
+
     /**
      * Appends environment context (working dir, platform, Java version, date, model).
      */
     private static void appendEnvironmentContext(StringBuilder sb, Path projectPath,
                                                   String model, String provider) {
+        sb.append(buildEnvironmentContext(projectPath, model, provider));
+    }
+
+    private static String buildEnvironmentContext(Path projectPath, String model, String provider) {
+        var sb = new StringBuilder();
         sb.append("\n\n# Environment\n\n");
         sb.append("- Working directory: ").append(projectPath.toAbsolutePath().normalize()).append("\n");
         sb.append("- All relative file paths resolve against this directory.\n");
@@ -284,15 +387,21 @@ public final class SystemPromptLoader {
         if (provider != null && !provider.isBlank()) {
             sb.append("- Provider: ").append(provider).append("\n");
         }
+        return sb.toString();
     }
 
     /**
      * Appends git repository context (branch, status, recent commits) if available.
      */
     private static void appendGitContext(StringBuilder sb, Path projectPath) {
+        sb.append(buildGitContext(projectPath));
+    }
+
+    private static String buildGitContext(Path projectPath) {
+        var sb = new StringBuilder();
         try {
             var gitDir = projectPath.resolve(".git");
-            if (!Files.exists(gitDir)) return;
+            if (!Files.exists(gitDir)) return "";
 
             sb.append("\n# Git Context\n\n");
 
@@ -317,6 +426,7 @@ public final class SystemPromptLoader {
         } catch (Exception e) {
             log.debug("Failed to gather git context: {}", e.getMessage());
         }
+        return sb.toString();
     }
 
     /**
@@ -404,5 +514,12 @@ public final class SystemPromptLoader {
         }
         log.warn("Base prompt resource not found, using fallback");
         return "You are AceClaw, an AI coding assistant. Use the available tools to help the user.\n";
+    }
+
+    private static String normalizeSection(String content) {
+        if (content == null || content.isBlank()) {
+            return "";
+        }
+        return "\n\n" + content.strip() + "\n";
     }
 }
