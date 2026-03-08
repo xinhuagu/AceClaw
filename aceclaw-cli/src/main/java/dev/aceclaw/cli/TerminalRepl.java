@@ -954,33 +954,53 @@ public final class TerminalRepl {
      */
     private void handlePermissionFromBridge(PrintWriter out, LineReader reader,
                                             PermissionBridge.PermissionRequest req) {
-        int boxWidth = 50;
+        // Inner width excludes the left and right border characters (│ ... │)
+        int innerWidth = 54;
         var pausedForeground = pauseForegroundRendering();
         beginPermissionModal(req);
 
         try {
+            // Truncate description to fit inside the box
+            String desc = req.description();
+            if (desc.length() > innerWidth - 2) {
+                desc = desc.substring(0, innerWidth - 5) + "...";
+            }
+
+            String title = " Permission Required ";
+            // Top border inner fill: 1 (leading ─) + title + topFill = innerWidth + 1
+            int topFill = innerWidth - title.length();
+            String P = PERMISSION;  // shorthand for color prefix
+
             out.println();
-            out.println(PERMISSION + " " + BOX_LIGHT_TOP_LEFT + BOX_LIGHT_HORIZONTAL
-                    + " Permission Required " + hlineLight(boxWidth - 22) + RESET);
-            out.println(PERMISSION + " " + BOX_LIGHT_VERTICAL + RESET + " " + req.description());
+            // ┌─ Permission Required ──────────────────────────────┐
+            out.println(P + BOX_LIGHT_TOP_LEFT + BOX_LIGHT_HORIZONTAL
+                    + title + hlineLight(topFill) + BOX_LIGHT_TOP_RIGHT + RESET);
+            // │ <description>                                      │
+            out.println(P + BOX_LIGHT_VERTICAL + RESET
+                    + " " + padRight(desc, innerWidth) + P + BOX_LIGHT_VERTICAL + RESET);
             int queued = permissionBridge.pendingCount();
             if (queued > 0) {
-                out.println(PERMISSION + " " + BOX_LIGHT_VERTICAL + RESET + " "
-                        + MUTED + queued + " more request(s) queued" + RESET);
+                out.println(P + BOX_LIGHT_VERTICAL + RESET
+                        + " " + padRight(queued + " more request(s) queued", innerWidth)
+                        + P + BOX_LIGHT_VERTICAL + RESET);
             }
-            out.println(PERMISSION + " " + BOX_LIGHT_VERTICAL + RESET);
-            out.printf("%s %s%s (%sy%s) Allow  (%sn%s) Deny  (%sa%s) Always: ",
-                    PERMISSION, BOX_LIGHT_VERTICAL, RESET,
-                    APPROVED, RESET,
-                    DENIED, RESET,
-                    WARNING, RESET);
+            // │                                                    │
+            out.println(P + BOX_LIGHT_VERTICAL
+                    + " ".repeat(innerWidth + 1) + BOX_LIGHT_VERTICAL + RESET);
+            // │ (y) Allow  (n) Deny  (a) Always                   │
+            String choicesText = "(y) Allow  (n) Deny  (a) Always";
+            out.println(P + BOX_LIGHT_VERTICAL + RESET
+                    + " " + padRight(choicesText, innerWidth) + P + BOX_LIGHT_VERTICAL + RESET);
+            // └────────────────────────────────────────────────────┘
+            out.println(P + BOX_LIGHT_BOTTOM_LEFT
+                    + hlineLight(innerWidth + 1) + BOX_LIGHT_BOTTOM_RIGHT + RESET);
+            // User input below the box
+            out.print(PERMISSION + " > " + RESET);
             out.flush();
 
             var answer = readPermissionAnswer(reader);
             boolean approved = answer.approved();
             boolean remember = answer.remember();
-
-            out.println(PERMISSION + " " + BOX_LIGHT_BOTTOM_LEFT + hlineLight(boxWidth) + RESET);
 
             if (answer.timedOut()) {
                 out.printf("%sTimed out%s%n", WARNING, RESET);

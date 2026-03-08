@@ -84,7 +84,9 @@ public final class TerminalTheme {
     public static final String BOX_VERTICAL = "\u2551";     // double vertical
 
     public static final String BOX_LIGHT_TOP_LEFT = "\u250C";
+    public static final String BOX_LIGHT_TOP_RIGHT = "\u2510";
     public static final String BOX_LIGHT_BOTTOM_LEFT = "\u2514";
+    public static final String BOX_LIGHT_BOTTOM_RIGHT = "\u2518";
     public static final String BOX_LIGHT_HORIZONTAL = "\u2500";
     public static final String BOX_LIGHT_VERTICAL = "\u2502";
 
