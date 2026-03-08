@@ -424,7 +424,9 @@ public final class TerminalRepl {
                                 // Split multi-line content into individual printAbove calls.
                                 // JLine's AttributedString is single-line oriented; passing
                                 // large multi-line ANSI strings to fromAnsi() can lose content.
-                                String[] lines = text.split("\n", -1);
+                                // Use split without -1 to drop trailing empty strings that
+                                // would push the prompt down with blank lines.
+                                String[] lines = text.split("\n");
                                 for (String line : lines) {
                                     try {
                                         reader.printAbove(AttributedString.fromAnsi(line));
@@ -564,7 +566,7 @@ public final class TerminalRepl {
                     var pw = new PrintWriter(sw);
                     new TerminalMarkdownRenderer().render(summary, pw);
                     pw.flush();
-                    sb.append(sw);
+                    sb.append(sw.toString().stripTrailing());
                 } else {
                     long durationMs = event.path("durationMs").asLong(-1L);
                     if (durationMs > 0) {
@@ -672,7 +674,7 @@ public final class TerminalRepl {
                     var pw = new PrintWriter(sw);
                     new TerminalMarkdownRenderer().render(summary, pw);
                     pw.flush();
-                    sb.append(sw);
+                    sb.append(sw.toString().stripTrailing());
                 } else {
                     long durationMs = event.path("durationMs").asLong(-1L);
                     if (durationMs > 0) {
