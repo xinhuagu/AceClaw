@@ -134,7 +134,7 @@ class TerminalMarkdownRendererTest {
         String stripped = result.stripTrailing();
         // After stripping, re-adding a single \n is fine — but the raw output
         // should not have more than 2 trailing newlines (one after the table is normal).
-        int trailingNewlines = result.length() - result.stripTrailing().length();
+        int trailingNewlines = result.length() - stripped.length();
         assertThat(trailingNewlines)
                 .as("Rendered table + heading should not produce excessive trailing newlines")
                 .isLessThanOrEqualTo(2);
