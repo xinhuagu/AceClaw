@@ -1,6 +1,6 @@
 <h1 align="center">AceClaw</h1>
 
-<p align="center">Enterprise agent harness for long-running autonomous workflows, powered by Java 21</p>
+<p align="center">Self-learning agent harness — learns from every session, evolves its own strategies, and gets better over time</p>
 
 <p align="center">
   <a href="https://github.com/xinhuagu/AceClaw/actions/workflows/ci.yml"><img src="https://github.com/xinhuagu/AceClaw/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -9,10 +9,12 @@
   <img src="https://img.shields.io/badge/Gradle-8.14-02303A?logo=gradle&logoColor=white" alt="Gradle 8.14">
 </p>
 
-An **agent harness** is the orchestration layer that turns LLMs into persistent, self-correcting workers — the loop that reasons, acts, observes, recovers, and remembers. AceClaw is that harness: a persistent JVM daemon built for workflows that run for hours, not seconds. Pure Java 21, zero network attack surface. Inspired by [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) and [OpenClaw](https://github.com/openclaw), built from scratch with three key enhancements:
+An **agent harness** is the orchestration layer that turns LLMs into persistent, self-correcting workers — the loop that reasons, acts, observes, recovers, and remembers. Most harnesses treat each session as a blank slate. **AceClaw doesn't.** It detects what worked, what failed, and what the user corrected — then carries those lessons forward as typed, confidence-scored insights that compound across sessions.
 
-1. **Security** — UDS-only communication, sealed 4-level permissions, HMAC-signed memory
-2. **Self-Learning** — Heuristic pattern detection, cross-session insight accumulation, strategy evolution
+AceClaw is a persistent JVM daemon built for workflows that run for hours, not seconds. Pure Java 21, zero network attack surface. Inspired by [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) and [OpenClaw](https://github.com/openclaw), built from scratch with three key differentiators:
+
+1. **Self-Learning** — Zero-cost heuristic detectors analyze every tool execution, error recovery, and user correction. Insights accumulate cross-session with confidence scoring (0.4 → +0.2 per recurrence → persist at 0.7). The agent evolves its own strategies without extra LLM calls.
+2. **Security** — UDS-only communication, sealed 4-level permissions, HMAC-signed memory
 3. **Long-Term Memory** — 8-tier hierarchy, hybrid search, automated consolidation
 
 ## Security First
