@@ -960,11 +960,8 @@ public final class TerminalRepl {
         beginPermissionModal(req);
 
         try {
-            // Truncate description to fit inside the box
-            String desc = req.description();
-            if (desc.length() > innerWidth - 2) {
-                desc = desc.substring(0, innerWidth - 5) + "...";
-            }
+            // Truncate description to fit inside the box (null-safe, CJK-aware)
+            String desc = fitWidth(req.description(), innerWidth);
 
             String title = " Permission Required ";
             // Top border inner fill: 1 (leading ─) + title + topFill = innerWidth + 1
