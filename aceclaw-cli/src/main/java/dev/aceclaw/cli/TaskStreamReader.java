@@ -7,6 +7,8 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.Objects;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 
 /**
@@ -19,6 +21,11 @@ import java.util.function.Consumer;
 public final class TaskStreamReader implements Runnable {
 
     private static final Logger log = LoggerFactory.getLogger(TaskStreamReader.class);
+    /**
+     * Slightly shorter than the daemon-side 120s permission timeout so the
+     * client can resume reading the stream before the server emits its timeout result.
+     */
+    static final long CLIENT_PERMISSION_WAIT_TIMEOUT_MS = 115_000L;
 
     private final TaskHandle handle;
     private final DaemonConnection connection;
@@ -234,7 +241,8 @@ public final class TaskStreamReader implements Runnable {
         handle.markWaitingPermission(description);
 
         try {
-            var answer = permissionBridge.requestPermission(request);
+            var answer = permissionBridge.requestPermission(
+                    request, CLIENT_PERMISSION_WAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
 
             // Send permission response back to daemon on this task's connection
             ObjectNode responseParams = connection.objectMapper().createObjectNode();
@@ -247,6 +255,10 @@ public final class TaskStreamReader implements Runnable {
             Thread.currentThread().interrupt();
             log.debug("Task {}: permission request interrupted", handle.taskId());
             handle.markActivity("permission interrupted");
+        } catch (TimeoutException e) {
+            log.info("Task {}: local permission wait timed out for requestId={} after {}ms",
+                    handle.taskId(), requestId, CLIENT_PERMISSION_WAIT_TIMEOUT_MS);
+            handle.markActivity("permission wait expired");
         } catch (IOException e) {
             log.error("Task {}: failed to send permission response: {}",
                     handle.taskId(), e.getMessage());

@@ -7,8 +7,10 @@ import java.util.Objects;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Bridges permission requests from task streaming threads to the main REPL thread.
@@ -54,6 +56,26 @@ public final class PermissionBridge {
      * @throws InterruptedException if the thread is interrupted while waiting
      */
     public PermissionAnswer requestPermission(PermissionRequest request) throws InterruptedException {
+        try {
+            return requestPermission(request, 0, null);
+        } catch (TimeoutException e) {
+            throw new IllegalStateException("Unexpected timeout for unbounded permission request", e);
+        }
+    }
+
+    /**
+     * Called by a task thread to request permission with an optional timeout.
+     * Blocks until the main thread answers or the timeout elapses.
+     *
+     * @param request the permission details
+     * @param timeout how long to wait; {@code <= 0} means wait indefinitely
+     * @param unit    the timeout unit; ignored when {@code timeout <= 0}
+     * @return the user's answer
+     * @throws InterruptedException if the thread is interrupted while waiting
+     * @throws TimeoutException     if the timeout elapses before the main thread answers
+     */
+    public PermissionAnswer requestPermission(PermissionRequest request, long timeout, TimeUnit unit)
+            throws InterruptedException, TimeoutException {
         Objects.requireNonNull(request, "request");
         var future = new CompletableFuture<PermissionAnswer>();
         futures.put(request.requestId(), future);
@@ -67,9 +89,16 @@ public final class PermissionBridge {
             }
         }
         try {
-            return future.join();
+            if (timeout <= 0) {
+                return future.get();
+            }
+            Objects.requireNonNull(unit, "unit");
+            return future.get(timeout, unit);
+        } catch (ExecutionException e) {
+            throw new IllegalStateException("Permission request failed unexpectedly", e);
         } finally {
             futures.remove(request.requestId());
+            pending.remove(request);
         }
     }
 
@@ -127,9 +156,9 @@ public final class PermissionBridge {
     public void submitAnswer(String requestId, PermissionAnswer answer) {
         Objects.requireNonNull(requestId, "requestId");
         Objects.requireNonNull(answer, "answer");
-        resolvedAnswers.put(requestId, answer);
         var future = futures.get(requestId);
         if (future != null) {
+            resolvedAnswers.put(requestId, answer);
             future.complete(answer);
         } else {
             log.warn("No pending permission future for requestId={}, answer dropped", requestId);

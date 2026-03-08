@@ -8,6 +8,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.lang.reflect.Field;
 import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -309,6 +310,34 @@ class TerminalReplTest {
                 .isLessThanOrEqualTo(1);
     }
 
+    @Test
+    void buildStatusString_permissionModalShowsQueuedCount() throws Exception {
+        var bridge = (PermissionBridge) getPrivateField(repl, "permissionBridge");
+        var req = new PermissionBridge.PermissionRequest("7", "bash", "run script", "req-active");
+
+        var pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<PermissionBridge.PermissionAnswer> future = pool.submit(() -> bridge.requestPermission(req));
+            for (int i = 0; i < 20 && bridge.pendingCount() < 1; i++) {
+                Thread.sleep(20);
+            }
+
+            setPrivateField(repl, "activePermissionRequestId", "req-active");
+            setPrivateEnumField(repl, "consoleMode", "PERMISSION_MODAL");
+
+            String status = (String) invokePrivate(repl, "buildStatusString",
+                    new Class<?>[]{});
+            assertThat(status).contains("permission-modal");
+            assertThat(status).contains("(+1 queued)");
+
+            bridge.submitAnswer("req-active", new PermissionBridge.PermissionAnswer(false, false));
+            future.get(2, TimeUnit.SECONDS);
+        } finally {
+            releasePendingPermissions(bridge);
+            pool.shutdownNow();
+        }
+    }
+
     private static TerminalRepl newReplForProject(Path project) {
         var sessionInfo = new TerminalRepl.SessionInfo(
                 "1.0.0", "claude-sonnet-4-5-20250929", project.toString(), 200_000, "main");
@@ -320,6 +349,32 @@ class TerminalReplTest {
         var m = TerminalRepl.class.getDeclaredMethod(method, types);
         m.setAccessible(true);
         return m.invoke(repl, args);
+    }
+
+    private static Object getPrivateField(TerminalRepl repl, String name) throws Exception {
+        Field field = TerminalRepl.class.getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(repl);
+    }
+
+    private static void setPrivateField(TerminalRepl repl, String name, Object value) throws Exception {
+        Field field = TerminalRepl.class.getDeclaredField(name);
+        field.setAccessible(true);
+        field.set(repl, value);
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static void setPrivateEnumField(TerminalRepl repl, String name, String enumValue) throws Exception {
+        Field field = TerminalRepl.class.getDeclaredField(name);
+        field.setAccessible(true);
+        Class<?> type = field.getType();
+        field.set(repl, Enum.valueOf((Class<? extends Enum>) type.asSubclass(Enum.class), enumValue));
+    }
+
+    private static void releasePendingPermissions(PermissionBridge bridge) {
+        for (var req : bridge.pendingSnapshot()) {
+            bridge.submitAnswer(req.requestId(), new PermissionBridge.PermissionAnswer(false, false));
+        }
     }
 
     private static void writeLearningArtifacts(Path root) throws Exception {

@@ -7,8 +7,10 @@ import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class PermissionBridgeTest {
 
@@ -106,6 +108,33 @@ class PermissionBridgeTest {
             releasePendingRequests(bridge);
             pool.shutdownNow();
         }
+    }
+
+    @Test
+    void timedRequestPermission_cleansUpPendingRequestOnTimeout() {
+        var bridge = new PermissionBridge();
+        var req = new PermissionBridge.PermissionRequest("1", "bash", "run script", "req-timeout");
+
+        assertThatThrownBy(() -> bridge.requestPermission(req, 20, TimeUnit.MILLISECONDS))
+                .isInstanceOf(TimeoutException.class);
+
+        assertThat(bridge.pendingCount()).isZero();
+        assertThat(bridge.pendingSnapshot()).isEmpty();
+        assertThat(bridge.consumeResolvedAnswer("req-timeout")).isNull();
+    }
+
+    @Test
+    void lateAnswerAfterTimeout_isDropped() {
+        var bridge = new PermissionBridge();
+        var req = new PermissionBridge.PermissionRequest("1", "bash", "run script", "req-late");
+
+        assertThatThrownBy(() -> bridge.requestPermission(req, 20, TimeUnit.MILLISECONDS))
+                .isInstanceOf(TimeoutException.class);
+
+        bridge.submitAnswer("req-late", new PermissionBridge.PermissionAnswer(true, false));
+
+        assertThat(bridge.consumeResolvedAnswer("req-late")).isNull();
+        assertThat(bridge.pendingCount()).isZero();
     }
 
     private static void releasePendingRequests(PermissionBridge bridge) {
