@@ -73,7 +73,9 @@ public final class TerminalRepl {
     private static final Duration TASK_TIMEOUT_AFTER = Duration.ofSeconds(180);
     private static final Duration LEARNING_STATUS_REFRESH = Duration.ofSeconds(5);
     private static final Duration CRON_STATUS_REFRESH = Duration.ofSeconds(5);
-    private static final long PERMISSION_MODAL_TIMEOUT_MS = TaskStreamReader.CLIENT_PERMISSION_WAIT_TIMEOUT_MS;
+    /** Slightly shorter than the bridge timeout so user answers win the race near deadline. */
+    private static final long PERMISSION_MODAL_TIMEOUT_MS =
+            TaskStreamReader.CLIENT_PERMISSION_WAIT_TIMEOUT_MS - 5_000L;
     private static final boolean PROMPT_STATUS_PANEL_ENABLED =
             Boolean.parseBoolean(System.getenv().getOrDefault("ACECLAW_PROMPT_STATUS_PANEL", "true"));
     private static final boolean CRON_STATUS_EXPANDED =
