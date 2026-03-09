@@ -438,15 +438,9 @@ public final class TerminalRepl {
                         boolean didPrintAbove = false;
                         if (!pendingPrintAbove.isEmpty() && readingPrompt && !isPermissionModalActive()) {
                             for (String text : pendingPrintAbove) {
-                                // Split multi-line content into individual printAbove calls.
-                                // JLine's AttributedString is single-line oriented; passing
-                                // large multi-line ANSI strings to fromAnsi() can lose content.
-                                // Use split with -1 to preserve all lines faithfully.
-                                // Trailing blank lines are stripped at each producer site
-                                // (renderSchedulerEventNote, renderDeferredEventNote, etc.)
-                                // rather than here, to avoid silently swallowing intentional
-                                // trailing newlines from other producers.
-                                String[] lines = text.split("\n", -1);
+                                // Strip trailing blank lines before splitting to avoid
+                                // empty printAbove() calls that produce visible blank lines.
+                                String[] lines = text.stripTrailing().split("\n", -1);
                                 for (String line : lines) {
                                     try {
                                         reader.printAbove(AttributedString.fromAnsi(line));
