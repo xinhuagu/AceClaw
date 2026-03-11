@@ -84,7 +84,7 @@ public final class SkillMetricsStore {
         Objects.requireNonNull(skillName, "skillName");
         Objects.requireNonNull(tracker, "tracker");
         Objects.requireNonNull(metrics, "metrics");
-        var config = SkillRegistry.load(projectPath).get(skillName).orElse(null);
+        var config = SkillRegistry.resolve(projectPath, skillName).orElse(null);
         if (config == null) {
             return;
         }
@@ -101,6 +101,26 @@ public final class SkillMetricsStore {
                 mapper.writerWithDefaultPrettyPrinter().writeValueAsString(root),
                 StandardOpenOption.CREATE,
                 StandardOpenOption.TRUNCATE_EXISTING);
+    }
+
+    /**
+     * Deletes the persisted metrics sidecar for a skill, if one exists.
+     */
+    public void reset(Path projectPath, String skillName) throws IOException {
+        Objects.requireNonNull(projectPath, "projectPath");
+        Objects.requireNonNull(skillName, "skillName");
+        Path metricsFile = resolveMetricsFile(projectPath, skillName);
+        if (metricsFile != null) {
+            Files.deleteIfExists(metricsFile);
+        }
+    }
+
+    private static Path resolveMetricsFile(Path projectPath, String skillName) {
+        var config = SkillRegistry.resolve(projectPath, skillName).orElse(null);
+        if (config == null) {
+            return null;
+        }
+        return config.directory().resolve(METRICS_FILE);
     }
 
     private static List<PersistedOutcome> encodeOutcomes(List<SkillOutcome> outcomes) {

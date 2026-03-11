@@ -100,4 +100,13 @@ class SkillMemoryFeedbackTest {
         var memories = store.query(MemoryEntry.Category.SUCCESSFUL_STRATEGY, List.of("review"), 10);
         assertThat(memories).hasSize(2);
     }
+
+    @Test
+    void rollbackCreatesAntiPatternMemory() {
+        feedback.onRollback("review", "refined skill underperformed baseline", tempDir);
+
+        var antiPatterns = store.query(MemoryEntry.Category.ANTI_PATTERN, List.of("review"), 10);
+        assertThat(antiPatterns).hasSize(1);
+        assertThat(antiPatterns.getFirst().content()).contains("last refinement").contains("review");
+    }
 }

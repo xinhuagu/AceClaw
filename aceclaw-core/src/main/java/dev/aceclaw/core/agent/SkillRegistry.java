@@ -62,6 +62,26 @@ public final class SkillRegistry {
         return new SkillRegistry(map);
     }
 
+    /**
+     * Resolves a single skill by name without scanning the full registry.
+     * Project-scoped skills override user-scoped skills.
+     */
+    public static Optional<SkillConfig> resolve(Path projectPath, String name) {
+        if (projectPath == null || name == null || name.isBlank()) {
+            return Optional.empty();
+        }
+
+        Path projectSkillDir = projectPath.resolve(SKILLS_DIR).resolve(name);
+        var projectSkill = loadSingleSkill(projectSkillDir);
+        if (projectSkill.isPresent()) {
+            return projectSkill;
+        }
+
+        return userSkillsDir()
+                .map(dir -> dir.resolve(name))
+                .flatMap(SkillRegistry::loadSingleSkill);
+    }
+
     private static Optional<Path> userSkillsDir() {
         String userHome = System.getProperty("user.home");
         if (userHome == null || userHome.isBlank()) {
@@ -169,6 +189,22 @@ public final class SkillRegistry {
                     });
         } catch (IOException e) {
             log.warn("Failed to scan skills directory {}: {}", skillsDir, e.getMessage());
+        }
+    }
+
+    private static Optional<SkillConfig> loadSingleSkill(Path skillDir) {
+        if (skillDir == null) {
+            return Optional.empty();
+        }
+        Path skillFile = skillDir.resolve(SKILL_FILE);
+        if (!Files.isRegularFile(skillFile)) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.ofNullable(parseSkillFile(skillFile, skillDir));
+        } catch (Exception e) {
+            log.warn("Skipping malformed skill {}: {}", skillDir.getFileName(), e.getMessage());
+            return Optional.empty();
         }
     }
 
