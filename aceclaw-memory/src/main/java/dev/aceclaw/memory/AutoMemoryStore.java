@@ -49,6 +49,7 @@ public final class AutoMemoryStore {
     private final ObjectMapper mapper;
     private final MemorySigner signer;
     private final CopyOnWriteArrayList<MemoryEntry> entries;
+    private final Map<String, String> entryFiles;
     /** Serializes all file I/O to prevent JSONL corruption from concurrent writes. */
     private final ReentrantLock fileLock = new ReentrantLock();
     /** Serializes in-memory access tracking to prevent lost updates from concurrent queries. */
@@ -70,6 +71,7 @@ public final class AutoMemoryStore {
 
         this.signer = new MemorySigner(loadOrCreateKey());
         this.entries = new CopyOnWriteArrayList<>();
+        this.entryFiles = new HashMap<>();
     }
 
     /**
@@ -110,6 +112,7 @@ public final class AutoMemoryStore {
         fileLock.lock();
         try {
             entries.clear();
+            entryFiles.clear();
 
             // Load global memories
             loadFile(memoryDir.resolve(GLOBAL_FILE));
@@ -153,13 +156,14 @@ public final class AutoMemoryStore {
 
         // Persist to disk and update in-memory index atomically under fileLock
         // to prevent remove() from rewriting the file before entries.add() runs.
-        String fileName = global ? GLOBAL_FILE : projectHash(projectPath) + ".jsonl";
+        String fileName = targetFileName(global, projectPath);
         fileLock.lock();
         try {
             String json = mapper.writeValueAsString(entry);
             Files.writeString(memoryDir.resolve(fileName), json + "\n",
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
             entries.add(entry);
+            entryFiles.put(entry.id(), fileName);
             log.debug("Added memory: category={}, tags={}, file={}", category, tags, fileName);
         } catch (IOException e) {
             log.error("Failed to persist memory entry: {}", e.getMessage());
@@ -167,6 +171,48 @@ public final class AutoMemoryStore {
             fileLock.unlock();
         }
         return entry;
+    }
+
+    /**
+     * Adds a new memory entry only if an equivalent entry is not already present.
+     * Equivalence is based on category, source, and normalized content.
+     */
+    public Optional<MemoryEntry> addIfAbsent(MemoryEntry.Category category, String content,
+                                             List<String> tags, String source,
+                                             boolean global, Path projectPath) {
+        fileLock.lock();
+        try {
+            String fileName = targetFileName(global, projectPath);
+            String normalizedContent = normalizeForDedup(content);
+            var existing = entries.stream()
+                    .filter(entry -> fileName.equals(entryFiles.get(entry.id())))
+                    .filter(entry -> entry.category() == category)
+                    .filter(entry -> Objects.equals(entry.source(), source))
+                    .filter(entry -> normalizeForDedup(entry.content()).equals(normalizedContent))
+                    .findFirst();
+            if (existing.isPresent()) {
+                return existing;
+            }
+
+            String id = UUID.randomUUID().toString();
+            Instant now = Instant.now();
+            var unsigned = new MemoryEntry(id, category, content, tags, now, source, null, 0, null);
+            String hmac = signer.sign(unsigned.signablePayload());
+            var entry = new MemoryEntry(id, category, content, tags, now, source, hmac, 0, null);
+
+            String json = mapper.writeValueAsString(entry);
+            Files.writeString(memoryDir.resolve(fileName), json + "\n",
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            entries.add(entry);
+            entryFiles.put(entry.id(), fileName);
+            log.debug("Added memory if absent: category={}, tags={}, file={}", category, tags, fileName);
+            return Optional.of(entry);
+        } catch (IOException e) {
+            log.error("Failed to persist memory entry: {}", e.getMessage());
+            return Optional.empty();
+        } finally {
+            fileLock.unlock();
+        }
     }
 
     /**
@@ -221,8 +267,14 @@ public final class AutoMemoryStore {
     public void replaceEntries(List<MemoryEntry> newEntries, Path projectPath) {
         fileLock.lock();
         try {
+            var previousEntryFiles = new HashMap<>(entryFiles);
             entries.clear();
+            entryFiles.clear();
             entries.addAll(newEntries);
+            String defaultProjectFile = projectPath == null ? GLOBAL_FILE : targetFileName(false, projectPath);
+            for (var entry : newEntries) {
+                entryFiles.put(entry.id(), previousEntryFiles.getOrDefault(entry.id(), defaultProjectFile));
+            }
             rewriteFile(memoryDir.resolve(GLOBAL_FILE));
             if (projectPath != null) {
                 rewriteFile(memoryDir.resolve(projectHash(projectPath) + ".jsonl"));
@@ -253,6 +305,7 @@ public final class AutoMemoryStore {
             if (removed.isEmpty()) return false;
 
             entries.removeIf(e -> e.id().equals(id));
+            entryFiles.remove(id);
 
             // Rewrite both files (we don't know which file it's in without tracking)
             rewriteFile(memoryDir.resolve(GLOBAL_FILE));
@@ -413,6 +466,13 @@ public final class AutoMemoryStore {
         return sb.toString();
     }
 
+    private static String normalizeForDedup(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text.trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+    }
+
     // -- internal --------------------------------------------------------
 
     /**
@@ -451,6 +511,7 @@ public final class AutoMemoryStore {
                     var entry = mapper.readValue(line, MemoryEntry.class);
                     if (entry.hmac() != null && signer.verify(entry.signablePayload(), entry.hmac())) {
                         entries.add(entry);
+                        entryFiles.put(entry.id(), file.getFileName().toString());
                         loaded++;
                     } else {
                         skipped++;
@@ -552,6 +613,10 @@ public final class AutoMemoryStore {
         String abs = projectPath.toAbsolutePath().normalize().toString();
         int hash = abs.hashCode();
         return "project-" + Integer.toHexString(hash);
+    }
+
+    private static String targetFileName(boolean global, Path projectPath) {
+        return global ? GLOBAL_FILE : projectHash(projectPath) + ".jsonl";
     }
 
     private static String formatCategory(MemoryEntry.Category category) {

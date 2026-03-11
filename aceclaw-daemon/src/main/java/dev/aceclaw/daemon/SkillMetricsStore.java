@@ -71,12 +71,21 @@ public final class SkillMetricsStore {
         Objects.requireNonNull(projectPath, "projectPath");
         Objects.requireNonNull(skillName, "skillName");
         Objects.requireNonNull(tracker, "tracker");
-        var config = SkillRegistry.load(projectPath).get(skillName).orElse(null);
-        if (config == null) {
-            return;
-        }
         var metrics = tracker.getMetrics(skillName).orElse(null);
         if (metrics == null) {
+            return;
+        }
+        persist(projectPath, skillName, tracker, metrics);
+    }
+
+    public void persist(Path projectPath, String skillName, SkillOutcomeTracker tracker, SkillMetrics metrics)
+            throws IOException {
+        Objects.requireNonNull(projectPath, "projectPath");
+        Objects.requireNonNull(skillName, "skillName");
+        Objects.requireNonNull(tracker, "tracker");
+        Objects.requireNonNull(metrics, "metrics");
+        var config = SkillRegistry.load(projectPath).get(skillName).orElse(null);
+        if (config == null) {
             return;
         }
 

@@ -9,6 +9,7 @@ import dev.aceclaw.core.agent.CompactionConfig;
 import dev.aceclaw.core.agent.ContextEstimator;
 import dev.aceclaw.core.agent.DoomLoopDetector;
 import dev.aceclaw.core.agent.ProgressDetector;
+import dev.aceclaw.core.agent.SkillMetrics;
 import dev.aceclaw.core.agent.SkillOutcome;
 import dev.aceclaw.core.agent.SkillOutcomeTracker;
 import dev.aceclaw.core.agent.WatchdogTimer;
@@ -141,6 +142,8 @@ public final class StreamingAgentHandler {
     private final ConcurrentHashMap<String, List<String>> sessionInjectedCandidateIds =
             new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Path, SkillOutcomeTracker> projectSkillTrackers =
+            new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, ReentrantLock> skillOutcomeLocks =
             new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, List<String>> sessionRecentSuccessfulSkills =
             new ConcurrentHashMap<>();
@@ -647,8 +650,8 @@ public final class StreamingAgentHandler {
         var tracker = projectSkillTrackers.computeIfAbsent(projectPath, skillMetricsStore::load);
         String correction = truncate(prompt, 200);
         for (var skillName : recent) {
-            tracker.record(skillName, new SkillOutcome.UserCorrected(Instant.now(), correction));
-            persistSkillMetrics(projectPath, skillName, tracker);
+            var outcome = new SkillOutcome.UserCorrected(Instant.now(), correction);
+            recordSkillOutcomeAtomically(projectPath, tracker, skillName, outcome);
         }
     }
 
@@ -690,8 +693,7 @@ public final class StreamingAgentHandler {
                 outcome = new SkillOutcome.Success(now, turnsUsed);
                 successfulSkills.add(invocation.skillName());
             }
-            tracker.record(invocation.skillName(), outcome);
-            persistSkillMetrics(projectPath, invocation.skillName(), tracker);
+            recordSkillOutcomeAtomically(projectPath, tracker, invocation.skillName(), outcome);
         }
 
         if (successfulSkills.isEmpty()) {
@@ -701,12 +703,51 @@ public final class StreamingAgentHandler {
         }
     }
 
-    private void persistSkillMetrics(Path projectPath, String skillName, SkillOutcomeTracker tracker) {
+    private void recordSkillOutcomeAtomically(Path projectPath,
+                                              SkillOutcomeTracker tracker,
+                                              String skillName,
+                                              SkillOutcome outcome) {
+        var lock = skillOutcomeLocks.computeIfAbsent(skillOutcomeLockKey(projectPath, skillName), _ -> new ReentrantLock());
+        lock.lock();
         try {
-            skillMetricsStore.persist(projectPath, skillName, tracker);
+            tracker.record(skillName, outcome);
+            var metrics = persistSkillMetrics(projectPath, skillName, tracker);
+            emitSkillMemoryFeedback(projectPath, skillName, metrics, outcome);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private SkillMetrics persistSkillMetrics(Path projectPath, String skillName, SkillOutcomeTracker tracker) {
+        var metrics = tracker.getMetrics(skillName).orElse(null);
+        if (metrics == null) {
+            return null;
+        }
+        try {
+            skillMetricsStore.persist(projectPath, skillName, tracker, metrics);
         } catch (Exception e) {
             log.warn("Failed to persist skill metrics for {}: {}", skillName, e.getMessage());
         }
+        return metrics;
+    }
+
+    private void emitSkillMemoryFeedback(Path projectPath,
+                                         String skillName,
+                                         SkillMetrics metrics,
+                                         SkillOutcome outcome) {
+        if (skillMemoryFeedback == null || metrics == null) {
+            return;
+        }
+        try {
+            skillMemoryFeedback.onOutcome(skillName, outcome, metrics, projectPath);
+        } catch (Exception e) {
+            log.warn("Failed to write skill-memory feedback for {}: {}", skillName, e.getMessage());
+        }
+    }
+
+    private static String skillOutcomeLockKey(Path projectPath, String skillName) {
+        String projectKey = projectPath == null ? "<null>" : projectPath.toAbsolutePath().normalize().toString();
+        return projectKey + "::" + skillName;
     }
 
     private List<SkillInvocationResult> extractSkillInvocations(dev.aceclaw.core.agent.Turn turn) {
@@ -1106,6 +1147,7 @@ public final class StreamingAgentHandler {
     private int maxPlanStepWallTimeSec = 300;
     private int maxPlanTotalWallTimeSec = 3600;
     private PlanCheckpointStore planCheckpointStore;
+    private SkillMemoryFeedback skillMemoryFeedback;
 
     /**
      * Sets the LLM configuration for permission-aware agent loop creation.
@@ -1156,6 +1198,7 @@ public final class StreamingAgentHandler {
     public void setMemoryStore(AutoMemoryStore memoryStore, Path workingDir) {
         this.memoryStore = memoryStore;
         this.workingDir = workingDir;
+        this.skillMemoryFeedback = memoryStore != null ? new SkillMemoryFeedback(memoryStore) : null;
         if (workingDir != null) {
             this.antiPatternGateFeedbackStore = new AntiPatternGateFeedbackStore(workingDir);
         }
