@@ -81,4 +81,23 @@ class SkillMemoryFeedbackTest {
         var memories = store.query(MemoryEntry.Category.SUCCESSFUL_STRATEGY, List.of("review"), 10);
         assertThat(memories).hasSize(1);
     }
+
+    @Test
+    void projectScopedFeedbackDoesNotDedupAgainstGlobalMemory() {
+        var now = Instant.now();
+        var metrics = new SkillMetrics("review", 1, 1, 0, 0, 1.0, now, 1.0);
+        var content = "Skill 'review' completed successfully and reinforced its current strategy.";
+        store.add(
+                MemoryEntry.Category.SUCCESSFUL_STRATEGY,
+                content,
+                List.of("review", "skill-feedback", "successful-strategy"),
+                "skill:review",
+                true,
+                tempDir);
+
+        feedback.onOutcome("review", new SkillOutcome.Success(now, 1), metrics, tempDir);
+
+        var memories = store.query(MemoryEntry.Category.SUCCESSFUL_STRATEGY, List.of("review"), 10);
+        assertThat(memories).hasSize(2);
+    }
 }
