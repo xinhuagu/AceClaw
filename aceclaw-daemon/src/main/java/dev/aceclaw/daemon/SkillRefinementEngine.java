@@ -87,7 +87,7 @@ public final class SkillRefinementEngine {
         Objects.requireNonNull(skillName, "skillName");
         Objects.requireNonNull(outcomes, "outcomes");
 
-        var skill = SkillRegistry.load(projectPath).get(skillName).orElse(null);
+        var skill = SkillRegistry.resolve(projectPath, skillName).orElse(null);
         if (skill == null) {
             return PreparedPlan.none();
         }
@@ -174,7 +174,7 @@ public final class SkillRefinementEngine {
         Objects.requireNonNull(skillName, "skillName");
         Objects.requireNonNull(tracker, "tracker");
 
-        var skill = SkillRegistry.load(projectPath).get(skillName).orElseThrow();
+        var skill = SkillRegistry.resolve(projectPath, skillName).orElseThrow();
         var state = loadState(skill.directory());
         apply(projectPath, tracker, new PreparedPlan(skill, state, WindowStats.EMPTY,
                 RefinementAction.ROLLED_BACK, "Manual rollback requested."), null);

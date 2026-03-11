@@ -84,7 +84,7 @@ public final class SkillMetricsStore {
         Objects.requireNonNull(skillName, "skillName");
         Objects.requireNonNull(tracker, "tracker");
         Objects.requireNonNull(metrics, "metrics");
-        var config = SkillRegistry.load(projectPath).get(skillName).orElse(null);
+        var config = SkillRegistry.resolve(projectPath, skillName).orElse(null);
         if (config == null) {
             return;
         }
@@ -116,7 +116,7 @@ public final class SkillMetricsStore {
     }
 
     private static Path resolveMetricsFile(Path projectPath, String skillName) {
-        var config = SkillRegistry.load(projectPath).get(skillName).orElse(null);
+        var config = SkillRegistry.resolve(projectPath, skillName).orElse(null);
         if (config == null) {
             return null;
         }
