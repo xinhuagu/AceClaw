@@ -146,11 +146,18 @@ class MemoryLifecycleIntegrationTest {
         // Extract memories from conversation
         var extracted = SessionEndExtractor.extract(messages);
         assertThat(extracted).isNotEmpty();
+        var learnings = new SessionAnalyzer().analyze(messages, java.util.Map.of());
+        assertThat(learnings.sessionSummary()).contains("Session retrospective");
 
         // Save extracted memories to store (as the daemon callback does)
         for (var mem : extracted) {
             memoryStore.add(mem.category(), mem.content(), mem.tags(),
                     "session-end:test-session", false, workspacePath);
+        }
+        for (var insight : learnings.insights()) {
+            memoryStore.addIfAbsent(
+                    insight.category(), insight.content(), insight.tags(),
+                    "session-analysis:test-session", false, workspacePath);
         }
         int sizeAfterExtraction = memoryStore.size();
         assertThat(sizeAfterExtraction).isGreaterThan(0);
@@ -166,8 +173,10 @@ class MemoryLifecycleIntegrationTest {
         // Journal should record the activity
         journal.append("Session test-session ended: " + messages.size() +
                 " messages, " + extracted.size() + " memories extracted");
+        journal.append("Session retrospective (test-ses): " + learnings.sessionSummary());
         var journalEntries = journal.loadRecentWindow();
         assertThat(journalEntries).anyMatch(e -> e.contains("memories extracted"));
+        assertThat(journalEntries).anyMatch(e -> e.contains("Session retrospective"));
     }
 
     @Test

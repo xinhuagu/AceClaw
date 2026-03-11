@@ -599,6 +599,7 @@ public final class AceClawDaemon {
             final var extractionJournal = journal;
             final var archiveDir = markdownStore != null ? markdownStore.memoryDir() : null;
             final var agentHandlerForCleanup = agentHandler;
+            final var sessionAnalyzer = new SessionAnalyzer();
             sessionManager.setSessionEndCallback(session -> {
                 var extracted = SessionEndExtractor.extract(session.messages());
                 for (var mem : extracted) {
@@ -613,12 +614,30 @@ public final class AceClawDaemon {
                     log.info("Extracted {} memories from session {} on destroy",
                             extracted.size(), session.id());
                 }
+                var learnings = sessionAnalyzer.analyze(session.messages(), Map.of());
+                for (var insight : learnings.insights()) {
+                    try {
+                        memoryStore.addIfAbsent(
+                                insight.category(),
+                                insight.content(),
+                                insight.tags(),
+                                "session-analysis:" + session.id(),
+                                false,
+                                workingDir);
+                    } catch (Exception e) {
+                        log.warn("Failed to save session analysis memory: {}", e.getMessage());
+                    }
+                }
                 var shortId = session.id().length() > 8
                         ? session.id().substring(0, 8) : session.id();
                 if (extractionJournal != null) {
                     extractionJournal.append("Session " + shortId +
                             " ended: " + session.messages().size() + " messages, " +
                             extracted.size() + " memories extracted");
+                    if (!learnings.sessionSummary().isBlank()) {
+                        extractionJournal.append("Session retrospective (" + shortId + "): "
+                                + learnings.sessionSummary());
+                    }
                 }
 
                 // Run memory consolidation after extraction
