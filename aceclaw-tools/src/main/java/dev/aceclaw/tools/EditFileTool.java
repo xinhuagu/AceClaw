@@ -118,11 +118,7 @@ public final class EditFileTool implements Tool {
     }
 
     private Path resolveFilePath(String raw) {
-        var path = Path.of(raw);
-        if (path.isAbsolute()) {
-            return path;
-        }
-        return workingDir.resolve(path).normalize();
+        return PathResolver.resolve(raw, workingDir);
     }
 
     private static int countOccurrences(String text, String search) {

@@ -69,9 +69,7 @@ public final class ScreenCaptureTool implements Tool {
         Path outputPath;
         if (input.has("output_path") && !input.get("output_path").isNull()
                 && !input.get("output_path").asText().isBlank()) {
-            var raw = input.get("output_path").asText();
-            var p = Path.of(raw);
-            outputPath = p.isAbsolute() ? p : workingDir.resolve(p).normalize();
+            outputPath = PathResolver.resolve(input.get("output_path").asText(), workingDir);
         } else {
             outputPath = Files.createTempFile("aceclaw-screenshot-", ".png");
         }

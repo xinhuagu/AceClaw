@@ -138,10 +138,6 @@ public final class WriteFileTool implements Tool {
     }
 
     private Path resolveFilePath(String raw) {
-        var path = Path.of(raw);
-        if (path.isAbsolute()) {
-            return path;
-        }
-        return workingDir.resolve(path).normalize();
+        return PathResolver.resolve(raw, workingDir);
     }
 }

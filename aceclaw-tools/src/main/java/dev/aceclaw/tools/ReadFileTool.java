@@ -240,12 +240,7 @@ public final class ReadFileTool implements Tool {
     }
 
     private Path resolveFilePath(JsonNode input) {
-        var raw = input.get("file_path").asText();
-        var path = Path.of(raw);
-        if (path.isAbsolute()) {
-            return path;
-        }
-        return workingDir.resolve(path).normalize();
+        return PathResolver.resolve(input.get("file_path").asText(), workingDir);
     }
 
     private static int getIntParam(JsonNode input, String field, int defaultValue) {

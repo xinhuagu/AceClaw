@@ -158,12 +158,7 @@ public final class GlobSearchTool implements Tool {
 
     private Path resolveSearchDir(JsonNode input) {
         if (input.has("path") && !input.get("path").isNull() && !input.get("path").asText().isBlank()) {
-            var raw = input.get("path").asText();
-            var path = Path.of(raw);
-            if (path.isAbsolute()) {
-                return path;
-            }
-            return workingDir.resolve(path).normalize();
+            return PathResolver.resolve(input.get("path").asText(), workingDir);
         }
         return workingDir;
     }

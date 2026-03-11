@@ -199,8 +199,14 @@ public final class GrepSearchTool implements Tool {
         try {
             lines = Files.readAllLines(file, StandardCharsets.UTF_8);
         } catch (MalformedInputException e) {
-            log.debug("Skipping non-UTF-8 file: {}", file);
-            return List.of();
+            // Retry with ISO-8859-1 (covers COBOL, legacy European files)
+            try {
+                lines = Files.readAllLines(file, java.nio.charset.StandardCharsets.ISO_8859_1);
+                log.debug("Read file with ISO-8859-1 fallback: {}", file);
+            } catch (IOException e2) {
+                log.debug("Skipping unreadable file: {}", file);
+                return List.of();
+            }
         }
         var results = new ArrayList<MatchResult>();
 
@@ -263,12 +269,7 @@ public final class GrepSearchTool implements Tool {
 
     private Path resolveSearchPath(JsonNode input) {
         if (input.has("path") && !input.get("path").isNull() && !input.get("path").asText().isBlank()) {
-            var raw = input.get("path").asText();
-            var path = Path.of(raw);
-            if (path.isAbsolute()) {
-                return path;
-            }
-            return workingDir.resolve(path).normalize();
+            return PathResolver.resolve(input.get("path").asText(), workingDir);
         }
         return workingDir;
     }
