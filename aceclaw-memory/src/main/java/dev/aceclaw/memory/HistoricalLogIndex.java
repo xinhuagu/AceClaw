@@ -7,9 +7,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -192,12 +195,13 @@ public final class HistoricalLogIndex {
     }
 
     private <T> void append(Path file, T entry) throws IOException {
-        Files.writeString(
-                file,
-                mapper.writeValueAsString(entry) + "\n",
-                StandardOpenOption.CREATE,
-                StandardOpenOption.APPEND
-        );
+        byte[] line = (mapper.writeValueAsString(entry) + "\n").getBytes(StandardCharsets.UTF_8);
+        try (var channel = FileChannel.open(file,
+                StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND)) {
+            try (var ignored = channel.lock()) {
+                channel.write(ByteBuffer.wrap(line));
+            }
+        }
     }
 
     private <T> List<T> read(Path file, Class<T> type) {
