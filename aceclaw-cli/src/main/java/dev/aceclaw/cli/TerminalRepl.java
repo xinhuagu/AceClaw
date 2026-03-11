@@ -1955,9 +1955,6 @@ public final class TerminalRepl {
 
         var previous = lastNotifiedSkillDraftSnapshot;
         lastNotifiedSkillDraftSnapshot = snapshot;
-        if (previous == null) {
-            return;
-        }
 
         for (var entry : snapshot.drafts().entrySet()) {
             String key = entry.getKey();
@@ -1993,8 +1990,8 @@ public final class TerminalRepl {
             return cachedSkillDraftSnapshot;
         }
         SkillDraftSnapshot next = loadSkillDraftSnapshot(projectRoot);
-        cachedSkillDraftSnapshot = next;
         cachedSkillDraftSnapshotAt = now;
+        cachedSkillDraftSnapshot = next;
         return next;
     }
 
@@ -2019,7 +2016,7 @@ public final class TerminalRepl {
                 Map<String, String> frontmatter = parseSkillFrontmatter(Files.readString(draftFile));
                 String skillName = frontmatter.getOrDefault("name", draftFile.getParent().getFileName().toString());
                 var validation = validations.getOrDefault(draftPath, new SkillValidationStatus("pending", List.of()));
-                var release = releases.getOrDefault(skillName, new SkillReleaseStatus("draft", false));
+                var release = releases.getOrDefault(skillName.toLowerCase(), new SkillReleaseStatus("draft", false));
                 drafts.put(skillName.toLowerCase(), new SkillDraftRecord(
                         skillName,
                         frontmatter.getOrDefault("description", ""),
@@ -2092,7 +2089,7 @@ public final class TerminalRepl {
             for (JsonNode release : releases) {
                 String skillName = release.path("skillName").asText("");
                 if (skillName.isBlank()) continue;
-                statuses.put(skillName, new SkillReleaseStatus(
+                statuses.put(skillName.toLowerCase(), new SkillReleaseStatus(
                         release.path("stage").asText("draft"),
                         release.path("paused").asBoolean(false)
                 ));
