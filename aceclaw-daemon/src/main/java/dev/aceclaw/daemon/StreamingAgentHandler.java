@@ -143,6 +143,8 @@ public final class StreamingAgentHandler {
             new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Path, SkillOutcomeTracker> projectSkillTrackers =
             new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, ReentrantLock> skillOutcomeLocks =
+            new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, List<String>> sessionRecentSuccessfulSkills =
             new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, AntiPatternGateOverride> antiPatternGateOverrides =
@@ -649,9 +651,7 @@ public final class StreamingAgentHandler {
         String correction = truncate(prompt, 200);
         for (var skillName : recent) {
             var outcome = new SkillOutcome.UserCorrected(Instant.now(), correction);
-            tracker.record(skillName, outcome);
-            var metrics = persistSkillMetrics(projectPath, skillName, tracker);
-            emitSkillMemoryFeedback(projectPath, skillName, metrics, outcome);
+            recordSkillOutcomeAtomically(projectPath, tracker, skillName, outcome);
         }
     }
 
@@ -693,15 +693,28 @@ public final class StreamingAgentHandler {
                 outcome = new SkillOutcome.Success(now, turnsUsed);
                 successfulSkills.add(invocation.skillName());
             }
-            tracker.record(invocation.skillName(), outcome);
-            var metrics = persistSkillMetrics(projectPath, invocation.skillName(), tracker);
-            emitSkillMemoryFeedback(projectPath, invocation.skillName(), metrics, outcome);
+            recordSkillOutcomeAtomically(projectPath, tracker, invocation.skillName(), outcome);
         }
 
         if (successfulSkills.isEmpty()) {
             sessionRecentSuccessfulSkills.remove(sessionId);
         } else {
             sessionRecentSuccessfulSkills.put(sessionId, List.copyOf(successfulSkills));
+        }
+    }
+
+    private void recordSkillOutcomeAtomically(Path projectPath,
+                                              SkillOutcomeTracker tracker,
+                                              String skillName,
+                                              SkillOutcome outcome) {
+        var lock = skillOutcomeLocks.computeIfAbsent(skillOutcomeLockKey(projectPath, skillName), _ -> new ReentrantLock());
+        lock.lock();
+        try {
+            tracker.record(skillName, outcome);
+            var metrics = persistSkillMetrics(projectPath, skillName, tracker);
+            emitSkillMemoryFeedback(projectPath, skillName, metrics, outcome);
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -730,6 +743,11 @@ public final class StreamingAgentHandler {
         } catch (Exception e) {
             log.warn("Failed to write skill-memory feedback for {}: {}", skillName, e.getMessage());
         }
+    }
+
+    private static String skillOutcomeLockKey(Path projectPath, String skillName) {
+        String projectKey = projectPath == null ? "<null>" : projectPath.toAbsolutePath().normalize().toString();
+        return projectKey + "::" + skillName;
     }
 
     private List<SkillInvocationResult> extractSkillInvocations(dev.aceclaw.core.agent.Turn turn) {
