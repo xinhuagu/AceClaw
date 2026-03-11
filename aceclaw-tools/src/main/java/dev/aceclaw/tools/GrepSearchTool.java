@@ -199,8 +199,20 @@ public final class GrepSearchTool implements Tool {
         try {
             lines = Files.readAllLines(file, StandardCharsets.UTF_8);
         } catch (MalformedInputException e) {
-            // Retry with ISO-8859-1 (covers COBOL, legacy European files)
+            // Retry with ISO-8859-1 (covers COBOL, legacy European files).
+            // Guard against binary files: ISO-8859-1 decodes any byte sequence,
+            // so check the first 8KB for NUL bytes before committing.
             try {
+                byte[] head = new byte[8192];
+                try (var is = Files.newInputStream(file)) {
+                    int n = is.read(head);
+                    for (int i = 0; i < n; i++) {
+                        if (head[i] == 0) {
+                            log.debug("Skipping likely binary file: {}", file);
+                            return List.of();
+                        }
+                    }
+                }
                 lines = Files.readAllLines(file, java.nio.charset.StandardCharsets.ISO_8859_1);
                 log.debug("Read file with ISO-8859-1 fallback: {}", file);
             } catch (IOException e2) {

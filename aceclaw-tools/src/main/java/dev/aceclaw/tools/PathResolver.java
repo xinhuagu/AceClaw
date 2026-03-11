@@ -15,7 +15,7 @@ final class PathResolver {
      * Java's {@code Path.of("~")} treats ~ as a literal directory name, not the home dir.
      */
     static String expandTilde(String raw) {
-        if (raw.startsWith("~/") || raw.equals("~")) {
+        if (raw.startsWith("~/") || raw.startsWith("~\\") || raw.equals("~")) {
             return System.getProperty("user.home") + raw.substring(1);
         }
         return raw;
