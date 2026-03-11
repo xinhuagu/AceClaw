@@ -12,6 +12,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -51,7 +52,7 @@ class CandidatePipelineIntegrationTest {
 
     @Test
     void shadowCandidateProgressionToPromoted() {
-        var t0 = Instant.parse("2026-02-23T00:00:00Z");
+        var t0 = Instant.now().minus(Duration.ofMinutes(10));
 
         // Upsert observations that exceed promotion gates (evidence >= 2, score >= 0.5)
         candidateStore.upsert(obs("timeout recovery via retry", "bash", 0.8, t0));
@@ -72,7 +73,7 @@ class CandidatePipelineIntegrationTest {
 
     @Test
     void promotedCandidateRegressionToDemoted() {
-        var t0 = Instant.parse("2026-02-23T00:00:00Z");
+        var t0 = Instant.now().minus(Duration.ofMinutes(10));
 
         // Create and promote a candidate
         candidateStore.upsert(obs("timeout recovery", "bash", 0.8, t0));
@@ -99,7 +100,7 @@ class CandidatePipelineIntegrationTest {
 
     @Test
     void killSwitchPreventsPromptInjection() {
-        var t0 = Instant.parse("2026-02-23T00:00:00Z");
+        var t0 = Instant.now().minus(Duration.ofMinutes(10));
 
         // Create and promote a candidate
         candidateStore.upsert(obs("strategy for bash", "bash", 0.8, t0));
@@ -115,7 +116,7 @@ class CandidatePipelineIntegrationTest {
 
     @Test
     void promptBudgetCapRespected() {
-        var t0 = Instant.parse("2026-02-23T00:00:00Z");
+        var t0 = Instant.now().minus(Duration.ofMinutes(10));
 
         // Create many promoted candidates with distinct tool tags to prevent merging
         for (int i = 0; i < 20; i++) {
@@ -141,7 +142,7 @@ class CandidatePipelineIntegrationTest {
 
     @Test
     void transitionAuditTrailPersisted() throws IOException {
-        var t0 = Instant.parse("2026-02-23T00:00:00Z");
+        var t0 = Instant.now().minus(Duration.ofMinutes(10));
 
         candidateStore.upsert(obs("timeout recovery", "bash", 0.8, t0));
         candidateStore.upsert(obs("bash timeout recovery approach", "bash", 0.8, t0.plusSeconds(60)));
@@ -178,7 +179,7 @@ class CandidatePipelineIntegrationTest {
 
     @Test
     void promotedCandidatesAppearInPromptAssembly() {
-        var t0 = Instant.parse("2026-02-23T00:00:00Z");
+        var t0 = Instant.now().minus(Duration.ofMinutes(10));
 
         candidateStore.upsert(obs("use retry for transient errors", "bash", 0.85, t0));
         candidateStore.upsert(obs("bash retry for transient timeout errors", "bash", 0.85,
@@ -195,7 +196,7 @@ class CandidatePipelineIntegrationTest {
 
     @Test
     void autoPromotionTriggersSkillDraftGeneration() throws IOException {
-        var t0 = Instant.parse("2026-02-23T00:00:00Z");
+        var t0 = Instant.now().minus(Duration.ofMinutes(10));
 
         // Track whether the trigger was called and capture the project path
         var triggerCalled = new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -258,7 +259,7 @@ class CandidatePipelineIntegrationTest {
                 projectPath -> triggerCalled.set(true));
 
         // Only one observation — not enough for promotion (needs evidence >= 2)
-        var t0 = Instant.parse("2026-02-23T00:00:00Z");
+        var t0 = Instant.now().minus(Duration.ofMinutes(10));
         candidateStore.upsert(obs("single observation", "bash", 0.8, t0));
 
         var insights = List.<Insight>of(

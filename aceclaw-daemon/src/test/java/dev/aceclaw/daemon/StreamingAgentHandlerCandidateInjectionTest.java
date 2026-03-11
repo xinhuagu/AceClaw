@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Set;
@@ -32,7 +33,7 @@ class StreamingAgentHandlerCandidateInjectionTest {
         var smConfig = new CandidateStateMachine.Config(1, 0.3, 1.0, 10, Set.of());
         var store = new CandidateStore(tempDir, smConfig);
         store.load();
-        var t0 = Instant.parse("2026-02-23T00:00:00Z");
+        var t0 = Instant.now().minus(Duration.ofMinutes(10));
         store.upsert(new CandidateStore.CandidateObservation(
                 MemoryEntry.Category.ERROR_RECOVERY, CandidateKind.ERROR_RECOVERY,
                 "retry transient timeout", "bash", List.of("bash", "timeout"),
@@ -59,7 +60,7 @@ class StreamingAgentHandlerCandidateInjectionTest {
         var smConfig = new CandidateStateMachine.Config(1, 0.3, 1.0, 10, Set.of());
         var store = new CandidateStore(tempDir.resolve("planned"), smConfig);
         store.load();
-        var t0 = Instant.parse("2026-02-23T00:00:00Z");
+        var t0 = Instant.now().minus(Duration.ofMinutes(10));
         store.upsert(new CandidateStore.CandidateObservation(
                 MemoryEntry.Category.ERROR_RECOVERY, CandidateKind.ERROR_RECOVERY,
                 "retry transient timeout", "bash", List.of("bash", "timeout"),
