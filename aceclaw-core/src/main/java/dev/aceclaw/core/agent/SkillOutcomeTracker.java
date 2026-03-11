@@ -63,6 +63,16 @@ public final class SkillOutcomeTracker {
         return List.copyOf(entries);
     }
 
+    /**
+     * Clears recorded outcomes for a skill and resets its metrics window.
+     */
+    public void reset(String skillName) {
+        if (skillName == null || skillName.isBlank()) {
+            return;
+        }
+        outcomes.remove(skillName);
+    }
+
     private static SkillMetrics toMetrics(String skillName, List<SkillOutcome> entries, Instant now) {
         int invocationCount = 0;
         int successCount = 0;

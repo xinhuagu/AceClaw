@@ -713,6 +713,7 @@ public final class StreamingAgentHandler {
             tracker.record(skillName, outcome);
             var metrics = persistSkillMetrics(projectPath, skillName, tracker);
             emitSkillMemoryFeedback(projectPath, skillName, metrics, outcome);
+            maybeRefineSkill(projectPath, skillName, tracker);
         } finally {
             lock.unlock();
         }
@@ -742,6 +743,21 @@ public final class StreamingAgentHandler {
             skillMemoryFeedback.onOutcome(skillName, outcome, metrics, projectPath);
         } catch (Exception e) {
             log.warn("Failed to write skill-memory feedback for {}: {}", skillName, e.getMessage());
+        }
+    }
+
+    private void maybeRefineSkill(Path projectPath, String skillName, SkillOutcomeTracker tracker) {
+        if (skillRefinementEngine == null) {
+            return;
+        }
+        try {
+            var outcome = skillRefinementEngine.onOutcomeRecorded(projectPath, skillName, tracker);
+            if (outcome.action() != SkillRefinementEngine.RefinementAction.NONE) {
+                log.info("Skill refinement action={} skill={} reason={}",
+                        outcome.action(), skillName, outcome.reason());
+            }
+        } catch (Exception e) {
+            log.warn("Failed to refine skill {}: {}", skillName, e.getMessage());
         }
     }
 
@@ -1148,6 +1164,7 @@ public final class StreamingAgentHandler {
     private int maxPlanTotalWallTimeSec = 3600;
     private PlanCheckpointStore planCheckpointStore;
     private SkillMemoryFeedback skillMemoryFeedback;
+    private SkillRefinementEngine skillRefinementEngine;
 
     /**
      * Sets the LLM configuration for permission-aware agent loop creation.
@@ -1157,6 +1174,9 @@ public final class StreamingAgentHandler {
         this.llmClient = llmClient;
         this.model = model;
         this.systemPrompt = systemPrompt;
+        this.skillRefinementEngine = llmClient != null && model != null
+                ? new SkillRefinementEngine(llmClient, model, skillMetricsStore)
+                : null;
     }
 
     /**
