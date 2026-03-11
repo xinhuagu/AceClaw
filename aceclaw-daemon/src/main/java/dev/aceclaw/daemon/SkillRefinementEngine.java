@@ -431,24 +431,23 @@ public final class SkillRefinementEngine {
         int successCount = 0;
         int correctionCount = 0;
         int consecutiveFailures = 0;
-        boolean trailingFailures = true;
         for (int i = startIndex; i < outcomes.size(); i++) {
             var outcome = outcomes.get(i);
             switch (outcome) {
-                case SkillOutcome.Success ignored -> {
-                    successCount++;
-                    trailingFailures = false;
-                }
+                case SkillOutcome.Success ignored -> successCount++;
                 case SkillOutcome.Failure ignored -> {
-                    if (trailingFailures) {
-                        consecutiveFailures++;
-                    }
+                    // counted in backward trailing-failure scan below
                 }
-                case SkillOutcome.UserCorrected ignored -> {
-                    correctionCount++;
-                    trailingFailures = false;
-                }
+                case SkillOutcome.UserCorrected ignored -> correctionCount++;
             }
+        }
+
+        for (int i = outcomes.size() - 1; i >= startIndex; i--) {
+            if (outcomes.get(i) instanceof SkillOutcome.Failure) {
+                consecutiveFailures++;
+                continue;
+            }
+            break;
         }
 
         return new WindowStats(

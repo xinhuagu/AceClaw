@@ -156,6 +156,15 @@ class SkillRefinementEngineTest {
         decision = engine.analyze(tracker.outcomes("review"));
 
         assertThat(decision).isInstanceOf(SkillRefinementEngine.RefinementDecision.NoActionNeeded.class);
+
+        tracker.reset("review");
+        record(
+                success(1),
+                failure("tail-1"), failure("tail-2"), failure("tail-3"), failure("tail-4"), failure("tail-5"));
+
+        decision = engine.analyze(tracker.outcomes("review"));
+
+        assertThat(decision).isInstanceOf(SkillRefinementEngine.RefinementDecision.DisableRecommended.class);
     }
 
     private SkillRefinementEngine.RefinementOutcome evaluate() throws Exception {
