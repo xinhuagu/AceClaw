@@ -41,7 +41,11 @@ public final class SessionAnalyzer {
             MemoryEntry.Category category,
             String content,
             List<String> tags
-    ) {}
+    ) {
+        public SessionInsight {
+            tags = tags != null ? List.copyOf(tags) : List.of();
+        }
+    }
 
     public record SessionLearnings(
             List<SessionInsight> insights,
@@ -52,7 +56,17 @@ public final class SessionAnalyzer {
             Map<String, ToolMetrics> toolMetrics,
             boolean backtrackingDetected,
             String endToEndStrategy
-    ) {}
+    ) {
+        public SessionLearnings {
+            insights = insights != null ? List.copyOf(insights) : List.of();
+            extractedFilePaths = extractedFilePaths != null ? List.copyOf(extractedFilePaths) : List.of();
+            executedCommands = executedCommands != null ? List.copyOf(executedCommands) : List.of();
+            errorsEncountered = errorsEncountered != null ? List.copyOf(errorsEncountered) : List.of();
+            sessionSummary = sessionSummary != null ? sessionSummary : "";
+            toolMetrics = toolMetrics != null ? Map.copyOf(toolMetrics) : Map.of();
+            endToEndStrategy = endToEndStrategy != null ? endToEndStrategy : "";
+        }
+    }
 
     public SessionLearnings analyze(
             List<AgentSession.ConversationMessage> fullHistory,
@@ -63,12 +77,20 @@ public final class SessionAnalyzer {
                     List.of(), List.of(), List.of(), List.of(), "", Map.of(), false, "");
         }
 
-        var files = extractFilePaths(fullHistory);
-        var commands = extractCommands(fullHistory);
-        var errors = extractErrors(fullHistory);
-        boolean backtracking = detectBacktracking(fullHistory, files, errors);
+        var history = fullHistory.stream()
+                .filter(Objects::nonNull)
+                .toList();
+        if (history.isEmpty()) {
+            return new SessionLearnings(
+                    List.of(), List.of(), List.of(), List.of(), "", Map.of(), false, "");
+        }
+
+        var files = extractFilePaths(history);
+        var commands = extractCommands(history);
+        var errors = extractErrors(history);
+        boolean backtracking = detectBacktracking(history, files, errors);
         String strategy = buildStrategy(files, commands, errors, backtracking);
-        String summary = buildSummary(fullHistory, files, commands, errors, backtracking, strategy);
+        String summary = buildSummary(history, files, commands, errors, backtracking, strategy);
         var insights = buildInsights(files, commands, errors, backtracking, strategy, summary);
 
         return new SessionLearnings(
@@ -244,13 +266,13 @@ public final class SessionAnalyzer {
         if (!commands.isEmpty()) {
             insights.add(new SessionInsight(
                     MemoryEntry.Category.TOOL_USAGE,
-                    truncate("Session relied on commands such as " + joinPreview(commands, 3), 200),
+                    "Session relied on shell commands during investigation and execution.",
                     List.of("session-analysis", "commands")));
         }
         if (!errors.isEmpty()) {
             insights.add(new SessionInsight(
                     MemoryEntry.Category.ERROR_RECOVERY,
-                    truncate("Session encountered errors including " + joinPreview(errors, 2), 200),
+                    "Session encountered runtime errors and iterated to recover before completion.",
                     List.of("session-analysis", "errors")));
         }
         if (backtracking) {
@@ -265,10 +287,6 @@ public final class SessionAnalyzer {
                     truncate(strategy, 200),
                     List.of("session-analysis", "strategy")));
         }
-        insights.add(new SessionInsight(
-                MemoryEntry.Category.SESSION_SUMMARY,
-                truncate(summary, 200),
-                List.of("session-analysis", "summary")));
         return List.copyOf(insights);
     }
 

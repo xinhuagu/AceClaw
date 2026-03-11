@@ -49,8 +49,7 @@ class SessionAnalyzerTest {
                         MemoryEntry.Category.CODEBASE_INSIGHT,
                         MemoryEntry.Category.TOOL_USAGE,
                         MemoryEntry.Category.ERROR_RECOVERY,
-                        MemoryEntry.Category.SUCCESSFUL_STRATEGY,
-                        MemoryEntry.Category.SESSION_SUMMARY);
+                        MemoryEntry.Category.SUCCESSFUL_STRATEGY);
     }
 
     @Test
@@ -78,5 +77,21 @@ class SessionAnalyzerTest {
         assertThat(learnings.backtrackingDetected()).isTrue();
         assertThat(learnings.insights().stream().map(SessionAnalyzer.SessionInsight::category))
                 .contains(MemoryEntry.Category.ANTI_PATTERN);
+    }
+
+    @Test
+    void ignoresNullMessagesAndNullCollections() {
+        var learnings = analyzer.analyze(java.util.Arrays.asList(
+                new AgentSession.ConversationMessage.User("Inspect src/main/App.java"),
+                null,
+                new AgentSession.ConversationMessage.Assistant("Done")), null);
+
+        assertThat(learnings.extractedFilePaths()).contains("src/main/App.java");
+        assertThat(new SessionAnalyzer.SessionInsight(MemoryEntry.Category.CODEBASE_INSIGHT, "x", null).tags())
+                .isEmpty();
+        var empty = new SessionAnalyzer.SessionLearnings(null, null, null, null, null, null, false, null);
+        assertThat(empty.insights()).isEmpty();
+        assertThat(empty.toolMetrics()).isEmpty();
+        assertThat(empty.sessionSummary()).isEmpty();
     }
 }

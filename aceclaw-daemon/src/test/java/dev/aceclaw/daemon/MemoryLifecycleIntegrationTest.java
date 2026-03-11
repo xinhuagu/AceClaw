@@ -155,6 +155,11 @@ class MemoryLifecycleIntegrationTest {
                     "session-end:test-session", false, workspacePath);
         }
         for (var insight : learnings.insights()) {
+            if (insight.category() != MemoryEntry.Category.CODEBASE_INSIGHT
+                    && insight.category() != MemoryEntry.Category.ANTI_PATTERN
+                    && insight.category() != MemoryEntry.Category.SUCCESSFUL_STRATEGY) {
+                continue;
+            }
             memoryStore.addIfAbsent(
                     insight.category(), insight.content(), insight.tags(),
                     "session-analysis:test-session", false, workspacePath);
@@ -177,6 +182,9 @@ class MemoryLifecycleIntegrationTest {
         var journalEntries = journal.loadRecentWindow();
         assertThat(journalEntries).anyMatch(e -> e.contains("memories extracted"));
         assertThat(journalEntries).anyMatch(e -> e.contains("Session retrospective"));
+        assertThat(memoryStore.entries())
+                .noneMatch(entry -> entry.category() == MemoryEntry.Category.TOOL_USAGE
+                        || entry.category() == MemoryEntry.Category.SESSION_SUMMARY);
     }
 
     @Test

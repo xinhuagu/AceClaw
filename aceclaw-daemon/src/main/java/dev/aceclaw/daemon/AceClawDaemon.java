@@ -616,6 +616,9 @@ public final class AceClawDaemon {
                 }
                 var learnings = sessionAnalyzer.analyze(session.messages(), Map.of());
                 for (var insight : learnings.insights()) {
+                    if (!shouldPersistSessionAnalysisInsight(insight)) {
+                        continue;
+                    }
                     try {
                         memoryStore.addIfAbsent(
                                 insight.category(),
@@ -1666,6 +1669,13 @@ public final class AceClawDaemon {
             Thread.currentThread().interrupt();
             log.debug("Daemon await interrupted");
         }
+    }
+
+    private static boolean shouldPersistSessionAnalysisInsight(SessionAnalyzer.SessionInsight insight) {
+        return switch (insight.category()) {
+            case CODEBASE_INSIGHT, ANTI_PATTERN, SUCCESSFUL_STRATEGY -> true;
+            default -> false;
+        };
     }
 
     private static ObjectMapper createObjectMapper() {
