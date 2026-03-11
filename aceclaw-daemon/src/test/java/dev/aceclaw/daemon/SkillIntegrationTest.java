@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import dev.aceclaw.core.agent.*;
+import dev.aceclaw.memory.AutoMemoryStore;
+import dev.aceclaw.memory.MemoryEntry;
 import dev.aceclaw.security.DefaultPermissionPolicy;
 import dev.aceclaw.security.PermissionManager;
 import dev.aceclaw.tools.*;
@@ -47,6 +49,7 @@ class SkillIntegrationTest {
     private static UdsListener udsListener;
     private static ObjectMapper objectMapper;
     private static StreamingAgentHandler agentHandler;
+    private static AutoMemoryStore memoryStore;
 
     @BeforeAll
     static void startDaemon() throws Exception {
@@ -99,6 +102,9 @@ class SkillIntegrationTest {
                 sessionManager, agentLoop, toolRegistry, permissionManager, objectMapper);
         agentHandler.setLlmConfig(mockLlm, "mock-model",
                 "You are a test agent with skill support.");
+        memoryStore = new AutoMemoryStore(tempDir.resolve(".aceclaw-home"));
+        memoryStore.load(workDir);
+        agentHandler.setMemoryStore(memoryStore, workDir);
         agentHandler.register(router);
 
         udsListener = new UdsListener(socketPath, connectionBridge);
@@ -129,6 +135,8 @@ class SkillIntegrationTest {
         permissionManager.clearSessionApprovals();
         channelLineBuffer.setLength(0);
         deleteMetricsFiles(workDir.resolve(".aceclaw/skills"));
+        memoryStore.replaceEntries(List.of(), workDir);
+        memoryStore.load(workDir);
         clearHandlerMetricState();
     }
 
@@ -167,6 +175,8 @@ class SkillIntegrationTest {
             assertThat(metrics.path("metrics").path("invocationCount").asInt()).isEqualTo(1);
             assertThat(metrics.path("metrics").path("successCount").asInt()).isEqualTo(1);
             assertThat(metrics.path("metrics").path("correctionCount").asInt()).isZero();
+            assertThat(memoryStore.query(MemoryEntry.Category.SUCCESSFUL_STRATEGY, List.of("review"), 10))
+                    .hasSize(1);
 
             destroySession(channel, sessionId, 3);
         }
@@ -295,6 +305,10 @@ class SkillIntegrationTest {
             assertThat(metrics.path("metrics").path("invocationCount").asInt()).isEqualTo(1);
             assertThat(metrics.path("metrics").path("successCount").asInt()).isEqualTo(1);
             assertThat(metrics.path("metrics").path("correctionCount").asInt()).isEqualTo(1);
+            assertThat(memoryStore.query(MemoryEntry.Category.CORRECTION, List.of("review"), 10))
+                    .hasSize(1);
+            assertThat(memoryStore.query(MemoryEntry.Category.PREFERENCE, List.of("review"), 10))
+                    .hasSize(1);
 
             destroySession(channel, sessionId, 5);
         }
@@ -323,6 +337,8 @@ class SkillIntegrationTest {
             assertThat(metrics.path("metrics").path("invocationCount").asInt()).isEqualTo(1);
             assertThat(metrics.path("metrics").path("failureCount").asInt()).isEqualTo(1);
             assertThat(metrics.path("metrics").path("successCount").asInt()).isZero();
+            assertThat(memoryStore.query(MemoryEntry.Category.ANTI_PATTERN, List.of("empty"), 10))
+                    .hasSize(1);
 
             destroySession(channel, sessionId, 3);
         }

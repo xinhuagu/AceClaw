@@ -647,8 +647,10 @@ public final class StreamingAgentHandler {
         var tracker = projectSkillTrackers.computeIfAbsent(projectPath, skillMetricsStore::load);
         String correction = truncate(prompt, 200);
         for (var skillName : recent) {
-            tracker.record(skillName, new SkillOutcome.UserCorrected(Instant.now(), correction));
+            var outcome = new SkillOutcome.UserCorrected(Instant.now(), correction);
+            tracker.record(skillName, outcome);
             persistSkillMetrics(projectPath, skillName, tracker);
+            emitSkillMemoryFeedback(projectPath, skillName, tracker, outcome);
         }
     }
 
@@ -692,6 +694,7 @@ public final class StreamingAgentHandler {
             }
             tracker.record(invocation.skillName(), outcome);
             persistSkillMetrics(projectPath, invocation.skillName(), tracker);
+            emitSkillMemoryFeedback(projectPath, invocation.skillName(), tracker, outcome);
         }
 
         if (successfulSkills.isEmpty()) {
@@ -706,6 +709,21 @@ public final class StreamingAgentHandler {
             skillMetricsStore.persist(projectPath, skillName, tracker);
         } catch (Exception e) {
             log.warn("Failed to persist skill metrics for {}: {}", skillName, e.getMessage());
+        }
+    }
+
+    private void emitSkillMemoryFeedback(Path projectPath,
+                                         String skillName,
+                                         SkillOutcomeTracker tracker,
+                                         SkillOutcome outcome) {
+        if (skillMemoryFeedback == null) {
+            return;
+        }
+        try {
+            var metrics = tracker.getMetrics(skillName).orElse(null);
+            skillMemoryFeedback.onOutcome(skillName, outcome, metrics, projectPath);
+        } catch (Exception e) {
+            log.warn("Failed to write skill-memory feedback for {}: {}", skillName, e.getMessage());
         }
     }
 
@@ -1106,6 +1124,7 @@ public final class StreamingAgentHandler {
     private int maxPlanStepWallTimeSec = 300;
     private int maxPlanTotalWallTimeSec = 3600;
     private PlanCheckpointStore planCheckpointStore;
+    private SkillMemoryFeedback skillMemoryFeedback;
 
     /**
      * Sets the LLM configuration for permission-aware agent loop creation.
@@ -1156,6 +1175,7 @@ public final class StreamingAgentHandler {
     public void setMemoryStore(AutoMemoryStore memoryStore, Path workingDir) {
         this.memoryStore = memoryStore;
         this.workingDir = workingDir;
+        this.skillMemoryFeedback = memoryStore != null ? new SkillMemoryFeedback(memoryStore) : null;
         if (workingDir != null) {
             this.antiPatternGateFeedbackStore = new AntiPatternGateFeedbackStore(workingDir);
         }
