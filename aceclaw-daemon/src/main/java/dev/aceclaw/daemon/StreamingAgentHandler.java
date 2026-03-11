@@ -707,16 +707,20 @@ public final class StreamingAgentHandler {
                                               SkillOutcomeTracker tracker,
                                               String skillName,
                                               SkillOutcome outcome) {
+        SkillOutcomeSnapshot snapshot;
         var lock = skillOutcomeLocks.computeIfAbsent(skillOutcomeLockKey(projectPath, skillName), _ -> new ReentrantLock());
         lock.lock();
         try {
             tracker.record(skillName, outcome);
             var metrics = persistSkillMetrics(projectPath, skillName, tracker);
             emitSkillMemoryFeedback(projectPath, skillName, metrics, outcome);
-            maybeRefineSkill(projectPath, skillName, tracker);
+            snapshot = metrics == null
+                    ? null
+                    : new SkillOutcomeSnapshot(tracker.outcomes(skillName));
         } finally {
             lock.unlock();
         }
+        maybeRefineSkill(projectPath, skillName, tracker, snapshot);
     }
 
     private SkillMetrics persistSkillMetrics(Path projectPath, String skillName, SkillOutcomeTracker tracker) {
@@ -746,13 +750,40 @@ public final class StreamingAgentHandler {
         }
     }
 
-    private void maybeRefineSkill(Path projectPath, String skillName, SkillOutcomeTracker tracker) {
-        if (skillRefinementEngine == null) {
+    private void maybeRefineSkill(Path projectPath,
+                                  String skillName,
+                                  SkillOutcomeTracker tracker,
+                                  SkillOutcomeSnapshot snapshot) {
+        if (skillRefinementEngine == null || snapshot == null) {
             return;
         }
         try {
-            var outcome = skillRefinementEngine.onOutcomeRecorded(projectPath, skillName, tracker);
+            var initialPlan = skillRefinementEngine.prepare(projectPath, skillName, snapshot.outcomes());
+            if (initialPlan.action() == SkillRefinementEngine.RefinementAction.NONE) {
+                return;
+            }
+
+            SkillRefinementEngine.SkillRefinement proposal = null;
+            if (initialPlan.action() == SkillRefinementEngine.RefinementAction.REFINED) {
+                proposal = skillRefinementEngine.proposeRefinement(initialPlan, snapshot.outcomes());
+            }
+
+            var lock = skillOutcomeLocks.computeIfAbsent(skillOutcomeLockKey(projectPath, skillName), _ -> new ReentrantLock());
+            SkillRefinementEngine.RefinementOutcome outcome;
+            lock.lock();
+            try {
+                var currentOutcomes = tracker.outcomes(skillName);
+                var currentPlan = skillRefinementEngine.prepare(projectPath, skillName, currentOutcomes);
+                if (!sameAction(currentPlan.action(), initialPlan.action())) {
+                    return;
+                }
+                outcome = skillRefinementEngine.apply(projectPath, tracker, currentPlan, proposal);
+            } finally {
+                lock.unlock();
+            }
+
             if (outcome.action() != SkillRefinementEngine.RefinementAction.NONE) {
+                emitSkillRollbackFeedback(projectPath, skillName, outcome);
                 log.info("Skill refinement action={} skill={} reason={}",
                         outcome.action(), skillName, outcome.reason());
             }
@@ -761,10 +792,33 @@ public final class StreamingAgentHandler {
         }
     }
 
+    private void emitSkillRollbackFeedback(Path projectPath,
+                                           String skillName,
+                                           SkillRefinementEngine.RefinementOutcome outcome) {
+        if (skillMemoryFeedback == null
+                || outcome.action() != SkillRefinementEngine.RefinementAction.ROLLED_BACK) {
+            return;
+        }
+        try {
+            skillMemoryFeedback.onRollback(skillName, outcome.reason(), projectPath);
+        } catch (Exception e) {
+            log.warn("Failed to write rollback feedback for {}: {}", skillName, e.getMessage());
+        }
+    }
+
+    private static boolean sameAction(SkillRefinementEngine.RefinementAction left,
+                                      SkillRefinementEngine.RefinementAction right) {
+        return left == right
+                || (left == SkillRefinementEngine.RefinementAction.STABILIZED
+                && right == SkillRefinementEngine.RefinementAction.STABILIZED);
+    }
+
     private static String skillOutcomeLockKey(Path projectPath, String skillName) {
         String projectKey = projectPath == null ? "<null>" : projectPath.toAbsolutePath().normalize().toString();
         return projectKey + "::" + skillName;
     }
+
+    private record SkillOutcomeSnapshot(List<SkillOutcome> outcomes) {}
 
     private List<SkillInvocationResult> extractSkillInvocations(dev.aceclaw.core.agent.Turn turn) {
         var skillNamesByToolUseId = new java.util.LinkedHashMap<String, String>();

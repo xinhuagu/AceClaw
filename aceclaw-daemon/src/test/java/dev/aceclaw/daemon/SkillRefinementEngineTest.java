@@ -65,7 +65,7 @@ class SkillRefinementEngineTest {
                 }
                 """));
 
-        var outcome = engine.onOutcomeRecorded(workDir, "review", tracker);
+        var outcome = evaluate();
 
         assertThat(outcome.action()).isEqualTo(SkillRefinementEngine.RefinementAction.REFINED);
         assertThat(Files.readString(skillDir.resolve("SKILL.md")))
@@ -79,6 +79,7 @@ class SkillRefinementEngineTest {
 
         var state = readState();
         assertThat(state.currentVersion()).isEqualTo(1);
+        assertThat(state.latestVersion()).isEqualTo(1);
         assertThat(state.rollbackBaselineSuccessRate()).isEqualTo(0.4);
         assertThat(state.deprecated()).isFalse();
     }
@@ -89,7 +90,7 @@ class SkillRefinementEngineTest {
                 failure("incorrect summary"), failure("wrong conclusion"));
         persistMetrics();
 
-        var outcome = engine.onOutcomeRecorded(workDir, "review", tracker);
+        var outcome = evaluate();
 
         assertThat(outcome.action()).isEqualTo(SkillRefinementEngine.RefinementAction.DEPRECATED);
         assertThat(Files.readString(skillDir.resolve("SKILL.md")))
@@ -113,7 +114,7 @@ class SkillRefinementEngineTest {
                   "updated_body": "# Review Skill\\n\\nUse an explicit checklist before answering."
                 }
                 """));
-        var refined = engine.onOutcomeRecorded(workDir, "review", tracker);
+        var refined = evaluate();
         assertThat(refined.action()).isEqualTo(SkillRefinementEngine.RefinementAction.REFINED);
 
         var afterFirstFailure = recordAndEvaluate(failure("still missed a regression"));
@@ -126,12 +127,48 @@ class SkillRefinementEngineTest {
         assertThat(Files.readString(skillDir.resolve("SKILL.md"))).isEqualTo(original);
         assertThat(tracker.getMetrics("review")).isEmpty();
         assertThat(readState().currentVersion()).isZero();
+        assertThat(readState().latestVersion()).isEqualTo(1);
     }
 
     private SkillRefinementEngine.RefinementOutcome recordAndEvaluate(SkillOutcome outcome) throws Exception {
         tracker.record("review", outcome);
         persistMetrics();
-        return engine.onOutcomeRecorded(workDir, "review", tracker);
+        return evaluate();
+    }
+
+    @Test
+    void analyzeUsesLastTenInvocationsAndCorrectionsBreakFailureStreak() {
+        record(
+                failure("old-1"), failure("old-2"), failure("old-3"), failure("old-4"), failure("old-5"),
+                success(1), success(1), success(1), success(1), success(1),
+                success(1), success(1), success(1), success(1), success(1));
+
+        var decision = engine.analyze(tracker.outcomes("review"));
+
+        assertThat(decision).isInstanceOf(SkillRefinementEngine.RefinementDecision.NoActionNeeded.class);
+
+        tracker.reset("review");
+        record(
+                failure("f1"), failure("f2"), failure("f3"), failure("f4"),
+                new SkillOutcome.UserCorrected(Instant.now(), "fix prompt"),
+                failure("f5"));
+
+        decision = engine.analyze(tracker.outcomes("review"));
+
+        assertThat(decision).isInstanceOf(SkillRefinementEngine.RefinementDecision.NoActionNeeded.class);
+    }
+
+    private SkillRefinementEngine.RefinementOutcome evaluate() throws Exception {
+        var outcomes = tracker.outcomes("review");
+        var plan = engine.prepare(workDir, "review", outcomes);
+        if (plan.action() == SkillRefinementEngine.RefinementAction.NONE) {
+            return SkillRefinementEngine.RefinementOutcome.none();
+        }
+        SkillRefinementEngine.SkillRefinement proposal = null;
+        if (plan.action() == SkillRefinementEngine.RefinementAction.REFINED) {
+            proposal = engine.proposeRefinement(plan, outcomes);
+        }
+        return engine.apply(workDir, tracker, plan, proposal);
     }
 
     private void persistMetrics() throws Exception {

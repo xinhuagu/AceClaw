@@ -79,6 +79,21 @@ public final class SkillMemoryFeedback {
         }
     }
 
+    /**
+     * Persists an anti-pattern when a refined skill is rolled back.
+     */
+    public void onRollback(String skillName, String reason, Path projectPath) {
+        if (skillName == null || skillName.isBlank() || projectPath == null) {
+            return;
+        }
+        addIfAbsent(
+                MemoryEntry.Category.ANTI_PATTERN,
+                truncate("Avoid reusing the last refinement of skill '" + skillName + "': " + normalize(reason) + "."),
+                List.of(skillName, "skill-feedback", "rollback", "anti-pattern"),
+                projectPath,
+                "skill-refinement:" + skillName);
+    }
+
     private String buildSuccessContent(String skillName, SkillOutcome.Success success) {
         if (success.turnsUsed() <= 1) {
             return "Skill '" + skillName + "' completed successfully and reinforced its current strategy.";

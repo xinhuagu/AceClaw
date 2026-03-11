@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import dev.aceclaw.core.agent.SkillConfig;
-import dev.aceclaw.core.agent.SkillMetrics;
 import dev.aceclaw.core.agent.SkillOutcome;
 import dev.aceclaw.core.agent.SkillOutcomeTracker;
 import dev.aceclaw.core.agent.SkillRegistry;
@@ -12,8 +11,6 @@ import dev.aceclaw.core.llm.LlmClient;
 import dev.aceclaw.core.llm.LlmException;
 import dev.aceclaw.core.llm.LlmRequest;
 import dev.aceclaw.core.llm.Message;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -34,7 +31,6 @@ import java.util.regex.Pattern;
  */
 public final class SkillRefinementEngine {
 
-    private static final Logger log = LoggerFactory.getLogger(SkillRefinementEngine.class);
     private static final Pattern CODE_FENCE = Pattern.compile(
             "```(?:json)?\\s*\\n?(\\{.*?})\\s*```",
             Pattern.DOTALL);
@@ -66,182 +62,73 @@ public final class SkillRefinementEngine {
         this.objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
     }
 
-    public RefinementOutcome onOutcomeRecorded(Path projectPath, String skillName, SkillOutcomeTracker tracker)
-            throws IOException, LlmException {
-        Objects.requireNonNull(projectPath, "projectPath");
-        Objects.requireNonNull(skillName, "skillName");
-        Objects.requireNonNull(tracker, "tracker");
-
-        var skill = SkillRegistry.load(projectPath).get(skillName).orElse(null);
-        var metrics = tracker.getMetrics(skillName).orElse(null);
-        if (skill == null || metrics == null) {
-            return RefinementOutcome.none();
-        }
-
-        var state = loadState(skill.directory());
-        var rollback = evaluateRollback(projectPath, skill, tracker, metrics, state);
-        if (rollback != null && rollback.action() != RefinementAction.NONE) {
-            return rollback;
-        }
-
-        if (state.deprecated() || skill.disableModelInvocation()) {
-            return RefinementOutcome.none();
-        }
-
-        var recentOutcomes = tracker.outcomes(skillName);
-        return switch (analyze(metrics, recentOutcomes)) {
-            case RefinementDecision.NoActionNeeded ignored -> RefinementOutcome.none();
-            case RefinementDecision.DisableRecommended disable ->
-                    deprecate(projectPath, skill, tracker, state, disable.reason());
-            case RefinementDecision.RefinementRecommended refine ->
-                    refine(projectPath, skill, tracker, recentOutcomes, metrics, state, refine.reason());
-        };
-    }
-
-    RefinementDecision analyze(SkillMetrics metrics, List<SkillOutcome> recentOutcomes) {
-        Objects.requireNonNull(metrics, "metrics");
-        Objects.requireNonNull(recentOutcomes, "recentOutcomes");
-
-        int consecutiveFailures = trailingConsecutiveFailures(recentOutcomes);
-        if (consecutiveFailures >= CONSECUTIVE_FAILURE_DISABLE_THRESHOLD) {
+    RefinementDecision analyze(List<SkillOutcome> outcomes) {
+        Objects.requireNonNull(outcomes, "outcomes");
+        var window = lastInvocationWindow(outcomes);
+        if (window.consecutiveFailures() >= CONSECUTIVE_FAILURE_DISABLE_THRESHOLD) {
             return new RefinementDecision.DisableRecommended(
-                    "Detected " + consecutiveFailures + " consecutive failures.");
+                    "Detected " + window.consecutiveFailures() + " consecutive failures.");
         }
-
-        int recentInvocationCount = recentInvocationCount(recentOutcomes);
-        if (recentInvocationCount >= RECENT_INVOCATION_WINDOW
-                && metrics.successRate() < SUCCESS_RATE_REFINEMENT_THRESHOLD) {
+        if (window.invocationCount() >= RECENT_INVOCATION_WINDOW
+                && window.successRate() < SUCCESS_RATE_REFINEMENT_THRESHOLD) {
             return new RefinementDecision.RefinementRecommended(
-                    "Success rate dropped to " + Math.round(metrics.successRate() * 100.0)
-                            + "% over the recent invocation window.");
+                    "Success rate dropped to " + percent(window.successRate())
+                            + " over the recent invocation window.");
         }
-        if (metrics.invocationCount() > 0 && metrics.correctionRate() > CORRECTION_RATE_REFINEMENT_THRESHOLD) {
+        if (window.invocationCount() > 0 && window.correctionRate() > CORRECTION_RATE_REFINEMENT_THRESHOLD) {
             return new RefinementDecision.RefinementRecommended(
-                    "User correction rate reached " + Math.round(metrics.correctionRate() * 100.0) + "%.");
+                    "User correction rate reached " + percent(window.correctionRate()) + ".");
         }
-
         return new RefinementDecision.NoActionNeeded();
     }
 
-    public void rollback(Path projectPath, String skillName, SkillOutcomeTracker tracker) throws IOException {
+    PreparedPlan prepare(Path projectPath, String skillName, List<SkillOutcome> outcomes) {
         Objects.requireNonNull(projectPath, "projectPath");
         Objects.requireNonNull(skillName, "skillName");
-        Objects.requireNonNull(tracker, "tracker");
+        Objects.requireNonNull(outcomes, "outcomes");
 
-        var skill = SkillRegistry.load(projectPath).get(skillName).orElseThrow();
-        rollbackToPreviousVersion(projectPath, skill, tracker, loadState(skill.directory()),
-                "Manual rollback requested.");
-    }
-
-    private RefinementOutcome evaluateRollback(Path projectPath,
-                                               SkillConfig skill,
-                                               SkillOutcomeTracker tracker,
-                                               SkillMetrics metrics,
-                                               RefinementState state) throws IOException {
-        if (state.rollbackBaselineSuccessRate() == null || state.currentVersion() <= 0) {
-            return RefinementOutcome.none();
+        var skill = SkillRegistry.load(projectPath).get(skillName).orElse(null);
+        if (skill == null) {
+            return PreparedPlan.none();
         }
 
-        if (metrics.invocationCount() >= ROLLBACK_SAMPLE_INVOCATIONS
-                && metrics.successRate() + 1e-9 < state.rollbackBaselineSuccessRate()) {
-            return rollbackToPreviousVersion(
-                    projectPath,
-                    skill,
-                    tracker,
-                    state,
-                    "Refined skill underperformed baseline (" + percent(metrics.successRate())
-                            + " vs " + percent(state.rollbackBaselineSuccessRate()) + ").");
+        var state = loadState(skill.directory());
+        var window = lastInvocationWindow(outcomes);
+
+        if (state.rollbackBaselineSuccessRate() != null && state.currentVersion() > 0) {
+            if (window.invocationCount() >= ROLLBACK_SAMPLE_INVOCATIONS
+                    && window.successRate() + 1e-9 < state.rollbackBaselineSuccessRate()) {
+                return new PreparedPlan(skill, state, window, RefinementAction.ROLLED_BACK,
+                        "Refined skill underperformed baseline (" + percent(window.successRate())
+                                + " vs " + percent(state.rollbackBaselineSuccessRate()) + ").");
+            }
+            if (window.invocationCount() >= ROLLBACK_STABILIZATION_INVOCATIONS
+                    && window.successRate() + 1e-9 >= state.rollbackBaselineSuccessRate()) {
+                return new PreparedPlan(skill, state, window, RefinementAction.STABILIZED,
+                        "Refined version met or exceeded baseline after observation window.");
+            }
         }
 
-        if (metrics.invocationCount() >= ROLLBACK_STABILIZATION_INVOCATIONS
-                && metrics.successRate() + 1e-9 >= state.rollbackBaselineSuccessRate()) {
-            var stabilized = state.withRollbackBaselineSuccessRate(null)
-                    .withLastAction("STABILIZED")
-                    .withLastReason("Refined version met or exceeded baseline after observation window.");
-            persistState(skill.directory(), stabilized);
-            return new RefinementOutcome(RefinementAction.NONE, skill.name(), stabilized.lastReason());
+        if (state.deprecated() || skill.disableModelInvocation()) {
+            return PreparedPlan.none();
         }
 
-        return RefinementOutcome.none();
+        return switch (analyze(outcomes)) {
+            case RefinementDecision.NoActionNeeded ignored -> PreparedPlan.none();
+            case RefinementDecision.DisableRecommended disable ->
+                    new PreparedPlan(skill, state, window, RefinementAction.DEPRECATED, disable.reason());
+            case RefinementDecision.RefinementRecommended refine ->
+                    new PreparedPlan(skill, state, window, RefinementAction.REFINED, refine.reason());
+        };
     }
 
-    private RefinementOutcome refine(Path projectPath,
-                                     SkillConfig skill,
-                                     SkillOutcomeTracker tracker,
-                                     List<SkillOutcome> recentOutcomes,
-                                     SkillMetrics metrics,
-                                     RefinementState state,
-                                     String reason) throws IOException, LlmException {
-        var proposal = proposeRefinement(skill, recentOutcomes, reason);
-        String originalMarkdown = readSkillMarkdown(skill);
-        int nextVersion = state.currentVersion() + 1;
-        backupVersion(skill.directory(), nextVersion, originalMarkdown);
-        writeSkillMarkdown(skill.directory(), renderSkillMarkdown(skill, proposal.updatedBody(), false, false));
-
-        var updatedState = state.withCurrentVersion(nextVersion)
-                .withDeprecated(false)
-                .withRollbackBaselineSuccessRate(metrics.successRate())
-                .withLastAction("REFINED")
-                .withLastReason(proposal.reason())
-                .withLastRefinedAt(Instant.now(clock))
-                .withLastAppliedDigest(digest(proposal.updatedBody()));
-        persistState(skill.directory(), updatedState);
-        resetMetrics(projectPath, skill.name(), tracker);
-        return new RefinementOutcome(RefinementAction.REFINED, skill.name(), proposal.reason());
-    }
-
-    private RefinementOutcome deprecate(Path projectPath,
-                                        SkillConfig skill,
-                                        SkillOutcomeTracker tracker,
-                                        RefinementState state,
-                                        String reason) throws IOException {
-        String originalMarkdown = readSkillMarkdown(skill);
-        int nextVersion = state.currentVersion() + 1;
-        backupVersion(skill.directory(), nextVersion, originalMarkdown);
-        writeSkillMarkdown(skill.directory(), renderSkillMarkdown(skill, skill.body(), true, true));
-
-        var updatedState = state.withCurrentVersion(nextVersion)
-                .withDeprecated(true)
-                .withRollbackBaselineSuccessRate(null)
-                .withLastAction("DEPRECATED")
-                .withLastReason(reason)
-                .withLastRefinedAt(Instant.now(clock))
-                .withLastAppliedDigest(digest(skill.body()));
-        persistState(skill.directory(), updatedState);
-        resetMetrics(projectPath, skill.name(), tracker);
-        return new RefinementOutcome(RefinementAction.DEPRECATED, skill.name(), reason);
-    }
-
-    private RefinementOutcome rollbackToPreviousVersion(Path projectPath,
-                                                        SkillConfig skill,
-                                                        SkillOutcomeTracker tracker,
-                                                        RefinementState state,
-                                                        String reason) throws IOException {
-        if (state.currentVersion() <= 0) {
-            return RefinementOutcome.none();
+    SkillRefinement proposeRefinement(PreparedPlan plan, List<SkillOutcome> outcomes) throws LlmException {
+        Objects.requireNonNull(plan, "plan");
+        Objects.requireNonNull(outcomes, "outcomes");
+        if (plan.action() != RefinementAction.REFINED) {
+            throw new IllegalArgumentException("Refinement proposal requires a REFINED plan");
         }
-        Path previous = skill.directory().resolve(VERSIONS_DIR).resolve("v" + state.currentVersion() + ".md");
-        if (!Files.isRegularFile(previous)) {
-            return RefinementOutcome.none();
-        }
-
-        String restored = Files.readString(previous);
-        writeSkillMarkdown(skill.directory(), restored);
-        var updatedState = state.withCurrentVersion(Math.max(0, state.currentVersion() - 1))
-                .withDeprecated(false)
-                .withRollbackBaselineSuccessRate(null)
-                .withLastAction("ROLLED_BACK")
-                .withLastReason(reason)
-                .withLastAppliedDigest(digest(restored));
-        persistState(skill.directory(), updatedState);
-        resetMetrics(projectPath, skill.name(), tracker);
-        return new RefinementOutcome(RefinementAction.ROLLED_BACK, skill.name(), reason);
-    }
-
-    private SkillRefinement proposeRefinement(SkillConfig skill,
-                                              List<SkillOutcome> recentOutcomes,
-                                              String reason) throws LlmException {
-        String prompt = buildRefinementPrompt(skill, recentOutcomes, reason);
+        String prompt = buildRefinementPrompt(plan.skill(), outcomes, plan.reason());
         var request = LlmRequest.builder()
                 .model(model)
                 .addMessage(Message.user(prompt))
@@ -265,6 +152,115 @@ public final class SkillRefinementEngine {
         return parseRefinement(text);
     }
 
+    RefinementOutcome apply(Path projectPath,
+                            SkillOutcomeTracker tracker,
+                            PreparedPlan plan,
+                            SkillRefinement proposal) throws IOException {
+        Objects.requireNonNull(projectPath, "projectPath");
+        Objects.requireNonNull(tracker, "tracker");
+        Objects.requireNonNull(plan, "plan");
+
+        return switch (plan.action()) {
+            case NONE -> RefinementOutcome.none();
+            case REFINED -> applyRefinement(projectPath, tracker, plan, proposal);
+            case DEPRECATED -> applyDeprecation(projectPath, tracker, plan);
+            case ROLLED_BACK -> rollbackToPreviousVersion(projectPath, tracker, plan);
+            case STABILIZED -> stabilize(plan);
+        };
+    }
+
+    public void rollback(Path projectPath, String skillName, SkillOutcomeTracker tracker) throws IOException {
+        Objects.requireNonNull(projectPath, "projectPath");
+        Objects.requireNonNull(skillName, "skillName");
+        Objects.requireNonNull(tracker, "tracker");
+
+        var skill = SkillRegistry.load(projectPath).get(skillName).orElseThrow();
+        var state = loadState(skill.directory());
+        apply(projectPath, tracker, new PreparedPlan(skill, state, WindowStats.EMPTY,
+                RefinementAction.ROLLED_BACK, "Manual rollback requested."), null);
+    }
+
+    private RefinementOutcome applyRefinement(Path projectPath,
+                                              SkillOutcomeTracker tracker,
+                                              PreparedPlan plan,
+                                              SkillRefinement proposal) throws IOException {
+        if (proposal == null) {
+            return RefinementOutcome.none();
+        }
+        String originalMarkdown = readSkillMarkdown(plan.skill());
+        int nextVersion = plan.state().latestVersion() + 1;
+        backupVersion(plan.skill().directory(), nextVersion, originalMarkdown);
+        writeSkillMarkdown(plan.skill().directory(),
+                renderSkillMarkdown(plan.skill(), proposal.updatedBody(), false, false));
+
+        var updatedState = plan.state().withCurrentVersion(nextVersion)
+                .withLatestVersion(nextVersion)
+                .withDeprecated(false)
+                .withRollbackBaselineSuccessRate(plan.window().successRate())
+                .withLastAction("REFINED")
+                .withLastReason(proposal.reason())
+                .withLastRefinedAt(Instant.now(clock))
+                .withLastAppliedDigest(digest(proposal.updatedBody()));
+        persistState(plan.skill().directory(), updatedState);
+        resetMetrics(projectPath, plan.skill().name(), tracker);
+        return new RefinementOutcome(RefinementAction.REFINED, plan.skill().name(), proposal.reason());
+    }
+
+    private RefinementOutcome applyDeprecation(Path projectPath,
+                                               SkillOutcomeTracker tracker,
+                                               PreparedPlan plan) throws IOException {
+        String originalMarkdown = readSkillMarkdown(plan.skill());
+        int nextVersion = plan.state().latestVersion() + 1;
+        backupVersion(plan.skill().directory(), nextVersion, originalMarkdown);
+        writeSkillMarkdown(plan.skill().directory(),
+                renderSkillMarkdown(plan.skill(), plan.skill().body(), true, true));
+
+        var updatedState = plan.state().withCurrentVersion(nextVersion)
+                .withLatestVersion(nextVersion)
+                .withDeprecated(true)
+                .withRollbackBaselineSuccessRate(null)
+                .withLastAction("DEPRECATED")
+                .withLastReason(plan.reason())
+                .withLastRefinedAt(Instant.now(clock))
+                .withLastAppliedDigest(digest(plan.skill().body()));
+        persistState(plan.skill().directory(), updatedState);
+        resetMetrics(projectPath, plan.skill().name(), tracker);
+        return new RefinementOutcome(RefinementAction.DEPRECATED, plan.skill().name(), plan.reason());
+    }
+
+    private RefinementOutcome rollbackToPreviousVersion(Path projectPath,
+                                                        SkillOutcomeTracker tracker,
+                                                        PreparedPlan plan) throws IOException {
+        if (plan.state().currentVersion() <= 0) {
+            return RefinementOutcome.none();
+        }
+        Path previous = plan.skill().directory().resolve(VERSIONS_DIR)
+                .resolve("v" + plan.state().currentVersion() + ".md");
+        if (!Files.isRegularFile(previous)) {
+            return RefinementOutcome.none();
+        }
+
+        String restored = Files.readString(previous);
+        writeSkillMarkdown(plan.skill().directory(), restored);
+        var updatedState = plan.state().withCurrentVersion(Math.max(0, plan.state().currentVersion() - 1))
+                .withDeprecated(false)
+                .withRollbackBaselineSuccessRate(null)
+                .withLastAction("ROLLED_BACK")
+                .withLastReason(plan.reason())
+                .withLastAppliedDigest(digest(restored));
+        persistState(plan.skill().directory(), updatedState);
+        resetMetrics(projectPath, plan.skill().name(), tracker);
+        return new RefinementOutcome(RefinementAction.ROLLED_BACK, plan.skill().name(), plan.reason());
+    }
+
+    private RefinementOutcome stabilize(PreparedPlan plan) throws IOException {
+        var updatedState = plan.state().withRollbackBaselineSuccessRate(null)
+                .withLastAction("STABILIZED")
+                .withLastReason(plan.reason());
+        persistState(plan.skill().directory(), updatedState);
+        return new RefinementOutcome(RefinementAction.NONE, plan.skill().name(), plan.reason());
+    }
+
     private SkillRefinement parseRefinement(String llmOutput) throws LlmException {
         String jsonText = extractJson(llmOutput);
         try {
@@ -283,7 +279,7 @@ public final class SkillRefinementEngine {
         }
     }
 
-    private String buildRefinementPrompt(SkillConfig skill, List<SkillOutcome> recentOutcomes, String reason) {
+    private String buildRefinementPrompt(SkillConfig skill, List<SkillOutcome> outcomes, String reason) {
         var sb = new StringBuilder();
         sb.append("Skill name: ").append(skill.name()).append("\n");
         sb.append("Description: ").append(skill.description()).append("\n");
@@ -291,7 +287,7 @@ public final class SkillRefinementEngine {
         sb.append("Current skill body:\n---\n").append(skill.body().trim()).append("\n---\n\n");
         sb.append("Recent outcomes:\n");
         int index = 1;
-        for (var outcome : recentOutcomes.subList(Math.max(0, recentOutcomes.size() - 12), recentOutcomes.size())) {
+        for (var outcome : outcomes.subList(Math.max(0, outcomes.size() - 12), outcomes.size())) {
             switch (outcome) {
                 case SkillOutcome.Success success ->
                         sb.append(index++).append(". success in ").append(success.turnsUsed()).append(" turns\n");
@@ -307,18 +303,18 @@ public final class SkillRefinementEngine {
     }
 
     private static String renderSkillMarkdown(SkillConfig skill,
-                                             String body,
-                                             boolean disableModelInvocation,
-                                             boolean deprecated) {
+                                              String body,
+                                              boolean disableModelInvocation,
+                                              boolean deprecated) {
         var sb = new StringBuilder();
         sb.append("---\n");
-        sb.append("description: \"").append(escape(skill.description())).append("\"\n");
+        appendScalar(sb, "description", skill.description());
         if (skill.argumentHint() != null && !skill.argumentHint().isBlank()) {
-            sb.append("argument-hint: \"").append(escape(skill.argumentHint())).append("\"\n");
+            appendScalar(sb, "argument-hint", skill.argumentHint());
         }
         sb.append("context: ").append(skill.context().name().toLowerCase(Locale.ROOT)).append("\n");
         if (skill.model() != null && !skill.model().isBlank()) {
-            sb.append("model: \"").append(escape(skill.model())).append("\"\n");
+            appendScalar(sb, "model", skill.model());
         }
         if (!skill.allowedTools().isEmpty()) {
             sb.append("allowed-tools: [");
@@ -339,6 +335,24 @@ public final class SkillRefinementEngine {
         sb.append("---\n\n");
         sb.append(body == null ? "" : body.strip()).append("\n");
         return sb.toString();
+    }
+
+    private static void appendScalar(StringBuilder sb, String key, String value) {
+        sb.append(key).append(": ").append(serializeScalar(value)).append("\n");
+    }
+
+    private static String serializeScalar(String value) {
+        if (value == null) {
+            return "\"\"";
+        }
+        String normalized = value.replace("\r", " ").replace("\n", " ").trim();
+        if (!normalized.contains("\"")) {
+            return "\"" + normalized + "\"";
+        }
+        if (!normalized.contains("'")) {
+            return "'" + normalized + "'";
+        }
+        return "\"" + normalized.replace("\"", "'") + "\"";
     }
 
     private static RefinementState loadState(Path skillDir) {
@@ -374,8 +388,7 @@ public final class SkillRefinementEngine {
         Files.writeString(
                 versionsDir.resolve("v" + version + ".md"),
                 markdown,
-                StandardOpenOption.CREATE,
-                StandardOpenOption.TRUNCATE_EXISTING);
+                StandardOpenOption.CREATE_NEW);
     }
 
     private static void writeSkillMarkdown(Path skillDir, String markdown) throws IOException {
@@ -395,30 +408,56 @@ public final class SkillRefinementEngine {
         skillMetricsStore.reset(projectPath, skillName);
     }
 
-    private static int trailingConsecutiveFailures(List<SkillOutcome> outcomes) {
-        int count = 0;
+    private static WindowStats lastInvocationWindow(List<SkillOutcome> outcomes) {
+        if (outcomes.isEmpty()) {
+            return WindowStats.EMPTY;
+        }
+        int invocationCount = 0;
+        int startIndex = outcomes.size();
         for (int i = outcomes.size() - 1; i >= 0; i--) {
             var outcome = outcomes.get(i);
-            if (outcome instanceof SkillOutcome.Failure) {
-                count++;
-                continue;
+            if (outcome instanceof SkillOutcome.Success || outcome instanceof SkillOutcome.Failure) {
+                invocationCount++;
+                startIndex = i;
+                if (invocationCount >= RECENT_INVOCATION_WINDOW) {
+                    break;
+                }
             }
-            if (outcome instanceof SkillOutcome.UserCorrected) {
-                continue;
-            }
-            break;
         }
-        return count;
-    }
+        if (startIndex >= outcomes.size()) {
+            return WindowStats.EMPTY;
+        }
 
-    private static int recentInvocationCount(List<SkillOutcome> outcomes) {
-        int count = 0;
-        for (int i = outcomes.size() - 1; i >= 0 && count < RECENT_INVOCATION_WINDOW; i--) {
-            if (outcomes.get(i) instanceof SkillOutcome.Success || outcomes.get(i) instanceof SkillOutcome.Failure) {
-                count++;
+        int successCount = 0;
+        int correctionCount = 0;
+        int consecutiveFailures = 0;
+        boolean trailingFailures = true;
+        for (int i = startIndex; i < outcomes.size(); i++) {
+            var outcome = outcomes.get(i);
+            switch (outcome) {
+                case SkillOutcome.Success ignored -> {
+                    successCount++;
+                    trailingFailures = false;
+                }
+                case SkillOutcome.Failure ignored -> {
+                    if (trailingFailures) {
+                        consecutiveFailures++;
+                    }
+                }
+                case SkillOutcome.UserCorrected ignored -> {
+                    correctionCount++;
+                    trailingFailures = false;
+                }
             }
         }
-        return count;
+
+        return new WindowStats(
+                invocationCount,
+                successCount,
+                correctionCount,
+                consecutiveFailures,
+                invocationCount == 0 ? 0.0 : (double) successCount / invocationCount,
+                invocationCount == 0 ? 0.0 : (double) correctionCount / invocationCount);
     }
 
     private static String extractJson(String text) {
@@ -427,10 +466,6 @@ public final class SkillRefinementEngine {
             return matcher.group(1);
         }
         return text.trim();
-    }
-
-    private static String escape(String text) {
-        return text == null ? "" : text.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     private static String trim(String text, int maxLength) {
@@ -447,7 +482,8 @@ public final class SkillRefinementEngine {
     private static String digest(String text) {
         try {
             var md = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(md.digest((text == null ? "" : text).getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+            return HexFormat.of().formatHex(md.digest((text == null ? "" : text)
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8)));
         } catch (Exception e) {
             return "";
         }
@@ -464,13 +500,14 @@ public final class SkillRefinementEngine {
         record DisableRecommended(String reason) implements RefinementDecision {}
     }
 
-    private record SkillRefinement(String reason, String updatedBody) {}
+    record SkillRefinement(String reason, String updatedBody) {}
 
     public enum RefinementAction {
         NONE,
         REFINED,
         DEPRECATED,
-        ROLLED_BACK
+        ROLLED_BACK,
+        STABILIZED
     }
 
     public record RefinementOutcome(RefinementAction action, String skillName, String reason) {
@@ -479,8 +516,32 @@ public final class SkillRefinementEngine {
         }
     }
 
+    record PreparedPlan(
+            SkillConfig skill,
+            RefinementState state,
+            WindowStats window,
+            RefinementAction action,
+            String reason
+    ) {
+        static PreparedPlan none() {
+            return new PreparedPlan(null, null, WindowStats.EMPTY, RefinementAction.NONE, "");
+        }
+    }
+
+    record WindowStats(
+            int invocationCount,
+            int successCount,
+            int correctionCount,
+            int consecutiveFailures,
+            double successRate,
+            double correctionRate
+    ) {
+        static final WindowStats EMPTY = new WindowStats(0, 0, 0, 0, 0.0, 0.0);
+    }
+
     record RefinementState(
             int currentVersion,
+            int latestVersion,
             boolean deprecated,
             Double rollbackBaselineSuccessRate,
             Instant lastRefinedAt,
@@ -488,42 +549,56 @@ public final class SkillRefinementEngine {
             String lastReason,
             String lastAppliedDigest
     ) {
-        static final RefinementState EMPTY = new RefinementState(0, false, null, null, null, null, null);
+        static final RefinementState EMPTY = new RefinementState(0, 0, false, null, null, null, null, null);
 
         RefinementState {
             currentVersion = Math.max(0, currentVersion);
+            latestVersion = Math.max(0, latestVersion);
         }
 
         RefinementState withCurrentVersion(int value) {
-            return new RefinementState(value, deprecated, rollbackBaselineSuccessRate, lastRefinedAt, lastAction, lastReason, lastAppliedDigest);
+            return new RefinementState(value, latestVersion, deprecated, rollbackBaselineSuccessRate,
+                    lastRefinedAt, lastAction, lastReason, lastAppliedDigest);
+        }
+
+        RefinementState withLatestVersion(int value) {
+            return new RefinementState(currentVersion, value, deprecated, rollbackBaselineSuccessRate,
+                    lastRefinedAt, lastAction, lastReason, lastAppliedDigest);
         }
 
         RefinementState withDeprecated(boolean value) {
-            return new RefinementState(currentVersion, value, rollbackBaselineSuccessRate, lastRefinedAt, lastAction, lastReason, lastAppliedDigest);
+            return new RefinementState(currentVersion, latestVersion, value, rollbackBaselineSuccessRate,
+                    lastRefinedAt, lastAction, lastReason, lastAppliedDigest);
         }
 
         RefinementState withRollbackBaselineSuccessRate(Double value) {
-            return new RefinementState(currentVersion, deprecated, value, lastRefinedAt, lastAction, lastReason, lastAppliedDigest);
+            return new RefinementState(currentVersion, latestVersion, deprecated, value,
+                    lastRefinedAt, lastAction, lastReason, lastAppliedDigest);
         }
 
         RefinementState withLastRefinedAt(Instant value) {
-            return new RefinementState(currentVersion, deprecated, rollbackBaselineSuccessRate, value, lastAction, lastReason, lastAppliedDigest);
+            return new RefinementState(currentVersion, latestVersion, deprecated, rollbackBaselineSuccessRate,
+                    value, lastAction, lastReason, lastAppliedDigest);
         }
 
         RefinementState withLastAction(String value) {
-            return new RefinementState(currentVersion, deprecated, rollbackBaselineSuccessRate, lastRefinedAt, value, lastReason, lastAppliedDigest);
+            return new RefinementState(currentVersion, latestVersion, deprecated, rollbackBaselineSuccessRate,
+                    lastRefinedAt, value, lastReason, lastAppliedDigest);
         }
 
         RefinementState withLastReason(String value) {
-            return new RefinementState(currentVersion, deprecated, rollbackBaselineSuccessRate, lastRefinedAt, lastAction, value, lastAppliedDigest);
+            return new RefinementState(currentVersion, latestVersion, deprecated, rollbackBaselineSuccessRate,
+                    lastRefinedAt, lastAction, value, lastAppliedDigest);
         }
 
         RefinementState withLastAppliedDigest(String value) {
-            return new RefinementState(currentVersion, deprecated, rollbackBaselineSuccessRate, lastRefinedAt, lastAction, lastReason, value);
+            return new RefinementState(currentVersion, latestVersion, deprecated, rollbackBaselineSuccessRate,
+                    lastRefinedAt, lastAction, lastReason, value);
         }
 
         RefinementState normalize() {
-            return new RefinementState(currentVersion, deprecated, rollbackBaselineSuccessRate, lastRefinedAt, lastAction, lastReason, lastAppliedDigest);
+            return new RefinementState(currentVersion, latestVersion, deprecated, rollbackBaselineSuccessRate,
+                    lastRefinedAt, lastAction, lastReason, lastAppliedDigest);
         }
     }
 }
