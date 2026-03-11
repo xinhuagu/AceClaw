@@ -236,6 +236,16 @@ public final class SessionEndExtractor {
         return List.copyOf(results);
     }
 
+    /**
+     * Returns whether a user message looks like a correction or explicit negative feedback.
+     */
+    public static boolean looksLikeCorrection(String text) {
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+        return matchesAny(text, CORRECTION_PATTERNS) || matchesAny(text, NEGATIVE_FEEDBACK_PATTERNS);
+    }
+
     private static boolean matchesAny(String text, List<Pattern> patterns) {
         for (var pattern : patterns) {
             if (pattern.matcher(text).find()) {

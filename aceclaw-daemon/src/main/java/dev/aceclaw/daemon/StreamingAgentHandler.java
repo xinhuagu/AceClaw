@@ -9,6 +9,8 @@ import dev.aceclaw.core.agent.CompactionConfig;
 import dev.aceclaw.core.agent.ContextEstimator;
 import dev.aceclaw.core.agent.DoomLoopDetector;
 import dev.aceclaw.core.agent.ProgressDetector;
+import dev.aceclaw.core.agent.SkillOutcome;
+import dev.aceclaw.core.agent.SkillOutcomeTracker;
 import dev.aceclaw.core.agent.WatchdogTimer;
 import dev.aceclaw.core.agent.CompactionResult;
 import dev.aceclaw.core.agent.HookEvent;
@@ -138,8 +140,13 @@ public final class StreamingAgentHandler {
             new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, List<String>> sessionInjectedCandidateIds =
             new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Path, SkillOutcomeTracker> projectSkillTrackers =
+            new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, List<String>> sessionRecentSuccessfulSkills =
+            new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, AntiPatternGateOverride> antiPatternGateOverrides =
             new ConcurrentHashMap<>();
+    private final SkillMetricsStore skillMetricsStore = new SkillMetricsStore();
 
     /** Per-session turn locks for serializing main turns within a session. */
     private final ConcurrentHashMap<String, ReentrantLock> sessionTurnLocks =
@@ -188,6 +195,8 @@ public final class StreamingAgentHandler {
         }
 
         log.info("Streaming agent prompt: sessionId={}, promptLength={}", sessionId, prompt.length());
+
+        recordPromptSkillCorrections(sessionId, session.projectPath(), prompt);
 
         // Convert session conversation history to LLM messages
         var conversationHistory = toMessages(session.messages());
@@ -584,6 +593,7 @@ public final class StreamingAgentHandler {
         recordInjectedCandidateOutcomes(
                 sessionId, turn.finalStopReason() != StopReason.ERROR, cancellationToken.isCancelled(),
                 turn.finalStopReason());
+        recordSkillOutcomes(sessionId, session.projectPath(), turn, cancellationToken, adaptive);
 
         // Build result
         var result = objectMapper.createObjectNode();
@@ -626,6 +636,126 @@ public final class StreamingAgentHandler {
                 cancellationToken.isCancelled(), turn.wasCompacted());
 
         return result;
+    }
+
+    private void recordPromptSkillCorrections(String sessionId, Path projectPath, String prompt) {
+        var recent = sessionRecentSuccessfulSkills.remove(sessionId);
+        if (recent == null || recent.isEmpty() || !SessionEndExtractor.looksLikeCorrection(prompt)) {
+            return;
+        }
+
+        var tracker = projectSkillTrackers.computeIfAbsent(projectPath, skillMetricsStore::load);
+        String correction = truncate(prompt, 200);
+        for (var skillName : recent) {
+            tracker.record(skillName, new SkillOutcome.UserCorrected(Instant.now(), correction));
+            persistSkillMetrics(projectPath, skillName, tracker);
+        }
+    }
+
+    private void recordSkillOutcomes(
+            String sessionId,
+            Path projectPath,
+            dev.aceclaw.core.agent.Turn turn,
+            CancellationToken cancellationToken,
+            AdaptiveTurnResult adaptive) {
+        if (turn == null || turn.newMessages().isEmpty()) {
+            sessionRecentSuccessfulSkills.remove(sessionId);
+            return;
+        }
+
+        var skillInvocations = extractSkillInvocations(turn);
+        if (skillInvocations.isEmpty()) {
+            sessionRecentSuccessfulSkills.remove(sessionId);
+            return;
+        }
+
+        int turnsUsed = adaptive != null ? Math.max(1, adaptive.segmentIndex()) : 1;
+        Instant now = Instant.now();
+        var tracker = projectSkillTrackers.computeIfAbsent(projectPath, skillMetricsStore::load);
+        var successfulSkills = new ArrayList<String>();
+
+        for (var invocation : skillInvocations) {
+            SkillOutcome outcome;
+            if (invocation.isError()) {
+                outcome = new SkillOutcome.Failure(now, truncate(invocation.resultContent(), 200));
+            } else if (cancellationToken.isCancelled()) {
+                outcome = new SkillOutcome.Failure(now, "turn cancelled");
+            } else if (turn.finalStopReason() == StopReason.ERROR) {
+                outcome = new SkillOutcome.Failure(now, "turn ended with error");
+            } else if (turn.budgetExhausted()) {
+                outcome = new SkillOutcome.Failure(now,
+                        "budget exhausted: " + (turn.budgetExhaustionReason() == null
+                                ? "unknown" : turn.budgetExhaustionReason()));
+            } else {
+                outcome = new SkillOutcome.Success(now, turnsUsed);
+                successfulSkills.add(invocation.skillName());
+            }
+            tracker.record(invocation.skillName(), outcome);
+            persistSkillMetrics(projectPath, invocation.skillName(), tracker);
+        }
+
+        if (successfulSkills.isEmpty()) {
+            sessionRecentSuccessfulSkills.remove(sessionId);
+        } else {
+            sessionRecentSuccessfulSkills.put(sessionId, List.copyOf(successfulSkills));
+        }
+    }
+
+    private void persistSkillMetrics(Path projectPath, String skillName, SkillOutcomeTracker tracker) {
+        try {
+            skillMetricsStore.persist(projectPath, skillName, tracker);
+        } catch (Exception e) {
+            log.warn("Failed to persist skill metrics for {}: {}", skillName, e.getMessage());
+        }
+    }
+
+    private List<SkillInvocationResult> extractSkillInvocations(dev.aceclaw.core.agent.Turn turn) {
+        var skillNamesByToolUseId = new java.util.LinkedHashMap<String, String>();
+        var toolResultsById = new java.util.LinkedHashMap<String, ContentBlock.ToolResult>();
+
+        for (var message : turn.newMessages()) {
+            switch (message) {
+                case Message.AssistantMessage assistant -> {
+                    for (var block : assistant.content()) {
+                        if (block instanceof ContentBlock.ToolUse toolUse && "skill".equals(toolUse.name())) {
+                            String skillName = extractInvokedSkillName(toolUse.inputJson());
+                            if (skillName != null && !skillName.isBlank()) {
+                                skillNamesByToolUseId.put(toolUse.id(), skillName);
+                            }
+                        }
+                    }
+                }
+                case Message.UserMessage user -> {
+                    for (var block : user.content()) {
+                        if (block instanceof ContentBlock.ToolResult toolResult) {
+                            toolResultsById.put(toolResult.toolUseId(), toolResult);
+                        }
+                    }
+                }
+            }
+        }
+
+        var results = new ArrayList<SkillInvocationResult>();
+        for (var entry : skillNamesByToolUseId.entrySet()) {
+            var toolResult = toolResultsById.get(entry.getKey());
+            if (toolResult == null) {
+                continue;
+            }
+            results.add(new SkillInvocationResult(
+                    entry.getValue(),
+                    toolResult.isError(),
+                    toolResult.content()));
+        }
+        return List.copyOf(results);
+    }
+
+    private String extractInvokedSkillName(String inputJson) {
+        try {
+            var node = objectMapper.readTree(inputJson);
+            return node.path("name").asText("");
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     private AdaptiveTurnResult runTurnWithAdaptiveContinuation(
@@ -756,6 +886,12 @@ public final class StreamingAgentHandler {
             int continuationCount,
             String reason,
             boolean stoppedByBudget
+    ) {}
+
+    private record SkillInvocationResult(
+            String skillName,
+            boolean isError,
+            String resultContent
     ) {}
 
     /**

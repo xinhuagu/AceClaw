@@ -20,6 +20,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -45,6 +46,7 @@ class SkillIntegrationTest {
     private static PermissionManager permissionManager;
     private static UdsListener udsListener;
     private static ObjectMapper objectMapper;
+    private static StreamingAgentHandler agentHandler;
 
     @BeforeAll
     static void startDaemon() throws Exception {
@@ -72,6 +74,7 @@ class SkillIntegrationTest {
         // Create test skills in the workspace
         createInlineSkill(workDir);
         createForkSkill(workDir);
+        createEmptySkill(workDir);
 
         // Sub-agent infrastructure (required for fork-mode skills)
         var agentTypeRegistry = AgentTypeRegistry.withBuiltins();
@@ -92,7 +95,7 @@ class SkillIntegrationTest {
         var agentLoop = new StreamingAgentLoop(
                 mockLlm, toolRegistry, "mock-model",
                 "You are a test agent with skill support.");
-        var agentHandler = new StreamingAgentHandler(
+        agentHandler = new StreamingAgentHandler(
                 sessionManager, agentLoop, toolRegistry, permissionManager, objectMapper);
         agentHandler.setLlmConfig(mockLlm, "mock-model",
                 "You are a test agent with skill support.");
@@ -125,6 +128,8 @@ class SkillIntegrationTest {
         mockLlm.reset();
         permissionManager.clearSessionApprovals();
         channelLineBuffer.setLength(0);
+        deleteMetricsFiles(workDir.resolve(".aceclaw/skills"));
+        clearHandlerMetricState();
     }
 
     @Test
@@ -157,6 +162,11 @@ class SkillIntegrationTest {
             // Verify only 2 LLM calls: parent tool_use + parent follow-up
             // (inline skill does NOT make an LLM call — it returns resolved content directly)
             assertThat(mockLlm.capturedRequests()).hasSize(2);
+
+            JsonNode metrics = readSkillMetrics("review");
+            assertThat(metrics.path("metrics").path("invocationCount").asInt()).isEqualTo(1);
+            assertThat(metrics.path("metrics").path("successCount").asInt()).isEqualTo(1);
+            assertThat(metrics.path("metrics").path("correctionCount").asInt()).isZero();
 
             destroySession(channel, sessionId, 3);
         }
@@ -212,6 +222,10 @@ class SkillIntegrationTest {
             assertThat(startNotif.path("params").path("agentType").asText())
                     .isEqualTo("skill:deploy");
 
+            JsonNode metrics = readSkillMetrics("deploy");
+            assertThat(metrics.path("metrics").path("invocationCount").asInt()).isEqualTo(1);
+            assertThat(metrics.path("metrics").path("successCount").asInt()).isEqualTo(1);
+
             destroySession(channel, sessionId, 3);
         }
     }
@@ -245,6 +259,70 @@ class SkillIntegrationTest {
 
             // Only 2 LLM calls (no sub-agent spawned for the error case)
             assertThat(mockLlm.capturedRequests()).hasSize(2);
+
+            destroySession(channel, sessionId, 3);
+        }
+    }
+
+    @Test
+    @Order(4)
+    void testUserCorrectionUpdatesPriorSkillMetrics() throws Exception {
+        try (var channel = connectToSocket()) {
+            String sessionId = createSession(channel, 1);
+
+            mockLlm.enqueueResponse(MockLlmClient.toolUseResponse(
+                    "Let me use the review skill.",
+                    "toolu_skill_004", "skill",
+                    "{\"name\":\"review\",\"arguments\":\"src/main\"}"
+            ));
+            mockLlm.enqueueResponse(MockLlmClient.textResponse(
+                    "I've reviewed the code following the skill instructions for src/main."));
+
+            var promptParams = objectMapper.createObjectNode();
+            promptParams.put("sessionId", sessionId);
+            promptParams.put("prompt", "Review the src/main directory");
+            sendPromptAndCollectEvents(channel, promptParams, 2);
+
+            mockLlm.enqueueResponse(MockLlmClient.textResponse(
+                    "Understood. I will use explicit types next time."));
+
+            var correctionParams = objectMapper.createObjectNode();
+            correctionParams.put("sessionId", sessionId);
+            correctionParams.put("prompt", "No, use explicit types instead.");
+            sendPromptAndCollectEvents(channel, correctionParams, 4);
+
+            JsonNode metrics = readSkillMetrics("review");
+            assertThat(metrics.path("metrics").path("invocationCount").asInt()).isEqualTo(1);
+            assertThat(metrics.path("metrics").path("successCount").asInt()).isEqualTo(1);
+            assertThat(metrics.path("metrics").path("correctionCount").asInt()).isEqualTo(1);
+
+            destroySession(channel, sessionId, 5);
+        }
+    }
+
+    @Test
+    @Order(5)
+    void testEmptySkillRecordsFailure() throws Exception {
+        try (var channel = connectToSocket()) {
+            String sessionId = createSession(channel, 1);
+
+            mockLlm.enqueueResponse(MockLlmClient.toolUseResponse(
+                    "Let me use the empty skill.",
+                    "toolu_skill_005", "skill",
+                    "{\"name\":\"empty\"}"
+            ));
+            mockLlm.enqueueResponse(MockLlmClient.textResponse(
+                    "The empty skill did not provide any content."));
+
+            var promptParams = objectMapper.createObjectNode();
+            promptParams.put("sessionId", sessionId);
+            promptParams.put("prompt", "Run the empty skill");
+            sendPromptAndCollectEvents(channel, promptParams, 2);
+
+            JsonNode metrics = readSkillMetrics("empty");
+            assertThat(metrics.path("metrics").path("invocationCount").asInt()).isEqualTo(1);
+            assertThat(metrics.path("metrics").path("failureCount").asInt()).isEqualTo(1);
+            assertThat(metrics.path("metrics").path("successCount").asInt()).isZero();
 
             destroySession(channel, sessionId, 3);
         }
@@ -295,6 +373,17 @@ class SkillIntegrationTest {
                 """);
     }
 
+    private static void createEmptySkill(Path projectDir) throws IOException {
+        var skillDir = projectDir.resolve(".aceclaw/skills/empty");
+        Files.createDirectories(skillDir);
+        Files.writeString(skillDir.resolve("SKILL.md"), """
+                ---
+                description: "Empty skill"
+                context: inline
+                ---
+                """);
+    }
+
     // -- Helper methods (same pattern as SubAgentIntegrationTest) --
 
     private SocketChannel connectToSocket() throws IOException {
@@ -313,6 +402,11 @@ class SkillIntegrationTest {
     private void destroySession(SocketChannel channel, String sessionId, int requestId) throws Exception {
         var params = objectMapper.createObjectNode().put("sessionId", sessionId);
         sendAndReceive(channel, "session.destroy", params, requestId);
+    }
+
+    private JsonNode readSkillMetrics(String skillName) throws IOException {
+        Path metrics = workDir.resolve(".aceclaw/skills").resolve(skillName).resolve("metrics.json");
+        return objectMapper.readTree(Files.readString(metrics));
     }
 
     private JsonNode sendAndReceive(SocketChannel channel, String method,
@@ -396,6 +490,38 @@ class SkillIntegrationTest {
 
             buffer.flip();
             channelLineBuffer.append(StandardCharsets.UTF_8.decode(buffer));
+        }
+    }
+
+    private static void deleteMetricsFiles(Path skillsRoot) {
+        if (!Files.isDirectory(skillsRoot)) {
+            return;
+        }
+        try (var stream = Files.walk(skillsRoot)) {
+            Iterator<Path> iterator = stream.iterator();
+            while (iterator.hasNext()) {
+                Path path = iterator.next();
+                if ("metrics.json".equals(path.getFileName().toString())) {
+                    Files.deleteIfExists(path);
+                }
+            }
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void clearHandlerMetricState() {
+        try {
+            var trackersField = StreamingAgentHandler.class.getDeclaredField("projectSkillTrackers");
+            trackersField.setAccessible(true);
+            ((java.util.Map<Path, ?>) trackersField.get(agentHandler)).clear();
+
+            var recentField = StreamingAgentHandler.class.getDeclaredField("sessionRecentSuccessfulSkills");
+            recentField.setAccessible(true);
+            ((java.util.Map<String, ?>) recentField.get(agentHandler)).clear();
+        } catch (ReflectiveOperationException e) {
+            throw new RuntimeException(e);
         }
     }
 
