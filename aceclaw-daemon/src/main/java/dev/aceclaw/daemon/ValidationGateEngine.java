@@ -70,7 +70,7 @@ public final class ValidationGateEngine {
         Path draftsRoot = projectRoot.resolve(DRAFTS_DIR);
         if (!Files.isDirectory(draftsRoot)) {
             return new ValidationSummary(
-                    0, 0, 0, 0, List.of(), projectRoot.resolve(AUDIT_DIR).resolve(AUDIT_FILE));
+                    0, 0, 0, 0, List.of(), List.of(), projectRoot.resolve(AUDIT_DIR).resolve(AUDIT_FILE));
         }
 
         var replay = evaluateReplay(projectRoot);
@@ -87,8 +87,8 @@ public final class ValidationGateEngine {
         for (var draftFile : draftFiles) {
             decisions.add(validateSingle(projectRoot, draftFile, normalizedTrigger, replay));
         }
-        writeAudit(projectRoot, decisions);
-        return summarize(projectRoot, decisions);
+        var changed = writeAudit(projectRoot, decisions);
+        return summarize(projectRoot, decisions, changed);
     }
 
     public ValidationSummary validateSingleDraft(Path projectRoot, Path draftPath, String trigger) throws IOException {
@@ -97,11 +97,11 @@ public final class ValidationGateEngine {
         String normalizedTrigger = normalizeTrigger(trigger);
         var replay = evaluateReplay(projectRoot);
         var decision = validateSingle(projectRoot, draftPath, normalizedTrigger, replay);
-        writeAudit(projectRoot, List.of(decision));
-        return summarize(projectRoot, List.of(decision));
+        var changed = writeAudit(projectRoot, List.of(decision));
+        return summarize(projectRoot, List.of(decision), changed);
     }
 
-    private ValidationSummary summarize(Path projectRoot, List<DraftDecision> decisions) {
+    private ValidationSummary summarize(Path projectRoot, List<DraftDecision> decisions, List<DraftDecision> changedDecisions) {
         int pass = 0;
         int hold = 0;
         int block = 0;
@@ -111,7 +111,7 @@ public final class ValidationGateEngine {
             if (d.verdict() == Verdict.BLOCK) block++;
         }
         return new ValidationSummary(
-                decisions.size(), pass, hold, block, List.copyOf(decisions),
+                decisions.size(), pass, hold, block, List.copyOf(decisions), List.copyOf(changedDecisions),
                 projectRoot.resolve(AUDIT_DIR).resolve(AUDIT_FILE));
     }
 
@@ -231,15 +231,16 @@ public final class ValidationGateEngine {
         }
     }
 
-    private void writeAudit(Path projectRoot, List<DraftDecision> decisions) throws IOException {
+    private List<DraftDecision> writeAudit(Path projectRoot, List<DraftDecision> decisions) throws IOException {
         if (decisions.isEmpty()) {
-            return;
+            return List.of();
         }
         Path auditPath = projectRoot.resolve(AUDIT_DIR).resolve(AUDIT_FILE);
         Files.createDirectories(auditPath.getParent());
 
         // Load last-known verdict per draft path to avoid duplicate entries
         var lastVerdicts = loadLastVerdicts(auditPath);
+        var changed = new ArrayList<DraftDecision>();
 
         for (var d : decisions) {
             String previousVerdict = lastVerdicts.get(d.draftPath());
@@ -270,7 +271,9 @@ public final class ValidationGateEngine {
                     StandardOpenOption.CREATE,
                     StandardOpenOption.APPEND
             );
+            changed.add(d);
         }
+        return List.copyOf(changed);
     }
 
     /**
@@ -425,10 +428,12 @@ public final class ValidationGateEngine {
             int holdCount,
             int blockCount,
             List<DraftDecision> decisions,
+            List<DraftDecision> changedDecisions,
             Path auditFile
     ) {
         public ValidationSummary {
             decisions = decisions != null ? List.copyOf(decisions) : List.of();
+            changedDecisions = changedDecisions != null ? List.copyOf(changedDecisions) : List.of();
         }
     }
 }

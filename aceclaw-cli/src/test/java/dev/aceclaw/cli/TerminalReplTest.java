@@ -153,8 +153,10 @@ class TerminalReplTest {
         String output = outputBuffer.toString();
         assertThat(output).contains("Skill Drafts");
         assertThat(output).contains("retry-safe");
+        assertThat(output).contains("candidate=cand-123");
         assertThat(output).contains("verdict=hold");
         assertThat(output).contains("release=shadow");
+        assertThat(output).contains("manual-review=yes");
     }
 
     @Test
@@ -169,7 +171,23 @@ class TerminalReplTest {
         assertThat(output).contains("Skill Draft");
         assertThat(output).contains("retry-safe");
         assertThat(output).contains("cand-123");
+        assertThat(output).contains("manual review needed");
         assertThat(output).contains("STATIC_ALLOWED_TOOLS_POLICY_VIOLATION");
+    }
+
+    @Test
+    void skillsDraftsPending_filtersToManualReviewItems() throws Exception {
+        var statusRepl = newReplForProject(tempDir);
+        writeSkillDraftArtifacts(tempDir);
+        writeActiveSkillDraftArtifacts(tempDir);
+
+        boolean shouldExit = statusRepl.handleSlashCommand(out, "/skills drafts pending", null);
+
+        assertThat(shouldExit).isFalse();
+        String output = outputBuffer.toString();
+        assertThat(output).contains("Pending Skill Drafts");
+        assertThat(output).contains("retry-safe");
+        assertThat(output).doesNotContain("fully-active");
     }
 
     @Test
@@ -267,6 +285,36 @@ class TerminalReplTest {
         String summary = (String) invokePrivate(statusRepl, "skillDraftStatusSummary",
                 new Class<?>[]{Path.class}, tempDir);
         assertThat(summary).isEqualTo("1(p:0,h:1,b:0,n:0)");
+    }
+
+    @Test
+    void renderSkillDraftEventNotice_enqueuesNotice() throws Exception {
+        var statusRepl = newReplForProject(tempDir);
+        var mapper = new ObjectMapper();
+        ObjectNode event = mapper.createObjectNode();
+        event.put("type", "validation_changed");
+        event.put("trigger", "draft-generated");
+        event.put("skillName", "retry-safe");
+        event.put("draftPath", ".aceclaw/skills-drafts/retry-safe/SKILL.md");
+        event.put("candidateId", "cand-123");
+        event.put("verdict", "hold");
+        event.put("releaseStage", "shadow");
+        event.put("paused", false);
+        var reasons = mapper.createArrayNode();
+        reasons.add("STATIC_ALLOWED_TOOLS_POLICY_VIOLATION: allowed-tools includes unsafe or malformed values");
+        event.set("reasons", reasons);
+
+        Object parsed = invokePrivate(statusRepl, "parseSkillDraftEvent",
+                new Class<?>[]{com.fasterxml.jackson.databind.JsonNode.class}, event);
+        invokePrivate(statusRepl, "renderSkillDraftEventNotice",
+                new Class<?>[]{parsed.getClass()}, parsed);
+        invokePrivate(statusRepl, "drainUiEventsIntoState", new Class<?>[]{});
+
+        @SuppressWarnings("unchecked")
+        var notices = (java.util.Deque<Object>) getPrivateField(statusRepl, "uiNoticeBuffer");
+        assertThat(notices).isNotEmpty();
+        assertThat(notices.getLast().toString()).contains("retry-safe");
+        assertThat(notices.getLast().toString()).contains("STATIC_ALLOWED_TOOLS_POLICY_VIOLATION");
     }
 
     @Test
@@ -477,6 +525,30 @@ class TerminalReplTest {
                 {
                   "releases": [
                     {"skillName":"retry-safe","stage":"shadow","paused":false}
+                  ]
+                }
+                """);
+    }
+
+    private static void writeActiveSkillDraftArtifacts(Path root) throws Exception {
+        Path draft = root.resolve(".aceclaw/skills-drafts/fully-active/SKILL.md");
+        Path release = root.resolve(".aceclaw/metrics/continuous-learning/skill-release-state.json");
+        Files.createDirectories(draft.getParent());
+        Files.writeString(draft, """
+                ---
+                name: "fully-active"
+                description: "Already active"
+                disable-model-invocation: true
+                source-candidate-id: "cand-999"
+                ---
+
+                # Draft Skill
+                """);
+        Files.writeString(release, """
+                {
+                  "releases": [
+                    {"skillName":"retry-safe","stage":"shadow","paused":false},
+                    {"skillName":"fully-active","stage":"active","paused":false}
                   ]
                 }
                 """);
