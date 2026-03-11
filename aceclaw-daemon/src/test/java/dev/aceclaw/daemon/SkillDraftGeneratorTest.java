@@ -27,7 +27,7 @@ class SkillDraftGeneratorTest {
     @Test
     void generatedDraftContainsRequiredFrontmatter() throws Exception {
         var store = newStore(tempDir.resolve("project-a"));
-        var t0 = Instant.parse("2026-02-24T00:00:00Z");
+        var t0 = recentTime();
 
         store.upsert(obs("Use retry with bounded timeout for flaky bash commands", "bash", t0));
         store.evaluateAll();
@@ -61,7 +61,7 @@ class SkillDraftGeneratorTest {
     void collisionNamingIsDeterministic() throws Exception {
         var project = tempDir.resolve("project-b");
         var store = newStore(project);
-        var t0 = Instant.parse("2026-02-24T00:00:00Z");
+        var t0 = recentTime();
 
         // Same content => same base skill name; different tool tags prevent merge in candidate store.
         store.upsert(obs("Prefer concise command output summaries", "bash", t0));
@@ -86,7 +86,7 @@ class SkillDraftGeneratorTest {
     void regeneratingExistingDraftSkipsInsteadOfRewriting() throws Exception {
         var project = tempDir.resolve("project-regen");
         var store = newStore(project);
-        var t0 = Instant.parse("2026-02-24T00:00:00Z");
+        var t0 = recentTime();
 
         store.upsert(obs("Prefer concise command output summaries", "bash", t0));
         store.upsert(obs("Prefer concise command output summaries", "read_file", t0.plusSeconds(30)));
@@ -108,7 +108,7 @@ class SkillDraftGeneratorTest {
     void onlyPromotedCandidatesGenerateDrafts() throws Exception {
         var project = tempDir.resolve("project-c");
         var store = newStore(project);
-        var t0 = Instant.parse("2026-02-24T00:00:00Z");
+        var t0 = recentTime();
 
         // Promoted candidate.
         store.upsert(obs("Use read-first then write pattern for edits", "edit_file", t0));
@@ -130,7 +130,7 @@ class SkillDraftGeneratorTest {
     void generatedDraftCanFlowIntoValidationGate() throws Exception {
         var project = tempDir.resolve("project-validate");
         var store = newStore(project);
-        var t0 = Instant.parse("2026-02-24T00:00:00Z");
+        var t0 = recentTime();
 
         store.upsert(obs("Use read-first then write pattern for edits", "edit_file", t0));
         store.evaluateAll();
@@ -202,5 +202,9 @@ class SkillDraftGeneratorTest {
                 "src:shadow",
                 at
         );
+    }
+
+    private static Instant recentTime() {
+        return Instant.now().minus(Duration.ofDays(1));
     }
 }
