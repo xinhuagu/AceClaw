@@ -1,6 +1,7 @@
 package dev.aceclaw.tools;
 
 import java.nio.file.Path;
+import java.util.Objects;
 
 /**
  * Shared path resolution logic for all tools.
@@ -15,6 +16,7 @@ final class PathResolver {
      * Java's {@code Path.of("~")} treats ~ as a literal directory name, not the home dir.
      */
     static String expandTilde(String raw) {
+        Objects.requireNonNull(raw, "raw");
         if (raw.startsWith("~/") || raw.startsWith("~\\") || raw.equals("~")) {
             return System.getProperty("user.home") + raw.substring(1);
         }
@@ -26,6 +28,8 @@ final class PathResolver {
      * against the working directory.
      */
     static Path resolve(String raw, Path workingDir) {
+        Objects.requireNonNull(raw, "raw");
+        Objects.requireNonNull(workingDir, "workingDir");
         raw = expandTilde(raw);
         var path = Path.of(raw);
         if (path.isAbsolute()) {
