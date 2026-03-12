@@ -76,28 +76,37 @@ public final class HistoricalLogIndex {
 
     public List<ToolInvocationEntry> queryByTool(String toolName, Instant from, Instant to) {
         Objects.requireNonNull(toolName, "toolName");
-        return read(toolFile, ToolInvocationEntry.class).stream()
+        return toolInvocations(null, from, to).stream()
                 .filter(entry -> toolName.equals(entry.tool()))
-                .filter(entry -> withinRange(entry.timestamp(), from, to))
                 .sorted(Comparator.comparing(ToolInvocationEntry::timestamp).reversed())
                 .toList();
     }
 
     public List<ErrorEntry> queryByErrorClass(ErrorClass errorClass, Instant from, Instant to) {
         Objects.requireNonNull(errorClass, "errorClass");
-        return read(errorFile, ErrorEntry.class).stream()
+        return errorEntries(null, from, to).stream()
                 .filter(entry -> entry.errorClass() == errorClass)
-                .filter(entry -> withinRange(entry.timestamp(), from, to))
                 .sorted(Comparator.comparing(ErrorEntry::timestamp).reversed())
+                .toList();
+    }
+
+    public List<ToolInvocationEntry> toolInvocations(String workspaceHash, Instant from, Instant to) {
+        return read(toolFile, ToolInvocationEntry.class).stream()
+                .filter(entry -> withinWorkspace(entry.workspaceHash(), workspaceHash))
+                .filter(entry -> withinRange(entry.timestamp(), from, to))
+                .toList();
+    }
+
+    public List<ErrorEntry> errorEntries(String workspaceHash, Instant from, Instant to) {
+        return read(errorFile, ErrorEntry.class).stream()
+                .filter(entry -> withinWorkspace(entry.workspaceHash(), workspaceHash))
+                .filter(entry -> withinRange(entry.timestamp(), from, to))
                 .toList();
     }
 
     public Map<String, Integer> toolInvocationCounts(Instant from, Instant to) {
         var counts = new HashMap<String, Integer>();
-        for (var entry : read(toolFile, ToolInvocationEntry.class)) {
-            if (!withinRange(entry.timestamp(), from, to)) {
-                continue;
-            }
+        for (var entry : toolInvocations(null, from, to)) {
             counts.merge(entry.tool(), entry.invocationCount(), Integer::sum);
         }
         return Map.copyOf(counts);
@@ -105,19 +114,22 @@ public final class HistoricalLogIndex {
 
     public Map<ErrorClass, Integer> errorCounts(Instant from, Instant to) {
         var counts = new EnumMap<ErrorClass, Integer>(ErrorClass.class);
-        for (var entry : read(errorFile, ErrorEntry.class)) {
-            if (!withinRange(entry.timestamp(), from, to)) {
-                continue;
-            }
+        for (var entry : errorEntries(null, from, to)) {
             counts.merge(entry.errorClass(), 1, Integer::sum);
         }
         return Map.copyOf(counts);
     }
 
     public List<PatternEntry> patterns(Instant from, Instant to) {
-        return read(patternFile, PatternEntry.class).stream()
-                .filter(entry -> withinRange(entry.timestamp(), from, to))
+        return patterns(null, from, to).stream()
                 .sorted(Comparator.comparing(PatternEntry::timestamp).reversed())
+                .toList();
+    }
+
+    public List<PatternEntry> patterns(String workspaceHash, Instant from, Instant to) {
+        return read(patternFile, PatternEntry.class).stream()
+                .filter(entry -> withinWorkspace(entry.workspaceHash(), workspaceHash))
+                .filter(entry -> withinRange(entry.timestamp(), from, to))
                 .toList();
     }
 
@@ -126,6 +138,7 @@ public final class HistoricalLogIndex {
         for (var metric : snapshot.toolMetrics().values()) {
             entries.add(new ToolInvocationEntry(
                     snapshot.sessionId(),
+                    snapshot.workspaceHash(),
                     metric.toolName(),
                     snapshot.closedAt(),
                     metric.totalInvocations(),
@@ -140,13 +153,16 @@ public final class HistoricalLogIndex {
     private List<ErrorEntry> toErrorEntries(HistoricalSessionSnapshot snapshot) {
         var entries = new ArrayList<ErrorEntry>();
         String inferredTool = inferTool(snapshot);
-        for (var error : snapshot.errorsEncountered()) {
+        for (int i = 0; i < snapshot.errorsEncountered().size(); i++) {
+            var error = snapshot.errorsEncountered().get(i);
             entries.add(new ErrorEntry(
                     snapshot.sessionId(),
+                    snapshot.workspaceHash(),
                     inferredTool,
                     ErrorClass.classify(error),
                     error,
                     ErrorClass.classify(error).defaultRecovery(),
+                    i,
                     snapshot.closedAt()
             ));
         }
@@ -158,6 +174,7 @@ public final class HistoricalLogIndex {
         if (snapshot.backtrackingDetected()) {
             entries.add(new PatternEntry(
                     snapshot.sessionId(),
+                    snapshot.workspaceHash(),
                     PatternType.ERROR_CORRECTION,
                     0.7,
                     "Session required backtracking after an error or correction.",
@@ -167,6 +184,7 @@ public final class HistoricalLogIndex {
         if (!snapshot.endToEndStrategy().isBlank()) {
             entries.add(new PatternEntry(
                     snapshot.sessionId(),
+                    snapshot.workspaceHash(),
                     PatternType.WORKFLOW,
                     0.6,
                     snapshot.endToEndStrategy(),
@@ -237,8 +255,16 @@ public final class HistoricalLogIndex {
         return true;
     }
 
+    private static boolean withinWorkspace(String entryWorkspaceHash, String workspaceHash) {
+        if (workspaceHash == null || workspaceHash.isBlank()) {
+            return true;
+        }
+        return workspaceHash.equals(entryWorkspaceHash);
+    }
+
     public record ToolInvocationEntry(
             String sessionId,
+            String workspaceHash,
             String tool,
             Instant timestamp,
             int invocationCount,
@@ -249,15 +275,18 @@ public final class HistoricalLogIndex {
 
     public record ErrorEntry(
             String sessionId,
+            String workspaceHash,
             String tool,
             ErrorClass errorClass,
             String message,
             String resolution,
+            int sequence,
             Instant timestamp
     ) {}
 
     public record PatternEntry(
             String sessionId,
+            String workspaceHash,
             PatternType patternType,
             double confidence,
             String description,
