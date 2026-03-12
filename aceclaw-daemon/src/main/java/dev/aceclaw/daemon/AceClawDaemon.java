@@ -24,12 +24,14 @@ import dev.aceclaw.llm.LlmClientFactory;
 import dev.aceclaw.memory.AutoMemoryStore;
 import dev.aceclaw.memory.CandidateStateMachine;
 import dev.aceclaw.memory.CandidateStore;
+import dev.aceclaw.memory.CrossSessionPatternMiner;
 import dev.aceclaw.memory.DailyJournal;
 import dev.aceclaw.memory.HistoricalLogIndex;
 import dev.aceclaw.memory.HistoricalSessionSnapshot;
 import dev.aceclaw.memory.MarkdownMemoryStore;
 import dev.aceclaw.memory.MemoryConsolidator;
 import dev.aceclaw.memory.StrategyRefiner;
+import dev.aceclaw.memory.WorkspacePaths;
 import dev.aceclaw.security.DefaultPermissionPolicy;
 import dev.aceclaw.security.PermissionManager;
 import dev.aceclaw.mcp.McpClientManager;
@@ -610,6 +612,8 @@ public final class AceClawDaemon {
             final var archiveDir = markdownStore != null ? markdownStore.memoryDir() : null;
             final var agentHandlerForCleanup = agentHandler;
             final var sessionAnalyzer = new SessionAnalyzer();
+            final var crossSessionPatternMiner = historicalLogIndex != null ? new CrossSessionPatternMiner() : null;
+            final var workspaceHash = WorkspacePaths.workspaceHash(workingDir);
             sessionManager.setSessionEndCallback(session -> {
                 var extracted = SessionEndExtractor.extract(session.messages());
                 for (var mem : extracted) {
@@ -657,6 +661,7 @@ public final class AceClawDaemon {
                     try {
                         historicalLogIndex.index(new HistoricalSessionSnapshot(
                                 session.id(),
+                                workspaceHash,
                                 Instant.now(),
                                 learnings.executedCommands(),
                                 learnings.errorsEncountered(),
@@ -667,6 +672,25 @@ public final class AceClawDaemon {
                         ));
                     } catch (Exception e) {
                         log.warn("Failed to index session history: {}", e.getMessage());
+                    }
+                }
+                if (crossSessionPatternMiner != null && historicalLogIndex != null) {
+                    try {
+                        var mined = crossSessionPatternMiner.mine(
+                                historicalLogIndex, memoryStore, workspaceHash, workingDir);
+                        if ((!mined.frequentErrorChains().isEmpty()
+                                || !mined.stableWorkflows().isEmpty()
+                                || !mined.convergingStrategies().isEmpty()
+                                || !mined.degradationSignals().isEmpty())
+                                && extractionJournal != null) {
+                            extractionJournal.append("Cross-session miner: "
+                                    + mined.frequentErrorChains().size() + " error chains, "
+                                    + mined.stableWorkflows().size() + " stable workflows, "
+                                    + mined.convergingStrategies().size() + " converging strategies, "
+                                    + mined.degradationSignals().size() + " degradation signals");
+                        }
+                    } catch (Exception e) {
+                        log.warn("Cross-session pattern mining failed: {}", e.getMessage());
                     }
                 }
 

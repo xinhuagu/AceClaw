@@ -24,6 +24,7 @@ class HistoricalLogIndexTest {
 
         index.index(new HistoricalSessionSnapshot(
                 "session-1",
+                "ws-a",
                 t0,
                 List.of("./gradlew test"),
                 List.of("Command timed out after 30s"),
@@ -34,6 +35,7 @@ class HistoricalLogIndexTest {
         ));
         index.index(new HistoricalSessionSnapshot(
                 "session-2",
+                "ws-a",
                 t0.plusSeconds(3600),
                 List.of("rg login src/main/App.java"),
                 List.of("Permission denied: /etc/shadow"),
@@ -77,6 +79,7 @@ class HistoricalLogIndexTest {
 
         index.index(new HistoricalSessionSnapshot(
                 "old-session",
+                "ws-a",
                 t0.minusSeconds(7200),
                 List.of("bash build.sh"),
                 List.of(),
@@ -87,6 +90,7 @@ class HistoricalLogIndexTest {
         ));
         index.index(new HistoricalSessionSnapshot(
                 "new-session",
+                "ws-a",
                 t0,
                 List.of("bash build.sh"),
                 List.of(),
@@ -109,6 +113,7 @@ class HistoricalLogIndexTest {
 
         index.index(new HistoricalSessionSnapshot(
                 "session-1",
+                "ws-a",
                 t0,
                 List.of("bash build.sh"),
                 List.of(),
@@ -128,5 +133,44 @@ class HistoricalLogIndexTest {
                 .singleElement()
                 .extracting(HistoricalLogIndex.ToolInvocationEntry::sessionId)
                 .isEqualTo("session-1");
+    }
+
+    @Test
+    void workspaceScopedQueriesDoNotLeakAcrossProjects() throws Exception {
+        var index = new HistoricalLogIndex(tempDir);
+        var t0 = Instant.parse("2026-03-12T10:00:00Z");
+
+        index.index(new HistoricalSessionSnapshot(
+                "session-a",
+                "ws-a",
+                t0,
+                List.of("bash build.sh"),
+                List.of("Command timed out after 30s"),
+                List.of(),
+                Map.of("bash", new ToolMetrics("bash", 2, 1, 1, 200, t0)),
+                true,
+                "The end-to-end strategy was to inspect files, then run build commands."
+        ));
+        index.index(new HistoricalSessionSnapshot(
+                "session-b",
+                "ws-b",
+                t0.plusSeconds(60),
+                List.of("bash build.sh"),
+                List.of("Permission denied"),
+                List.of(),
+                Map.of("bash", new ToolMetrics("bash", 1, 0, 1, 120, t0.plusSeconds(60))),
+                false,
+                "The end-to-end strategy was to inspect files, then run build commands."
+        ));
+
+        assertThat(index.toolInvocations("ws-a", t0.minusSeconds(1), t0.plusSeconds(120)))
+                .extracting(HistoricalLogIndex.ToolInvocationEntry::sessionId)
+                .containsExactly("session-a");
+        assertThat(index.errorEntries("ws-b", t0.minusSeconds(1), t0.plusSeconds(120)))
+                .extracting(HistoricalLogIndex.ErrorEntry::sessionId)
+                .containsExactly("session-b");
+        assertThat(index.patterns("ws-a", t0.minusSeconds(1), t0.plusSeconds(120)))
+                .extracting(HistoricalLogIndex.PatternEntry::sessionId)
+                .containsOnly("session-a");
     }
 }
