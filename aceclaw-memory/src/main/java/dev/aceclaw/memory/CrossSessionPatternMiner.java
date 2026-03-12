@@ -171,7 +171,7 @@ public final class CrossSessionPatternMiner {
                     continue;
                 }
                 String key = a.name() + "->" + b.name();
-                support.computeIfAbsent(key, _ -> new LinkedHashSet<>()).add(session);
+                support.computeIfAbsent(key, ignored -> new LinkedHashSet<>()).add(session);
             }
         }
 
