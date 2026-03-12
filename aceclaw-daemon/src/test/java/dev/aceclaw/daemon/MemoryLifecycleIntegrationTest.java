@@ -300,4 +300,82 @@ class MemoryLifecycleIntegrationTest {
         assertThat(prompt).contains("Daily Journal");
         assertThat(prompt).contains("Session 1 ended");
     }
+
+    @Test
+    void trendDetectionWritesMemoryAndJournalSummary() throws Exception {
+        var index = new HistoricalLogIndex(aceclawHome);
+        var detector = new TrendDetector();
+        var t0 = java.time.Instant.parse("2026-03-12T10:00:00Z");
+        String workspaceHash = WorkspacePaths.workspaceHash(workspacePath);
+
+        index.index(new HistoricalSessionSnapshot(
+                "trend-1",
+                workspaceHash,
+                t0,
+                List.of("bash build.sh"),
+                List.of(),
+                List.of(),
+                java.util.Map.of("bash", new dev.aceclaw.core.agent.ToolMetrics("bash", 7, 7, 0, 8_400, t0)),
+                false,
+                "The end-to-end strategy was to inspect files, then run build commands."
+        ));
+        index.index(new HistoricalSessionSnapshot(
+                "trend-2",
+                workspaceHash,
+                t0.plusSeconds(60),
+                List.of("bash build.sh"),
+                List.of("Command timed out after 30s"),
+                List.of(),
+                java.util.Map.of("bash", new dev.aceclaw.core.agent.ToolMetrics("bash", 6, 5, 1, 7_200, t0.plusSeconds(60))),
+                true,
+                "The end-to-end strategy was to inspect files, then run build commands."
+        ));
+        index.index(new HistoricalSessionSnapshot(
+                "trend-3",
+                workspaceHash,
+                t0.plusSeconds(120),
+                List.of("bash build.sh"),
+                List.of("Permission denied"),
+                List.of(),
+                java.util.Map.of("bash", new dev.aceclaw.core.agent.ToolMetrics("bash", 5, 4, 1, 5_000, t0.plusSeconds(120))),
+                true,
+                "The end-to-end strategy was to inspect files, then run build commands."
+        ));
+        index.index(new HistoricalSessionSnapshot(
+                "trend-4",
+                workspaceHash,
+                t0.plusSeconds(180),
+                List.of("bash build.sh"),
+                List.of(),
+                List.of(),
+                java.util.Map.of("bash", new dev.aceclaw.core.agent.ToolMetrics("bash", 3, 3, 0, 1_800, t0.plusSeconds(180))),
+                false,
+                "The end-to-end strategy was to inspect files, then run build commands."
+        ));
+        index.index(new HistoricalSessionSnapshot(
+                "trend-5",
+                workspaceHash,
+                t0.plusSeconds(240),
+                List.of("bash build.sh"),
+                List.of(),
+                List.of(),
+                java.util.Map.of("bash", new dev.aceclaw.core.agent.ToolMetrics("bash", 2, 2, 0, 800, t0.plusSeconds(240))),
+                false,
+                "The end-to-end strategy was to inspect files, then run build commands."
+        ));
+
+        var trends = detector.detect(index, memoryStore, workspaceHash, workspacePath);
+        if (!trends.isEmpty()) {
+            journal.append("Trend detector: " + trends.size()
+                    + " significant trends. "
+                    + trends.stream().limit(2).map(TrendDetector.Trend::description)
+                    .collect(java.util.stream.Collectors.joining(" | ")));
+        }
+
+        assertThat(trends).isNotEmpty();
+        assertThat(memoryStore.query(MemoryEntry.Category.SUCCESSFUL_STRATEGY, List.of("trend"), 10))
+                .anySatisfy(entry -> assertThat(entry.content()).contains("Overall tool invocations per session fell"));
+        assertThat(journal.loadRecentWindow())
+                .anyMatch(line -> line.contains("Trend detector:"));
+    }
 }

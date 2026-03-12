@@ -31,6 +31,7 @@ import dev.aceclaw.memory.HistoricalSessionSnapshot;
 import dev.aceclaw.memory.MarkdownMemoryStore;
 import dev.aceclaw.memory.MemoryConsolidator;
 import dev.aceclaw.memory.StrategyRefiner;
+import dev.aceclaw.memory.TrendDetector;
 import dev.aceclaw.memory.WorkspacePaths;
 import dev.aceclaw.security.DefaultPermissionPolicy;
 import dev.aceclaw.security.PermissionManager;
@@ -613,6 +614,7 @@ public final class AceClawDaemon {
             final var agentHandlerForCleanup = agentHandler;
             final var sessionAnalyzer = new SessionAnalyzer();
             final var crossSessionPatternMiner = historicalLogIndex != null ? new CrossSessionPatternMiner() : null;
+            final var trendDetector = historicalLogIndex != null ? new TrendDetector() : null;
             final var workspaceHash = WorkspacePaths.workspaceHash(workingDir);
             sessionManager.setSessionEndCallback(session -> {
                 var extracted = SessionEndExtractor.extract(session.messages());
@@ -691,6 +693,18 @@ public final class AceClawDaemon {
                         }
                     } catch (Exception e) {
                         log.warn("Cross-session pattern mining failed: {}", e.getMessage());
+                    }
+                }
+                if (trendDetector != null && historicalLogIndex != null) {
+                    try {
+                        var trends = trendDetector.detect(
+                                historicalLogIndex, memoryStore, workspaceHash, workingDir);
+                        if (!trends.isEmpty() && extractionJournal != null) {
+                            extractionJournal.append("Trend detector: " + trends.size()
+                                    + " significant trends. " + summarizeTrends(trends));
+                        }
+                    } catch (Exception e) {
+                        log.warn("Trend detection failed: {}", e.getMessage());
                     }
                 }
 
@@ -1757,5 +1771,12 @@ public final class AceClawDaemon {
     public static final class DaemonException extends Exception {
         public DaemonException(String message) { super(message); }
         public DaemonException(String message, Throwable cause) { super(message, cause); }
+    }
+
+    private static String summarizeTrends(List<TrendDetector.Trend> trends) {
+        return trends.stream()
+                .limit(3)
+                .map(TrendDetector.Trend::description)
+                .collect(java.util.stream.Collectors.joining(" | "));
     }
 }
