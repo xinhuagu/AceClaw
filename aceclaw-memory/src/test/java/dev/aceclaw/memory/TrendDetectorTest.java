@@ -25,6 +25,8 @@ class TrendDetectorTest {
         var t0 = Instant.parse("2026-03-12T10:00:00Z");
         String workspaceHash = WorkspacePaths.workspaceHash(workspace);
 
+        index.index(snapshot("s0a", workspaceHash, t0.minusSeconds(120), 5, 0, 580, List.of()));
+        index.index(snapshot("s0b", workspaceHash, t0.minusSeconds(60), 5, 0, 590, List.of()));
         index.index(snapshot("s1", workspaceHash, t0, 5, 0, 600, List.of()));
         index.index(snapshot("s2", workspaceHash, t0.plusSeconds(60), 5, 1, 650, List.of("Command timed out after 30s")));
         index.index(snapshot("s3", workspaceHash, t0.plusSeconds(120), 5, 2, 700,
@@ -58,12 +60,10 @@ class TrendDetectorTest {
         var t0 = Instant.parse("2026-03-12T10:00:00Z");
         String workspaceHash = WorkspacePaths.workspaceHash(workspace);
 
-        index.index(snapshot("s1", workspaceHash, t0, 8, 1, 1800, List.of("Command timed out after 30s")));
-        index.index(snapshot("s2", workspaceHash, t0.plusSeconds(60), 7, 1, 1600, List.of("Command timed out after 30s")));
-        index.index(snapshot("s3", workspaceHash, t0.plusSeconds(120), 6, 1, 1300, List.of("Permission denied")));
-        index.index(snapshot("s4", workspaceHash, t0.plusSeconds(180), 4, 0, 700, List.of()));
-        index.index(snapshot("s5", workspaceHash, t0.plusSeconds(240), 3, 0, 450, List.of()));
-        index.index(snapshot("s6", workspaceHash, t0.plusSeconds(300), 2, 0, 300, List.of()));
+        index.index(snapshot("s1", workspaceHash, t0, 5, 1, 1800, List.of("Command timed out after 30s")));
+        index.index(snapshot("s2", workspaceHash, t0.plusSeconds(60), 4, 1, 1600, List.of("Command timed out after 30s")));
+        index.index(snapshot("s3", workspaceHash, t0.plusSeconds(120), 0, 0, 0, List.of()));
+        index.index(snapshot("s4", workspaceHash, t0.plusSeconds(180), 0, 0, 0, List.of()));
 
         var trends = detector.detect(index, store, workspaceHash, workspace, 10);
 

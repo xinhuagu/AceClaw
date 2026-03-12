@@ -47,6 +47,15 @@ public final class TrendDetector {
                               Path projectPath,
                               int windowSize) {
         Objects.requireNonNull(index, "index");
+        if (memoryStore != null) {
+            Objects.requireNonNull(projectPath, "projectPath");
+            String expectedWorkspaceHash = WorkspacePaths.workspaceHash(projectPath);
+            if (workspaceHash != null
+                    && !workspaceHash.isBlank()
+                    && !Objects.equals(expectedWorkspaceHash, workspaceHash)) {
+                throw new IllegalArgumentException("workspaceHash does not match projectPath");
+            }
+        }
         int effectiveWindow = Math.max(1, windowSize);
         var windowData = loadWindowData(index, workspaceHash, effectiveWindow);
         if (windowData.recentSessions().isEmpty()) {
@@ -206,8 +215,9 @@ public final class TrendDetector {
                         LinkedHashMap::new,
                         Collectors.summingInt(HistoricalLogIndex.ToolInvocationEntry::invocationCount)));
         var series = chronologicalSessions.stream()
-                .filter(totalBySession::containsKey)
-                .map(sessionId -> new SessionValue(sessionId, totalBySession.get(sessionId)))
+                .map(sessionId -> new SessionValue(
+                        sessionId,
+                        totalBySession.getOrDefault(sessionId, 0).doubleValue()))
                 .toList();
         return trendForSeries(
                 "overall.toolInvocationsPerSession",
@@ -262,8 +272,9 @@ public final class TrendDetector {
                         LinkedHashMap::new,
                         Collectors.counting()));
         return chronologicalSessions.stream()
-                .filter(countsBySession::containsKey)
-                .map(sessionId -> new SessionValuePair(sessionId, countsBySession.get(sessionId).doubleValue()))
+                .map(sessionId -> new SessionValuePair(
+                        sessionId,
+                        countsBySession.getOrDefault(sessionId, 0L).doubleValue()))
                 .toList();
     }
 
@@ -427,7 +438,14 @@ public final class TrendDetector {
             List<String> chronologicalSessions,
             List<HistoricalLogIndex.ToolInvocationEntry> toolEntries,
             List<HistoricalLogIndex.ErrorEntry> errorEntries
-    ) {}
+    ) {
+        private SessionWindowData {
+            recentSessions = recentSessions != null ? List.copyOf(recentSessions) : List.of();
+            chronologicalSessions = chronologicalSessions != null ? List.copyOf(chronologicalSessions) : List.of();
+            toolEntries = toolEntries != null ? List.copyOf(toolEntries) : List.of();
+            errorEntries = errorEntries != null ? List.copyOf(errorEntries) : List.of();
+        }
+    }
 
     @FunctionalInterface
     private interface TrendDescriptionBuilder {
