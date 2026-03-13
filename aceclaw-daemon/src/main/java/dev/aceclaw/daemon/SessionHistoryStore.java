@@ -318,9 +318,18 @@ public final class SessionHistoryStore {
 
     private void writeAtomically(Path target, String content) throws IOException {
         Path tmp = target.resolveSibling(target.getFileName() + ".tmp");
-        Files.writeString(tmp, content,
-                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
-        Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        try {
+            Files.writeString(tmp, content,
+                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException e) {
+            try {
+                Files.deleteIfExists(tmp);
+            } catch (IOException ignored) {
+                // Preserve the original write/move failure and best-effort cleanup only.
+            }
+            throw e;
+        }
     }
 
     private Path historyFile(String sessionId) {
