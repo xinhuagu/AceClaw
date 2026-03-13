@@ -341,6 +341,47 @@ class AutoMemoryStoreTest {
         assertThat(freshStore.size()).isEqualTo(store.size());
     }
 
+    @Test
+    void concurrentQueryAndReplaceEntriesDoNotThrow() throws Exception {
+        for (int i = 0; i < 50; i++) {
+            store.add(MemoryEntry.Category.PATTERN, "Pattern " + i,
+                    List.of("concurrent"), "seed", false, projectPath);
+        }
+
+        var latch = new CountDownLatch(1);
+        var errors = new AtomicInteger(0);
+
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            executor.submit(() -> {
+                try {
+                    latch.await();
+                    for (int i = 0; i < 200; i++) {
+                        store.query(MemoryEntry.Category.PATTERN, List.of("concurrent"), 10);
+                    }
+                } catch (Exception e) {
+                    errors.incrementAndGet();
+                }
+            });
+
+            executor.submit(() -> {
+                try {
+                    latch.await();
+                    for (int i = 0; i < 50; i++) {
+                        store.replaceEntries(new ArrayList<>(store.entries()), projectPath);
+                    }
+                } catch (Exception e) {
+                    errors.incrementAndGet();
+                }
+            });
+
+            latch.countDown();
+            executor.shutdown();
+            assertThat(executor.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
+        }
+
+        assertThat(errors.get()).isEqualTo(0);
+    }
+
     // =========================================================================
     // Proactive strategy injection — per-tool grouping
     // =========================================================================

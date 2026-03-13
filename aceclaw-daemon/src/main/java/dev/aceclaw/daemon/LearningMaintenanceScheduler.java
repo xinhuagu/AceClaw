@@ -99,6 +99,9 @@ public final class LearningMaintenanceScheduler {
     }
 
     public void onSessionClosed() {
+        if (!running.get()) {
+            return;
+        }
         sessionsSinceLastRun.incrementAndGet();
         tryTrigger(Trigger.SESSION_COUNT);
     }
@@ -123,6 +126,9 @@ public final class LearningMaintenanceScheduler {
     }
 
     private void tryTrigger(Trigger trigger) {
+        if (!running.get()) {
+            return;
+        }
         if (!shouldTrigger(trigger)) {
             return;
         }

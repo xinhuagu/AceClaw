@@ -104,6 +104,23 @@ class LearningMaintenanceSchedulerTest {
         }
     }
 
+    @Test
+    void sessionCloseDoesNotTriggerWhileStopped() throws Exception {
+        var clock = new MutableClock(Instant.parse("2026-03-13T10:00:00Z"));
+        var activeSessions = new AtomicInteger(0);
+        var memoryBytes = new AtomicLong(0);
+        var triggers = Collections.synchronizedList(new ArrayList<String>());
+        var scheduler = scheduler(clock, activeSessions, memoryBytes, triggers);
+        scheduler.stop();
+
+        for (int i = 0; i < 20; i++) {
+            scheduler.onSessionClosed();
+        }
+        Thread.sleep(50);
+
+        assertThat(triggers).isEmpty();
+    }
+
     private static LearningMaintenanceScheduler scheduler(MutableClock clock,
                                                           AtomicInteger activeSessions,
                                                           AtomicLong memoryBytes,

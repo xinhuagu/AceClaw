@@ -157,6 +157,7 @@ public final class AutoMemoryStore {
         // Persist to disk and update in-memory index atomically under fileLock
         // to prevent remove() from rewriting the file before entries.add() runs.
         String fileName = targetFileName(global, projectPath);
+        accessLock.lock();
         fileLock.lock();
         try {
             String json = mapper.writeValueAsString(entry);
@@ -169,6 +170,7 @@ public final class AutoMemoryStore {
             log.error("Failed to persist memory entry: {}", e.getMessage());
         } finally {
             fileLock.unlock();
+            accessLock.unlock();
         }
         return entry;
     }
@@ -180,6 +182,7 @@ public final class AutoMemoryStore {
     public Optional<MemoryEntry> addIfAbsent(MemoryEntry.Category category, String content,
                                              List<String> tags, String source,
                                              boolean global, Path projectPath) {
+        accessLock.lock();
         fileLock.lock();
         try {
             String fileName = targetFileName(global, projectPath);
@@ -212,6 +215,7 @@ public final class AutoMemoryStore {
             return Optional.empty();
         } finally {
             fileLock.unlock();
+            accessLock.unlock();
         }
     }
 
@@ -265,6 +269,7 @@ public final class AutoMemoryStore {
      * Also rewrites all backing files.
      */
     public void replaceEntries(List<MemoryEntry> newEntries, Path projectPath) {
+        accessLock.lock();
         fileLock.lock();
         try {
             var previousEntryFiles = new HashMap<>(entryFiles);
@@ -281,6 +286,7 @@ public final class AutoMemoryStore {
             }
         } finally {
             fileLock.unlock();
+            accessLock.unlock();
         }
     }
 
@@ -315,6 +321,7 @@ public final class AutoMemoryStore {
      * @return true if the entry was found and removed
      */
     public boolean remove(String id, Path projectPath) {
+        accessLock.lock();
         fileLock.lock();
         try {
             var removed = entries.stream().filter(e -> e.id().equals(id)).findFirst();
@@ -333,6 +340,7 @@ public final class AutoMemoryStore {
             return true;
         } finally {
             fileLock.unlock();
+            accessLock.unlock();
         }
     }
 
