@@ -144,6 +144,10 @@ public final class TerminalRepl {
     /** Cached cron status snapshot from daemon RPC. */
     private volatile CronStatusSnapshot cachedCronStatus;
     private volatile Instant cachedCronStatusAt = Instant.EPOCH;
+    /** Cached git branch name, refreshed periodically. */
+    private volatile String cachedGitBranch;
+    private volatile Instant cachedGitBranchAt = Instant.EPOCH;
+    private static final Duration GIT_BRANCH_REFRESH = Duration.ofSeconds(5);
     /** Last non-trivial user task prompt, used by /continue fallback. */
     private volatile String lastTaskPrompt;
     private final ResumeCheckpointStore resumeCheckpointStore;
@@ -1449,13 +1453,46 @@ public final class TerminalRepl {
 
     // -- Status line ---------------------------------------------------------
 
+    /**
+     * Returns the current git branch, refreshing from disk at most every 5 seconds.
+     * Falls back to the startup value from {@code SessionInfo} if detection fails.
+     */
+    private String currentGitBranch() {
+        Instant now = Instant.now();
+        if (cachedGitBranch != null
+                && Duration.between(cachedGitBranchAt, now).compareTo(GIT_BRANCH_REFRESH) < 0) {
+            return cachedGitBranch;
+        }
+        String project = sessionInfo.project();
+        if (project == null || project.isBlank()) {
+            return sessionInfo.gitBranch();
+        }
+        try {
+            var pb = new ProcessBuilder("git", "rev-parse", "--abbrev-ref", "HEAD");
+            pb.directory(Path.of(project).toFile());
+            pb.redirectErrorStream(true);
+            var process = pb.start();
+            String output = new String(process.getInputStream().readAllBytes()).trim();
+            int exitCode = process.waitFor();
+            if (exitCode == 0 && !output.isBlank()) {
+                cachedGitBranch = output;
+            } else {
+                cachedGitBranch = sessionInfo.gitBranch();
+            }
+        } catch (Exception e) {
+            cachedGitBranch = sessionInfo.gitBranch();
+        }
+        cachedGitBranchAt = now;
+        return cachedGitBranch;
+    }
+
     private String buildStatusString() {
         var sb = new StringBuilder();
 
         sb.append(PURPLE).append(ICON_PRIMARY).append(RESET).append(" ");
         sb.append(INFO).append(BOLD).append(effectiveModel).append(RESET);
 
-        String branch = sessionInfo.gitBranch();
+        String branch = currentGitBranch();
         if (branch != null && !branch.isBlank()) {
             sb.append(MUTED).append(" | ").append(RESET);
             sb.append(SUCCESS).append("branch=")
@@ -2360,8 +2397,9 @@ public final class TerminalRepl {
                 out.println(BOLD + "Session Status" + RESET);
                 out.printf("  %sModel:%s       %s%n", MUTED, RESET, effectiveModel);
                 out.printf("  %sProject:%s     %s%n", MUTED, RESET, sessionInfo.project());
-                if (sessionInfo.gitBranch() != null) {
-                    out.printf("  %sGit branch:%s  %s%n", MUTED, RESET, sessionInfo.gitBranch());
+                String statusBranch = currentGitBranch();
+                if (statusBranch != null) {
+                    out.printf("  %sGit branch:%s  %s%n", MUTED, RESET, statusBranch);
                 }
                 out.printf("  %sContext:%s     %s / %s (%d%%)%n", MUTED, RESET,
                         formatTokenCount(latestInputTokens),
