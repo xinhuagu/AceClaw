@@ -1325,7 +1325,8 @@ public final class AceClawDaemon {
                         explanation.actionType(),
                         explanationCounts.path(explanation.actionType()).asInt(0) + 1);
             }
-            for (var explanation : learningExplanationStore.recent(projectPath, limit)) {
+            var recentExplanations = learningExplanationStore.recent(projectPath, Integer.MAX_VALUE);
+            for (var explanation : recentExplanations) {
                 if (!isOperatorFacingAction(explanation.actionType())) {
                     continue;
                 }
@@ -1337,6 +1338,9 @@ public final class AceClawDaemon {
                 node.put("summary", explanation.summary());
                 node.put("trigger", explanation.trigger());
                 recentActions.add(node);
+                if (recentActions.size() >= limit) {
+                    break;
+                }
             }
 
             for (var validation : learningValidationStore.recent(projectPath, 100)) {

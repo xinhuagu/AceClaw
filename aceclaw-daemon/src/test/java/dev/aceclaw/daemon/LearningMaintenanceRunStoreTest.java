@@ -26,11 +26,23 @@ class LearningMaintenanceRunStoreTest {
                 8,
                 9, 10, 11,
                 "maintenance summary"));
+        store.append(tempDir, new LearningMaintenanceRun(
+                Instant.parse("2026-03-13T19:00:00Z"),
+                "time-interval",
+                "abc123",
+                tempDir.toString(),
+                0, 0, 0,
+                0, 0, 0, 0,
+                0,
+                0, 0, 0,
+                "résumé"));
 
         var recent = store.recent(tempDir, 10);
-        assertThat(recent).hasSize(1);
+        assertThat(recent).hasSize(2);
         assertThat(recent.get(0).trigger()).isEqualTo("session-count");
         assertThat(recent.get(0).pruned()).isEqualTo(3);
         assertThat(recent.get(0).candidatePromoted()).isEqualTo(11);
+        assertThat(recent.get(1).trigger()).isEqualTo("time-interval");
+        assertThat(recent.get(1).summary()).isEqualTo("résumé");
     }
 }

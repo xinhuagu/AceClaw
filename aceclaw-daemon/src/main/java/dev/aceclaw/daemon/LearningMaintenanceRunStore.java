@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.file.Files;
@@ -31,8 +32,10 @@ public final class LearningMaintenanceRunStore {
         try (var channel = FileChannel.open(file,
                 StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND);
              FileLock ignored = channel.lock()) {
-            channel.write(java.nio.charset.StandardCharsets.UTF_8.encode(
-                    mapper.writeValueAsString(run) + "\n"));
+            var buffer = StandardCharsets.UTF_8.encode(mapper.writeValueAsString(run) + "\n");
+            while (buffer.hasRemaining()) {
+                channel.write(buffer);
+            }
         }
     }
 
@@ -44,7 +47,7 @@ public final class LearningMaintenanceRunStore {
             return List.of();
         }
         var runs = new ArrayList<LearningMaintenanceRun>();
-        for (var line : Files.readAllLines(file)) {
+        for (var line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
             if (line == null || line.isBlank()) {
                 continue;
             }
