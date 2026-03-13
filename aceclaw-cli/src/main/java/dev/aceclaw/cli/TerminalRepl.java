@@ -105,7 +105,7 @@ public final class TerminalRepl {
     private static final int MAX_PENDING_PRINT_ABOVE = 32;
     private final Deque<String> pendingPrintAbove = new ArrayDeque<>();
     /** Fixed status panel height so JLine's Status widget never resizes its scroll region. */
-    private static final int FIXED_STATUS_LINE_COUNT = 8;
+    private static final int FIXED_STATUS_LINE_COUNT = 9;
     /** Soft cap (in display columns) for daemon-provided fields rendered inside the status panel. */
     private static final int STATUS_PANEL_FIELD_MAX_COLS = 80;
     private final Object uiRenderLock = new Object();
@@ -1570,6 +1570,8 @@ public final class TerminalRepl {
             int maxLines = Math.min(FIXED_STATUS_LINE_COUNT, terminalHeight / 3);
 
             var lines = buildStatusPanelLines();
+            // Separator line above the status panel
+            lines.addFirst(MUTED + "─".repeat(terminalWidth) + RESET);
             if (!uiNoticeBuffer.isEmpty()) {
                 lines.add(MUTED + "  " + ICON_NOTICES + " notices" + RESET);
                 UiNotice latest = null;
