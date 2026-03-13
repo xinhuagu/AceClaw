@@ -18,8 +18,8 @@ The AceClaw memory system enables **cross-session learning** through an 8-tier h
 | **Tamper detection, not encryption** | Memories are HMAC-SHA256 signed. Tampered entries are silently skipped on load. Users can inspect JSONL files freely. |
 | **Workspace isolation** | Each project gets its own memory directory via SHA-256 hash. No cross-project leakage. |
 | **Concise over exhaustive** | System prompt injection is capped. Auto-memory entries are 1-2 sentences. MEMORY.md injects first 200 lines. The journal caps at 500 lines/day. |
-| **No LLM calls for basic ops** | Memory save, search, load, consolidation, and session-end extraction are all pure-Java heuristic operations. Only context compaction Phase 2 uses an LLM call. |
-| **Self-maintaining** | Memory consolidation (dedup, merge, prune) runs automatically at session end. No manual cleanup needed. |
+| **No LLM calls for basic ops** | Memory save, search, load, consolidation, session-end extraction, historical indexing, and trend detection are all pure-Java heuristic operations. Only context compaction and skill refinement use LLM calls. |
+| **Self-maintaining** | Session close performs extraction and indexing immediately; heavier consolidation and historical maintenance run via the background learning maintenance scheduler. |
 
 ---
 
@@ -295,7 +295,7 @@ Periodic memory maintenance: dedup, merge similar, prune low-relevance.
 - `consolidate(AutoMemoryStore, Path projectPath, Path archiveDir)` — runs all 3 passes
 - Returns `ConsolidationResult` record with counts: `{deduped, merged, pruned, hasChanges()}`
 
-**Trigger:** Called at session end (alongside `SessionEndExtractor`), runs on virtual thread.
+**Trigger:** Invoked by the deferred learning maintenance scheduler after session-close extraction and indexing. Runs on a background virtual thread.
 
 **Null-safe:** If `archiveDir` is null, prune pass skips archiving but still removes entries.
 
@@ -377,13 +377,13 @@ These items flow to the `StreamingAgentHandler` which persists them via `AutoMem
 
 ### 4.4 Memory Consolidation (MemoryConsolidator)
 
-At session end, after extraction completes, the consolidator runs 3 maintenance passes:
+After session-close extraction and indexing complete, the consolidator runs as part of deferred learning maintenance:
 
 1. **Exact dedup** — Removes entries with identical content+category (keeps newest)
 2. **Similarity merge** — Entries with >80% Jaccard token overlap in same category → merged, tags combined
 3. **Age prune** — Entries >90 days old with 0 access count → archived to `archived.jsonl`
 
-This prevents memory pollution from accumulating duplicate or stale entries over many sessions.
+This prevents memory pollution from accumulating duplicate or stale entries over many sessions without slowing down session teardown.
 
 ---
 

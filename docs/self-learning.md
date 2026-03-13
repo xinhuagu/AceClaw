@@ -1,12 +1,16 @@
 # AceClaw Self-Learning Pipeline
 
-> Version 1.0 | 2026-02-19
+> Version 2.0 | 2026-03-13
 
 ## Overview
 
-AceClaw learns from its own behavior. Every tool execution, error recovery, and user correction is analyzed by zero-cost heuristic detectors that produce type-safe insights — no LLM calls required. These insights accumulate across sessions, refine agent strategies, and persist as HMAC-signed memories.
+AceClaw learns from its own behavior across three layers:
 
-This document covers the architecture defined by issues #13–#18.
+1. **Per-turn detectors** capture tool failures, recoveries, and recurring local patterns.
+2. **Session-close retrospectives** summarize what happened in the finished session and append a historical snapshot.
+3. **Deferred maintenance** consolidates memory, mines cross-session patterns, and detects trends on background triggers.
+
+The result is a learning loop that stays cheap on the hot path while still building long-term signals for adaptive skills and historical analysis.
 
 ---
 
@@ -14,8 +18,8 @@ This document covers the architecture defined by issues #13–#18.
 
 ```
                          ┌─────────────────────┐
-                         │   StreamingAgentLoop │
-                         │  (ReAct loop cycle)  │
+                         │ StreamingAgentLoop  │
+                         │   (ReAct loop)      │
                          └─────────┬───────────┘
                                    │
               ┌────────────────────┼────────────────────┐
@@ -23,50 +27,58 @@ This document covers the architecture defined by issues #13–#18.
    ┌──────────────────┐  ┌────────────────┐  ┌──────────────────────┐
    │ ToolMetrics       │  │ Turn           │  │ Conversation History │
    │ Collector         │  │ (messages,     │  │ (full session)       │
-   │ (per-tool stats)  │  │  tool results) │  │                      │
+   │                   │  │  tool results) │  │                      │
    └────────┬─────────┘  └───────┬────────┘  └──────────┬───────────┘
             │                     │                       │
             │          ┌──────────┼───────────────────────┘
             │          ▼          ▼
             │  ┌────────────────────────────────┐
             │  │   SelfImprovementEngine        │
-            │  │  (facade: analyze + persist)    │
-            │  │                                 │
-            │  │  ├── ErrorDetector              │
-            │  │  │   (error→fix pattern match)  │
-            │  │  │   → ErrorInsight             │
-            │  │  │                              │
-            │  │  └── PatternDetector            │
-            │  │      (sequences, corrections,   │
-            │  │       workflows, preferences)   │
-            │  │      → PatternInsight           │
-            │  │                                 │
-            │  │  deduplicate + filter (≥0.7)    │
+            │  │ ErrorDetector + PatternDetector│
             │  └──────────────┬─────────────────┘
             │                 │
-            │          ┌──────┘    ┌──────────────────────┐
-            │          │           │ SessionEndExtractor   │
-            │          │           │ (corrections, prefs,  │
-            │          │           │  feedback, files)     │
-            │          │           └──────────┬────────────┘
-            │          │                      │
-            └──────────┼──────────────────────┘
-                       ▼
-              ┌─────────────────┐
-              │  AutoMemoryStore │
-              │ (HMAC-signed    │
-              │  JSONL storage) │
-              └────────┬────────┘
-                       ▼
-              ┌─────────────────┐
-              │ Memory          │
-              │ Consolidator    │
-              │ (dedup, merge,  │
-              │  age-prune)     │
-              └─────────────────┘
+            │                 ▼
+            │          ┌──────────────────────┐
+            │          │ SessionEndExtractor   │
+            │          │ SessionAnalyzer       │
+            │          └──────────┬────────────┘
+            │                     │
+            │                     ▼
+            │          ┌──────────────────────┐
+            │          │ HistoricalLogIndex    │
+            │          │ (session snapshots)   │
+            │          └──────────┬────────────┘
+            │                     │
+            └─────────────────────┼─────────────────────────────┐
+                                  ▼                             │
+                         ┌─────────────────┐                    │
+                         │ AutoMemoryStore │                    │
+                         │  (JSONL + HMAC) │                    │
+                         └────────┬────────┘                    │
+                                  ▼                             │
+                      ┌─────────────────────────┐               │
+                      │ LearningMaintenance     │◀──────────────┘
+                      │ Scheduler               │
+                      │ (time/session/size/idle)│
+                      └────────┬────────────────┘
+                               ▼
+        ┌──────────────────────────────────────────────────────────────┐
+        │ MemoryConsolidator → CrossSessionPatternMiner → TrendDetector│
+        └──────────────────────────────────────────────────────────────┘
 ```
 
-**Data flow:** The agent loop produces raw signals (tool metrics, turn messages, conversation history). Detectors analyze those signals into typed insights. Insights are persisted as signed memory entries and consolidated at session end.
+**Data flow:** The agent loop produces raw signals. Per-turn detectors and session-close retrospectives persist immediate learnings and historical snapshots. Heavier maintenance work then runs asynchronously through the learning maintenance scheduler instead of blocking session teardown.
+
+## Current Learning Loop
+
+The current end-to-end loop is:
+
+1. **Turn-time detection**: `ErrorDetector` and `PatternDetector` emit typed insights.
+2. **Outcome tracking**: `SkillOutcomeTracker` records success, failure, and user correction for invoked skills.
+3. **Session-close retrospective**: `SessionEndExtractor` and `SessionAnalyzer` summarize the finished session.
+4. **Historical indexing**: `HistoricalLogIndex` stores normalized snapshots for later mining.
+5. **Deferred maintenance**: `LearningMaintenanceScheduler` triggers `MemoryConsolidator`, `CrossSessionPatternMiner`, and `TrendDetector`.
+6. **Skill adaptation**: metrics and memory feedback feed `SkillRefinementEngine`, which can refine, rollback, or deprecate skills.
 
 ---
 
@@ -269,7 +281,7 @@ Refinement strategies applied to accumulated insights:
 
 ### Confidence Threshold
 
-Only insights with `confidence >= 0.7` are persisted to long-term memory. Lower-confidence insights are retained in the working set for the current session but discarded at session end unless reinforced.
+Only insights with `confidence >= 0.7` are persisted to long-term memory. Lower-confidence insights remain session-local unless reinforced by later detections.
 
 ### Cross-Session Accumulation
 
@@ -282,7 +294,7 @@ This means a pattern must be observed in at least 2 sessions before reaching the
 
 ### Debounce
 
-Memory entries are deduplicated during the 3-pass consolidation:
+Memory entries are deduplicated during deferred 3-pass consolidation:
 1. **Dedup** — Exact content matches are merged (higher confidence wins).
 2. **Similarity merge** — Entries with >80% text similarity are consolidated.
 3. **Age prune** — Entries older than 90 days with zero access are archived.
@@ -302,7 +314,7 @@ See [Memory System Design](memory-system-design.md) for the full storage archite
 
 ## Session-End Extraction
 
-The `SessionEndExtractor` complements the per-turn detectors by scanning the full conversation history at session close. Five regex-based passes extract:
+The `SessionEndExtractor` complements the per-turn detectors by scanning the full conversation history at session close. The `SessionAnalyzer` then produces a compact retrospective summary and normalized historical snapshot. Five regex-based extraction passes still feed the memory path:
 
 | Pass | Pattern | Category |
 |------|---------|----------|
@@ -313,6 +325,23 @@ The `SessionEndExtractor` complements the per-turn detectors by scanning the ful
 | 5 | User feedback (`"great"`, `"that's right"` / `"that's wrong"`) | `USER_FEEDBACK` |
 
 All extracted entries are capped at 200 characters and tagged for searchability.
+
+## Deferred Learning Maintenance
+
+After session-close extraction and indexing complete, the learning maintenance scheduler runs heavier background passes using four triggers:
+
+- **Time-based**: every 6 hours
+- **Session-count**: every 10 closed sessions
+- **Size-based**: when memory backing files exceed 50 KB
+- **Idle-based**: after 5 minutes with no active sessions
+
+The maintenance pipeline currently runs:
+
+1. **Memory consolidation**
+2. **Cross-session pattern mining**
+3. **Trend detection**
+
+This keeps session teardown fast while still preserving a self-maintaining memory system.
 
 ---
 

@@ -13,7 +13,7 @@ An **agent harness** is the orchestration layer that turns LLMs into persistent,
 
 AceClaw is a persistent JVM daemon built for workflows that run for hours, not seconds. Pure Java 21, zero network attack surface. Inspired by [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) and [OpenClaw](https://github.com/openclaw), built from scratch with three key differentiators:
 
-1. **Self-Learning** — Zero-cost heuristic detectors analyze every tool execution, error recovery, and user correction. Insights accumulate cross-session with confidence scoring (0.4 → +0.2 per recurrence → persist at 0.7). The agent evolves its own strategies without extra LLM calls.
+1. **Self-Learning** — Zero-cost heuristic detectors, session retrospectives, historical indexing, cross-session pattern mining, and trend detection turn agent behavior into durable learning signals. The agent evolves its own strategies without extra LLM calls in the hot path.
 2. **Security** — UDS-only communication, sealed 4-level permissions, HMAC-signed memory
 3. **Long-Term Memory** — 8-tier hierarchy, hybrid search, automated consolidation
 
@@ -33,10 +33,11 @@ See [Security Details](#security-details) for the full breakdown and [Security R
 
 AceClaw learns from its own behavior — no LLM calls required. Every tool execution, error recovery, and user correction is analyzed by heuristic detectors that produce type-safe insights.
 
-- **Automatic pattern detection** — `ErrorDetector` matches tool failures to subsequent retries. `SessionEndExtractor` captures user corrections and preferences via regex-based passes. All detection is zero-cost (no API calls).
+- **Automatic pattern detection** — `ErrorDetector` matches tool failures to subsequent retries. `SessionEndExtractor` captures user corrections and preferences via regex-based passes. `SessionAnalyzer`, `HistoricalLogIndex`, `CrossSessionPatternMiner`, and `TrendDetector` extend that learning across sessions.
 - **Cross-session accumulation** — Insights start at 0.4 confidence and gain +0.2 per recurrence. Only patterns reaching 0.7 confidence are persisted.
-- **Strategy evolution** — Errors become `ErrorInsight`s, recurring sequences become `SuccessInsight`s, unresolved errors become anti-patterns. A closed feedback loop: detect → persist → recall → avoid.
+- **Strategy evolution** — Errors become `ErrorInsight`s, recurring sequences become `SuccessInsight`s, unresolved errors become anti-patterns, and underperforming skills are refined or rolled back. A closed feedback loop: detect → persist → recall → refine.
 - **Type-safe insight hierarchy** — `Insight` is a sealed interface (`ErrorInsight | SuccessInsight | PatternInsight`). The compiler enforces exhaustive handling.
+- **Deferred maintenance scheduler** — Session end performs extraction and indexing immediately; heavier consolidation, pattern mining, and trend detection run through background maintenance triggers (time, session count, size, idle).
 - **Baseline evaluation** — Continuous-learning KPIs and collection workflow are documented in `docs/continuous-learning-plan.md` with report templates and sample output.
 
 See [Self-Learning Pipeline](docs/self-learning.md) for the full architecture.
@@ -53,7 +54,7 @@ T7: Markdown Memory  →  T8: Daily Journal
 
 - **HMAC-SHA256 integrity** — Every entry is signed. Mutable fields excluded from payload so reads don't invalidate signatures.
 - **21 memory categories** — From `CODEBASE_INSIGHT` and `ERROR_RECOVERY` to `USER_FEEDBACK` and `ANTI_PATTERN`.
-- **3-pass consolidation** — Dedup, similarity merge (>80% threshold), age prune (90 days, zero access). Runs automatically at session end.
+- **3-pass consolidation** — Dedup, similarity merge (>80% threshold), age prune (90 days, zero access). Triggered by the learning maintenance scheduler after session-close extraction and indexing.
 - **Workspace isolation** — SHA-256 hashed paths under `~/.aceclaw/workspaces/`. No cross-project leakage.
 
 See [Memory System Design](docs/memory-system-design.md) for the full architecture.
@@ -103,9 +104,9 @@ Daemon (persistent JVM, separate process group)
   ├─ Permission Manager   → sealed 4-level gate (READ/WRITE/EXECUTE/DANGEROUS)
   ├─ Tool Registry        → 12 native tools + MCP (filtered per sub-agent)
   ├─ Memory System        → 8-tier hierarchy, HMAC-signed, hybrid search
-  ├─ Self-Learning        → ErrorDetector, ToolMetrics, SessionEndExtractor
+  ├─ Self-Learning        → ErrorDetector, ToolMetrics, SessionAnalyzer, historical index, pattern mining, trend detection, skill feedback
   ├─ Context Compactor    → 3-phase (prune → summarize → memory flush)
-  ├─ Scheduler            → persistent cron jobs, heartbeat runner
+  ├─ Scheduler            → persistent cron jobs, heartbeat runner, learning maintenance
   ├─ Hook System          → BOOT.md startup, command hooks
   └─ LLM Client Factory   → 8 providers, extended thinking, prompt caching
 ```
@@ -149,7 +150,7 @@ DANGEROUS   → always prompt, never remembered
 - **HMAC-SHA256** per entry with constant-time verification — tampered entries are rejected.
 - **POSIX 600** on the signing key file — only the owning user can read it.
 - **SHA-256 hashed workspace paths** — workspace isolation without leaking directory names.
-- **3-pass memory consolidation** — prevents memory pollution and unbounded growth.
+- **3-pass memory consolidation** — prevents memory pollution and unbounded growth; now runs via deferred learning maintenance rather than inline session teardown.
 
 ### Content Boundaries
 
@@ -179,6 +180,8 @@ DANGEROUS   → always prompt, never remembered
 - [x] 8-tier memory hierarchy, hybrid search, daily journal, workspace isolation
 - [x] Sub-agents: depth-1 delegation, filtered tool registries, task lifecycle
 - [x] Self-learning: insight hierarchy, error/pattern detection, self-improvement engine
+- [x] Historical learning: session retrospectives, historical index, cross-session pattern mining, trend detection
+- [x] Adaptive skills: metrics, skill memory feedback, refinement, rollback
 - [x] Candidate pipeline: injected-candidate outcome writeback, clock-injected gates, stale cleanup, score decay
 - [x] Hook system: BOOT.md startup execution, command hooks, persistent cron, heartbeat runner
 - [x] Task planner: complexity estimation, LLM plan generation, sequential execution
