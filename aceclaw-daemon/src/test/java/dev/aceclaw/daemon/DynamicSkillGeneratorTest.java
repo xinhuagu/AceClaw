@@ -69,6 +69,7 @@ class DynamicSkillGeneratorTest {
         assertThat(workDir.resolve(".aceclaw/skills-drafts/review-file-workflow/SKILL.md"))
                 .exists()
                 .content()
+                .contains("argument-hint: \"<target>\"")
                 .contains("disable-model-invocation: true")
                 .contains("source-session-id: \"session-1\"")
                 .contains("source-tool-sequence: \"read_file -> grep -> edit_file\"");
@@ -105,7 +106,7 @@ class DynamicSkillGeneratorTest {
                     workDir,
                     repeatedSequenceTurn("tool-" + i, "read_file", "edit_file"),
                     sessionHistory("Handle workflow " + i),
-                    repeatedSequenceInsight(),
+                    repeatedSequenceInsight("tool-" + i, "read_file", "edit_file"),
                     Set.of("tool-" + i, "read_file", "edit_file"));
             assertThat(generated).isPresent();
         }
@@ -124,7 +125,7 @@ class DynamicSkillGeneratorTest {
                 workDir,
                 repeatedSequenceTurn("glob", "grep", "read_file"),
                 sessionHistory("Handle workflow 4"),
-                repeatedSequenceInsight(),
+                repeatedSequenceInsight("glob", "grep", "read_file"),
                 Set.of("glob", "grep", "read_file"));
 
         assertThat(fourth).isEmpty();
@@ -191,6 +192,33 @@ class DynamicSkillGeneratorTest {
     }
 
     @Test
+    void requiresMatchingRepeatedSequenceInsight() {
+        mockLlm.enqueueSendMessageResponse(MockLlmClient.sendMessageTextResponse("""
+                {
+                  "name": "workflow",
+                  "description": "Generated workflow",
+                  "argument_hint": "",
+                  "body": "# Workflow\\n\\nUse the repeated sequence."
+                }
+                """));
+
+        var generated = generator.maybeGenerate(
+                "session-1",
+                workDir,
+                repeatedSequenceTurn("read_file", "grep", "edit_file"),
+                sessionHistory("Inspect files"),
+                List.of(new Insight.PatternInsight(
+                        PatternType.REPEATED_TOOL_SEQUENCE,
+                        "Repeated tool sequence [grep -> read_file -> edit_file] observed 3 times",
+                        3,
+                        0.9,
+                        List.of("current turn"))),
+                Set.of("read_file", "grep", "edit_file"));
+
+        assertThat(generated).isEmpty();
+    }
+
+    @Test
     void doesNotRegenerateAfterSessionHasBeenPersisted() throws Exception {
         mockLlm.enqueueSendMessageResponse(MockLlmClient.sendMessageTextResponse("""
                 {
@@ -229,9 +257,13 @@ class DynamicSkillGeneratorTest {
     }
 
     private static List<Insight> repeatedSequenceInsight() {
+        return repeatedSequenceInsight("read_file", "grep", "edit_file");
+    }
+
+    private static List<Insight> repeatedSequenceInsight(String first, String second, String third) {
         return List.of(new Insight.PatternInsight(
                 PatternType.REPEATED_TOOL_SEQUENCE,
-                "Repeated tool sequence [read_file -> grep -> edit_file] observed 3 times",
+                "Repeated tool sequence [%s -> %s -> %s] observed 3 times".formatted(first, second, third),
                 3,
                 0.9,
                 List.of("current turn")));

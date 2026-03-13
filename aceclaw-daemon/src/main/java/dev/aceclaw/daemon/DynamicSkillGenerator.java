@@ -84,12 +84,8 @@ public final class DynamicSkillGenerator {
             return java.util.Optional.empty();
         }
 
-        if (!hasRepeatedSequenceInsight(insights)) {
-            return java.util.Optional.empty();
-        }
-
         var toolSequence = extractToolSequence(turn.newMessages());
-        if (toolSequence.size() < 3) {
+        if (toolSequence.size() < 3 || !hasRepeatedSequenceInsight(insights, toolSequence)) {
             return java.util.Optional.empty();
         }
 
@@ -98,7 +94,7 @@ public final class DynamicSkillGenerator {
             return java.util.Optional.empty();
         }
 
-        String sequenceSignature = signatureOf(allowedTools);
+        String sequenceSignature = signatureOf(toolSequence);
         var state = sessionStates.computeIfAbsent(sessionId, ignored -> new SessionRuntimeState());
         synchronized (state) {
             if (closedSessions.contains(sessionId) || state.closing) {
@@ -205,11 +201,13 @@ public final class DynamicSkillGenerator {
         return List.copyOf(toolSequence);
     }
 
-    private static boolean hasRepeatedSequenceInsight(List<Insight> insights) {
+    private static boolean hasRepeatedSequenceInsight(List<Insight> insights, List<String> toolSequence) {
+        var signature = signatureOf(toolSequence);
         return insights.stream()
                 .filter(Insight.PatternInsight.class::isInstance)
                 .map(Insight.PatternInsight.class::cast)
-                .anyMatch(insight -> insight.patternType() == PatternType.REPEATED_TOOL_SEQUENCE);
+                .anyMatch(insight -> insight.patternType() == PatternType.REPEATED_TOOL_SEQUENCE
+                        && signature.equals(extractInsightSequenceSignature(insight.description())));
     }
 
     private RuntimeSkillDraft generateDraft(String sessionId,
@@ -397,6 +395,7 @@ public final class DynamicSkillGenerator {
                 ---
                 name: %s
                 description: %s
+                argument-hint: %s
                 context: %s
                 allowed-tools: %s
                 max-turns: %d
@@ -410,6 +409,7 @@ public final class DynamicSkillGenerator {
                 """.formatted(
                 quoted(skillName),
                 quoted(record.skill().description()),
+                quoted(record.skill().argumentHint()),
                 quoted(record.skill().context().name()),
                 allowedTools,
                 record.skill().maxTurns(),
@@ -445,6 +445,18 @@ public final class DynamicSkillGenerator {
 
     private static String signatureOf(List<String> allowedTools) {
         return String.join("->", allowedTools);
+    }
+
+    private static String extractInsightSequenceSignature(String description) {
+        if (description == null) {
+            return "";
+        }
+        int start = description.indexOf('[');
+        int end = description.indexOf(']');
+        if (start < 0 || end <= start) {
+            return "";
+        }
+        return description.substring(start + 1, end).replace(" ", "");
     }
 
     private static Path runtimeDirectory(Path projectPath, String skillName) {
