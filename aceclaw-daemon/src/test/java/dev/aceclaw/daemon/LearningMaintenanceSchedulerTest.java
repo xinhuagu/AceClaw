@@ -1,7 +1,10 @@
 package dev.aceclaw.daemon;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -16,6 +19,9 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class LearningMaintenanceSchedulerTest {
+
+    @TempDir
+    Path tempDir;
 
     @Test
     void sessionCountTriggerRunsAfterThreshold() throws Exception {
@@ -139,7 +145,7 @@ class LearningMaintenanceSchedulerTest {
                         2,
                         50L * 1024L,
                         Duration.ofMinutes(5),
-                Duration.ofDays(1)),
+                        Duration.ofDays(1)),
                 clock,
                 activeSessions::get,
                 scopes -> memoryBytes.get(),
@@ -147,7 +153,8 @@ class LearningMaintenanceSchedulerTest {
                     triggers.add(trigger + ":" + scope.workspaceHash());
                     started.countDown();
                     release.await();
-                }
+                },
+                null
         );
         scheduler.start();
         try {
@@ -191,6 +198,42 @@ class LearningMaintenanceSchedulerTest {
         }
     }
 
+    @Test
+    void recoveryTriggerRunsForWorkspaceWithPendingRecoveryState() throws Exception {
+        var clock = new MutableClock(Instant.parse("2026-03-13T10:00:00Z"));
+        var activeSessions = new AtomicInteger(0);
+        var memoryBytes = new AtomicLong(0);
+        var triggers = Collections.synchronizedList(new ArrayList<String>());
+        var recoveryStore = new LearningMaintenanceRecoveryStore();
+        var workspace = tempDir.resolve("workspace-a");
+        Files.createDirectories(workspace);
+        recoveryStore.markFailed(workspace, "ws-a", "scheduled", new IllegalStateException("failed"));
+
+        var scheduler = new LearningMaintenanceScheduler(
+                new LearningMaintenanceScheduler.Config(
+                        Duration.ofHours(6),
+                        10,
+                        50L * 1024L,
+                        Duration.ofMinutes(5),
+                        Duration.ofDays(1)),
+                clock,
+                activeSessions::get,
+                scopes -> memoryBytes.get(),
+                (trigger, scope) -> triggers.add(trigger + ":" + scope.workspaceHash()),
+                recoveryStore
+        );
+        scheduler.start();
+        try {
+            scheduler.registerWorkspace("ws-a", workspace);
+            waitForTriggers(triggers, 1);
+
+            assertThat(triggers).containsExactly("recovery:ws-a");
+            assertThat(recoveryStore.load(workspace)).isEmpty();
+        } finally {
+            scheduler.stop();
+        }
+    }
+
     private static LearningMaintenanceScheduler scheduler(MutableClock clock,
                                                           AtomicInteger activeSessions,
                                                           AtomicLong memoryBytes,
@@ -205,7 +248,8 @@ class LearningMaintenanceSchedulerTest {
                 clock,
                 activeSessions::get,
                 scopes -> memoryBytes.get(),
-                (trigger, scope) -> triggers.add(trigger + ":" + scope.workspaceHash())
+                (trigger, scope) -> triggers.add(trigger + ":" + scope.workspaceHash()),
+                null
         );
         scheduler.start();
         return scheduler;

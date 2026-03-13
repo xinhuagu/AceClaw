@@ -86,6 +86,7 @@ public final class AceClawDaemon {
     private final LearningValidationStore learningValidationStore;
     private final LearningValidationRecorder learningValidationRecorder;
     private final LearningMaintenanceRunStore learningMaintenanceRunStore;
+    private final LearningMaintenanceRecoveryStore learningMaintenanceRecoveryStore;
     private final MarkdownMemoryStore markdownStore;
     private final JobStore cronJobStore;
     private final EventBus eventBus;
@@ -162,6 +163,7 @@ public final class AceClawDaemon {
         this.learningValidationStore = new LearningValidationStore();
         this.learningValidationRecorder = new LearningValidationRecorder(learningValidationStore);
         this.learningMaintenanceRunStore = new LearningMaintenanceRunStore();
+        this.learningMaintenanceRecoveryStore = new LearningMaintenanceRecoveryStore();
 
         // Markdown memory store (persistent MEMORY.md + topic files)
         MarkdownMemoryStore mds = null;
@@ -671,7 +673,8 @@ public final class AceClawDaemon {
                             maintenanceAutoRelease,
                             draftPipelineLock,
                             scope.workspaceHash(),
-                            scope.workingDir())
+                            scope.workingDir()),
+                    learningMaintenanceRecoveryStore
             );
         }
         final var runtimeSkillGeneratorForSessionEnd = dynamicSkillGenerator;
@@ -1823,7 +1826,11 @@ public final class AceClawDaemon {
 
         if (learningMaintenanceScheduler != null) {
             try {
+                Path startupWorkingDir = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
                 learningMaintenanceScheduler.start();
+                learningMaintenanceScheduler.registerWorkspace(
+                        WorkspacePaths.workspaceHash(startupWorkingDir),
+                        startupWorkingDir);
                 shutdownManager.register(new ShutdownManager.ShutdownParticipant() {
                     @Override public String name() { return "Learning Maintenance Scheduler"; }
                     @Override public int priority() { return 87; }

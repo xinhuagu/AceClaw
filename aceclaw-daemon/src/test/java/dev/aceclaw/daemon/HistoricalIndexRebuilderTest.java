@@ -10,6 +10,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -166,5 +167,53 @@ class HistoricalIndexRebuilderTest {
 
         assertThat(summary.rebuilt()).isFalse();
         assertThat(historicalLogIndex.sessionIds(workspaceHash)).isEmpty();
+    }
+
+    @Test
+    void rebuildsWhenIndexedCoverageIsIncomplete() throws Exception {
+        var homeDir = tempDir.resolve(".aceclaw");
+        Files.createDirectories(homeDir);
+        var workspace = tempDir.resolve("workspace");
+        Files.createDirectories(workspace);
+
+        var historyStore = new SessionHistoryStore(homeDir);
+        historyStore.init();
+        var historicalLogIndex = new HistoricalLogIndex(homeDir);
+        var rebuilder = new HistoricalIndexRebuilder(historyStore, historicalLogIndex);
+        String workspaceHash = WorkspacePaths.workspaceHash(workspace);
+
+        var snapshot = new HistoricalSessionSnapshot(
+                "session-coverage",
+                workspaceHash,
+                Instant.parse("2026-03-13T10:00:00Z"),
+                java.util.List.of("./gradlew test"),
+                java.util.List.of("Timed out"),
+                java.util.List.of(),
+                Map.of("bash", new ToolMetrics("bash", 1, 0, 1, 100, Instant.parse("2026-03-13T10:00:00Z"))),
+                true,
+                "Run tests, inspect failure, retry."
+        );
+        historyStore.saveSnapshot(snapshot);
+
+        historicalLogIndex.index(new HistoricalSessionSnapshot(
+                "session-coverage",
+                workspaceHash,
+                snapshot.closedAt(),
+                snapshot.executedCommands(),
+                java.util.List.of(),
+                java.util.List.of(),
+                snapshot.toolMetrics(),
+                false,
+                ""
+        ));
+
+        var beforeCoverage = historicalLogIndex.sessionCoverage(workspaceHash).get("session-coverage");
+        assertThat(beforeCoverage).isEqualTo(new HistoricalLogIndex.SessionCoverage(1, 0, 0));
+
+        var summary = rebuilder.rebuildWorkspaceIfStale(workspaceHash);
+
+        assertThat(summary.rebuilt()).isTrue();
+        assertThat(historicalLogIndex.sessionCoverage(workspaceHash).get("session-coverage"))
+                .isEqualTo(new HistoricalLogIndex.SessionCoverage(1, 1, 2));
     }
 }

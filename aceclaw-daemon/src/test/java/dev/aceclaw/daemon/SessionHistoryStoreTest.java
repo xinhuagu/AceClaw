@@ -153,6 +153,14 @@ class SessionHistoryStoreTest {
     }
 
     @Test
+    void loadSnapshotReturnsEmptyForMalformedSnapshotJson() throws IOException {
+        Files.writeString(tempDir.resolve("history/bad.snapshot.json"), "{not-json");
+
+        assertThat(store.loadSnapshot("bad")).isEmpty();
+        assertThat(store.listSnapshotSessionsForWorkspace("ws-a")).isEmpty();
+    }
+
+    @Test
     void saveSessionOverwritesPrevious() {
         var session = AgentSession.withId("overwrite", tempDir);
         session.addMessage(new AgentSession.ConversationMessage.User("First"));
@@ -167,6 +175,18 @@ class SessionHistoryStoreTest {
         assertThat(loaded).hasSize(1);
         assertThat(((AgentSession.ConversationMessage.User) loaded.get(0)).content())
                 .isEqualTo("Replaced");
+    }
+
+    @Test
+    void saveSessionWritesAtomicallyWithoutTmpLeak() throws IOException {
+        var session = AgentSession.withId("atomic", tempDir);
+        session.addMessage(new AgentSession.ConversationMessage.User("First"));
+
+        store.saveSession(session);
+        store.saveSession(session);
+
+        assertThat(Files.isRegularFile(tempDir.resolve("history/atomic.jsonl"))).isTrue();
+        assertThat(Files.exists(tempDir.resolve("history/atomic.jsonl.tmp"))).isFalse();
     }
 
     @Test

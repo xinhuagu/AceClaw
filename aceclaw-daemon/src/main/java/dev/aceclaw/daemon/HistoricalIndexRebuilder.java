@@ -4,6 +4,7 @@ import dev.aceclaw.memory.HistoricalLogIndex;
 import dev.aceclaw.memory.HistoricalSessionSnapshot;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -52,27 +53,73 @@ public final class HistoricalIndexRebuilder {
             var legacyHistoryIds = historySessionIds.stream()
                     .filter(sessionId -> !snapshotSessionSet.contains(sessionId))
                     .collect(Collectors.toSet());
+            var legacyIndexedIds = indexedSessionIds.stream()
+                    .filter(sessionId -> !snapshotSessionSet.contains(sessionId))
+                    .collect(Collectors.toSet());
             var snapshots = snapshotSessionIds.stream()
                     .map(historyStore::loadSnapshot)
                     .flatMap(java.util.Optional::stream)
                     .filter(snapshot -> workspaceHash.equals(snapshot.workspaceHash()))
                     .toList();
-            var expectedIndexedSessionIds = snapshots.stream()
-                    .filter(HistoricalIndexRebuilder::producesIndexEntries)
-                    .map(HistoricalSessionSnapshot::sessionId)
-                    .collect(Collectors.toSet());
+            var expectedCoverage = expectedCoverage(snapshots);
+            var expectedIndexedSessionIds = expectedCoverage.keySet();
             var comparableIndexedSessionIds = indexedSessionIds.stream()
-                    .filter(sessionId -> !legacyHistoryIds.contains(sessionId))
+                    .filter(sessionId -> !legacyHistoryIds.contains(sessionId) && !legacyIndexedIds.contains(sessionId))
                     .collect(Collectors.toSet());
-            if (comparableIndexedSessionIds.equals(expectedIndexedSessionIds)) {
+            if (comparableIndexedSessionIds.equals(expectedIndexedSessionIds)
+                    && comparableCoverage(historicalLogIndex.sessionCoverage(workspaceHash), legacyHistoryIds, legacyIndexedIds)
+                    .equals(expectedCoverage)) {
                 return new RebuildSummary(false, snapshots.size(), indexedSessionIds.size(), snapshotSessionSet, indexedSessionIds);
             }
 
             historicalLogIndex.replaceSessions(workspaceHash, snapshots);
+            var actualCoverage = comparableCoverage(
+                    historicalLogIndex.sessionCoverage(workspaceHash),
+                    legacyHistoryIds,
+                    legacyIndexedIds);
+            if (!actualCoverage.equals(expectedCoverage)) {
+                throw new IllegalStateException("Historical index rebuild produced inconsistent coverage for workspace "
+                        + workspaceHash + ": expected=" + expectedCoverage + ", actual=" + actualCoverage);
+            }
             return new RebuildSummary(true, snapshots.size(), indexedSessionIds.size(), snapshotSessionSet, indexedSessionIds);
         } finally {
             workspaceLock.unlock();
         }
+    }
+
+    private static Map<String, HistoricalLogIndex.SessionCoverage> expectedCoverage(List<HistoricalSessionSnapshot> snapshots) {
+        var coverage = new java.util.LinkedHashMap<String, HistoricalLogIndex.SessionCoverage>();
+        for (var snapshot : snapshots) {
+            var expected = new HistoricalLogIndex.SessionCoverage(
+                    snapshot.toolMetrics().size(),
+                    snapshot.errorsEncountered().size(),
+                    patternRowCount(snapshot));
+            if (expected.toolRows() > 0 || expected.errorRows() > 0 || expected.patternRows() > 0) {
+                coverage.put(snapshot.sessionId(), expected);
+            }
+        }
+        return Map.copyOf(coverage);
+    }
+
+    private static int patternRowCount(HistoricalSessionSnapshot snapshot) {
+        int count = 0;
+        if (snapshot.backtrackingDetected()) {
+            count++;
+        }
+        if (!snapshot.endToEndStrategy().isBlank()) {
+            count++;
+        }
+        return count;
+    }
+
+    private static Map<String, HistoricalLogIndex.SessionCoverage> comparableCoverage(
+            Map<String, HistoricalLogIndex.SessionCoverage> actualCoverage,
+            Set<String> legacyHistoryIds,
+            Set<String> legacyIndexedIds) {
+        return actualCoverage.entrySet().stream()
+                .filter(entry -> !legacyHistoryIds.contains(entry.getKey()))
+                .filter(entry -> !legacyIndexedIds.contains(entry.getKey()))
+                .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey, Map.Entry::getValue));
     }
 
     private static boolean producesIndexEntries(HistoricalSessionSnapshot snapshot) {
