@@ -295,6 +295,9 @@ public final class StreamingAgentLoop {
                     totalCacheCreationTokens += accumulator.usage.cacheCreationInputTokens();
                     totalCacheReadTokens += accumulator.usage.cacheReadInputTokens();
                     lastInputTokens = accumulator.usage.inputTokens();
+                    if (eventHandler != null) {
+                        eventHandler.onUsageUpdate(lastInputTokens, totalInputTokens, totalOutputTokens);
+                    }
                 }
 
                 // Build assistant message from accumulated content

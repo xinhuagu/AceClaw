@@ -1510,9 +1510,18 @@ public final class TerminalRepl {
 
         int ctxWindow = sessionInfo.contextWindowTokens();
         if (ctxWindow > 0) {
+            // Use live input tokens from foreground task if available
+            long displayTokens = latestInputTokens;
+            var fgTask = taskManager.foregroundTask();
+            if (fgTask != null && fgTask.isRunning()) {
+                long live = fgTask.liveInputTokens();
+                if (live > 0) {
+                    displayTokens = live;
+                }
+            }
             sb.append(MUTED).append(" | ").append(RESET);
-            long pct = ctxWindow > 0 ? latestInputTokens * 100 / ctxWindow : 0;
-            sb.append(WARNING).append(formatTokenCount(latestInputTokens))
+            long pct = displayTokens * 100 / ctxWindow;
+            sb.append(WARNING).append(formatTokenCount(displayTokens))
               .append("/").append(formatTokenCount(ctxWindow))
               .append(" (").append(pct).append("%)").append(RESET);
         }
@@ -2410,11 +2419,17 @@ public final class TerminalRepl {
                 if (statusBranch != null) {
                     out.printf("  %sGit branch:%s  %s%n", MUTED, RESET, statusBranch);
                 }
+                long ctxTokens = latestInputTokens;
+                var fgCtx = taskManager.foregroundTask();
+                if (fgCtx != null && fgCtx.isRunning()) {
+                    long live = fgCtx.liveInputTokens();
+                    if (live > 0) ctxTokens = live;
+                }
                 out.printf("  %sContext:%s     %s / %s (%d%%)%n", MUTED, RESET,
-                        formatTokenCount(latestInputTokens),
+                        formatTokenCount(ctxTokens),
                         formatTokenCount(sessionInfo.contextWindowTokens()),
                         sessionInfo.contextWindowTokens() > 0
-                                ? latestInputTokens * 100 / sessionInfo.contextWindowTokens() : 0);
+                                ? ctxTokens * 100 / sessionInfo.contextWindowTokens() : 0);
                 out.printf("  %sTotal usage:%s %s in / %s out%n", MUTED, RESET,
                         formatTokenCount(totalInputTokens),
                         formatTokenCount(totalOutputTokens));

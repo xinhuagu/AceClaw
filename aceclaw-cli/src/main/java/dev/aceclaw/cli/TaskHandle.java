@@ -63,6 +63,9 @@ public final class TaskHandle {
 
     /** Optional permission description shown while waiting. */
     private volatile String permissionDetail;
+
+    /** Latest per-call input tokens from the most recent LLM call (real-time). */
+    private volatile long liveInputTokens;
     /** Recent tool events for resume checkpointing. */
     private final Deque<ToolEvent> recentToolEvents;
 
@@ -179,6 +182,9 @@ public final class TaskHandle {
             }
         }
     }
+
+    public long liveInputTokens() { return liveInputTokens; }
+    public void setLiveInputTokens(long tokens) { this.liveInputTokens = tokens; }
 
     public boolean isRunning() { return state == TaskState.RUNNING; }
     public boolean isTerminal() {

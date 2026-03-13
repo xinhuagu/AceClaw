@@ -211,6 +211,13 @@ public final class TaskStreamReader implements Runnable {
                 handle.markActivity("plan done");
                 sink.onPlanCompleted(params);
             }
+            case "stream.usage" -> {
+                if (params != null) {
+                    long inputTokens = params.path("inputTokens").asLong(0);
+                    handle.setLiveInputTokens(inputTokens);
+                    handle.markActivity("streaming");
+                }
+            }
             case "stream.compaction" -> {
                 handle.markActivity("compacting");
                 sink.onCompaction(params);
