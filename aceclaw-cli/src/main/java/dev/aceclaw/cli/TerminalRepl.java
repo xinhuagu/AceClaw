@@ -106,6 +106,8 @@ public final class TerminalRepl {
     private final Deque<String> pendingPrintAbove = new ArrayDeque<>();
     /** Fixed status panel height so JLine's Status widget never resizes its scroll region. */
     private static final int FIXED_STATUS_LINE_COUNT = 8;
+    /** Soft cap for daemon-provided fields rendered inside the status panel. */
+    private static final int STATUS_PANEL_FIELD_MAX_CHARS = 160;
     private final Object uiRenderLock = new Object();
     private final AtomicBoolean permissionInterruptRequested = new AtomicBoolean(false);
     private final AtomicBoolean uiRenderRequested = new AtomicBoolean(true);
@@ -1567,7 +1569,8 @@ public final class TerminalRepl {
                     latest = note;
                 }
                 if (latest != null) {
-                    lines.add(MUTED + "    " + ICON_ITEM + " " + RESET + latest.text());
+                    lines.add(MUTED + "    " + ICON_ITEM + " " + RESET
+                            + normalizeStatusPanelField(latest.text()));
                 }
             }
             // Truncate if over budget, then pad to fixed count
@@ -1727,7 +1730,7 @@ public final class TerminalRepl {
                 String enabled = job.enabled() ? "enabled" : "disabled";
                 String next = formatCronNext(now, cron, job);
                 String kind = job.kind();
-                String desc = job.description() == null ? "" : job.description();
+                String desc = normalizeStatusPanelField(job.description());
                 lines.add(MUTED + "  " + TREE_PIPE_SPACE + " " + ICON_ITEM + " "
                         + job.id() + " [" + kind + "] "
                         + enabled + " next=" + next + " :: " + desc + RESET);
@@ -1761,9 +1764,9 @@ public final class TerminalRepl {
             for (var task : visible) {
                 String elapsed = formatDuration(Duration.between(task.startedAt(), now));
                 String prefix = task.taskId().equals(fgId) ? "[fg] " : "";
-                String summary = task.promptSummary();
+                String summary = normalizeStatusPanelField(task.promptSummary());
                 var runtime = deriveRuntimeInfo(task, now);
-                String runtimeLabel = runtime.label();
+                String runtimeLabel = normalizeStatusPanelField(runtime.label());
 
                 lines.add(MUTED + "       " + ICON_ITEM + " " + RESET
                         + runtime.color() + runtime.shortState() + RESET + " "
@@ -1781,7 +1784,7 @@ public final class TerminalRepl {
             int maxPermVisible = 2;
             for (int i = 0; i < Math.min(maxPermVisible, pending.size()); i++) {
                 var req = pending.get(i);
-                String detail = req.description();
+                String detail = normalizeStatusPanelField(req.description());
                 lines.add(MUTED + "       " + ICON_ITEM + " " + RESET
                         + WARNING + "permission" + RESET + " "
                         + INFO + "#" + req.taskId() + RESET + " "
@@ -3052,6 +3055,22 @@ public final class TerminalRepl {
             }
         }
         return sb.toString().strip();
+    }
+
+    private static String normalizeStatusPanelField(String raw) {
+        String normalized = sanitizeCronSummary(raw);
+        if (normalized.isBlank()) {
+            return "";
+        }
+        String singleLine = normalized.replace('\n', ' ')
+                .replace('\r', ' ')
+                .replace('\t', ' ')
+                .replaceAll("\\s+", " ")
+                .trim();
+        if (singleLine.length() <= STATUS_PANEL_FIELD_MAX_CHARS) {
+            return singleLine;
+        }
+        return singleLine.substring(0, STATUS_PANEL_FIELD_MAX_CHARS - 3) + "...";
     }
 
     private static Instant parseInstant(String raw) {
