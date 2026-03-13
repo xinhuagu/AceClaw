@@ -59,6 +59,7 @@ public final class DynamicSkillGenerator {
     private final ConcurrentHashMap<String, SessionRuntimeState> sessionStates = new ConcurrentHashMap<>();
     private final Set<String> closedSessions = ConcurrentHashMap.newKeySet();
     private LearningExplanationRecorder learningExplanationRecorder;
+    private LearningValidationRecorder learningValidationRecorder;
 
     public DynamicSkillGenerator(LlmClient llmClient,
                                  Function<String, String> modelResolver,
@@ -70,6 +71,10 @@ public final class DynamicSkillGenerator {
 
     public void setLearningExplanationRecorder(LearningExplanationRecorder learningExplanationRecorder) {
         this.learningExplanationRecorder = learningExplanationRecorder;
+    }
+
+    public void setLearningValidationRecorder(LearningValidationRecorder learningValidationRecorder) {
+        this.learningValidationRecorder = learningValidationRecorder;
     }
 
     public java.util.Optional<SkillConfig> maybeGenerate(String sessionId,
@@ -147,6 +152,14 @@ public final class DynamicSkillGenerator {
                         sequenceSignature,
                         allowedTools);
             }
+            if (learningValidationRecorder != null) {
+                learningValidationRecorder.recordRuntimeSkillObserved(
+                        projectPath,
+                        sessionId,
+                        skillName,
+                        sequenceSignature,
+                        allowedTools);
+            }
             log.info("Registered runtime skill '{}' for session {}", skillName, sessionId);
             return java.util.Optional.of(config);
         }
@@ -185,6 +198,13 @@ public final class DynamicSkillGenerator {
                                 StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
                         if (learningExplanationRecorder != null) {
                             learningExplanationRecorder.recordRuntimeSkillDraftPersisted(
+                                    projectPath,
+                                    sessionId,
+                                    resolvedName,
+                                    projectPath.relativize(skillFile).toString().replace('\\', '/'));
+                        }
+                        if (learningValidationRecorder != null) {
+                            learningValidationRecorder.recordRuntimeSkillAwaitingDurableValidation(
                                     projectPath,
                                     sessionId,
                                     resolvedName,

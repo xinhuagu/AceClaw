@@ -838,6 +838,13 @@ public final class StreamingAgentHandler {
                             outcome.action().name(),
                             outcome.reason());
                 }
+                if (learningValidationRecorder != null) {
+                    learningValidationRecorder.recordRefinementValidation(
+                            projectPath,
+                            skillName,
+                            outcome.action(),
+                            outcome.reason());
+                }
                 log.info("Skill refinement action={} skill={} reason={}",
                         outcome.action(), skillName, outcome.reason());
             }
@@ -1285,6 +1292,7 @@ public final class StreamingAgentHandler {
     private SkillRefinementEngine skillRefinementEngine;
     private DynamicSkillGenerator dynamicSkillGenerator;
     private LearningExplanationRecorder learningExplanationRecorder;
+    private LearningValidationRecorder learningValidationRecorder;
 
     /**
      * Sets the LLM configuration for permission-aware agent loop creation.
@@ -1351,6 +1359,10 @@ public final class StreamingAgentHandler {
         this.skillMemoryFeedback = memoryStore != null
                 ? new SkillMemoryFeedback(memoryStore, learningExplanationRecorder)
                 : null;
+    }
+
+    public void setLearningValidationRecorder(LearningValidationRecorder learningValidationRecorder) {
+        this.learningValidationRecorder = learningValidationRecorder;
     }
 
     /**

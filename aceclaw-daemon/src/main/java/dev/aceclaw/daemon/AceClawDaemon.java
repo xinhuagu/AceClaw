@@ -83,6 +83,8 @@ public final class AceClawDaemon {
     private final HistoricalLogIndex historicalLogIndex;
     private final LearningExplanationStore learningExplanationStore;
     private final LearningExplanationRecorder learningExplanationRecorder;
+    private final LearningValidationStore learningValidationStore;
+    private final LearningValidationRecorder learningValidationRecorder;
     private final MarkdownMemoryStore markdownStore;
     private final JobStore cronJobStore;
     private final EventBus eventBus;
@@ -156,6 +158,8 @@ public final class AceClawDaemon {
         this.historicalLogIndex = hli;
         this.learningExplanationStore = new LearningExplanationStore();
         this.learningExplanationRecorder = new LearningExplanationRecorder(learningExplanationStore);
+        this.learningValidationStore = new LearningValidationStore();
+        this.learningValidationRecorder = new LearningValidationRecorder(learningValidationStore);
 
         // Markdown memory store (persistent MEMORY.md + topic files)
         MarkdownMemoryStore mds = null;
@@ -538,10 +542,10 @@ public final class AceClawDaemon {
                             // Validate drafts and evaluate for auto-release
                             if (validationGateForAuto != null) {
                                 var validation = validationGateForAuto.validateAll(projectPath, "auto-promotion");
-                                publishSkillDraftValidationEvents(validation, "auto-promotion");
+                                publishSkillDraftValidationEvents(validation, workingDir, "auto-promotion");
                                 if (autoReleaseForAuto != null && candidateStoreForAuto != null) {
                                     var release = autoReleaseForAuto.evaluateAll(projectPath, candidateStoreForAuto, "auto-promotion");
-                                    publishSkillDraftReleaseEvents(release, "auto-promotion");
+                                    publishSkillDraftReleaseEvents(release, workingDir, "auto-promotion");
                                 }
                             }
                         } catch (Exception e) {
@@ -584,10 +588,10 @@ public final class AceClawDaemon {
                         }
                         if (catchupValidation != null && summary.createdDrafts() > 0) {
                             var validation = catchupValidation.validateAll(workingDir, "startup-catchup");
-                            publishSkillDraftValidationEvents(validation, "startup-catchup");
+                            publishSkillDraftValidationEvents(validation, workingDir, "startup-catchup");
                             if (catchupAutoRelease != null) {
                                 var release = catchupAutoRelease.evaluateAll(workingDir, catchupCs, "startup-catchup");
-                                publishSkillDraftReleaseEvents(release, "startup-catchup");
+                                publishSkillDraftReleaseEvents(release, workingDir, "startup-catchup");
                             }
                         }
                     } catch (Exception e) {
@@ -604,7 +608,9 @@ public final class AceClawDaemon {
                 agentHandler::getModelForSession,
                 skillRegistry);
         dynamicSkillGenerator.setLearningExplanationRecorder(learningExplanationRecorder);
+        dynamicSkillGenerator.setLearningValidationRecorder(learningValidationRecorder);
         agentHandler.setLearningExplanationRecorder(learningExplanationRecorder);
+        agentHandler.setLearningValidationRecorder(learningValidationRecorder);
         agentHandler.setDynamicSkillGenerator(dynamicSkillGenerator);
 
         // Wire deferred action scheduler (no turn lock dependency — uses isolated context)
@@ -919,11 +925,11 @@ public final class AceClawDaemon {
                 result.put("auditFile", workingDir.relativize(summary.auditFile()).toString().replace('\\', '/'));
                 if (validationGateForRpc != null) {
                     var validation = validationGateForRpc.validateAll(workingDir, "draft-generated");
-                    publishSkillDraftValidationEvents(validation, "draft-generated");
+                    publishSkillDraftValidationEvents(validation, workingDir, "draft-generated");
                     result.set("validation", toValidationJson(validation, workingDir));
                     if (autoReleaseForRpc != null && candidateStoreForRpc != null) {
                         var release = autoReleaseForRpc.evaluateAll(workingDir, candidateStoreForRpc, "draft-generated");
-                        publishSkillDraftReleaseEvents(release, "draft-generated");
+                        publishSkillDraftReleaseEvents(release, workingDir, "draft-generated");
                         result.set("release", toReleaseJson(release));
                     }
                 }
@@ -943,11 +949,11 @@ public final class AceClawDaemon {
                 if (params != null && params.has("draftPath")) {
                     Path draftPath = workingDir.resolve(params.get("draftPath").asText()).normalize();
                     var summary = validationGateForRpc.validateSingleDraft(workingDir, draftPath, trigger);
-                    publishSkillDraftValidationEvents(summary, trigger);
+                    publishSkillDraftValidationEvents(summary, workingDir, trigger);
                     return toValidationJson(summary, workingDir);
                 }
                 var summary = validationGateForRpc.validateAll(workingDir, trigger);
-                publishSkillDraftValidationEvents(summary, trigger);
+                publishSkillDraftValidationEvents(summary, workingDir, trigger);
                 return toValidationJson(summary, workingDir);
             } finally {
                 draftPipelineLock.unlock();
@@ -962,7 +968,7 @@ public final class AceClawDaemon {
                 String trigger = params != null && params.has("trigger")
                         ? params.get("trigger").asText() : "manual";
                 var summary = autoReleaseForRpc.evaluateAll(workingDir, candidateStoreForRpc, trigger);
-                publishSkillDraftReleaseEvents(summary, trigger);
+                publishSkillDraftReleaseEvents(summary, workingDir, trigger);
                 return toReleaseJson(summary);
             } finally {
                 draftPipelineLock.unlock();
@@ -979,7 +985,7 @@ public final class AceClawDaemon {
             String reason = params.has("reason") ? params.get("reason").asText() : "manual pause";
             String trigger = params.has("trigger") ? params.get("trigger").asText() : "manual";
             var summary = autoReleaseForRpc.pause(workingDir, skillName, reason, trigger);
-            publishSkillDraftReleaseEvents(summary, trigger);
+            publishSkillDraftReleaseEvents(summary, workingDir, trigger);
             return toReleaseJson(summary);
         });
         router.register("skill.release.forceRollback", params -> {
@@ -993,7 +999,7 @@ public final class AceClawDaemon {
             String reason = params.has("reason") ? params.get("reason").asText() : "manual force rollback";
             String trigger = params.has("trigger") ? params.get("trigger").asText() : "manual";
             var summary = autoReleaseForRpc.forceRollback(workingDir, skillName, reason, trigger);
-            publishSkillDraftReleaseEvents(summary, trigger);
+            publishSkillDraftReleaseEvents(summary, workingDir, trigger);
             return toReleaseJson(summary);
         });
         router.register("skill.release.forcePromote", params -> {
@@ -1015,7 +1021,7 @@ public final class AceClawDaemon {
             String reason = params.has("reason") ? params.get("reason").asText() : "manual force promote";
             String trigger = params.has("trigger") ? params.get("trigger").asText() : "manual";
             var summary = autoReleaseForRpc.forcePromote(workingDir, skillName, stage, reason, trigger);
-            publishSkillDraftReleaseEvents(summary, trigger);
+            publishSkillDraftReleaseEvents(summary, workingDir, trigger);
             return toReleaseJson(summary);
         });
 
@@ -1483,12 +1489,14 @@ public final class AceClawDaemon {
 
     private void publishSkillDraftValidationEvents(
             ValidationGateEngine.ValidationSummary summary,
+            Path projectRoot,
             String trigger
     ) {
         if (summary == null || summary.changedDecisions().isEmpty()) {
             return;
         }
         for (var decision : summary.changedDecisions()) {
+            learningValidationRecorder.recordDraftValidation(projectRoot, trigger, decision);
             String skillName = skillNameFromDraftPath(decision.draftPath());
             var reasons = decision.reasons().stream()
                     .map(reason -> reason.code() + ": " + reason.message())
@@ -1510,12 +1518,14 @@ public final class AceClawDaemon {
 
     private void publishSkillDraftReleaseEvents(
             AutoReleaseController.EvaluationSummary summary,
+            Path projectRoot,
             String trigger
     ) {
         if (summary == null || summary.events().isEmpty()) {
             return;
         }
         for (var event : summary.events()) {
+            learningValidationRecorder.recordReleaseValidation(projectRoot, trigger, event);
             var release = summary.releases().stream()
                     .filter(candidate -> candidate.skillName().equals(event.skillName()))
                     .findFirst()
@@ -2023,10 +2033,10 @@ public final class AceClawDaemon {
                 publishSkillDraftCreatedEvents(summary, workingDir, trigger);
                 if (validationGateEngine != null && summary.createdDrafts() > 0) {
                     var validation = validationGateEngine.validateAll(workingDir, trigger);
-                    publishSkillDraftValidationEvents(validation, trigger);
+                    publishSkillDraftValidationEvents(validation, workingDir, trigger);
                     if (autoReleaseController != null) {
                         var release = autoReleaseController.evaluateAll(workingDir, candidateStore, trigger);
-                        publishSkillDraftReleaseEvents(release, trigger);
+                        publishSkillDraftReleaseEvents(release, workingDir, trigger);
                     }
                 }
             } catch (Exception e) {

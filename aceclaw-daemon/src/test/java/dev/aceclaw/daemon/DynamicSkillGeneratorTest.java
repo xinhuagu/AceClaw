@@ -42,6 +42,8 @@ class DynamicSkillGeneratorTest {
     void recordsRuntimeSkillExplainabilityAndDraftPersistence() throws Exception {
         var explanationStore = new LearningExplanationStore();
         generator.setLearningExplanationRecorder(new LearningExplanationRecorder(explanationStore));
+        var validationStore = new LearningValidationStore();
+        generator.setLearningValidationRecorder(new LearningValidationRecorder(validationStore));
         mockLlm.enqueueSendMessageResponse(MockLlmClient.sendMessageTextResponse("""
                 {
                   "name": "review-file-workflow",
@@ -65,6 +67,9 @@ class DynamicSkillGeneratorTest {
         var explanations = explanationStore.recent(workDir, 10);
         assertThat(explanations).anyMatch(explanation -> explanation.actionType().equals("runtime_skill_created"));
         assertThat(explanations).anyMatch(explanation -> explanation.actionType().equals("runtime_skill_persisted"));
+        var validations = validationStore.recent(workDir, 10);
+        assertThat(validations).anyMatch(validation -> validation.verdict() == LearningValidation.Verdict.OBSERVED_USEFUL);
+        assertThat(validations).anyMatch(validation -> validation.verdict() == LearningValidation.Verdict.HOLD);
     }
 
     @Test
