@@ -1509,9 +1509,9 @@ public final class TerminalRepl {
         }
 
         int ctxWindow = sessionInfo.contextWindowTokens();
-        if (ctxWindow > 0 && latestInputTokens > 0) {
+        if (ctxWindow > 0) {
             sb.append(MUTED).append(" | ").append(RESET);
-            long pct = latestInputTokens * 100 / ctxWindow;
+            long pct = ctxWindow > 0 ? latestInputTokens * 100 / ctxWindow : 0;
             sb.append(WARNING).append(formatTokenCount(latestInputTokens))
               .append("/").append(formatTokenCount(ctxWindow))
               .append(" (").append(pct).append("%)").append(RESET);
