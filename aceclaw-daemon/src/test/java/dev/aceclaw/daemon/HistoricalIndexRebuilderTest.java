@@ -105,4 +105,66 @@ class HistoricalIndexRebuilderTest {
         assertThat(historicalLogIndex.sessionIds(workspaceHash))
                 .containsExactlyInAnyOrder("legacy-indexed", "new-snapshot");
     }
+
+    @Test
+    void rebuildClearsWorkspaceWhenNoHistoryRemains() throws Exception {
+        var homeDir = tempDir.resolve(".aceclaw");
+        Files.createDirectories(homeDir);
+        var workspace = tempDir.resolve("workspace");
+        Files.createDirectories(workspace);
+
+        var historyStore = new SessionHistoryStore(homeDir);
+        historyStore.init();
+        var historicalLogIndex = new HistoricalLogIndex(homeDir);
+        var rebuilder = new HistoricalIndexRebuilder(historyStore, historicalLogIndex);
+        String workspaceHash = WorkspacePaths.workspaceHash(workspace);
+
+        historicalLogIndex.index(new HistoricalSessionSnapshot(
+                "stale-indexed",
+                workspaceHash,
+                Instant.parse("2026-03-13T10:00:00Z"),
+                java.util.List.of("./gradlew test"),
+                java.util.List.of(),
+                java.util.List.of(),
+                java.util.Map.of("bash", new ToolMetrics("bash", 1, 1, 0, 100, Instant.parse("2026-03-13T10:00:00Z"))),
+                false,
+                "Stale indexed snapshot"
+        ));
+
+        var summary = rebuilder.rebuildWorkspaceIfStale(workspaceHash);
+
+        assertThat(summary.rebuilt()).isTrue();
+        assertThat(historicalLogIndex.sessionIds(workspaceHash)).isEmpty();
+    }
+
+    @Test
+    void rebuildIgnoresSnapshotsThatProduceNoIndexRows() throws Exception {
+        var homeDir = tempDir.resolve(".aceclaw");
+        Files.createDirectories(homeDir);
+        var workspace = tempDir.resolve("workspace");
+        Files.createDirectories(workspace);
+
+        var historyStore = new SessionHistoryStore(homeDir);
+        historyStore.init();
+        var historicalLogIndex = new HistoricalLogIndex(homeDir);
+        var rebuilder = new HistoricalIndexRebuilder(historyStore, historicalLogIndex);
+        String workspaceHash = WorkspacePaths.workspaceHash(workspace);
+
+        historyStore.saveSnapshot(new HistoricalSessionSnapshot(
+                "quiet-session",
+                workspaceHash,
+                Instant.parse("2026-03-13T10:00:00Z"),
+                java.util.List.of(),
+                java.util.List.of(),
+                java.util.List.of(),
+                java.util.Map.of(),
+                false,
+                ""
+        ));
+
+        var summary = rebuilder.rebuildWorkspaceIfStale(workspaceHash);
+
+        assertThat(summary.rebuilt()).isFalse();
+        assertThat(historicalLogIndex.sessionIds(workspaceHash)).isEmpty();
+    }
 }

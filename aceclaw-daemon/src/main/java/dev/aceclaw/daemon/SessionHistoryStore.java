@@ -120,7 +120,7 @@ public final class SessionHistoryStore {
                 try {
                     var entry = mapper.readValue(line, HistoryEntry.class);
                     messages.add(fromEntry(entry));
-                } catch (IOException e) {
+                } catch (IOException | RuntimeException e) {
                     log.warn("Skipping malformed history line for session {}: {}", sessionId, e.getMessage());
                 }
             }
@@ -283,9 +283,14 @@ public final class SessionHistoryStore {
                 if (line == null || line.isBlank()) {
                     continue;
                 }
-                var entry = mapper.readValue(line, HistoryEntry.class);
-                if (entry.workspaceHash != null && !entry.workspaceHash.isBlank()) {
-                    return java.util.Optional.of(entry.workspaceHash);
+                try {
+                    var entry = mapper.readValue(line, HistoryEntry.class);
+                    if (entry.workspaceHash != null && !entry.workspaceHash.isBlank()) {
+                        return java.util.Optional.of(entry.workspaceHash);
+                    }
+                } catch (IOException | RuntimeException e) {
+                    log.debug("Skipping malformed history line while inspecting {}: {}",
+                            file.getFileName(), e.getMessage());
                 }
             }
         } catch (IOException e) {

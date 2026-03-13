@@ -127,11 +127,42 @@ public final class HistoricalLogIndex {
         if (workspaceHash.isBlank()) {
             throw new IllegalArgumentException("workspaceHash must not be blank");
         }
-        var ids = new LinkedHashSet<String>();
-        toolInvocations(workspaceHash, null, null).forEach(entry -> ids.add(entry.sessionId()));
-        errorEntries(workspaceHash, null, null).forEach(entry -> ids.add(entry.sessionId()));
-        patterns(workspaceHash, null, null).forEach(entry -> ids.add(entry.sessionId()));
-        return Set.copyOf(ids);
+        fileLock.lock();
+        try {
+            var ids = new LinkedHashSet<String>();
+            toolInvocations(workspaceHash, null, null).forEach(entry -> ids.add(entry.sessionId()));
+            errorEntries(workspaceHash, null, null).forEach(entry -> ids.add(entry.sessionId()));
+            patterns(workspaceHash, null, null).forEach(entry -> ids.add(entry.sessionId()));
+            return Set.copyOf(ids);
+        } finally {
+            fileLock.unlock();
+        }
+    }
+
+    public void clearWorkspace(String workspaceHash) throws IOException {
+        Objects.requireNonNull(workspaceHash, "workspaceHash");
+        if (workspaceHash.isBlank()) {
+            throw new IllegalArgumentException("workspaceHash must not be blank");
+        }
+
+        fileLock.lock();
+        try {
+            var retainedTools = new ArrayList<>(toolInvocations(null, null, null).stream()
+                    .filter(entry -> !workspaceHash.equals(entry.workspaceHash()))
+                    .toList());
+            var retainedErrors = new ArrayList<>(errorEntries(null, null, null).stream()
+                    .filter(entry -> !workspaceHash.equals(entry.workspaceHash()))
+                    .toList());
+            var retainedPatterns = new ArrayList<>(patterns(null, null, null).stream()
+                    .filter(entry -> !workspaceHash.equals(entry.workspaceHash()))
+                    .toList());
+
+            rewrite(toolFile, retainedTools);
+            rewrite(errorFile, retainedErrors);
+            rewrite(patternFile, retainedPatterns);
+        } finally {
+            fileLock.unlock();
+        }
     }
 
     public void replaceSessions(String workspaceHash, List<HistoricalSessionSnapshot> snapshots) throws IOException {

@@ -619,19 +619,21 @@ public final class AceClawDaemon {
                     : null;
             final var crossSessionPatternMiner = historicalLogIndex != null ? new CrossSessionPatternMiner() : null;
             final var trendDetector = historicalLogIndex != null ? new TrendDetector() : null;
-            final var maintenanceCandidateBridge = candidateStoreRef != null
+            final var maintenanceCandidateBridge = config.candidatePromotionEnabled() && candidateStoreRef != null
                     ? new LearningMaintenanceCandidateBridge(candidateStoreRef)
                     : null;
             final var maintenanceCandidateStore = candidateStoreRef;
             final var maintenanceValidationGate = validationGateEngine;
             final var maintenanceAutoRelease = autoReleaseController;
-            final var workspaceHash = WorkspacePaths.workspaceHash(workingDir);
             learningMaintenanceScheduler = new LearningMaintenanceScheduler(
                     LearningMaintenanceScheduler.Config.defaults(Duration.ofSeconds(config.schedulerTickSeconds())),
                     java.time.Clock.systemUTC(),
                     sessionManager::sessionCount,
-                    () -> memoryStore.largestBackingFileBytes(workingDir),
-                    trigger -> runLearningMaintenancePipeline(
+                    scopes -> scopes.stream()
+                            .mapToLong(scope -> memoryStore.largestBackingFileBytes(scope.workingDir()))
+                            .max()
+                            .orElse(0L),
+                    (trigger, scope) -> runLearningMaintenancePipeline(
                             trigger,
                             memoryStore,
                             archiveDir,
@@ -644,16 +646,18 @@ public final class AceClawDaemon {
                             maintenanceValidationGate,
                             maintenanceAutoRelease,
                             draftPipelineLock,
-                            workspaceHash,
-                            workingDir)
+                            scope.workspaceHash(),
+                            scope.workingDir())
             );
             sessionManager.setSessionEndCallback(session -> {
+                var sessionWorkingDir = session.projectPath().toAbsolutePath().normalize();
+                var sessionWorkspaceHash = WorkspacePaths.workspaceHash(sessionWorkingDir);
                 historyStore.saveSession(session);
                 var extracted = SessionEndExtractor.extract(session.messages());
                 for (var mem : extracted) {
                     try {
                         memoryStore.add(mem.category(), mem.content(), mem.tags(),
-                                "session-end:" + session.id(), false, workingDir);
+                                "session-end:" + session.id(), false, sessionWorkingDir);
                     } catch (Exception e) {
                         log.warn("Failed to save session-end memory: {}", e.getMessage());
                     }
@@ -675,7 +679,7 @@ public final class AceClawDaemon {
                                 insight.tags(),
                                 "session-analysis:" + session.id(),
                                 false,
-                                workingDir);
+                                sessionWorkingDir);
                     } catch (Exception e) {
                         log.warn("Failed to save session analysis memory: {}", e.getMessage());
                     }
@@ -695,7 +699,7 @@ public final class AceClawDaemon {
                     try {
                         var snapshot = new HistoricalSessionSnapshot(
                                 session.id(),
-                                workspaceHash,
+                                sessionWorkspaceHash,
                                 Instant.now(),
                                 learnings.executedCommands(),
                                 learnings.errorsEncountered(),
@@ -712,7 +716,7 @@ public final class AceClawDaemon {
                 }
                 if (learningMaintenanceScheduler != null) {
                     try {
-                        learningMaintenanceScheduler.onSessionClosed();
+                        learningMaintenanceScheduler.onSessionClosed(sessionWorkspaceHash, sessionWorkingDir);
                     } catch (Exception e) {
                         log.warn("Learning maintenance trigger failed: {}", e.getMessage());
                     }

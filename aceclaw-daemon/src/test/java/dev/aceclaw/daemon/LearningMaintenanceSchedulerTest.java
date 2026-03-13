@@ -26,14 +26,14 @@ class LearningMaintenanceSchedulerTest {
         var scheduler = scheduler(clock, activeSessions, memoryBytes, triggers);
         try {
             for (int i = 0; i < 9; i++) {
-                scheduler.onSessionClosed();
+                scheduler.onSessionClosed("ws-a", java.nio.file.Path.of("/tmp/ws-a"));
             }
             assertThat(triggers).isEmpty();
 
-            scheduler.onSessionClosed();
+            scheduler.onSessionClosed("ws-a", java.nio.file.Path.of("/tmp/ws-a"));
             waitForTriggers(triggers, 1);
 
-            assertThat(triggers).containsExactly("session-count");
+            assertThat(triggers).containsExactly("session-count:ws-a");
         } finally {
             scheduler.stop();
         }
@@ -47,11 +47,12 @@ class LearningMaintenanceSchedulerTest {
         var triggers = Collections.synchronizedList(new ArrayList<String>());
         var scheduler = scheduler(clock, activeSessions, memoryBytes, triggers);
         try {
+            scheduler.onSessionClosed("ws-a", java.nio.file.Path.of("/tmp/ws-a"));
             clock.advance(Duration.ofHours(6).plusSeconds(1));
             scheduler.tick();
             waitForTriggers(triggers, 1);
 
-            assertThat(triggers).containsExactly("scheduled");
+            assertThat(triggers).containsExactly("scheduled:ws-a");
         } finally {
             scheduler.stop();
         }
@@ -65,21 +66,22 @@ class LearningMaintenanceSchedulerTest {
         var triggers = Collections.synchronizedList(new ArrayList<String>());
         var scheduler = scheduler(clock, activeSessions, memoryBytes, triggers);
         try {
+            scheduler.onSessionClosed("ws-a", java.nio.file.Path.of("/tmp/ws-a"));
             memoryBytes.set(60L * 1024L);
             scheduler.tick();
             waitForTriggers(triggers, 1);
-            assertThat(triggers).containsExactly("size-threshold");
+            assertThat(triggers).containsExactly("size-threshold:ws-a");
 
             scheduler.tick();
             Thread.sleep(50);
-            assertThat(triggers).containsExactly("size-threshold");
+            assertThat(triggers).containsExactly("size-threshold:ws-a");
 
             memoryBytes.set(10L * 1024L);
             scheduler.tick();
             memoryBytes.set(75L * 1024L);
             scheduler.tick();
             waitForTriggers(triggers, 2);
-            assertThat(triggers).containsExactly("size-threshold", "size-threshold");
+            assertThat(triggers).containsExactly("size-threshold:ws-a", "size-threshold:ws-a");
         } finally {
             scheduler.stop();
         }
@@ -93,13 +95,14 @@ class LearningMaintenanceSchedulerTest {
         var triggers = Collections.synchronizedList(new ArrayList<String>());
         var scheduler = scheduler(clock, activeSessions, memoryBytes, triggers);
         try {
+            scheduler.onSessionClosed("ws-a", java.nio.file.Path.of("/tmp/ws-a"));
             scheduler.tick();
             activeSessions.set(0);
             clock.advance(Duration.ofMinutes(5).plusSeconds(1));
             scheduler.tick();
             waitForTriggers(triggers, 1);
 
-            assertThat(triggers).containsExactly("idle");
+            assertThat(triggers).containsExactly("idle:ws-a");
         } finally {
             scheduler.stop();
         }
@@ -115,7 +118,7 @@ class LearningMaintenanceSchedulerTest {
         scheduler.stop();
 
         for (int i = 0; i < 20; i++) {
-            scheduler.onSessionClosed();
+            scheduler.onSessionClosed("ws-a", java.nio.file.Path.of("/tmp/ws-a"));
         }
         Thread.sleep(50);
 
@@ -136,32 +139,53 @@ class LearningMaintenanceSchedulerTest {
                         2,
                         50L * 1024L,
                         Duration.ofMinutes(5),
-                        Duration.ofDays(1)),
+                Duration.ofDays(1)),
                 clock,
                 activeSessions::get,
-                memoryBytes::get,
-                trigger -> {
-                    triggers.add(trigger);
+                scopes -> memoryBytes.get(),
+                (trigger, scope) -> {
+                    triggers.add(trigger + ":" + scope.workspaceHash());
                     started.countDown();
                     release.await();
                 }
         );
         scheduler.start();
         try {
-            scheduler.onSessionClosed();
-            scheduler.onSessionClosed();
+            scheduler.onSessionClosed("ws-a", java.nio.file.Path.of("/tmp/ws-a"));
+            scheduler.onSessionClosed("ws-a", java.nio.file.Path.of("/tmp/ws-a"));
             assertThat(started.await(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
-            assertThat(triggers).containsExactly("session-count");
+            assertThat(triggers).containsExactly("session-count:ws-a");
 
-            scheduler.onSessionClosed();
+            scheduler.onSessionClosed("ws-a", java.nio.file.Path.of("/tmp/ws-a"));
 
             release.countDown();
             waitForMaintenanceToSettle(scheduler);
 
-            scheduler.onSessionClosed();
+            scheduler.onSessionClosed("ws-a", java.nio.file.Path.of("/tmp/ws-a"));
             waitForTriggers(triggers, 2);
 
-            assertThat(triggers).containsExactly("session-count", "session-count");
+            assertThat(triggers).containsExactly("session-count:ws-a", "session-count:ws-a");
+        } finally {
+            scheduler.stop();
+        }
+    }
+
+    @Test
+    void timeTriggerRunsAcrossKnownWorkspaces() throws Exception {
+        var clock = new MutableClock(Instant.parse("2026-03-13T10:00:00Z"));
+        var activeSessions = new AtomicInteger(0);
+        var memoryBytes = new AtomicLong(0);
+        var triggers = Collections.synchronizedList(new ArrayList<String>());
+        var scheduler = scheduler(clock, activeSessions, memoryBytes, triggers);
+        try {
+            scheduler.onSessionClosed("ws-a", java.nio.file.Path.of("/tmp/ws-a"));
+            scheduler.onSessionClosed("ws-b", java.nio.file.Path.of("/tmp/ws-b"));
+
+            clock.advance(Duration.ofHours(6).plusSeconds(1));
+            scheduler.tick();
+            waitForTriggers(triggers, 2);
+
+            assertThat(triggers).containsExactlyInAnyOrder("scheduled:ws-a", "scheduled:ws-b");
         } finally {
             scheduler.stop();
         }
@@ -180,8 +204,8 @@ class LearningMaintenanceSchedulerTest {
                         Duration.ofDays(1)),
                 clock,
                 activeSessions::get,
-                memoryBytes::get,
-                trigger -> triggers.add(trigger)
+                scopes -> memoryBytes.get(),
+                (trigger, scope) -> triggers.add(trigger + ":" + scope.workspaceHash())
         );
         scheduler.start();
         return scheduler;
