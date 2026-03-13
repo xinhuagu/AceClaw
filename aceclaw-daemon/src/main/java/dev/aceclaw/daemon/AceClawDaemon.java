@@ -547,11 +547,6 @@ public final class AceClawDaemon {
                         }
                     } : null);
             agentHandler.setSelfImprovementEngine(selfImprovementEngine);
-            dynamicSkillGenerator = new DynamicSkillGenerator(
-                    llmClient,
-                    agentHandler::getModelForSession,
-                    skillRegistry);
-            agentHandler.setDynamicSkillGenerator(dynamicSkillGenerator);
             candidateStoreRef = cs;
 
             // Pass candidate store to agent handler for prompt injection
@@ -599,6 +594,12 @@ public final class AceClawDaemon {
             }
         }
 
+        dynamicSkillGenerator = new DynamicSkillGenerator(
+                llmClient,
+                agentHandler::getModelForSession,
+                skillRegistry);
+        agentHandler.setDynamicSkillGenerator(dynamicSkillGenerator);
+
         // Wire deferred action scheduler (no turn lock dependency — uses isolated context)
         if (config.deferredActionEnabled()) {
             this.deferredActionScheduler = new DeferredActionScheduler(
@@ -617,22 +618,22 @@ public final class AceClawDaemon {
         // Runs SYNCHRONOUSLY to ensure extraction completes before session deactivation.
         // This is critical during shutdown — async virtual threads may not finish before JVM exits.
         // The extraction is pure-Java regex matching (no LLM calls), so blocking is fast.
+        final var extractionJournal = journal;
+        final var archiveDir = markdownStore != null ? markdownStore.memoryDir() : null;
+        final var agentHandlerForCleanup = agentHandler;
+        final var sessionAnalyzer = memoryStore != null ? new SessionAnalyzer() : null;
+        final var historicalIndexRebuilder = historicalLogIndex != null
+                ? new HistoricalIndexRebuilder(historyStore, historicalLogIndex)
+                : null;
+        final var crossSessionPatternMiner = historicalLogIndex != null ? new CrossSessionPatternMiner() : null;
+        final var trendDetector = historicalLogIndex != null ? new TrendDetector() : null;
+        final var maintenanceCandidateBridge = config.candidatePromotionEnabled() && candidateStoreRef != null
+                ? new LearningMaintenanceCandidateBridge(candidateStoreRef)
+                : null;
+        final var maintenanceCandidateStore = candidateStoreRef;
+        final var maintenanceValidationGate = validationGateEngine;
+        final var maintenanceAutoRelease = autoReleaseController;
         if (memoryStore != null) {
-            final var extractionJournal = journal;
-            final var archiveDir = markdownStore != null ? markdownStore.memoryDir() : null;
-            final var agentHandlerForCleanup = agentHandler;
-            final var sessionAnalyzer = new SessionAnalyzer();
-            final var historicalIndexRebuilder = historicalLogIndex != null
-                    ? new HistoricalIndexRebuilder(historyStore, historicalLogIndex)
-                    : null;
-            final var crossSessionPatternMiner = historicalLogIndex != null ? new CrossSessionPatternMiner() : null;
-            final var trendDetector = historicalLogIndex != null ? new TrendDetector() : null;
-            final var maintenanceCandidateBridge = config.candidatePromotionEnabled() && candidateStoreRef != null
-                    ? new LearningMaintenanceCandidateBridge(candidateStoreRef)
-                    : null;
-            final var maintenanceCandidateStore = candidateStoreRef;
-            final var maintenanceValidationGate = validationGateEngine;
-            final var maintenanceAutoRelease = autoReleaseController;
             learningMaintenanceScheduler = new LearningMaintenanceScheduler(
                     LearningMaintenanceScheduler.Config.defaults(Duration.ofSeconds(config.schedulerTickSeconds())),
                     java.time.Clock.systemUTC(),
@@ -657,8 +658,10 @@ public final class AceClawDaemon {
                             scope.workspaceHash(),
                             scope.workingDir())
             );
-            final var runtimeSkillGeneratorForSessionEnd = dynamicSkillGenerator;
-            sessionManager.setSessionEndCallback(session -> {
+        }
+        final var runtimeSkillGeneratorForSessionEnd = dynamicSkillGenerator;
+        sessionManager.setSessionEndCallback(session -> {
+            if (memoryStore != null) {
                 var sessionWorkingDir = session.projectPath().toAbsolutePath().normalize();
                 var sessionWorkspaceHash = WorkspacePaths.workspaceHash(sessionWorkingDir);
                 historyStore.saveSession(session);
@@ -741,12 +744,12 @@ public final class AceClawDaemon {
                         log.warn("Runtime skill draft persistence failed: {}", e.getMessage());
                     }
                 }
+            }
 
-                // Clean up session-scoped resources in the agent handler
-                agentHandlerForCleanup.clearSessionOverride(session.id());
-                agentHandlerForCleanup.clearSessionMetrics(session.id());
-            });
-        }
+            // Clean up session-scoped resources in the agent handler
+            agentHandlerForCleanup.clearSessionOverride(session.id());
+            agentHandlerForCleanup.clearSessionMetrics(session.id());
+        });
 
         // Expose model name, provider info, and health monitor to status endpoint
         router.setModelName(model);
