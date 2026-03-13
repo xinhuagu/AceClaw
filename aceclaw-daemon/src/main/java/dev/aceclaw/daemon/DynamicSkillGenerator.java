@@ -207,6 +207,7 @@ public final class DynamicSkillGenerator {
                 .filter(Insight.PatternInsight.class::isInstance)
                 .map(Insight.PatternInsight.class::cast)
                 .anyMatch(insight -> insight.patternType() == PatternType.REPEATED_TOOL_SEQUENCE
+                        && insight.frequency() >= 3
                         && signature.equals(extractInsightSequenceSignature(insight.description())));
     }
 
@@ -507,7 +508,7 @@ public final class DynamicSkillGenerator {
             String signature
     ) {
         private RuntimeSkillRecord {
-            allowedTools = List.copyOf(allowedTools);
+            allowedTools = allowedTools != null ? List.copyOf(allowedTools) : List.of();
         }
     }
 

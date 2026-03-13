@@ -1537,6 +1537,7 @@ public final class StreamingAgentHandler {
      */
     public void clearSessionMetrics(String sessionId) {
         java.util.Objects.requireNonNull(sessionId, "sessionId");
+        awaitSessionPostProcessing(sessionId);
         sessionMetrics.remove(sessionId);
         sessionInjectedCandidateIds.remove(sessionId);
         sessionDoomLoops.remove(sessionId);
@@ -1552,8 +1553,16 @@ public final class StreamingAgentHandler {
         }
         try {
             future.get(30, TimeUnit.SECONDS);
-        } catch (Exception e) {
-            log.warn("Timed out waiting for post-request learning for {}: {}", sessionId, e.getMessage());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("Interrupted while waiting for post-request learning for {}", sessionId);
+        } catch (TimeoutException e) {
+            log.warn("Timed out waiting for post-request learning for {}", sessionId);
+        } catch (ExecutionException e) {
+            var cause = e.getCause();
+            log.warn("Post-request learning failed for {}: {}",
+                    sessionId,
+                    cause != null ? cause.getMessage() : e.getMessage());
         }
     }
 
