@@ -614,30 +614,50 @@ public final class AceClawDaemon {
             final var archiveDir = markdownStore != null ? markdownStore.memoryDir() : null;
             final var agentHandlerForCleanup = agentHandler;
             final var sessionAnalyzer = new SessionAnalyzer();
+            final var historicalIndexRebuilder = historicalLogIndex != null
+                    ? new HistoricalIndexRebuilder(historyStore, historicalLogIndex)
+                    : null;
             final var crossSessionPatternMiner = historicalLogIndex != null ? new CrossSessionPatternMiner() : null;
             final var trendDetector = historicalLogIndex != null ? new TrendDetector() : null;
-            final var workspaceHash = WorkspacePaths.workspaceHash(workingDir);
+            final var maintenanceCandidateBridge = config.candidatePromotionEnabled() && candidateStoreRef != null
+                    ? new LearningMaintenanceCandidateBridge(candidateStoreRef)
+                    : null;
+            final var maintenanceCandidateStore = candidateStoreRef;
+            final var maintenanceValidationGate = validationGateEngine;
+            final var maintenanceAutoRelease = autoReleaseController;
             learningMaintenanceScheduler = new LearningMaintenanceScheduler(
                     LearningMaintenanceScheduler.Config.defaults(Duration.ofSeconds(config.schedulerTickSeconds())),
                     java.time.Clock.systemUTC(),
                     sessionManager::sessionCount,
-                    () -> memoryStore.largestBackingFileBytes(workingDir),
-                    trigger -> runLearningMaintenancePipeline(
+                    scopes -> scopes.stream()
+                            .mapToLong(scope -> memoryStore.largestBackingFileBytes(scope.workingDir()))
+                            .max()
+                            .orElse(0L),
+                    (trigger, scope) -> runLearningMaintenancePipeline(
                             trigger,
                             memoryStore,
                             archiveDir,
                             extractionJournal,
+                            historicalIndexRebuilder,
                             crossSessionPatternMiner,
                             trendDetector,
-                            workspaceHash,
-                            workingDir)
+                            maintenanceCandidateBridge,
+                            maintenanceCandidateStore,
+                            maintenanceValidationGate,
+                            maintenanceAutoRelease,
+                            draftPipelineLock,
+                            scope.workspaceHash(),
+                            scope.workingDir())
             );
             sessionManager.setSessionEndCallback(session -> {
+                var sessionWorkingDir = session.projectPath().toAbsolutePath().normalize();
+                var sessionWorkspaceHash = WorkspacePaths.workspaceHash(sessionWorkingDir);
+                historyStore.saveSession(session);
                 var extracted = SessionEndExtractor.extract(session.messages());
                 for (var mem : extracted) {
                     try {
                         memoryStore.add(mem.category(), mem.content(), mem.tags(),
-                                "session-end:" + session.id(), false, workingDir);
+                                "session-end:" + session.id(), false, sessionWorkingDir);
                     } catch (Exception e) {
                         log.warn("Failed to save session-end memory: {}", e.getMessage());
                     }
@@ -659,7 +679,7 @@ public final class AceClawDaemon {
                                 insight.tags(),
                                 "session-analysis:" + session.id(),
                                 false,
-                                workingDir);
+                                sessionWorkingDir);
                     } catch (Exception e) {
                         log.warn("Failed to save session analysis memory: {}", e.getMessage());
                     }
@@ -677,9 +697,9 @@ public final class AceClawDaemon {
                 }
                 if (historicalLogIndex != null) {
                     try {
-                        historicalLogIndex.index(new HistoricalSessionSnapshot(
+                        var snapshot = new HistoricalSessionSnapshot(
                                 session.id(),
-                                workspaceHash,
+                                sessionWorkspaceHash,
                                 Instant.now(),
                                 learnings.executedCommands(),
                                 learnings.errorsEncountered(),
@@ -687,14 +707,16 @@ public final class AceClawDaemon {
                                 metricsSnapshot,
                                 learnings.backtrackingDetected(),
                                 learnings.endToEndStrategy()
-                        ));
+                        );
+                        historyStore.saveSnapshot(snapshot);
+                        historicalLogIndex.index(snapshot);
                     } catch (Exception e) {
                         log.warn("Failed to index session history: {}", e.getMessage());
                     }
                 }
                 if (learningMaintenanceScheduler != null) {
                     try {
-                        learningMaintenanceScheduler.onSessionClosed();
+                        learningMaintenanceScheduler.onSessionClosed(sessionWorkspaceHash, sessionWorkingDir);
                     } catch (Exception e) {
                         log.warn("Learning maintenance trigger failed: {}", e.getMessage());
                     }
@@ -1776,8 +1798,14 @@ public final class AceClawDaemon {
             AutoMemoryStore memoryStore,
             Path archiveDir,
             DailyJournal journal,
+            HistoricalIndexRebuilder historicalIndexRebuilder,
             CrossSessionPatternMiner crossSessionPatternMiner,
             TrendDetector trendDetector,
+            LearningMaintenanceCandidateBridge maintenanceCandidateBridge,
+            CandidateStore candidateStore,
+            ValidationGateEngine validationGateEngine,
+            AutoReleaseController autoReleaseController,
+            java.util.concurrent.locks.ReentrantLock draftPipelineLock,
             String workspaceHash,
             Path workingDir
     ) {
@@ -1793,29 +1821,43 @@ public final class AceClawDaemon {
             log.warn("Memory consolidation failed (trigger={}): {}", trigger, e.getMessage());
         }
 
+        if (historicalIndexRebuilder != null) {
+            try {
+                var rebuild = historicalIndexRebuilder.rebuildWorkspaceIfStale(workspaceHash);
+                if (rebuild.rebuilt() && journal != null) {
+                    journal.append("Historical index rebuilt (" + trigger + "): "
+                            + rebuild.rebuiltSessions() + " sessions re-indexed");
+                }
+            } catch (Exception e) {
+                log.warn("Historical index rebuild failed (trigger={}): {}", trigger, e.getMessage());
+            }
+        }
+
+        CrossSessionPatternMiner.MiningResult miningResult = null;
         if (crossSessionPatternMiner != null && historicalLogIndex != null) {
             try {
-                var mined = crossSessionPatternMiner.mine(
+                miningResult = crossSessionPatternMiner.mine(
                         historicalLogIndex, memoryStore, workspaceHash, workingDir);
-                if ((!mined.frequentErrorChains().isEmpty()
-                        || !mined.stableWorkflows().isEmpty()
-                        || !mined.convergingStrategies().isEmpty()
-                        || !mined.degradationSignals().isEmpty())
+                if ((!miningResult.frequentErrorChains().isEmpty()
+                        || !miningResult.stableWorkflows().isEmpty()
+                        || !miningResult.convergingStrategies().isEmpty()
+                        || !miningResult.degradationSignals().isEmpty())
                         && journal != null) {
                     journal.append("Cross-session miner (" + trigger + "): "
-                            + mined.frequentErrorChains().size() + " error chains, "
-                            + mined.stableWorkflows().size() + " stable workflows, "
-                            + mined.convergingStrategies().size() + " converging strategies, "
-                            + mined.degradationSignals().size() + " degradation signals");
+                            + miningResult.frequentErrorChains().size() + " error chains, "
+                            + miningResult.stableWorkflows().size() + " stable workflows, "
+                            + miningResult.convergingStrategies().size() + " converging strategies, "
+                            + miningResult.degradationSignals().size() + " degradation signals");
                 }
             } catch (Exception e) {
                 log.warn("Cross-session pattern mining failed (trigger={}): {}", trigger, e.getMessage());
             }
         }
 
+        List<TrendDetector.Trend> trends = List.of();
         if (trendDetector != null && historicalLogIndex != null) {
             try {
-                var trends = trendDetector.detect(
+                trends = trendDetector.detect(
                         historicalLogIndex, memoryStore, workspaceHash, workingDir);
                 if (!trends.isEmpty() && journal != null) {
                     journal.append("Trend detector (" + trigger + "): " + trends.size()
@@ -1824,6 +1866,67 @@ public final class AceClawDaemon {
             } catch (Exception e) {
                 log.warn("Trend detection failed (trigger={}): {}", trigger, e.getMessage());
             }
+        }
+
+        if (maintenanceCandidateBridge != null && candidateStore != null
+                && (miningResult != null || !trends.isEmpty())) {
+            try {
+                var bridgeResult = maintenanceCandidateBridge.bridge(
+                        trigger,
+                        miningResult != null ? miningResult
+                                : new CrossSessionPatternMiner.MiningResult(List.of(), List.of(), List.of(), List.of()),
+                        trends);
+                if (bridgeResult.upserts() > 0 && journal != null) {
+                    journal.append("Maintenance candidate bridge (" + trigger + "): "
+                            + bridgeResult.upserts() + " observations, "
+                            + bridgeResult.transitions() + " transitions, "
+                            + bridgeResult.promoted() + " promoted");
+                }
+                if (bridgeResult.promoted() > 0) {
+                    triggerMaintenanceDraftLifecycle(
+                            "maintenance-" + trigger,
+                            workingDir,
+                            candidateStore,
+                            validationGateEngine,
+                            autoReleaseController,
+                            draftPipelineLock);
+                }
+            } catch (Exception e) {
+                log.warn("Maintenance candidate bridge failed (trigger={}): {}", trigger, e.getMessage());
+            }
+        }
+    }
+
+    private void triggerMaintenanceDraftLifecycle(
+            String trigger,
+            Path workingDir,
+            CandidateStore candidateStore,
+            ValidationGateEngine validationGateEngine,
+            AutoReleaseController autoReleaseController,
+            java.util.concurrent.locks.ReentrantLock draftPipelineLock
+    ) {
+        if (candidateStore == null || draftPipelineLock == null) {
+            return;
+        }
+        draftPipelineLock.lock();
+        try {
+            try {
+                var generator = new SkillDraftGenerator();
+                var summary = generator.generateFromPromoted(candidateStore, workingDir);
+                publishSkillDraftCreatedEvents(summary, workingDir, trigger);
+                if (validationGateEngine != null && summary.createdDrafts() > 0) {
+                    var validation = validationGateEngine.validateAll(workingDir, trigger);
+                    publishSkillDraftValidationEvents(validation, trigger);
+                    if (autoReleaseController != null) {
+                        var release = autoReleaseController.evaluateAll(workingDir, candidateStore, trigger);
+                        publishSkillDraftReleaseEvents(release, trigger);
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("Maintenance draft lifecycle failed (trigger={}): {}", trigger, e.getMessage());
+            }
+        } finally {
+            draftPipelineLock.unlock();
         }
     }
 }

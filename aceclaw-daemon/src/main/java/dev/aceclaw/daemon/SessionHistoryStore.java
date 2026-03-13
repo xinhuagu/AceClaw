@@ -3,16 +3,21 @@ package dev.aceclaw.daemon;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import dev.aceclaw.memory.HistoricalSessionSnapshot;
+import dev.aceclaw.memory.WorkspacePaths;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -60,7 +65,8 @@ public final class SessionHistoryStore {
     public void appendMessage(String sessionId, AgentSession.ConversationMessage message) {
         writeLock.lock();
         try {
-            var entry = toEntry(message);
+            Files.createDirectories(historyDir);
+            var entry = toEntry(message, null);
             String json = mapper.writeValueAsString(entry);
             Path file = historyDir.resolve(sessionId + ".jsonl");
             Files.writeString(file, json + "\n",
@@ -78,10 +84,12 @@ public final class SessionHistoryStore {
     public void saveSession(AgentSession session) {
         writeLock.lock();
         try {
-            Path file = historyDir.resolve(session.id() + ".jsonl");
+            Files.createDirectories(historyDir);
+            Path file = historyFile(session.id());
+            String workspaceHash = WorkspacePaths.workspaceHash(session.projectPath());
             var lines = new StringBuilder();
             for (var msg : session.messages()) {
-                lines.append(mapper.writeValueAsString(toEntry(msg))).append("\n");
+                lines.append(mapper.writeValueAsString(toEntry(msg, workspaceHash))).append("\n");
             }
             Files.writeString(file, lines.toString(),
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
@@ -99,7 +107,7 @@ public final class SessionHistoryStore {
      * @return the loaded messages, or empty list if no history exists
      */
     public List<AgentSession.ConversationMessage> loadSession(String sessionId) {
-        Path file = historyDir.resolve(sessionId + ".jsonl");
+        Path file = historyFile(sessionId);
         if (!Files.isRegularFile(file)) {
             return List.of();
         }
@@ -109,14 +117,94 @@ public final class SessionHistoryStore {
             var lines = Files.readAllLines(file);
             for (String line : lines) {
                 if (line.isBlank()) continue;
-                var entry = mapper.readValue(line, HistoryEntry.class);
-                messages.add(fromEntry(entry));
+                try {
+                    var entry = mapper.readValue(line, HistoryEntry.class);
+                    messages.add(fromEntry(entry));
+                } catch (IOException | RuntimeException e) {
+                    log.warn("Skipping malformed history line for session {}: {}", sessionId, e.getMessage());
+                }
             }
             log.debug("Loaded session history: id={}, messages={}", sessionId, messages.size());
         } catch (IOException e) {
             log.warn("Failed to load session {}: {}", sessionId, e.getMessage());
         }
         return messages;
+    }
+
+    /**
+     * Lists persisted sessions for the given workspace hash.
+     */
+    public List<String> listSessionsForWorkspace(String workspaceHash) {
+        Objects.requireNonNull(workspaceHash, "workspaceHash");
+        if (workspaceHash.isBlank()) {
+            throw new IllegalArgumentException("workspaceHash must not be blank");
+        }
+
+        var sessionIds = new LinkedHashSet<String>();
+        try (var stream = Files.list(historyDir)) {
+            stream.filter(p -> p.toString().endsWith(".jsonl"))
+                    .forEach(path -> workspaceHashOf(path).ifPresent(entryWorkspaceHash -> {
+                        if (workspaceHash.equals(entryWorkspaceHash)) {
+                            String name = path.getFileName().toString();
+                            sessionIds.add(name.substring(0, name.length() - ".jsonl".length()));
+                        }
+                    }));
+        } catch (IOException e) {
+            log.debug("No history directory or error listing workspace sessions: {}", e.getMessage());
+        }
+        return List.copyOf(sessionIds);
+    }
+
+    public void saveSnapshot(HistoricalSessionSnapshot snapshot) {
+        Objects.requireNonNull(snapshot, "snapshot");
+        writeLock.lock();
+        try {
+            Files.createDirectories(historyDir);
+            writeAtomically(snapshotFile(snapshot.sessionId()), mapper.writeValueAsString(snapshot) + "\n");
+        } catch (IOException e) {
+            log.warn("Failed to save historical snapshot for session {}: {}", snapshot.sessionId(), e.getMessage());
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    public java.util.Optional<HistoricalSessionSnapshot> loadSnapshot(String sessionId) {
+        Objects.requireNonNull(sessionId, "sessionId");
+        Path file = snapshotFile(sessionId);
+        if (!Files.isRegularFile(file)) {
+            return java.util.Optional.empty();
+        }
+        try {
+            String json = Files.readString(file);
+            if (json == null || json.isBlank()) {
+                return java.util.Optional.empty();
+            }
+            return java.util.Optional.of(mapper.readValue(json, HistoricalSessionSnapshot.class));
+        } catch (IOException e) {
+            log.warn("Failed to load historical snapshot for session {}: {}", sessionId, e.getMessage());
+            return java.util.Optional.empty();
+        }
+    }
+
+    public List<String> listSnapshotSessionsForWorkspace(String workspaceHash) {
+        Objects.requireNonNull(workspaceHash, "workspaceHash");
+        if (workspaceHash.isBlank()) {
+            throw new IllegalArgumentException("workspaceHash must not be blank");
+        }
+
+        var sessionIds = new LinkedHashSet<String>();
+        try (var stream = Files.list(historyDir)) {
+            stream.filter(p -> p.toString().endsWith(".snapshot.json"))
+                    .forEach(path -> snapshotWorkspaceHashOf(path).ifPresent(entryWorkspaceHash -> {
+                        if (workspaceHash.equals(entryWorkspaceHash)) {
+                            String name = path.getFileName().toString();
+                            sessionIds.add(name.substring(0, name.length() - ".snapshot.json".length()));
+                        }
+                    }));
+        } catch (IOException e) {
+            log.debug("No snapshot directory or error listing workspace snapshots: {}", e.getMessage());
+        }
+        return List.copyOf(sessionIds);
     }
 
     /**
@@ -141,8 +229,8 @@ public final class SessionHistoryStore {
      */
     public void deleteSession(String sessionId) {
         try {
-            Path file = historyDir.resolve(sessionId + ".jsonl");
-            Files.deleteIfExists(file);
+            Files.deleteIfExists(historyFile(sessionId));
+            Files.deleteIfExists(snapshotFile(sessionId));
         } catch (IOException e) {
             log.warn("Failed to delete history for session {}: {}", sessionId, e.getMessage());
         }
@@ -169,14 +257,14 @@ public final class SessionHistoryStore {
 
     // -- internal --------------------------------------------------------
 
-    private static HistoryEntry toEntry(AgentSession.ConversationMessage msg) {
+    private static HistoryEntry toEntry(AgentSession.ConversationMessage msg, String workspaceHash) {
         return switch (msg) {
             case AgentSession.ConversationMessage.User u ->
-                    new HistoryEntry("user", u.content(), u.timestamp());
+                    new HistoryEntry("user", u.content(), u.timestamp(), workspaceHash);
             case AgentSession.ConversationMessage.Assistant a ->
-                    new HistoryEntry("assistant", a.content(), a.timestamp());
+                    new HistoryEntry("assistant", a.content(), a.timestamp(), workspaceHash);
             case AgentSession.ConversationMessage.System s ->
-                    new HistoryEntry("system", s.content(), s.timestamp());
+                    new HistoryEntry("system", s.content(), s.timestamp(), workspaceHash);
         };
     }
 
@@ -189,6 +277,69 @@ public final class SessionHistoryStore {
         };
     }
 
+    private java.util.Optional<String> workspaceHashOf(Path file) {
+        try {
+            for (String line : Files.readAllLines(file)) {
+                if (line == null || line.isBlank()) {
+                    continue;
+                }
+                try {
+                    var entry = mapper.readValue(line, HistoryEntry.class);
+                    if (entry.workspaceHash != null && !entry.workspaceHash.isBlank()) {
+                        return java.util.Optional.of(entry.workspaceHash);
+                    }
+                } catch (IOException | RuntimeException e) {
+                    log.debug("Skipping malformed history line while inspecting {}: {}",
+                            file.getFileName(), e.getMessage());
+                }
+            }
+        } catch (IOException e) {
+            log.debug("Failed to inspect history workspace hash for {}: {}", file.getFileName(), e.getMessage());
+        }
+        return java.util.Optional.empty();
+    }
+
+    private java.util.Optional<String> snapshotWorkspaceHashOf(Path file) {
+        try {
+            String json = Files.readString(file);
+            if (json == null || json.isBlank()) {
+                return java.util.Optional.empty();
+            }
+            var snapshot = mapper.readValue(json, HistoricalSessionSnapshot.class);
+            if (snapshot.workspaceHash() == null || snapshot.workspaceHash().isBlank()) {
+                return java.util.Optional.empty();
+            }
+            return java.util.Optional.of(snapshot.workspaceHash());
+        } catch (IOException e) {
+            log.debug("Failed to inspect snapshot workspace hash for {}: {}", file.getFileName(), e.getMessage());
+            return java.util.Optional.empty();
+        }
+    }
+
+    private void writeAtomically(Path target, String content) throws IOException {
+        Path tmp = target.resolveSibling(target.getFileName() + ".tmp");
+        try {
+            Files.writeString(tmp, content,
+                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException e) {
+            try {
+                Files.deleteIfExists(tmp);
+            } catch (IOException ignored) {
+                // Preserve the original write/move failure and best-effort cleanup only.
+            }
+            throw e;
+        }
+    }
+
+    private Path historyFile(String sessionId) {
+        return historyDir.resolve(sessionId + ".jsonl");
+    }
+
+    private Path snapshotFile(String sessionId) {
+        return historyDir.resolve(sessionId + ".snapshot.json");
+    }
+
     @JsonIgnoreProperties(ignoreUnknown = true)
-    record HistoryEntry(String role, String content, Instant timestamp) {}
+    record HistoryEntry(String role, String content, Instant timestamp, String workspaceHash) {}
 }

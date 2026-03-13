@@ -3,10 +3,16 @@ package dev.aceclaw.daemon;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -29,13 +35,15 @@ public final class LearningMaintenanceScheduler {
     private final Config config;
     private final Clock clock;
     private final IntSupplier activeSessionCount;
-    private final LongSupplier largestMemoryFileBytes;
+    private final WorkspaceMemoryProbe largestMemoryFileBytes;
     private final MaintenancePipeline pipeline;
     private final Object lifecycleLock = new Object();
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean maintenanceRunning = new AtomicBoolean(false);
     private final AtomicInteger sessionsSinceLastRun = new AtomicInteger();
+    private final Map<String, WorkspaceScope> knownScopes = new ConcurrentHashMap<>();
+    private final Map<String, WorkspaceScope> pendingScopes = new ConcurrentHashMap<>();
 
     private ScheduledExecutorService scheduler;
     private volatile Instant lastRunAt;
@@ -46,7 +54,7 @@ public final class LearningMaintenanceScheduler {
     public LearningMaintenanceScheduler(Config config,
                                         Clock clock,
                                         IntSupplier activeSessionCount,
-                                        LongSupplier largestMemoryFileBytes,
+                                        WorkspaceMemoryProbe largestMemoryFileBytes,
                                         MaintenancePipeline pipeline) {
         this.config = Objects.requireNonNull(config, "config");
         this.clock = Objects.requireNonNull(clock, "clock");
@@ -116,10 +124,13 @@ public final class LearningMaintenanceScheduler {
         return maintenanceRunning.get();
     }
 
-    public void onSessionClosed() {
+    public void onSessionClosed(String workspaceHash, Path workingDir) {
         if (!running.get()) {
             return;
         }
+        var scope = new WorkspaceScope(workspaceHash, workingDir);
+        knownScopes.put(scope.workspaceHash(), scope);
+        pendingScopes.put(scope.workspaceHash(), scope);
         sessionsSinceLastRun.incrementAndGet();
         tryTrigger(Trigger.SESSION_COUNT);
     }
@@ -150,6 +161,10 @@ public final class LearningMaintenanceScheduler {
         if (!shouldTrigger(trigger)) {
             return;
         }
+        var scopesToRun = scopesFor(trigger);
+        if (scopesToRun.isEmpty()) {
+            return;
+        }
         if (!maintenanceRunning.compareAndSet(false, true)) {
             return;
         }
@@ -157,9 +172,12 @@ public final class LearningMaintenanceScheduler {
 
         Thread.ofVirtual().name("learning-maintenance-" + trigger.id()).start(() -> {
             try {
-                pipeline.run(trigger.id());
+                for (var scope : scopesToRun) {
+                    pipeline.run(trigger.id(), scope);
+                }
                 lastRunAt = clock.instant();
                 sessionsSinceLastRun.updateAndGet(current -> Math.max(0, current - sessionsAtStart));
+                scopesToRun.forEach(scope -> pendingScopes.remove(scope.workspaceHash(), scope));
                 if (trigger == Trigger.SIZE_THRESHOLD) {
                     sizeTriggerArmed = false;
                 }
@@ -179,11 +197,13 @@ public final class LearningMaintenanceScheduler {
         return switch (trigger) {
             case SESSION_COUNT ->
                     config.sessionCountTrigger() > 0
-                            && sessionsSinceLastRun.get() >= config.sessionCountTrigger();
+                            && sessionsSinceLastRun.get() >= config.sessionCountTrigger()
+                            && !pendingScopes.isEmpty();
             case TIME_INTERVAL -> Duration.between(lastRunAt, clock.instant())
-                    .compareTo(config.timeTriggerInterval()) >= 0;
+                    .compareTo(config.timeTriggerInterval()) >= 0
+                    && !knownScopes.isEmpty();
             case SIZE_THRESHOLD -> {
-                long bytes = Math.max(0L, largestMemoryFileBytes.getAsLong());
+                long bytes = Math.max(0L, largestMemoryFileBytes.largestMemoryFileBytes(List.copyOf(knownScopes.values())));
                 if (bytes <= config.sizeTriggerBytes()) {
                     sizeTriggerArmed = true;
                     yield false;
@@ -192,13 +212,35 @@ public final class LearningMaintenanceScheduler {
             }
             case IDLE_INTERVAL -> activeSessionCount.getAsInt() == 0
                     && idleTriggerArmed
+                    && !knownScopes.isEmpty()
                     && Duration.between(lastActiveAt, clock.instant()).compareTo(config.idleTriggerInterval()) >= 0;
         };
     }
 
+    private List<WorkspaceScope> scopesFor(Trigger trigger) {
+        var source = trigger == Trigger.SESSION_COUNT ? pendingScopes : knownScopes;
+        return List.copyOf(new ArrayList<>(new LinkedHashMap<>(source).values()));
+    }
+
     @FunctionalInterface
     public interface MaintenancePipeline {
-        void run(String trigger) throws Exception;
+        void run(String trigger, WorkspaceScope scope) throws Exception;
+    }
+
+    @FunctionalInterface
+    public interface WorkspaceMemoryProbe {
+        long largestMemoryFileBytes(List<WorkspaceScope> scopes);
+    }
+
+    public record WorkspaceScope(String workspaceHash, Path workingDir) {
+        public WorkspaceScope {
+            Objects.requireNonNull(workspaceHash, "workspaceHash");
+            Objects.requireNonNull(workingDir, "workingDir");
+            if (workspaceHash.isBlank()) {
+                throw new IllegalArgumentException("workspaceHash must not be blank");
+            }
+            workingDir = workingDir.toAbsolutePath().normalize();
+        }
     }
 
     public record Config(Duration timeTriggerInterval,

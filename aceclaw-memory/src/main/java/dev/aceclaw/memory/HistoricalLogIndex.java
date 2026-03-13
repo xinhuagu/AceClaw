@@ -18,10 +18,12 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -118,6 +120,91 @@ public final class HistoricalLogIndex {
             counts.merge(entry.errorClass(), 1, Integer::sum);
         }
         return Map.copyOf(counts);
+    }
+
+    public Set<String> sessionIds(String workspaceHash) {
+        Objects.requireNonNull(workspaceHash, "workspaceHash");
+        if (workspaceHash.isBlank()) {
+            throw new IllegalArgumentException("workspaceHash must not be blank");
+        }
+        fileLock.lock();
+        try {
+            var ids = new LinkedHashSet<String>();
+            toolInvocations(workspaceHash, null, null).forEach(entry -> ids.add(entry.sessionId()));
+            errorEntries(workspaceHash, null, null).forEach(entry -> ids.add(entry.sessionId()));
+            patterns(workspaceHash, null, null).forEach(entry -> ids.add(entry.sessionId()));
+            return Set.copyOf(ids);
+        } finally {
+            fileLock.unlock();
+        }
+    }
+
+    public void clearWorkspace(String workspaceHash) throws IOException {
+        Objects.requireNonNull(workspaceHash, "workspaceHash");
+        if (workspaceHash.isBlank()) {
+            throw new IllegalArgumentException("workspaceHash must not be blank");
+        }
+
+        fileLock.lock();
+        try {
+            var retainedTools = new ArrayList<>(toolInvocations(null, null, null).stream()
+                    .filter(entry -> !workspaceHash.equals(entry.workspaceHash()))
+                    .toList());
+            var retainedErrors = new ArrayList<>(errorEntries(null, null, null).stream()
+                    .filter(entry -> !workspaceHash.equals(entry.workspaceHash()))
+                    .toList());
+            var retainedPatterns = new ArrayList<>(patterns(null, null, null).stream()
+                    .filter(entry -> !workspaceHash.equals(entry.workspaceHash()))
+                    .toList());
+
+            rewrite(toolFile, retainedTools);
+            rewrite(errorFile, retainedErrors);
+            rewrite(patternFile, retainedPatterns);
+        } finally {
+            fileLock.unlock();
+        }
+    }
+
+    public void replaceSessions(String workspaceHash, List<HistoricalSessionSnapshot> snapshots) throws IOException {
+        Objects.requireNonNull(workspaceHash, "workspaceHash");
+        Objects.requireNonNull(snapshots, "snapshots");
+        if (workspaceHash.isBlank()) {
+            throw new IllegalArgumentException("workspaceHash must not be blank");
+        }
+
+        fileLock.lock();
+        try {
+            var sessionIdsToReplace = snapshots.stream()
+                    .map(HistoricalSessionSnapshot::sessionId)
+                    .collect(java.util.stream.Collectors.toSet());
+            var retainedTools = new ArrayList<>(toolInvocations(null, null, null).stream()
+                    .filter(entry -> !workspaceHash.equals(entry.workspaceHash())
+                            || !sessionIdsToReplace.contains(entry.sessionId()))
+                    .toList());
+            var retainedErrors = new ArrayList<>(errorEntries(null, null, null).stream()
+                    .filter(entry -> !workspaceHash.equals(entry.workspaceHash())
+                            || !sessionIdsToReplace.contains(entry.sessionId()))
+                    .toList());
+            var retainedPatterns = new ArrayList<>(patterns(null, null, null).stream()
+                    .filter(entry -> !workspaceHash.equals(entry.workspaceHash())
+                            || !sessionIdsToReplace.contains(entry.sessionId()))
+                    .toList());
+
+            for (var snapshot : snapshots) {
+                if (!workspaceHash.equals(snapshot.workspaceHash())) {
+                    throw new IllegalArgumentException("snapshot workspaceHash does not match replace target");
+                }
+                retainedTools.addAll(toToolEntries(snapshot));
+                retainedErrors.addAll(toErrorEntries(snapshot));
+                retainedPatterns.addAll(toPatternEntries(snapshot));
+            }
+
+            rewrite(toolFile, retainedTools);
+            rewrite(errorFile, retainedErrors);
+            rewrite(patternFile, retainedPatterns);
+        } finally {
+            fileLock.unlock();
+        }
     }
 
     public List<PatternEntry> patterns(Instant from, Instant to) {
@@ -220,6 +307,19 @@ public final class HistoricalLogIndex {
                 channel.write(ByteBuffer.wrap(line));
             }
         }
+    }
+
+    private <T> void rewrite(Path file, List<T> entries) throws IOException {
+        Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
+        var builder = new StringBuilder();
+        for (var entry : entries) {
+            builder.append(mapper.writeValueAsString(entry)).append('\n');
+        }
+        Files.writeString(tmp, builder.toString(),
+                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+        Files.move(tmp, file,
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE);
     }
 
     private <T> List<T> read(Path file, Class<T> type) {
