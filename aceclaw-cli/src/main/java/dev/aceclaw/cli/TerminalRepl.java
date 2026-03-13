@@ -106,8 +106,8 @@ public final class TerminalRepl {
     private final Deque<String> pendingPrintAbove = new ArrayDeque<>();
     /** Fixed status panel height so JLine's Status widget never resizes its scroll region. */
     private static final int FIXED_STATUS_LINE_COUNT = 8;
-    /** Soft cap for daemon-provided fields rendered inside the status panel. */
-    private static final int STATUS_PANEL_FIELD_MAX_CHARS = 160;
+    /** Soft cap (in display columns) for daemon-provided fields rendered inside the status panel. */
+    private static final int STATUS_PANEL_FIELD_MAX_COLS = 80;
     private final Object uiRenderLock = new Object();
     private final AtomicBoolean permissionInterruptRequested = new AtomicBoolean(false);
     private final AtomicBoolean uiRenderRequested = new AtomicBoolean(true);
@@ -3067,10 +3067,7 @@ public final class TerminalRepl {
                 .replace('\t', ' ')
                 .replaceAll("\\s+", " ")
                 .trim();
-        if (singleLine.length() <= STATUS_PANEL_FIELD_MAX_CHARS) {
-            return singleLine;
-        }
-        return singleLine.substring(0, STATUS_PANEL_FIELD_MAX_CHARS - 3) + "...";
+        return fitWidth(singleLine, STATUS_PANEL_FIELD_MAX_COLS);
     }
 
     private static Instant parseInstant(String raw) {
