@@ -732,6 +732,7 @@ public final class AceClawDaemon {
                 }
                 if (runtimeSkillGeneratorForSessionEnd != null) {
                     try {
+                        agentHandlerForCleanup.awaitSessionPostProcessing(session.id());
                         int persistedDrafts = runtimeSkillGeneratorForSessionEnd.persistDrafts(session.id(), sessionWorkingDir);
                         if (persistedDrafts > 0) {
                             log.info("Persisted {} runtime skill drafts for session {}", persistedDrafts, session.id());

@@ -143,6 +143,8 @@ public final class StreamingAgentHandler {
             new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, List<String>> sessionInjectedCandidateIds =
             new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, CompletableFuture<Void>> sessionPostProcessing =
+            new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Path, SkillOutcomeTracker> projectSkillTrackers =
             new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, ReentrantLock> skillOutcomeLocks =
@@ -271,7 +273,7 @@ public final class StreamingAgentHandler {
             if (planCheckpointStore != null) {
                 var resumeResult = tryResumeFromCheckpoint(
                         sessionId, session, cancelContext, eventHandler,
-                        permissionAwareLoop, cancellationToken, metricsCollector, watchdog);
+                        permissionAwareLoop, cancellationToken, metricsCollector, watchdog, requestToolNames);
                 if (resumeResult != null) {
                     sendBudgetExhaustedNotificationIfNeeded(watchdog, cancelContext, sessionId, cancellationToken);
                     return resumeResult;
@@ -499,6 +501,13 @@ public final class StreamingAgentHandler {
         }
 
         var plannedStopReason = planResult.success() ? StopReason.END_TURN : StopReason.ERROR;
+        schedulePostRequestLearning(
+                sessionId,
+                session.projectPath(),
+                syntheticTurn(planResult, plannedStopReason),
+                List.copyOf(session.messages()),
+                metricsCollector != null ? metricsCollector.allMetrics() : Map.of(),
+                requestToolNames);
         recordInjectedCandidateOutcomes(
                 sessionId, planResult.success(), cancellationToken.isCancelled(), plannedStopReason);
 
@@ -557,33 +566,13 @@ public final class StreamingAgentHandler {
             logTurnToJournal(prompt, turn);
         }
 
-        // Self-improvement
-        if (selfImprovementEngine != null) {
-            final var turnRef = turn;
-            final var historyRef = List.copyOf(session.messages());
-            final var sessionIdRef = sessionId;
-            final var projectPathRef = session.projectPath();
-            // Take an immutable snapshot of metrics before handing off to the virtual thread
-            final var metricsSnapshot = metricsCollector != null
-                    ? metricsCollector.allMetrics() : Map.<String, dev.aceclaw.core.agent.ToolMetrics>of();
-            var shortId = sessionId.length() > 8 ? sessionId.substring(0, 8) : sessionId;
-            Thread.ofVirtual().name("self-improve-" + shortId).start(() -> {
-                try {
-                    var insights = selfImprovementEngine.analyze(turnRef, historyRef, metricsSnapshot);
-                    if (!insights.isEmpty()) {
-                        int persisted = selfImprovementEngine.persist(insights, sessionIdRef, projectPathRef);
-                        log.debug("Self-improvement: {} insights analyzed, {} persisted (session={})",
-                                insights.size(), persisted, sessionIdRef);
-                    }
-                    if (dynamicSkillGenerator != null) {
-                        dynamicSkillGenerator.maybeGenerate(
-                                sessionIdRef, projectPathRef, turnRef, historyRef, insights, requestToolNames);
-                    }
-                } catch (Exception e) {
-                    log.warn("Self-improvement analysis failed: {}", e.getMessage());
-                }
-            });
-        }
+        schedulePostRequestLearning(
+                sessionId,
+                session.projectPath(),
+                turn,
+                List.copyOf(session.messages()),
+                metricsCollector != null ? metricsCollector.allMetrics() : Map.of(),
+                requestToolNames);
 
         recordInjectedCandidateOutcomes(
                 sessionId, turn.finalStopReason() != StopReason.ERROR, cancellationToken.isCancelled(),
@@ -631,6 +620,72 @@ public final class StreamingAgentHandler {
                 cancellationToken.isCancelled(), turn.wasCompacted());
 
         return result;
+    }
+
+    private void schedulePostRequestLearning(String sessionId,
+                                             Path projectPath,
+                                             dev.aceclaw.core.agent.Turn turn,
+                                             List<AgentSession.ConversationMessage> sessionHistory,
+                                             Map<String, ToolMetrics> metricsSnapshot,
+                                             Set<String> requestToolNames) {
+        if ((selfImprovementEngine == null && dynamicSkillGenerator == null)
+                || turn == null || turn.newMessages().isEmpty()) {
+            return;
+        }
+
+        var historyRef = List.copyOf(sessionHistory);
+        var metricsRef = metricsSnapshot == null ? Map.<String, ToolMetrics>of() : Map.copyOf(metricsSnapshot);
+        var toolNamesRef = requestToolNames == null ? Set.<String>of() : Set.copyOf(requestToolNames);
+
+        sessionPostProcessing.compute(sessionId, (ignored, previous) -> {
+            var base = previous == null
+                    ? CompletableFuture.<Void>completedFuture(null)
+                    : previous.exceptionally(error -> null);
+            var next = base.thenRunAsync(
+                    () -> runPostRequestLearning(sessionId, projectPath, turn, historyRef, metricsRef, toolNamesRef),
+                    command -> Thread.ofVirtual().name("post-learn-" + shortenSessionId(sessionId)).start(command));
+            next.whenComplete((unused, error) -> sessionPostProcessing.remove(sessionId, next));
+            return next;
+        });
+    }
+
+    private void runPostRequestLearning(String sessionId,
+                                        Path projectPath,
+                                        dev.aceclaw.core.agent.Turn turn,
+                                        List<AgentSession.ConversationMessage> sessionHistory,
+                                        Map<String, ToolMetrics> metricsSnapshot,
+                                        Set<String> requestToolNames) {
+        var insights = List.<dev.aceclaw.memory.Insight>of();
+        if (selfImprovementEngine != null) {
+            try {
+                insights = selfImprovementEngine.analyze(turn, sessionHistory, metricsSnapshot);
+                if (!insights.isEmpty()) {
+                    int persisted = selfImprovementEngine.persist(insights, sessionId, projectPath);
+                    log.debug("Self-improvement: {} insights analyzed, {} persisted (session={})",
+                            insights.size(), persisted, sessionId);
+                }
+            } catch (Exception e) {
+                log.warn("Self-improvement analysis failed: {}", e.getMessage());
+            }
+        }
+        if (dynamicSkillGenerator != null) {
+            try {
+                dynamicSkillGenerator.maybeGenerate(
+                        sessionId, projectPath, turn, sessionHistory, insights, requestToolNames);
+            } catch (Exception e) {
+                log.warn("Dynamic runtime skill generation failed: {}", e.getMessage());
+            }
+        }
+    }
+
+    private dev.aceclaw.core.agent.Turn syntheticTurn(PlanExecutionResult planResult, StopReason stopReason) {
+        int totalInput = planResult.stepResults().stream().mapToInt(StepResult::inputTokens).sum();
+        int totalOutput = planResult.stepResults().stream().mapToInt(StepResult::outputTokens).sum();
+        return new dev.aceclaw.core.agent.Turn(planResult.messages(), stopReason, new dev.aceclaw.core.llm.Usage(totalInput, totalOutput));
+    }
+
+    private static String shortenSessionId(String sessionId) {
+        return sessionId.length() > 8 ? sessionId.substring(0, 8) : sessionId;
     }
 
     private void recordPromptSkillCorrections(String sessionId, Path projectPath, String prompt) {
@@ -1482,6 +1537,20 @@ public final class StreamingAgentHandler {
         sessionInjectedCandidateIds.remove(sessionId);
         sessionDoomLoops.remove(sessionId);
         sessionProgressDetectors.remove(sessionId);
+        sessionPostProcessing.remove(sessionId);
+    }
+
+    public void awaitSessionPostProcessing(String sessionId) {
+        Objects.requireNonNull(sessionId, "sessionId");
+        var future = sessionPostProcessing.get(sessionId);
+        if (future == null) {
+            return;
+        }
+        try {
+            future.get(30, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            log.warn("Timed out waiting for post-request learning for {}: {}", sessionId, e.getMessage());
+        }
     }
 
     /**
@@ -1902,7 +1971,8 @@ public final class StreamingAgentHandler {
             String sessionId, AgentSession session,
             StreamContext cancelContext, StreamEventHandler eventHandler,
             StreamingAgentLoop permissionAwareLoop, CancellationToken cancellationToken,
-            ToolMetricsCollector metricsCollector, WatchdogTimer watchdog) throws Exception {
+            ToolMetricsCollector metricsCollector, WatchdogTimer watchdog,
+            Set<String> requestToolNames) throws Exception {
 
         var resumeRouter = new ResumeRouter(planCheckpointStore);
         var routeDecision = resumeRouter.route(sessionId, session.projectPath());
@@ -1933,7 +2003,8 @@ public final class StreamingAgentHandler {
 
         if (userAccepted && cp.hasRemainingSteps()) {
             return executeResumedPlan(cp, session, sessionId, cancelContext,
-                    eventHandler, permissionAwareLoop, cancellationToken, metricsCollector, watchdog);
+                    eventHandler, permissionAwareLoop, cancellationToken, metricsCollector, watchdog,
+                    requestToolNames);
         }
 
         // User declined or no remaining steps
@@ -1994,7 +2065,8 @@ public final class StreamingAgentHandler {
             PlanCheckpoint cp, AgentSession session, String sessionId,
             StreamContext cancelContext, StreamEventHandler eventHandler,
             StreamingAgentLoop permissionAwareLoop, CancellationToken cancellationToken,
-            ToolMetricsCollector metricsCollector, WatchdogTimer watchdog) throws Exception {
+            ToolMetricsCollector metricsCollector, WatchdogTimer watchdog,
+            Set<String> requestToolNames) throws Exception {
 
         // 1. Mark old checkpoint as RESUMED
         planCheckpointStore.markResumed(cp.planId());
@@ -2185,6 +2257,13 @@ public final class StreamingAgentHandler {
         }
 
         var plannedStopReason = planResult.success() ? StopReason.END_TURN : StopReason.ERROR;
+        schedulePostRequestLearning(
+                sessionId,
+                session.projectPath(),
+                syntheticTurn(planResult, plannedStopReason),
+                List.copyOf(session.messages()),
+                metricsCollector != null ? metricsCollector.allMetrics() : Map.of(),
+                requestToolNames);
         recordInjectedCandidateOutcomes(
                 sessionId, planResult.success(), cancellationToken.isCancelled(), plannedStopReason);
 

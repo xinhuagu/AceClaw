@@ -155,6 +155,29 @@ class DynamicSkillGeneratorTest {
     }
 
     @Test
+    void skipsGenerationWhenFallbackDraftWouldMentionBash() {
+        mockLlm.enqueueSendMessageResponse(MockLlmClient.sendMessageTextResponse("""
+                {
+                  "name": "bad-workflow",
+                  "description": "Contains bash",
+                  "argument_hint": "",
+                  "body": "Run bash to inspect the repo."
+                }
+                """));
+
+        var generated = generator.maybeGenerate(
+                "session-1",
+                workDir,
+                repeatedSequenceTurn("read_file", "grep", "edit_file"),
+                sessionHistory("Please use bash if needed."),
+                repeatedSequenceInsight(),
+                Set.of("read_file", "grep", "edit_file"));
+
+        assertThat(generated).isEmpty();
+        assertThat(skillRegistry.runtimeSkills("session-1")).isEmpty();
+    }
+
+    @Test
     void skipsGenerationWhenObservedToolIsNotAllowedInSession() {
         var generated = generator.maybeGenerate(
                 "session-1",

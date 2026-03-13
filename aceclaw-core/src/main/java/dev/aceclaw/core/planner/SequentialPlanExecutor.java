@@ -113,6 +113,7 @@ public final class SequentialPlanExecutor implements PlanExecutor {
         long planStart = System.currentTimeMillis();
         var allMessages = new ArrayList<>(
                 conversationHistory != null ? conversationHistory : Collections.<Message>emptyList());
+        var generatedMessages = new ArrayList<Message>();
         var stepResults = new ArrayList<StepResult>();
         var mutablePlan = plan.withStatus(new PlanStatus.Executing(0, plan.steps().size()));
         boolean allSuccess = true;
@@ -185,6 +186,7 @@ public final class SequentialPlanExecutor implements PlanExecutor {
             try {
                 var turn = agentLoop.runTurn(stepPrompt, allMessages, handler, cancellationToken);
                 allMessages.addAll(turn.newMessages());
+                generatedMessages.addAll(turn.newMessages());
 
                 var usage = turn.totalUsage();
                 var result = new StepResult(
@@ -241,6 +243,7 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                         var fallbackTurn = agentLoop.runTurn(
                                 fallbackPrompt, allMessages, handler, cancellationToken);
                         allMessages.addAll(fallbackTurn.newMessages());
+                        generatedMessages.addAll(fallbackTurn.newMessages());
 
                         var fbUsage = fallbackTurn.totalUsage();
                         var fallbackResult = new StepResult(
@@ -396,7 +399,13 @@ public final class SequentialPlanExecutor implements PlanExecutor {
         log.info("Plan execution finished: success={}, steps={}/{}, duration={}ms, tokens={}",
                 allSuccess, stepResults.size(), plan.steps().size(), totalDuration, totalTokens);
 
-        return new PlanExecutionResult(mutablePlan, stepResults, totalDuration, allSuccess, totalTokens);
+        return new PlanExecutionResult(
+                mutablePlan,
+                stepResults,
+                generatedMessages,
+                totalDuration,
+                allSuccess,
+                totalTokens);
     }
 
     /**

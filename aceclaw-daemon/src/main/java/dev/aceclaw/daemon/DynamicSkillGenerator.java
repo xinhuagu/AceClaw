@@ -113,7 +113,13 @@ public final class DynamicSkillGenerator {
                 return java.util.Optional.empty();
             }
 
-            var draft = generateDraft(sessionId, projectPath, allowedTools, sessionHistory);
+            final RuntimeSkillDraft draft;
+            try {
+                draft = generateDraft(sessionId, projectPath, allowedTools, sessionHistory);
+            } catch (IllegalArgumentException e) {
+                log.debug("Skipping runtime skill generation for session {}: {}", sessionId, e.getMessage());
+                return java.util.Optional.empty();
+            }
             String skillName = resolveRuntimeName(sessionId, draft.name(), state);
             var config = new SkillConfig(
                     skillName,
@@ -199,10 +205,10 @@ public final class DynamicSkillGenerator {
                                             List<String> allowedTools,
                                             List<AgentSession.ConversationMessage> sessionHistory) {
         try {
-            return proposeDraft(sessionId, projectPath, allowedTools, sessionHistory);
+            return sanitizeDraft(proposeDraft(sessionId, projectPath, allowedTools, sessionHistory));
         } catch (Exception e) {
             log.warn("Dynamic runtime skill generation fell back to template: {}", e.getMessage());
-            return fallbackDraft(allowedTools, sessionHistory);
+            return sanitizeDraft(fallbackDraft(allowedTools, sessionHistory));
         }
     }
 
@@ -271,17 +277,32 @@ public final class DynamicSkillGenerator {
             if (description == null || body == null) {
                 throw new LlmException("Runtime skill response missing description/body");
             }
-            if (BASH_MENTION.matcher(body).find()) {
-                throw new LlmException("Runtime skill response contains disallowed bash content");
-            }
-            return new RuntimeSkillDraft(
+            return sanitizeDraft(new RuntimeSkillDraft(
                     name != null ? name : "runtime-workflow",
                     description,
                     argumentHint,
-                    body);
+                    body));
         } catch (IOException e) {
             throw new LlmException("Failed to parse runtime skill response: " + e.getMessage());
         }
+    }
+
+    private static RuntimeSkillDraft sanitizeDraft(RuntimeSkillDraft draft) {
+        Objects.requireNonNull(draft, "draft");
+        var description = trimToNull(draft.description());
+        var body = trimToNull(draft.body());
+        if (description == null || body == null) {
+            throw new IllegalArgumentException("Runtime skill draft missing description/body");
+        }
+        if (BASH_MENTION.matcher(body).find()) {
+            throw new IllegalArgumentException("Runtime skill draft contains disallowed bash content");
+        }
+        var name = trimToNull(draft.name());
+        return new RuntimeSkillDraft(
+                name != null ? name : "runtime-workflow",
+                description,
+                trimToNull(draft.argumentHint()),
+                body);
     }
 
     private static String extractJson(String text) {
