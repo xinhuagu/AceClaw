@@ -355,8 +355,22 @@ class TerminalReplTest {
                 new Class<?>[]{org.jline.utils.AttributedString.class, int.class, int.class},
                 input, 80, 80);
         assertThat(clamped.toAnsi()).isNotBlank();
-        // padded to clearWidth
-        assertThat(clamped.columnLength()).isEqualTo(80);
+        assertThat(clamped.columnLength()).isEqualTo(input.columnLength());
+    }
+
+    @Test
+    void normalizeStatusPanelField_collapsesMultilineAndCapsLength() throws Exception {
+        String raw = "line1\nline2\tline3 " + "x".repeat(300);
+
+        String normalized = (String) invokePrivate(
+                repl,
+                "normalizeStatusPanelField",
+                new Class<?>[]{String.class},
+                raw);
+
+        assertThat(normalized).doesNotContain("\n").doesNotContain("\r").doesNotContain("\t");
+        assertThat(normalized).startsWith("line1 line2 line3 ");
+        assertThat(normalized.length()).isLessThanOrEqualTo(160);
     }
 
     /**
