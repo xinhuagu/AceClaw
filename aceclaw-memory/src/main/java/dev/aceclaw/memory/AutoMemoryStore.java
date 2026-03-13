@@ -348,6 +348,7 @@ public final class AutoMemoryStore {
         try {
             return Files.exists(file) ? Files.size(file) : 0L;
         } catch (IOException e) {
+            log.debug("Failed to read memory file size for {}: {}", file, e.getMessage());
             return 0L;
         }
     }

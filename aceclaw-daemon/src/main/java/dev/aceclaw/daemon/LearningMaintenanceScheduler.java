@@ -31,6 +31,7 @@ public final class LearningMaintenanceScheduler {
     private final IntSupplier activeSessionCount;
     private final LongSupplier largestMemoryFileBytes;
     private final MaintenancePipeline pipeline;
+    private final Object lifecycleLock = new Object();
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean maintenanceRunning = new AtomicBoolean(false);
@@ -57,17 +58,21 @@ public final class LearningMaintenanceScheduler {
     }
 
     public void start() {
-        if (!running.compareAndSet(false, true)) {
-            log.debug("LearningMaintenanceScheduler already running");
-            return;
+        synchronized (lifecycleLock) {
+            if (running.get()) {
+                log.debug("LearningMaintenanceScheduler already running");
+                return;
+            }
+            var nextScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+                var thread = new Thread(r, "learning-maintenance-scheduler");
+                thread.setDaemon(true);
+                return thread;
+            });
+            long tickMillis = Math.max(1, config.tickInterval().toMillis());
+            nextScheduler.scheduleAtFixedRate(this::tick, tickMillis, tickMillis, TimeUnit.MILLISECONDS);
+            scheduler = nextScheduler;
+            running.set(true);
         }
-        scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            var thread = new Thread(r, "learning-maintenance-scheduler");
-            thread.setDaemon(true);
-            return thread;
-        });
-        long tickMillis = Math.max(1, config.tickInterval().toMillis());
-        scheduler.scheduleAtFixedRate(this::tick, tickMillis, tickMillis, TimeUnit.MILLISECONDS);
         log.info("LearningMaintenanceScheduler started: tick={}s timeTrigger={}h sessionTrigger={} sizeTrigger={}KB idleTrigger={}m",
                 config.tickInterval().toSeconds(),
                 config.timeTriggerInterval().toHours(),
@@ -77,18 +82,27 @@ public final class LearningMaintenanceScheduler {
     }
 
     public void stop() {
-        if (!running.compareAndSet(true, false)) {
-            return;
+        ScheduledExecutorService currentScheduler;
+        synchronized (lifecycleLock) {
+            if (!running.get()) {
+                return;
+            }
+            running.set(false);
+            currentScheduler = scheduler;
+            scheduler = null;
         }
-        if (scheduler != null) {
-            scheduler.shutdown();
+        if (currentScheduler != null) {
+            currentScheduler.shutdown();
             try {
-                if (!scheduler.awaitTermination(10, TimeUnit.SECONDS)) {
-                    scheduler.shutdownNow();
+                if (!currentScheduler.awaitTermination(10, TimeUnit.SECONDS)) {
+                    currentScheduler.shutdownNow();
                 }
             } catch (InterruptedException e) {
-                scheduler.shutdownNow();
+                currentScheduler.shutdownNow();
                 Thread.currentThread().interrupt();
+            } finally {
+                maintenanceRunning.set(false);
+                sessionsSinceLastRun.set(0);
             }
         }
         log.info("LearningMaintenanceScheduler stopped");
@@ -96,6 +110,10 @@ public final class LearningMaintenanceScheduler {
 
     public boolean isRunning() {
         return running.get();
+    }
+
+    boolean isMaintenanceRunningForTest() {
+        return maintenanceRunning.get();
     }
 
     public void onSessionClosed() {
@@ -135,12 +153,13 @@ public final class LearningMaintenanceScheduler {
         if (!maintenanceRunning.compareAndSet(false, true)) {
             return;
         }
+        int sessionsAtStart = sessionsSinceLastRun.get();
 
         Thread.ofVirtual().name("learning-maintenance-" + trigger.id()).start(() -> {
             try {
                 pipeline.run(trigger.id());
                 lastRunAt = clock.instant();
-                sessionsSinceLastRun.set(0);
+                sessionsSinceLastRun.updateAndGet(current -> Math.max(0, current - sessionsAtStart));
                 if (trigger == Trigger.SIZE_THRESHOLD) {
                     sizeTriggerArmed = false;
                 }

@@ -9,6 +9,7 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -121,6 +122,51 @@ class LearningMaintenanceSchedulerTest {
         assertThat(triggers).isEmpty();
     }
 
+    @Test
+    void sessionsClosedDuringMaintenanceArePreserved() throws Exception {
+        var clock = new MutableClock(Instant.parse("2026-03-13T10:00:00Z"));
+        var activeSessions = new AtomicInteger(0);
+        var memoryBytes = new AtomicLong(0);
+        var triggers = Collections.synchronizedList(new ArrayList<String>());
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var scheduler = new LearningMaintenanceScheduler(
+                new LearningMaintenanceScheduler.Config(
+                        Duration.ofHours(6),
+                        2,
+                        50L * 1024L,
+                        Duration.ofMinutes(5),
+                        Duration.ofDays(1)),
+                clock,
+                activeSessions::get,
+                memoryBytes::get,
+                trigger -> {
+                    triggers.add(trigger);
+                    started.countDown();
+                    release.await();
+                }
+        );
+        scheduler.start();
+        try {
+            scheduler.onSessionClosed();
+            scheduler.onSessionClosed();
+            assertThat(started.await(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            assertThat(triggers).containsExactly("session-count");
+
+            scheduler.onSessionClosed();
+
+            release.countDown();
+            waitForMaintenanceToSettle(scheduler);
+
+            scheduler.onSessionClosed();
+            waitForTriggers(triggers, 2);
+
+            assertThat(triggers).containsExactly("session-count", "session-count");
+        } finally {
+            scheduler.stop();
+        }
+    }
+
     private static LearningMaintenanceScheduler scheduler(MutableClock clock,
                                                           AtomicInteger activeSessions,
                                                           AtomicLong memoryBytes,
@@ -152,6 +198,17 @@ class LearningMaintenanceSchedulerTest {
             Thread.sleep(20);
         }
         throw new AssertionError("Timed out waiting for trigger count " + expected + ", got " + triggers.size());
+    }
+
+    private static void waitForMaintenanceToSettle(LearningMaintenanceScheduler scheduler) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 2_000;
+        while (System.currentTimeMillis() < deadline) {
+            if (!scheduler.isMaintenanceRunningForTest()) {
+                return;
+            }
+            Thread.sleep(20);
+        }
+        throw new AssertionError("Timed out waiting for maintenance to settle");
     }
 
     private static final class MutableClock extends Clock {
