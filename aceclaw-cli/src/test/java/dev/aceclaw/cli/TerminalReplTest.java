@@ -355,8 +355,7 @@ class TerminalReplTest {
                 new Class<?>[]{org.jline.utils.AttributedString.class, int.class, int.class},
                 input, 80, 80);
         assertThat(clamped.toAnsi()).isNotBlank();
-        // padded to clearWidth
-        assertThat(clamped.columnLength()).isEqualTo(80);
+        assertThat(clamped.columnLength()).isEqualTo(input.columnLength());
     }
 
     /**

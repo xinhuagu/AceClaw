@@ -1567,7 +1567,7 @@ public final class TerminalRepl {
                     latest = note;
                 }
                 if (latest != null) {
-                    lines.add(MUTED + "    " + ICON_ITEM + " " + RESET + fitWidth(latest.text(), 72));
+                    lines.add(MUTED + "    " + ICON_ITEM + " " + RESET + latest.text());
                 }
             }
             // Truncate if over budget, then pad to fixed count
@@ -1578,7 +1578,7 @@ public final class TerminalRepl {
                 lines.add("");
             }
 
-            int safeWidth = Math.max(20, terminalWidth - 12);
+            int safeWidth = terminalWidth;
             var rendered = lines.stream()
                     .map(AttributedString::fromAnsi)
                     .map(as -> clampAttributedLine(as, safeWidth, terminalWidth))
@@ -1727,7 +1727,7 @@ public final class TerminalRepl {
                 String enabled = job.enabled() ? "enabled" : "disabled";
                 String next = formatCronNext(now, cron, job);
                 String kind = job.kind();
-                String desc = fitWidth(job.description() == null ? "" : job.description(), 24);
+                String desc = job.description() == null ? "" : job.description();
                 lines.add(MUTED + "  " + TREE_PIPE_SPACE + " " + ICON_ITEM + " "
                         + job.id() + " [" + kind + "] "
                         + enabled + " next=" + next + " :: " + desc + RESET);
@@ -1761,9 +1761,9 @@ public final class TerminalRepl {
             for (var task : visible) {
                 String elapsed = formatDuration(Duration.between(task.startedAt(), now));
                 String prefix = task.taskId().equals(fgId) ? "[fg] " : "";
-                String summary = fitWidth(task.promptSummary(), 52);
+                String summary = task.promptSummary();
                 var runtime = deriveRuntimeInfo(task, now);
-                String runtimeLabel = fitWidth(runtime.label(), 24);
+                String runtimeLabel = runtime.label();
 
                 lines.add(MUTED + "       " + ICON_ITEM + " " + RESET
                         + runtime.color() + runtime.shortState() + RESET + " "
@@ -1781,7 +1781,7 @@ public final class TerminalRepl {
             int maxPermVisible = 2;
             for (int i = 0; i < Math.min(maxPermVisible, pending.size()); i++) {
                 var req = pending.get(i);
-                String detail = fitWidth(req.description(), 58);
+                String detail = req.description();
                 lines.add(MUTED + "       " + ICON_ITEM + " " + RESET
                         + WARNING + "permission" + RESET + " "
                         + INFO + "#" + req.taskId() + RESET + " "
@@ -3076,21 +3076,16 @@ public final class TerminalRepl {
         if (as == null) return new AttributedString("");
         int visibleWidth = as.columnLength();
         if (visibleWidth <= safeWidth) {
-            // Fits — pad to clearWidth to overwrite previous longer content
-            if (visibleWidth >= clearWidth) return as;
             var sb = new AttributedStringBuilder();
             sb.append(as);
-            sb.append(" ".repeat(clearWidth - visibleWidth));
+            sb.append(AttributedString.fromAnsi("\u001B[K"));
             return sb.toAttributedString();
         }
         // Too long — truncate and pad
         var sb = new AttributedStringBuilder();
         sb.append(as.columnSubSequence(0, Math.max(0, safeWidth - 3)));
         sb.append("...");
-        int truncatedWidth = sb.toAttributedString().columnLength();
-        if (truncatedWidth < clearWidth) {
-            sb.append(" ".repeat(clearWidth - truncatedWidth));
-        }
+        sb.append(AttributedString.fromAnsi("\u001B[K"));
         return sb.toAttributedString();
     }
 }
