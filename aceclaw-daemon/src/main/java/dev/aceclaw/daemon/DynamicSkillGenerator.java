@@ -58,6 +58,7 @@ public final class DynamicSkillGenerator {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final ConcurrentHashMap<String, SessionRuntimeState> sessionStates = new ConcurrentHashMap<>();
     private final Set<String> closedSessions = ConcurrentHashMap.newKeySet();
+    private LearningExplanationRecorder learningExplanationRecorder;
 
     public DynamicSkillGenerator(LlmClient llmClient,
                                  Function<String, String> modelResolver,
@@ -65,6 +66,10 @@ public final class DynamicSkillGenerator {
         this.llmClient = Objects.requireNonNull(llmClient, "llmClient");
         this.modelResolver = Objects.requireNonNull(modelResolver, "modelResolver");
         this.skillRegistry = Objects.requireNonNull(skillRegistry, "skillRegistry");
+    }
+
+    public void setLearningExplanationRecorder(LearningExplanationRecorder learningExplanationRecorder) {
+        this.learningExplanationRecorder = learningExplanationRecorder;
     }
 
     public java.util.Optional<SkillConfig> maybeGenerate(String sessionId,
@@ -134,6 +139,14 @@ public final class DynamicSkillGenerator {
             state.signatures.add(sequenceSignature);
             state.skillsByName.put(skillName,
                     new RuntimeSkillRecord(config, Instant.now(), List.copyOf(allowedTools), sequenceSignature));
+            if (learningExplanationRecorder != null) {
+                learningExplanationRecorder.recordRuntimeSkill(
+                        projectPath,
+                        sessionId,
+                        skillName,
+                        sequenceSignature,
+                        allowedTools);
+            }
             log.info("Registered runtime skill '{}' for session {}", skillName, sessionId);
             return java.util.Optional.of(config);
         }
@@ -170,6 +183,13 @@ public final class DynamicSkillGenerator {
                         Files.writeString(temp, renderDraftMarkdown(resolvedName, record, sessionId));
                         Files.move(temp, skillFile,
                                 StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                        if (learningExplanationRecorder != null) {
+                            learningExplanationRecorder.recordRuntimeSkillDraftPersisted(
+                                    projectPath,
+                                    sessionId,
+                                    resolvedName,
+                                    projectPath.relativize(skillFile).toString().replace('\\', '/'));
+                        }
                         persisted++;
                     }
                 }

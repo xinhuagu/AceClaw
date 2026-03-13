@@ -152,6 +152,24 @@ class SelfImprovementEngineTest {
     }
 
     @Test
+    void persistRecordsLearningExplanationWhenRecorderConfigured() throws Exception {
+        var explanationStore = new LearningExplanationStore();
+        engine.setLearningExplanationRecorder(new LearningExplanationRecorder(explanationStore));
+
+        var insights = List.<Insight>of(
+                ErrorInsight.of("read_file", "File not found", "Used correct path", 0.9)
+        );
+
+        int count = engine.persist(insights, "test-session", tempDir);
+
+        assertThat(count).isEqualTo(1);
+        var explanations = explanationStore.recent(tempDir, 10);
+        assertThat(explanations).anyMatch(explanation ->
+                explanation.actionType().equals("memory_write")
+                        && explanation.trigger().equals("self-improvement"));
+    }
+
+    @Test
     void persistSkipsLowConfidenceInsights() {
         var insights = List.<Insight>of(
                 ErrorInsight.of("read_file", "File not found", "Retry", 0.3), // below 0.7

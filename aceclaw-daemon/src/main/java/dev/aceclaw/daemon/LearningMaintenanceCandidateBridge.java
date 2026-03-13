@@ -2,9 +2,11 @@ package dev.aceclaw.daemon;
 
 import dev.aceclaw.memory.CandidateKind;
 import dev.aceclaw.memory.CandidateState;
+import dev.aceclaw.memory.CandidateTransition;
 import dev.aceclaw.memory.CandidateStore;
 import dev.aceclaw.memory.CrossSessionPatternMiner;
 import dev.aceclaw.memory.ErrorClass;
+import dev.aceclaw.memory.LearningCandidate;
 import dev.aceclaw.memory.MemoryEntry;
 import dev.aceclaw.memory.TrendDetector;
 
@@ -33,15 +35,21 @@ public final class LearningMaintenanceCandidateBridge {
         Objects.requireNonNull(trends, "trends");
 
         int upserts = 0;
+        var observedCandidates = new ArrayList<LearningCandidate>();
         for (var observation : toObservations(trigger, miningResult, trends)) {
-            candidateStore.upsert(observation);
+            observedCandidates.add(candidateStore.upsert(observation));
             upserts++;
         }
         var transitions = candidateStore.evaluateAll();
         int promoted = (int) transitions.stream()
                 .filter(t -> t.toState() == CandidateState.PROMOTED)
                 .count();
-        return new BridgeResult(upserts, transitions.size(), promoted);
+        return new BridgeResult(
+                upserts,
+                transitions.size(),
+                promoted,
+                List.copyOf(observedCandidates),
+                List.copyOf(transitions));
     }
 
     private static List<CandidateStore.CandidateObservation> toObservations(
@@ -171,5 +179,16 @@ public final class LearningMaintenanceCandidateBridge {
         return metric.substring(0, dot).toLowerCase(Locale.ROOT);
     }
 
-    public record BridgeResult(int upserts, int transitions, int promoted) {}
+    public record BridgeResult(
+            int upserts,
+            int transitions,
+            int promoted,
+            List<LearningCandidate> observedCandidates,
+            List<CandidateTransition> stateTransitions
+    ) {
+        public BridgeResult {
+            observedCandidates = observedCandidates != null ? List.copyOf(observedCandidates) : List.of();
+            stateTransitions = stateTransitions != null ? List.copyOf(stateTransitions) : List.of();
+        }
+    }
 }

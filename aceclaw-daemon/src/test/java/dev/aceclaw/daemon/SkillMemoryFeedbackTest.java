@@ -109,4 +109,21 @@ class SkillMemoryFeedbackTest {
         assertThat(antiPatterns).hasSize(1);
         assertThat(antiPatterns.getFirst().content()).contains("last refinement").contains("review");
     }
+
+    @Test
+    void successRecordsLearningExplanationWhenRecorderConfigured() throws Exception {
+        var explanationStore = new LearningExplanationStore();
+        feedback = new SkillMemoryFeedback(store, new LearningExplanationRecorder(explanationStore));
+
+        feedback.onOutcome(
+                "review",
+                new SkillOutcome.Success(Instant.now(), 1),
+                new SkillMetrics("review", 1, 1, 0, 0, 1.0, Instant.now(), 1.0),
+                tempDir);
+
+        var explanations = explanationStore.recent(tempDir, 10);
+        assertThat(explanations).anyMatch(explanation ->
+                explanation.actionType().equals("memory_write")
+                        && explanation.trigger().equals("skill-success"));
+    }
 }

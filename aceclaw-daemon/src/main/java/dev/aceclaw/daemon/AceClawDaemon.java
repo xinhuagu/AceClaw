@@ -81,6 +81,8 @@ public final class AceClawDaemon {
     private final SessionHistoryStore historyStore;
     private final AutoMemoryStore memoryStore;
     private final HistoricalLogIndex historicalLogIndex;
+    private final LearningExplanationStore learningExplanationStore;
+    private final LearningExplanationRecorder learningExplanationRecorder;
     private final MarkdownMemoryStore markdownStore;
     private final JobStore cronJobStore;
     private final EventBus eventBus;
@@ -152,6 +154,8 @@ public final class AceClawDaemon {
             log.warn("Failed to initialize historical log index: {}", e.getMessage());
         }
         this.historicalLogIndex = hli;
+        this.learningExplanationStore = new LearningExplanationStore();
+        this.learningExplanationRecorder = new LearningExplanationRecorder(learningExplanationStore);
 
         // Markdown memory store (persistent MEMORY.md + topic files)
         MarkdownMemoryStore mds = null;
@@ -546,6 +550,7 @@ public final class AceClawDaemon {
                             draftPipelineLock.unlock();
                         }
                     } : null);
+            selfImprovementEngine.setLearningExplanationRecorder(learningExplanationRecorder);
             agentHandler.setSelfImprovementEngine(selfImprovementEngine);
             candidateStoreRef = cs;
 
@@ -598,6 +603,8 @@ public final class AceClawDaemon {
                 llmClient,
                 agentHandler::getModelForSession,
                 skillRegistry);
+        dynamicSkillGenerator.setLearningExplanationRecorder(learningExplanationRecorder);
+        agentHandler.setLearningExplanationRecorder(learningExplanationRecorder);
         agentHandler.setDynamicSkillGenerator(dynamicSkillGenerator);
 
         // Wire deferred action scheduler (no turn lock dependency — uses isolated context)
@@ -692,6 +699,17 @@ public final class AceClawDaemon {
                                 "session-analysis:" + session.id(),
                                 false,
                                 sessionWorkingDir);
+                        learningExplanationRecorder.recordMemoryWrite(
+                                sessionWorkingDir,
+                                session.id(),
+                                "session-analysis",
+                                insight.category(),
+                                insight.content(),
+                                insight.tags(),
+                                List.of(new LearningExplanation.EvidenceRef(
+                                        "session-summary",
+                                        session.id(),
+                                        learnings.sessionSummary())));
                     } catch (Exception e) {
                         log.warn("Failed to save session analysis memory: {}", e.getMessage());
                     }
@@ -1234,6 +1252,47 @@ public final class AceClawDaemon {
             return result;
         });
 
+        router.register("learning.explanations.list", params -> {
+            Path projectPath = workingDir;
+            int limit = 30;
+            if (params != null) {
+                if (params.has("project") && !params.get("project").asText("").isBlank()) {
+                    projectPath = Path.of(params.get("project").asText()).toAbsolutePath().normalize();
+                }
+                if (params.has("limit")) {
+                    limit = Math.max(1, Math.min(200, params.get("limit").asInt(30)));
+                }
+            }
+
+            var result = objectMapper.createObjectNode();
+            var explanations = objectMapper.createArrayNode();
+            for (var explanation : learningExplanationStore.recent(projectPath, limit)) {
+                var node = objectMapper.createObjectNode();
+                node.put("timestamp", explanation.timestamp().toString());
+                node.put("actionType", explanation.actionType());
+                node.put("targetType", explanation.targetType());
+                node.put("targetId", explanation.targetId());
+                node.put("sessionId", explanation.sessionId());
+                node.put("trigger", explanation.trigger());
+                node.put("summary", explanation.summary());
+                var tags = objectMapper.createArrayNode();
+                explanation.tags().forEach(tags::add);
+                node.set("tags", tags);
+                var evidence = objectMapper.createArrayNode();
+                for (var ref : explanation.evidence()) {
+                    var en = objectMapper.createObjectNode();
+                    en.put("type", ref.type());
+                    en.put("ref", ref.ref());
+                    en.put("detail", ref.detail());
+                    evidence.add(en);
+                }
+                node.set("evidence", evidence);
+                explanations.add(node);
+            }
+            result.set("explanations", explanations);
+            return result;
+        });
+
         // Deferred action RPC routes
         router.register("deferred.status", params -> {
             var result = objectMapper.createObjectNode();
@@ -1401,6 +1460,12 @@ public final class AceClawDaemon {
                 candidateId = parseDraftFrontmatter(draftFile).getOrDefault("source-candidate-id", "");
             } catch (Exception ignored) {
             }
+            learningExplanationRecorder.recordSkillDraft(
+                    workingDir,
+                    trigger,
+                    skillName,
+                    draftPath.replace('\\', '/'),
+                    candidateId);
             skillDraftEventFeed.append(new SkillDraftEvent(
                     Instant.now(),
                     "draft_created",
@@ -1904,6 +1969,25 @@ public final class AceClawDaemon {
                             + bridgeResult.upserts() + " observations, "
                             + bridgeResult.transitions() + " transitions, "
                             + bridgeResult.promoted() + " promoted");
+                }
+                for (var candidate : bridgeResult.observedCandidates()) {
+                    learningExplanationRecorder.recordCandidateObservation(
+                            workingDir,
+                            "",
+                            "maintenance-" + trigger,
+                            candidate,
+                            candidate.content(),
+                            List.of(new LearningExplanation.EvidenceRef(
+                                    "maintenance-trigger",
+                                    trigger,
+                                    candidate.toolTag())));
+                }
+                for (var transition : bridgeResult.stateTransitions()) {
+                    learningExplanationRecorder.recordCandidateTransition(
+                            workingDir,
+                            "",
+                            "maintenance-" + trigger,
+                            transition);
                 }
                 if (bridgeResult.promoted() > 0) {
                     triggerMaintenanceDraftLifecycle(

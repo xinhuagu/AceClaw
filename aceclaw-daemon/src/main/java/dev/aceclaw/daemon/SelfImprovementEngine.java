@@ -63,6 +63,7 @@ public final class SelfImprovementEngine {
     private final CandidateStore candidateStore;
     private final boolean candidateTransitionsEnabled;
     private final Consumer<Path> draftReevaluationTrigger;
+    private LearningExplanationRecorder learningExplanationRecorder;
 
     private final AtomicInteger turnsSinceRefinement = new AtomicInteger();
     private final AtomicInteger persistedSinceLastRefinement = new AtomicInteger();
@@ -160,6 +161,10 @@ public final class SelfImprovementEngine {
         this.draftReevaluationTrigger = draftReevaluationTrigger;
     }
 
+    public void setLearningExplanationRecorder(LearningExplanationRecorder learningExplanationRecorder) {
+        this.learningExplanationRecorder = learningExplanationRecorder;
+    }
+
     /**
      * Analyzes a completed turn and returns deduplicated insights from all detectors.
      *
@@ -229,6 +234,19 @@ public final class SelfImprovementEngine {
                         "self-improve:" + sessionId,
                         false,
                         projectPath);
+                if (learningExplanationRecorder != null) {
+                    learningExplanationRecorder.recordMemoryWrite(
+                            projectPath,
+                            sessionId,
+                            "self-improvement",
+                            insight.targetCategory(),
+                            content,
+                            insight.tags(),
+                            List.of(new LearningExplanation.EvidenceRef(
+                                    "insight",
+                                    insight.getClass().getSimpleName(),
+                                    truncate(insight.description(), 140))));
+                }
                 persisted++;
                 log.debug("Persisted insight: category={}, confidence={}, content={}",
                         insight.targetCategory(), insight.confidence(), truncate(content));
@@ -255,12 +273,30 @@ public final class SelfImprovementEngine {
                             isSuccess ? 1 : 0, isSuccess ? 0 : 1,
                             "self-improve:" + sessionId, null,
                             severeFailure, correctionConflict, insight.description(), null);
-                    candidateStore.upsert(observation);
+                    var stored = candidateStore.upsert(observation);
+                    if (learningExplanationRecorder != null) {
+                        learningExplanationRecorder.recordCandidateObservation(
+                                projectPath,
+                                sessionId,
+                                "self-improvement",
+                                stored,
+                                truncate(insight.description(), 160),
+                                List.of(new LearningExplanation.EvidenceRef(
+                                        "insight",
+                                        insight.getClass().getSimpleName(),
+                                        truncate(insight.description(), 140))));
+                    }
                 }
                 if (candidateTransitionsEnabled) {
                     var transitions = candidateStore.evaluateAll();
                     if (!transitions.isEmpty()) {
                         log.info("Candidate pipeline: {} transitions applied after turn", transitions.size());
+                        if (learningExplanationRecorder != null) {
+                            for (var transition : transitions) {
+                                learningExplanationRecorder.recordCandidateTransition(
+                                        projectPath, sessionId, "self-improvement", transition);
+                            }
+                        }
                     }
                 }
                 // Always fire draft re-evaluation trigger (not just on new promotions).

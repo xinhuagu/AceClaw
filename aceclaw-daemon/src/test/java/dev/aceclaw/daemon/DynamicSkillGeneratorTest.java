@@ -39,6 +39,35 @@ class DynamicSkillGeneratorTest {
     }
 
     @Test
+    void recordsRuntimeSkillExplainabilityAndDraftPersistence() throws Exception {
+        var explanationStore = new LearningExplanationStore();
+        generator.setLearningExplanationRecorder(new LearningExplanationRecorder(explanationStore));
+        mockLlm.enqueueSendMessageResponse(MockLlmClient.sendMessageTextResponse("""
+                {
+                  "name": "review-file-workflow",
+                  "description": "Review a file-oriented workflow.",
+                  "argument_hint": "<target>",
+                  "body": "# Runtime Workflow\\n\\nFollow the repeated workflow carefully."
+                }
+                """));
+
+        var generated = generator.maybeGenerate(
+                "session-1",
+                workDir,
+                repeatedSequenceTurn("read_file", "grep", "edit_file"),
+                sessionHistory("Please inspect the config files."),
+                repeatedSequenceInsight(),
+                Set.of("read_file", "grep", "edit_file", "skill"));
+
+        assertThat(generated).isPresent();
+        assertThat(generator.persistDrafts("session-1", workDir)).isEqualTo(1);
+
+        var explanations = explanationStore.recent(workDir, 10);
+        assertThat(explanations).anyMatch(explanation -> explanation.actionType().equals("runtime_skill_created"));
+        assertThat(explanations).anyMatch(explanation -> explanation.actionType().equals("runtime_skill_persisted"));
+    }
+
+    @Test
     void generatesRuntimeSkillAndPersistsDraftOnSessionEnd() throws Exception {
         mockLlm.enqueueSendMessageResponse(MockLlmClient.sendMessageTextResponse("""
                 {

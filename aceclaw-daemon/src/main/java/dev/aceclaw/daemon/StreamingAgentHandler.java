@@ -831,6 +831,13 @@ public final class StreamingAgentHandler {
 
             if (outcome.action() != SkillRefinementEngine.RefinementAction.NONE) {
                 emitSkillRollbackFeedback(projectPath, skillName, outcome);
+                if (learningExplanationRecorder != null) {
+                    learningExplanationRecorder.recordRefinement(
+                            projectPath,
+                            skillName,
+                            outcome.action().name(),
+                            outcome.reason());
+                }
                 log.info("Skill refinement action={} skill={} reason={}",
                         outcome.action(), skillName, outcome.reason());
             }
@@ -1277,6 +1284,7 @@ public final class StreamingAgentHandler {
     private SkillMemoryFeedback skillMemoryFeedback;
     private SkillRefinementEngine skillRefinementEngine;
     private DynamicSkillGenerator dynamicSkillGenerator;
+    private LearningExplanationRecorder learningExplanationRecorder;
 
     /**
      * Sets the LLM configuration for permission-aware agent loop creation.
@@ -1330,10 +1338,19 @@ public final class StreamingAgentHandler {
     public void setMemoryStore(AutoMemoryStore memoryStore, Path workingDir) {
         this.memoryStore = memoryStore;
         this.workingDir = workingDir;
-        this.skillMemoryFeedback = memoryStore != null ? new SkillMemoryFeedback(memoryStore) : null;
+        this.skillMemoryFeedback = memoryStore != null
+                ? new SkillMemoryFeedback(memoryStore, learningExplanationRecorder)
+                : null;
         if (workingDir != null) {
             this.antiPatternGateFeedbackStore = new AntiPatternGateFeedbackStore(workingDir);
         }
+    }
+
+    public void setLearningExplanationRecorder(LearningExplanationRecorder learningExplanationRecorder) {
+        this.learningExplanationRecorder = learningExplanationRecorder;
+        this.skillMemoryFeedback = memoryStore != null
+                ? new SkillMemoryFeedback(memoryStore, learningExplanationRecorder)
+                : null;
     }
 
     /**
