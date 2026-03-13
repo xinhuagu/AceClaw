@@ -699,6 +699,7 @@ public final class StreamingAgentHandler {
         for (var skillName : recent) {
             var outcome = new SkillOutcome.UserCorrected(Instant.now(), correction);
             recordSkillOutcomeAtomically(projectPath, tracker, skillName, outcome);
+            recordRuntimeSkillOutcome(sessionId, projectPath, skillName, outcome);
         }
     }
 
@@ -741,6 +742,7 @@ public final class StreamingAgentHandler {
                 successfulSkills.add(invocation.skillName());
             }
             recordSkillOutcomeAtomically(projectPath, tracker, invocation.skillName(), outcome);
+            recordRuntimeSkillOutcome(sessionId, projectPath, invocation.skillName(), outcome);
         }
 
         if (successfulSkills.isEmpty()) {
@@ -768,6 +770,20 @@ public final class StreamingAgentHandler {
             lock.unlock();
         }
         maybeRefineSkill(projectPath, skillName, tracker, snapshot);
+    }
+
+    private void recordRuntimeSkillOutcome(String sessionId,
+                                           Path projectPath,
+                                           String skillName,
+                                           SkillOutcome outcome) {
+        if (dynamicSkillGenerator == null) {
+            return;
+        }
+        try {
+            dynamicSkillGenerator.onOutcome(sessionId, projectPath, skillName, outcome);
+        } catch (Exception e) {
+            log.warn("Failed to update runtime skill governance for {}: {}", skillName, e.getMessage());
+        }
     }
 
     private SkillMetrics persistSkillMetrics(Path projectPath, String skillName, SkillOutcomeTracker tracker) {
@@ -1664,6 +1680,9 @@ public final class StreamingAgentHandler {
             String sessionId, AgentSession session, String prompt) {
         if (session == null || session.projectPath() == null) {
             return new SystemPromptLoader.RequestAssembly(getSystemPrompt(sessionId), List.of(), List.of(), List.of());
+        }
+        if (dynamicSkillGenerator != null) {
+            dynamicSkillGenerator.pruneExpired(sessionId, session.projectPath());
         }
         var activePaths = inferActiveFilePaths(prompt, session.messages(), session.projectPath());
         var config = new CandidatePromptAssembler.Config(

@@ -110,6 +110,25 @@ public final class LearningExplanationRecorder {
                         new LearningExplanation.EvidenceRef("allowed-tools", String.join(",", allowedTools), ""))));
     }
 
+    public void recordRuntimeSkillConflict(Path projectRoot,
+                                           String sessionId,
+                                           String durableSkillName,
+                                           String sequenceSignature,
+                                           List<String> allowedTools) {
+        append(projectRoot, new LearningExplanation(
+                Instant.now(),
+                "runtime_skill_conflict",
+                "runtime-skill",
+                durableSkillName,
+                sessionId,
+                "runtime-governance",
+                "Skipped runtime skill generation because durable skill '" + durableSkillName + "' already covers the workflow.",
+                List.of("runtime-skill", "conflict", durableSkillName),
+                List.of(
+                        new LearningExplanation.EvidenceRef("sequence", sequenceSignature, ""),
+                        new LearningExplanation.EvidenceRef("allowed-tools", String.join(",", allowedTools), ""))));
+    }
+
     public void recordRuntimeSkillDraftPersisted(Path projectRoot,
                                                  String sessionId,
                                                  String skillName,
@@ -124,6 +143,66 @@ public final class LearningExplanationRecorder {
                 "Persisted runtime skill '" + skillName + "' as draft.",
                 List.of("runtime-skill", "skill-draft", skillName),
                 List.of(new LearningExplanation.EvidenceRef("draft-path", draftPath, skillName))));
+    }
+
+    public void recordRuntimeSkillSuppressed(Path projectRoot,
+                                             String sessionId,
+                                             String skillName,
+                                             String reason,
+                                             int successes,
+                                             int failures,
+                                             int corrections) {
+        append(projectRoot, new LearningExplanation(
+                Instant.now(),
+                "runtime_skill_suppressed",
+                "runtime-skill",
+                skillName,
+                sessionId,
+                "runtime-governance",
+                "Suppressed runtime skill '" + skillName + "': " + reason,
+                List.of("runtime-skill", "suppressed", skillName),
+                List.of(
+                        new LearningExplanation.EvidenceRef("successes", Integer.toString(successes), ""),
+                        new LearningExplanation.EvidenceRef("failures", Integer.toString(failures), ""),
+                        new LearningExplanation.EvidenceRef("corrections", Integer.toString(corrections), ""))));
+    }
+
+    public void recordRuntimeSkillExpired(Path projectRoot,
+                                          String sessionId,
+                                          String skillName,
+                                          String reason) {
+        append(projectRoot, new LearningExplanation(
+                Instant.now(),
+                "runtime_skill_expired",
+                "runtime-skill",
+                skillName,
+                sessionId,
+                "runtime-governance",
+                "Expired runtime skill '" + skillName + "': " + reason,
+                List.of("runtime-skill", "expired", skillName),
+                List.of(new LearningExplanation.EvidenceRef("reason", reason, ""))));
+    }
+
+    public void recordRuntimeSkillNotPromoted(Path projectRoot,
+                                              String sessionId,
+                                              String skillName,
+                                              String reason,
+                                              int successes,
+                                              int failures,
+                                              int corrections) {
+        append(projectRoot, new LearningExplanation(
+                Instant.now(),
+                "runtime_skill_not_promoted",
+                "runtime-skill",
+                skillName,
+                sessionId,
+                "runtime-governance",
+                "Did not persist runtime skill '" + skillName + "' as draft: " + reason,
+                List.of("runtime-skill", "not-promoted", skillName),
+                List.of(
+                        new LearningExplanation.EvidenceRef("successes", Integer.toString(successes), ""),
+                        new LearningExplanation.EvidenceRef("failures", Integer.toString(failures), ""),
+                        new LearningExplanation.EvidenceRef("corrections", Integer.toString(corrections), ""))));
     }
 
     public void recordRefinement(Path projectRoot,

@@ -233,6 +233,28 @@ public final class SkillRegistry {
     }
 
     /**
+     * Removes a single session-scoped runtime skill.
+     *
+     * @return true when a runtime skill was removed
+     */
+    public boolean removeRuntime(String sessionId, String skillName) {
+        Objects.requireNonNull(sessionId, "sessionId");
+        Objects.requireNonNull(skillName, "skillName");
+        if (sessionId.isBlank() || skillName.isBlank()) {
+            return false;
+        }
+        var runtime = runtimeRegistry.get(sessionId);
+        if (runtime == null) {
+            return false;
+        }
+        boolean removed = runtime.remove(skillName) != null;
+        if (runtime.isEmpty()) {
+            runtimeRegistry.remove(sessionId, runtime);
+        }
+        return removed;
+    }
+
+    /**
      * Clears all runtime skills for the given session.
      */
     public void clearRuntime(String sessionId) {

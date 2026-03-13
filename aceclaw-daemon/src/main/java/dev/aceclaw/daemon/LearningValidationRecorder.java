@@ -60,6 +60,92 @@ public final class LearningValidationRecorder {
                 List.of(new LearningValidation.EvidenceRef("runtime-skill", skillName, draftPath))));
     }
 
+    public void recordRuntimeSkillConflict(Path projectRoot,
+                                           String sessionId,
+                                           String durableSkillName,
+                                           String sequenceSignature,
+                                           List<String> allowedTools) {
+        append(projectRoot, new LearningValidation(
+                java.time.Instant.now(),
+                "runtime-skill",
+                durableSkillName,
+                sessionId,
+                "runtime-governance",
+                "runtime-skill-policy",
+                LearningValidation.Verdict.HOLD,
+                "Skipped runtime skill generation because durable skill already covers the workflow.",
+                List.of(new LearningValidation.Reason(
+                        "DURABLE_SKILL_CONFLICT",
+                        "A durable skill already matches the repeated workflow, so runtime generation was suppressed.")),
+                List.of(
+                        new LearningValidation.EvidenceRef("durable-skill", durableSkillName, ""),
+                        new LearningValidation.EvidenceRef("sequence", sequenceSignature, ""),
+                        new LearningValidation.EvidenceRef("allowed-tools", String.join(",", allowedTools), ""))));
+    }
+
+    public void recordRuntimeSkillSuppressed(Path projectRoot,
+                                             String sessionId,
+                                             String skillName,
+                                             String reason,
+                                             int successes,
+                                             int failures,
+                                             int corrections) {
+        append(projectRoot, new LearningValidation(
+                java.time.Instant.now(),
+                "runtime-skill",
+                skillName,
+                sessionId,
+                "runtime-governance",
+                "runtime-skill-policy",
+                LearningValidation.Verdict.REJECT,
+                "Suppressed runtime skill '" + skillName + "': " + reason,
+                List.of(new LearningValidation.Reason("RUNTIME_SKILL_SUPPRESSED", reason)),
+                List.of(
+                        new LearningValidation.EvidenceRef("successes", Integer.toString(successes), ""),
+                        new LearningValidation.EvidenceRef("failures", Integer.toString(failures), ""),
+                        new LearningValidation.EvidenceRef("corrections", Integer.toString(corrections), ""))));
+    }
+
+    public void recordRuntimeSkillExpired(Path projectRoot,
+                                          String sessionId,
+                                          String skillName,
+                                          String reason) {
+        append(projectRoot, new LearningValidation(
+                java.time.Instant.now(),
+                "runtime-skill",
+                skillName,
+                sessionId,
+                "runtime-governance",
+                "runtime-skill-policy",
+                LearningValidation.Verdict.HOLD,
+                "Expired runtime skill '" + skillName + "': " + reason,
+                List.of(new LearningValidation.Reason("RUNTIME_SKILL_EXPIRED", reason)),
+                List.of(new LearningValidation.EvidenceRef("reason", reason, ""))));
+    }
+
+    public void recordRuntimeSkillNotPromoted(Path projectRoot,
+                                              String sessionId,
+                                              String skillName,
+                                              String reason,
+                                              int successes,
+                                              int failures,
+                                              int corrections) {
+        append(projectRoot, new LearningValidation(
+                java.time.Instant.now(),
+                "runtime-skill",
+                skillName,
+                sessionId,
+                "session-end",
+                "runtime-skill-policy",
+                LearningValidation.Verdict.HOLD,
+                "Runtime skill '" + skillName + "' did not meet durable promotion criteria.",
+                List.of(new LearningValidation.Reason("INSUFFICIENT_RUNTIME_EVIDENCE", reason)),
+                List.of(
+                        new LearningValidation.EvidenceRef("successes", Integer.toString(successes), ""),
+                        new LearningValidation.EvidenceRef("failures", Integer.toString(failures), ""),
+                        new LearningValidation.EvidenceRef("corrections", Integer.toString(corrections), ""))));
+    }
+
     public void recordDraftValidation(Path projectRoot,
                                       String trigger,
                                       ValidationGateEngine.DraftDecision decision) {

@@ -1,6 +1,7 @@
 package dev.aceclaw.daemon;
 
 import dev.aceclaw.core.agent.SkillRegistry;
+import dev.aceclaw.core.agent.SkillOutcome;
 import dev.aceclaw.core.agent.Turn;
 import dev.aceclaw.core.llm.ContentBlock;
 import dev.aceclaw.core.llm.Message;
@@ -14,6 +15,9 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Set;
 
@@ -28,6 +32,7 @@ class DynamicSkillGeneratorTest {
     private MockLlmClient mockLlm;
     private SkillRegistry skillRegistry;
     private DynamicSkillGenerator generator;
+    private MutableClock clock;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -35,7 +40,8 @@ class DynamicSkillGeneratorTest {
         Files.createDirectories(workDir);
         mockLlm = new MockLlmClient();
         skillRegistry = SkillRegistry.load(workDir);
-        generator = new DynamicSkillGenerator(mockLlm, ignored -> "mock-model", skillRegistry);
+        clock = new MutableClock(Instant.parse("2026-03-13T12:00:00Z"));
+        generator = new DynamicSkillGenerator(mockLlm, ignored -> "mock-model", skillRegistry, clock);
     }
 
     @Test
@@ -62,6 +68,8 @@ class DynamicSkillGeneratorTest {
                 Set.of("read_file", "grep", "edit_file", "skill"));
 
         assertThat(generated).isPresent();
+        generator.onOutcome("session-1", workDir, "review-file-workflow", new SkillOutcome.Success(clock.instant(), 1));
+        generator.onOutcome("session-1", workDir, "review-file-workflow", new SkillOutcome.Success(clock.instant(), 1));
         assertThat(generator.persistDrafts("session-1", workDir)).isEqualTo(1);
 
         var explanations = explanationStore.recent(workDir, 10);
@@ -95,6 +103,8 @@ class DynamicSkillGeneratorTest {
         assertThat(skillRegistry.names("session-1")).contains("review-file-workflow");
         assertThat(skillRegistry.names("session-2")).doesNotContain("review-file-workflow");
         assertThat(skillRegistry.formatDescriptions("session-1")).contains("review-file-workflow");
+        generator.onOutcome("session-1", workDir, "review-file-workflow", new SkillOutcome.Success(clock.instant(), 1));
+        generator.onOutcome("session-1", workDir, "review-file-workflow", new SkillOutcome.Success(clock.instant(), 1));
 
         int persisted = generator.persistDrafts("session-1", workDir);
 
@@ -269,6 +279,8 @@ class DynamicSkillGeneratorTest {
                 sessionHistory("Inspect files"),
                 repeatedSequenceInsight(),
                 Set.of("read_file", "grep", "edit_file"))).isPresent();
+        generator.onOutcome("session-1", workDir, "workflow-one", new SkillOutcome.Success(clock.instant(), 1));
+        generator.onOutcome("session-1", workDir, "workflow-one", new SkillOutcome.Success(clock.instant(), 1));
 
         assertThat(generator.persistDrafts("session-1", workDir)).isEqualTo(1);
 
@@ -288,6 +300,187 @@ class DynamicSkillGeneratorTest {
                 repeatedSequenceInsight(),
                 Set.of("read_file", "grep", "edit_file"))).isEmpty();
         assertThat(skillRegistry.runtimeSkills("session-1")).isEmpty();
+    }
+
+    @Test
+    void suppressesRuntimeGenerationWhenDurableSkillAlreadyCoversWorkflow() throws Exception {
+        createDurableSkill("existing-review", List.of("read_file", "grep", "edit_file"));
+        skillRegistry = SkillRegistry.load(workDir);
+        generator = new DynamicSkillGenerator(mockLlm, ignored -> "mock-model", skillRegistry, clock);
+
+        var explanationStore = new LearningExplanationStore();
+        generator.setLearningExplanationRecorder(new LearningExplanationRecorder(explanationStore));
+        var validationStore = new LearningValidationStore();
+        generator.setLearningValidationRecorder(new LearningValidationRecorder(validationStore));
+
+        var generated = generator.maybeGenerate(
+                "session-1",
+                workDir,
+                repeatedSequenceTurn("read_file", "grep", "edit_file"),
+                sessionHistory("Inspect files"),
+                repeatedSequenceInsight(),
+                Set.of("read_file", "grep", "edit_file"));
+
+        assertThat(generated).isEmpty();
+        assertThat(skillRegistry.runtimeSkills("session-1")).isEmpty();
+        assertThat(explanationStore.recent(workDir, 10))
+                .anyMatch(explanation -> explanation.actionType().equals("runtime_skill_conflict"));
+        assertThat(validationStore.recent(workDir, 10))
+                .anyMatch(validation -> validation.summary().contains("durable skill"));
+    }
+
+    @Test
+    void onlyPersistsRuntimeDraftAfterTwoSuccessfulUses() throws Exception {
+        mockLlm.enqueueSendMessageResponse(MockLlmClient.sendMessageTextResponse("""
+                {
+                  "name": "review-file-workflow",
+                  "description": "Review a file-oriented workflow.",
+                  "argument_hint": "<target>",
+                  "body": "# Runtime Workflow\\n\\nFollow the repeated workflow carefully."
+                }
+                """));
+
+        var generated = generator.maybeGenerate(
+                "session-1",
+                workDir,
+                repeatedSequenceTurn("read_file", "grep", "edit_file"),
+                sessionHistory("Please inspect the config files."),
+                repeatedSequenceInsight(),
+                Set.of("read_file", "grep", "edit_file"));
+        assertThat(generated).isPresent();
+
+        generator.onOutcome("session-1", workDir, "review-file-workflow",
+                new SkillOutcome.Success(clock.instant(), 1));
+        assertThat(generator.persistDrafts("session-1", workDir)).isZero();
+
+        skillRegistry = SkillRegistry.load(workDir);
+        generator = new DynamicSkillGenerator(mockLlm, ignored -> "mock-model", skillRegistry, clock);
+        mockLlm.enqueueSendMessageResponse(MockLlmClient.sendMessageTextResponse("""
+                {
+                  "name": "review-file-workflow",
+                  "description": "Review a file-oriented workflow.",
+                  "argument_hint": "<target>",
+                  "body": "# Runtime Workflow\\n\\nFollow the repeated workflow carefully."
+                }
+                """));
+        assertThat(generator.maybeGenerate(
+                "session-2",
+                workDir,
+                repeatedSequenceTurn("read_file", "grep", "edit_file"),
+                sessionHistory("Please inspect the config files."),
+                repeatedSequenceInsight(),
+                Set.of("read_file", "grep", "edit_file"))).isPresent();
+        generator.onOutcome("session-2", workDir, "review-file-workflow",
+                new SkillOutcome.Success(clock.instant(), 1));
+        generator.onOutcome("session-2", workDir, "review-file-workflow",
+                new SkillOutcome.Success(clock.instant(), 1));
+
+        assertThat(generator.persistDrafts("session-2", workDir)).isEqualTo(1);
+    }
+
+    @Test
+    void suppressesRuntimeSkillAfterUserCorrection() throws Exception {
+        mockLlm.enqueueSendMessageResponse(MockLlmClient.sendMessageTextResponse("""
+                {
+                  "name": "review-file-workflow",
+                  "description": "Review a file-oriented workflow.",
+                  "argument_hint": "<target>",
+                  "body": "# Runtime Workflow\\n\\nFollow the repeated workflow carefully."
+                }
+                """));
+
+        assertThat(generator.maybeGenerate(
+                "session-1",
+                workDir,
+                repeatedSequenceTurn("read_file", "grep", "edit_file"),
+                sessionHistory("Please inspect the config files."),
+                repeatedSequenceInsight(),
+                Set.of("read_file", "grep", "edit_file"))).isPresent();
+
+        generator.onOutcome("session-1", workDir, "review-file-workflow",
+                new SkillOutcome.UserCorrected(clock.instant(), "Use a narrower grep pattern"));
+
+        assertThat(skillRegistry.runtimeSkills("session-1")).isEmpty();
+        assertThat(generator.maybeGenerate(
+                "session-1",
+                workDir,
+                repeatedSequenceTurn("read_file", "grep", "edit_file"),
+                sessionHistory("Please inspect the config files again."),
+                repeatedSequenceInsight(),
+                Set.of("read_file", "grep", "edit_file"))).isEmpty();
+        assertThat(generator.persistDrafts("session-1", workDir)).isZero();
+    }
+
+    @Test
+    void expiresInactiveRuntimeSkills() throws Exception {
+        mockLlm.enqueueSendMessageResponse(MockLlmClient.sendMessageTextResponse("""
+                {
+                  "name": "review-file-workflow",
+                  "description": "Review a file-oriented workflow.",
+                  "argument_hint": "<target>",
+                  "body": "# Runtime Workflow\\n\\nFollow the repeated workflow carefully."
+                }
+                """));
+
+        assertThat(generator.maybeGenerate(
+                "session-1",
+                workDir,
+                repeatedSequenceTurn("read_file", "grep", "edit_file"),
+                sessionHistory("Please inspect the config files."),
+                repeatedSequenceInsight(),
+                Set.of("read_file", "grep", "edit_file"))).isPresent();
+
+        clock.advance(java.time.Duration.ofMinutes(21));
+        generator.pruneExpired("session-1", workDir);
+
+        assertThat(skillRegistry.runtimeSkills("session-1")).isEmpty();
+    }
+
+    private void createDurableSkill(String name, List<String> allowedTools) throws Exception {
+        Path skillDir = workDir.resolve(".aceclaw/skills").resolve(name);
+        Files.createDirectories(skillDir);
+        Files.writeString(skillDir.resolve("SKILL.md"), """
+                ---
+                name: "%s"
+                description: "Existing durable workflow"
+                context: "FORK"
+                allowed-tools: [%s]
+                disable-model-invocation: false
+                ---
+
+                # Durable workflow
+
+                Use the existing durable workflow.
+                """.formatted(
+                name,
+                allowedTools.stream().map(tool -> "\"" + tool + "\"").reduce((a, b) -> a + ", " + b).orElse("")));
+    }
+
+    private static final class MutableClock extends Clock {
+        private Instant current;
+
+        private MutableClock(Instant current) {
+            this.current = current;
+        }
+
+        void advance(java.time.Duration duration) {
+            current = current.plus(duration);
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneId.of("UTC");
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            return current;
+        }
     }
 
     private static List<Insight> repeatedSequenceInsight() {

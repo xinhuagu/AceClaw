@@ -19,6 +19,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -44,6 +46,10 @@ public final class DynamicSkillGenerator {
     private static final Logger log = LoggerFactory.getLogger(DynamicSkillGenerator.class);
 
     static final int MAX_RUNTIME_SKILLS_PER_SESSION = 3;
+    static final int MIN_SUCCESSFUL_USES_FOR_DRAFT = 2;
+    static final int MAX_RUNTIME_FAILURES = 2;
+    static final int MAX_RUNTIME_CORRECTIONS = 1;
+    static final Duration RUNTIME_IDLE_TTL = Duration.ofMinutes(20);
     private static final int DEFAULT_MAX_TURNS = 6;
     private static final String DRAFTS_DIR = ".aceclaw/skills-drafts";
     private static final Pattern CODE_FENCE = Pattern.compile(
@@ -55,6 +61,7 @@ public final class DynamicSkillGenerator {
     private final LlmClient llmClient;
     private final Function<String, String> modelResolver;
     private final SkillRegistry skillRegistry;
+    private final Clock clock;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final ConcurrentHashMap<String, SessionRuntimeState> sessionStates = new ConcurrentHashMap<>();
     private final Set<String> closedSessions = ConcurrentHashMap.newKeySet();
@@ -64,9 +71,17 @@ public final class DynamicSkillGenerator {
     public DynamicSkillGenerator(LlmClient llmClient,
                                  Function<String, String> modelResolver,
                                  SkillRegistry skillRegistry) {
+        this(llmClient, modelResolver, skillRegistry, Clock.systemUTC());
+    }
+
+    DynamicSkillGenerator(LlmClient llmClient,
+                          Function<String, String> modelResolver,
+                          SkillRegistry skillRegistry,
+                          Clock clock) {
         this.llmClient = Objects.requireNonNull(llmClient, "llmClient");
         this.modelResolver = Objects.requireNonNull(modelResolver, "modelResolver");
         this.skillRegistry = Objects.requireNonNull(skillRegistry, "skillRegistry");
+        this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     public void setLearningExplanationRecorder(LearningExplanationRecorder learningExplanationRecorder) {
@@ -94,6 +109,8 @@ public final class DynamicSkillGenerator {
             return java.util.Optional.empty();
         }
 
+        pruneExpired(sessionId, projectPath);
+
         var toolSequence = extractToolSequence(turn.newMessages());
         if (toolSequence.size() < 3 || !hasRepeatedSequenceInsight(insights, toolSequence)) {
             return java.util.Optional.empty();
@@ -108,6 +125,31 @@ public final class DynamicSkillGenerator {
         var state = sessionStates.computeIfAbsent(sessionId, ignored -> new SessionRuntimeState());
         synchronized (state) {
             if (closedSessions.contains(sessionId) || state.closing) {
+                return java.util.Optional.empty();
+            }
+            pruneExpiredLocked(sessionId, projectPath, state, clock.instant());
+            if (state.suppressedSignatures.contains(sequenceSignature)) {
+                return java.util.Optional.empty();
+            }
+            var conflictingSkill = conflictingDurableSkill(allowedTools);
+            if (conflictingSkill.isPresent()) {
+                state.suppressedSignatures.add(sequenceSignature);
+                if (learningExplanationRecorder != null) {
+                    learningExplanationRecorder.recordRuntimeSkillConflict(
+                            projectPath,
+                            sessionId,
+                            conflictingSkill.get().name(),
+                            sequenceSignature,
+                            allowedTools);
+                }
+                if (learningValidationRecorder != null) {
+                    learningValidationRecorder.recordRuntimeSkillConflict(
+                            projectPath,
+                            sessionId,
+                            conflictingSkill.get().name(),
+                            sequenceSignature,
+                            allowedTools);
+                }
                 return java.util.Optional.empty();
             }
             if (state.skillsByName.size() >= MAX_RUNTIME_SKILLS_PER_SESSION) {
@@ -142,8 +184,9 @@ public final class DynamicSkillGenerator {
                 return java.util.Optional.empty();
             }
             state.signatures.add(sequenceSignature);
+            Instant now = clock.instant();
             state.skillsByName.put(skillName,
-                    new RuntimeSkillRecord(config, Instant.now(), List.copyOf(allowedTools), sequenceSignature));
+                    RuntimeSkillRecord.created(config, now, List.copyOf(allowedTools), sequenceSignature));
             if (learningExplanationRecorder != null) {
                 learningExplanationRecorder.recordRuntimeSkill(
                         projectPath,
@@ -165,6 +208,42 @@ public final class DynamicSkillGenerator {
         }
     }
 
+    public void onOutcome(String sessionId, Path projectPath, String skillName, dev.aceclaw.core.agent.SkillOutcome outcome) {
+        Objects.requireNonNull(sessionId, "sessionId");
+        Objects.requireNonNull(projectPath, "projectPath");
+        Objects.requireNonNull(skillName, "skillName");
+        Objects.requireNonNull(outcome, "outcome");
+
+        var state = sessionStates.get(sessionId);
+        if (state == null) {
+            return;
+        }
+        synchronized (state) {
+            pruneExpiredLocked(sessionId, projectPath, state, clock.instant());
+            var current = state.skillsByName.get(skillName);
+            if (current == null) {
+                return;
+            }
+            var updated = current.recordOutcome(outcome, clock.instant(), RUNTIME_IDLE_TTL);
+            state.skillsByName.put(skillName, updated);
+            if (updated.shouldSuppress()) {
+                suppressRuntimeSkill(sessionId, projectPath, state, updated, updated.suppressionReason());
+            }
+        }
+    }
+
+    public void pruneExpired(String sessionId, Path projectPath) {
+        Objects.requireNonNull(sessionId, "sessionId");
+        Objects.requireNonNull(projectPath, "projectPath");
+        var state = sessionStates.get(sessionId);
+        if (state == null) {
+            return;
+        }
+        synchronized (state) {
+            pruneExpiredLocked(sessionId, projectPath, state, clock.instant());
+        }
+    }
+
     public int persistDrafts(String sessionId, Path projectPath) throws IOException {
         Objects.requireNonNull(sessionId, "sessionId");
         Objects.requireNonNull(projectPath, "projectPath");
@@ -183,10 +262,34 @@ public final class DynamicSkillGenerator {
                 return 0;
             }
             state.closing = true;
+            pruneExpiredLocked(sessionId, projectPath, state, clock.instant());
             Path draftsRoot = projectPath.resolve(DRAFTS_DIR);
             try {
                 Files.createDirectories(draftsRoot);
                 for (var record : state.skillsByName.values()) {
+                    if (!record.eligibleForDraft()) {
+                        if (learningExplanationRecorder != null) {
+                            learningExplanationRecorder.recordRuntimeSkillNotPromoted(
+                                    projectPath,
+                                    sessionId,
+                                    record.skill().name(),
+                                    record.promotionReason(),
+                                    record.successCount(),
+                                    record.failureCount(),
+                                    record.correctionCount());
+                        }
+                        if (learningValidationRecorder != null) {
+                            learningValidationRecorder.recordRuntimeSkillNotPromoted(
+                                    projectPath,
+                                    sessionId,
+                                    record.skill().name(),
+                                    record.promotionReason(),
+                                    record.successCount(),
+                                    record.failureCount(),
+                                    record.correctionCount());
+                        }
+                        continue;
+                    }
                     String resolvedName = resolveDraftName(draftsRoot, record.skill().name(), sessionId);
                     Path skillDir = draftsRoot.resolve(resolvedName);
                     Files.createDirectories(skillDir);
@@ -397,6 +500,76 @@ public final class DynamicSkillGenerator {
         return List.copyOf(allowed);
     }
 
+    private java.util.Optional<SkillConfig> conflictingDurableSkill(List<String> allowedTools) {
+        return skillRegistry.all().stream()
+                .filter(skill -> skill.context() == SkillConfig.ExecutionContext.FORK)
+                .filter(skill -> !skill.disableModelInvocation() || skill.userInvocable())
+                .filter(skill -> skill.allowedTools().equals(allowedTools))
+                .findFirst();
+    }
+
+    private void pruneExpiredLocked(String sessionId,
+                                    Path projectPath,
+                                    SessionRuntimeState state,
+                                    Instant now) {
+        var iterator = state.skillsByName.entrySet().iterator();
+        while (iterator.hasNext()) {
+            var entry = iterator.next();
+            var record = entry.getValue();
+            if (!record.isExpired(now)) {
+                continue;
+            }
+            iterator.remove();
+            state.signatures.remove(record.signature());
+            skillRegistry.removeRuntime(sessionId, entry.getKey());
+            if (learningExplanationRecorder != null) {
+                learningExplanationRecorder.recordRuntimeSkillExpired(
+                        projectPath,
+                        sessionId,
+                        entry.getKey(),
+                        "inactive for more than " + RUNTIME_IDLE_TTL.toMinutes() + " minutes");
+            }
+            if (learningValidationRecorder != null) {
+                learningValidationRecorder.recordRuntimeSkillExpired(
+                        projectPath,
+                        sessionId,
+                        entry.getKey(),
+                        "Inactive runtime skill was removed before durable promotion");
+            }
+        }
+    }
+
+    private void suppressRuntimeSkill(String sessionId,
+                                      Path projectPath,
+                                      SessionRuntimeState state,
+                                      RuntimeSkillRecord record,
+                                      String reason) {
+        state.skillsByName.remove(record.skill().name());
+        state.signatures.remove(record.signature());
+        state.suppressedSignatures.add(record.signature());
+        skillRegistry.removeRuntime(sessionId, record.skill().name());
+        if (learningExplanationRecorder != null) {
+            learningExplanationRecorder.recordRuntimeSkillSuppressed(
+                    projectPath,
+                    sessionId,
+                    record.skill().name(),
+                    reason,
+                    record.successCount(),
+                    record.failureCount(),
+                    record.correctionCount());
+        }
+        if (learningValidationRecorder != null) {
+            learningValidationRecorder.recordRuntimeSkillSuppressed(
+                    projectPath,
+                    sessionId,
+                    record.skill().name(),
+                    reason,
+                    record.successCount(),
+                    record.failureCount(),
+                    record.correctionCount());
+        }
+    }
+
     private String resolveRuntimeName(String sessionId, String rawName, SessionRuntimeState state) {
         String base = toSlug(rawName);
         if (base.isBlank()) {
@@ -538,17 +711,100 @@ public final class DynamicSkillGenerator {
     private static final class SessionRuntimeState {
         private final LinkedHashMap<String, RuntimeSkillRecord> skillsByName = new LinkedHashMap<>();
         private final LinkedHashSet<String> signatures = new LinkedHashSet<>();
+        private final LinkedHashSet<String> suppressedSignatures = new LinkedHashSet<>();
         private boolean closing;
     }
 
     private record RuntimeSkillRecord(
             SkillConfig skill,
             Instant createdAt,
+            Instant lastUsedAt,
+            Instant expiresAt,
             List<String> allowedTools,
-            String signature
+            String signature,
+            int useCount,
+            int successCount,
+            int failureCount,
+            int correctionCount
     ) {
         private RuntimeSkillRecord {
+            Objects.requireNonNull(skill, "skill");
+            Objects.requireNonNull(createdAt, "createdAt");
+            Objects.requireNonNull(lastUsedAt, "lastUsedAt");
+            Objects.requireNonNull(expiresAt, "expiresAt");
             allowedTools = allowedTools != null ? List.copyOf(allowedTools) : List.of();
+            signature = Objects.requireNonNull(signature, "signature");
+        }
+
+        private static RuntimeSkillRecord created(SkillConfig skill,
+                                                  Instant now,
+                                                  List<String> allowedTools,
+                                                  String signature) {
+            return new RuntimeSkillRecord(skill, now, now, now.plus(RUNTIME_IDLE_TTL), allowedTools, signature, 0, 0, 0, 0);
+        }
+
+        private RuntimeSkillRecord recordOutcome(dev.aceclaw.core.agent.SkillOutcome outcome,
+                                                 Instant now,
+                                                 Duration ttl) {
+            int nextUses = useCount + 1;
+            int nextSuccess = successCount;
+            int nextFailure = failureCount;
+            int nextCorrection = correctionCount;
+            if (outcome instanceof dev.aceclaw.core.agent.SkillOutcome.Success) {
+                nextSuccess++;
+            } else if (outcome instanceof dev.aceclaw.core.agent.SkillOutcome.Failure) {
+                nextFailure++;
+            } else if (outcome instanceof dev.aceclaw.core.agent.SkillOutcome.UserCorrected) {
+                nextCorrection++;
+            }
+            return new RuntimeSkillRecord(
+                    skill,
+                    createdAt,
+                    now,
+                    now.plus(ttl),
+                    allowedTools,
+                    signature,
+                    nextUses,
+                    nextSuccess,
+                    nextFailure,
+                    nextCorrection);
+        }
+
+        private boolean eligibleForDraft() {
+            return successCount >= MIN_SUCCESSFUL_USES_FOR_DRAFT
+                    && failureCount == 0
+                    && correctionCount == 0;
+        }
+
+        private boolean shouldSuppress() {
+            return failureCount >= MAX_RUNTIME_FAILURES || correctionCount >= MAX_RUNTIME_CORRECTIONS;
+        }
+
+        private boolean isExpired(Instant now) {
+            return !now.isBefore(expiresAt);
+        }
+
+        private String suppressionReason() {
+            if (correctionCount >= MAX_RUNTIME_CORRECTIONS) {
+                return "user corrected the workflow";
+            }
+            if (failureCount >= MAX_RUNTIME_FAILURES) {
+                return "runtime skill failed " + failureCount + " times";
+            }
+            return "runtime governance suppressed the skill";
+        }
+
+        private String promotionReason() {
+            if (successCount < MIN_SUCCESSFUL_USES_FOR_DRAFT) {
+                return "needs at least " + MIN_SUCCESSFUL_USES_FOR_DRAFT + " successful uses before draft persistence";
+            }
+            if (failureCount > 0) {
+                return "observed failures make the runtime skill ineligible for durable promotion";
+            }
+            if (correctionCount > 0) {
+                return "user corrections make the runtime skill ineligible for durable promotion";
+            }
+            return "runtime skill did not meet durable promotion criteria";
         }
     }
 
