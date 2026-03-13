@@ -85,6 +85,7 @@ public final class AceClawDaemon {
     private final LearningExplanationRecorder learningExplanationRecorder;
     private final LearningValidationStore learningValidationStore;
     private final LearningValidationRecorder learningValidationRecorder;
+    private final LearningMaintenanceRunStore learningMaintenanceRunStore;
     private final MarkdownMemoryStore markdownStore;
     private final JobStore cronJobStore;
     private final EventBus eventBus;
@@ -160,6 +161,7 @@ public final class AceClawDaemon {
         this.learningExplanationRecorder = new LearningExplanationRecorder(learningExplanationStore);
         this.learningValidationStore = new LearningValidationStore();
         this.learningValidationRecorder = new LearningValidationRecorder(learningValidationStore);
+        this.learningMaintenanceRunStore = new LearningMaintenanceRunStore();
 
         // Markdown memory store (persistent MEMORY.md + topic files)
         MarkdownMemoryStore mds = null;
@@ -1299,6 +1301,101 @@ public final class AceClawDaemon {
             return result;
         });
 
+        router.register("learning.summary", params -> {
+            Path projectPath = workingDir;
+            int limit = 10;
+            if (params != null) {
+                if (params.has("project") && !params.get("project").asText("").isBlank()) {
+                    projectPath = Path.of(params.get("project").asText()).toAbsolutePath().normalize();
+                }
+                if (params.has("limit")) {
+                    limit = Math.max(1, Math.min(50, params.get("limit").asInt(10)));
+                }
+            }
+
+            var result = objectMapper.createObjectNode();
+            var explanationCounts = objectMapper.createObjectNode();
+            var validationCounts = objectMapper.createObjectNode();
+            var recentActions = objectMapper.createArrayNode();
+            var recentValidations = objectMapper.createArrayNode();
+            var maintenanceRuns = objectMapper.createArrayNode();
+
+            for (var explanation : learningExplanationStore.recent(projectPath, 100)) {
+                explanationCounts.put(
+                        explanation.actionType(),
+                        explanationCounts.path(explanation.actionType()).asInt(0) + 1);
+            }
+            var recentExplanations = learningExplanationStore.recent(projectPath, Integer.MAX_VALUE);
+            for (var explanation : recentExplanations) {
+                if (!isOperatorFacingAction(explanation.actionType())) {
+                    continue;
+                }
+                var node = objectMapper.createObjectNode();
+                node.put("timestamp", explanation.timestamp().toString());
+                node.put("actionType", explanation.actionType());
+                node.put("targetType", explanation.targetType());
+                node.put("targetId", explanation.targetId());
+                node.put("summary", explanation.summary());
+                node.put("trigger", explanation.trigger());
+                recentActions.add(node);
+                if (recentActions.size() >= limit) {
+                    break;
+                }
+            }
+
+            for (var validation : learningValidationStore.recent(projectPath, 100)) {
+                var key = validation.verdict().name().toLowerCase();
+                validationCounts.put(key, validationCounts.path(key).asInt(0) + 1);
+            }
+            for (var validation : learningValidationStore.recent(projectPath, limit)) {
+                var node = objectMapper.createObjectNode();
+                node.put("timestamp", validation.timestamp().toString());
+                node.put("targetType", validation.targetType());
+                node.put("targetId", validation.targetId());
+                node.put("verdict", validation.verdict().name().toLowerCase());
+                node.put("policy", validation.policy());
+                node.put("summary", validation.summary());
+                recentValidations.add(node);
+            }
+
+            int totalDeduped = 0;
+            int totalMerged = 0;
+            int totalPruned = 0;
+            for (var run : learningMaintenanceRunStore.recent(projectPath, limit)) {
+                totalDeduped += run.deduped();
+                totalMerged += run.merged();
+                totalPruned += run.pruned();
+                var node = objectMapper.createObjectNode();
+                node.put("timestamp", run.timestamp().toString());
+                node.put("trigger", run.trigger());
+                node.put("summary", run.summary());
+                node.put("deduped", run.deduped());
+                node.put("merged", run.merged());
+                node.put("pruned", run.pruned());
+                node.put("errorChains", run.errorChains());
+                node.put("stableWorkflows", run.stableWorkflows());
+                node.put("convergingStrategies", run.convergingStrategies());
+                node.put("degradationSignals", run.degradationSignals());
+                node.put("trends", run.trends());
+                node.put("candidateObservations", run.candidateObservations());
+                node.put("candidateTransitions", run.candidateTransitions());
+                node.put("candidatePromoted", run.candidatePromoted());
+                maintenanceRuns.add(node);
+            }
+
+            var maintenanceTotals = objectMapper.createObjectNode();
+            maintenanceTotals.put("deduped", totalDeduped);
+            maintenanceTotals.put("merged", totalMerged);
+            maintenanceTotals.put("pruned", totalPruned);
+            result.set("maintenanceTotals", maintenanceTotals);
+            result.set("explanationCounts", explanationCounts);
+            result.set("validationCounts", validationCounts);
+            result.set("recentActions", recentActions);
+            result.set("recentValidations", recentValidations);
+            result.set("maintenanceRuns", maintenanceRuns);
+            return result;
+        });
+
         // Deferred action RPC routes
         router.register("deferred.status", params -> {
             var result = objectMapper.createObjectNode();
@@ -1891,6 +1988,14 @@ public final class AceClawDaemon {
                 .collect(java.util.stream.Collectors.joining(" | "));
     }
 
+    private static boolean isOperatorFacingAction(String actionType) {
+        return switch (actionType) {
+            case "runtime_skill_created", "runtime_skill_persisted", "skill_refinement",
+                    "skill_draft_created", "candidate_transition" -> true;
+            default -> false;
+        };
+    }
+
     private void runLearningMaintenancePipeline(
             String trigger,
             AutoMemoryStore memoryStore,
@@ -1907,8 +2012,10 @@ public final class AceClawDaemon {
             String workspaceHash,
             Path workingDir
     ) {
+        var maintenanceSummary = new LearningMaintenanceRunBuilder(trigger, workspaceHash, workingDir);
         try {
             var result = MemoryConsolidator.consolidate(memoryStore, workingDir, archiveDir);
+            maintenanceSummary.consolidation(result);
             if (result.hasChanges() && journal != null) {
                 journal.append("Memory consolidated (" + trigger + "): "
                         + result.deduped() + " deduped, "
@@ -1936,6 +2043,7 @@ public final class AceClawDaemon {
             try {
                 miningResult = crossSessionPatternMiner.mine(
                         historicalLogIndex, memoryStore, workspaceHash, workingDir);
+                maintenanceSummary.mining(miningResult);
                 if ((!miningResult.frequentErrorChains().isEmpty()
                         || !miningResult.stableWorkflows().isEmpty()
                         || !miningResult.convergingStrategies().isEmpty()
@@ -1957,6 +2065,7 @@ public final class AceClawDaemon {
             try {
                 trends = trendDetector.detect(
                         historicalLogIndex, memoryStore, workspaceHash, workingDir);
+                maintenanceSummary.trends(trends);
                 if (!trends.isEmpty() && journal != null) {
                     journal.append("Trend detector (" + trigger + "): " + trends.size()
                             + " significant trends. " + summarizeTrends(trends));
@@ -1974,6 +2083,7 @@ public final class AceClawDaemon {
                         miningResult != null ? miningResult
                                 : new CrossSessionPatternMiner.MiningResult(List.of(), List.of(), List.of(), List.of()),
                         trends);
+                maintenanceSummary.bridge(bridgeResult);
                 if (bridgeResult.upserts() > 0 && journal != null) {
                     journal.append("Maintenance candidate bridge (" + trigger + "): "
                             + bridgeResult.upserts() + " observations, "
@@ -2012,6 +2122,11 @@ public final class AceClawDaemon {
                 log.warn("Maintenance candidate bridge failed (trigger={}): {}", trigger, e.getMessage());
             }
         }
+        try {
+            learningMaintenanceRunStore.append(workingDir, maintenanceSummary.build());
+        } catch (Exception e) {
+            log.debug("Failed to persist maintenance summary (trigger={}): {}", trigger, e.getMessage());
+        }
     }
 
     private void triggerMaintenanceDraftLifecycle(
@@ -2044,6 +2159,88 @@ public final class AceClawDaemon {
             }
         } finally {
             draftPipelineLock.unlock();
+        }
+    }
+
+    private static final class LearningMaintenanceRunBuilder {
+        private final String trigger;
+        private final String workspaceHash;
+        private final Path workingDir;
+        private int deduped;
+        private int merged;
+        private int pruned;
+        private int errorChains;
+        private int stableWorkflows;
+        private int convergingStrategies;
+        private int degradationSignals;
+        private int trends;
+        private int candidateObservations;
+        private int candidateTransitions;
+        private int candidatePromoted;
+
+        private LearningMaintenanceRunBuilder(String trigger, String workspaceHash, Path workingDir) {
+            this.trigger = trigger;
+            this.workspaceHash = workspaceHash;
+            this.workingDir = workingDir;
+        }
+
+        void consolidation(dev.aceclaw.memory.MemoryConsolidator.ConsolidationResult result) {
+            if (result == null) {
+                return;
+            }
+            deduped = result.deduped();
+            merged = result.merged();
+            pruned = result.pruned();
+        }
+
+        void mining(CrossSessionPatternMiner.MiningResult result) {
+            if (result == null) {
+                return;
+            }
+            errorChains = result.frequentErrorChains().size();
+            stableWorkflows = result.stableWorkflows().size();
+            convergingStrategies = result.convergingStrategies().size();
+            degradationSignals = result.degradationSignals().size();
+        }
+
+        void trends(List<TrendDetector.Trend> trendList) {
+            trends = trendList != null ? trendList.size() : 0;
+        }
+
+        void bridge(LearningMaintenanceCandidateBridge.BridgeResult bridgeResult) {
+            if (bridgeResult == null) {
+                return;
+            }
+            candidateObservations = bridgeResult.upserts();
+            candidateTransitions = bridgeResult.transitions();
+            candidatePromoted = bridgeResult.promoted();
+        }
+
+        LearningMaintenanceRun build() {
+            return new LearningMaintenanceRun(
+                    Instant.now(),
+                    trigger,
+                    workspaceHash,
+                    workingDir != null ? workingDir.toString() : "",
+                    deduped,
+                    merged,
+                    pruned,
+                    errorChains,
+                    stableWorkflows,
+                    convergingStrategies,
+                    degradationSignals,
+                    trends,
+                    candidateObservations,
+                    candidateTransitions,
+                    candidatePromoted,
+                    "maintenance "
+                            + trigger
+                            + ": deduped=" + deduped
+                            + ", merged=" + merged
+                            + ", pruned=" + pruned
+                            + ", mining=" + (errorChains + stableWorkflows + convergingStrategies + degradationSignals)
+                            + ", trends=" + trends
+                            + ", bridge=" + candidateObservations + "/" + candidateTransitions + "/" + candidatePromoted);
         }
     }
 }

@@ -59,6 +59,7 @@ class TerminalReplTest {
         assertThat(output).contains("/exit");
         assertThat(output).contains("/model");
         assertThat(output).contains("/tools");
+        assertThat(output).contains("/learning");
         assertThat(output).contains("/project");
         assertThat(output).contains("/skills");
         assertThat(output).contains("/tasks");
@@ -124,6 +125,13 @@ class TerminalReplTest {
         assertThat(output).contains("Session Status");
         assertThat(output).contains("claude-sonnet-4-5-20250929");
         assertThat(output).contains("/tmp/project");
+    }
+
+    @Test
+    void learningWithNoClient_showsNotConnectedWhenNullClient() {
+        boolean shouldExit = repl.handleSlashCommand(out, "/learning", null);
+        assertThat(shouldExit).isFalse();
+        assertThat(outputBuffer.toString()).contains("Not connected to daemon");
     }
 
     @Test
