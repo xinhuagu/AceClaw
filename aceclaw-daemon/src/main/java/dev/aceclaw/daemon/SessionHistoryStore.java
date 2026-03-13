@@ -3,6 +3,7 @@ package dev.aceclaw.daemon;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import dev.aceclaw.memory.WorkspacePaths;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -12,7 +13,9 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -60,7 +63,8 @@ public final class SessionHistoryStore {
     public void appendMessage(String sessionId, AgentSession.ConversationMessage message) {
         writeLock.lock();
         try {
-            var entry = toEntry(message);
+            Files.createDirectories(historyDir);
+            var entry = toEntry(message, null);
             String json = mapper.writeValueAsString(entry);
             Path file = historyDir.resolve(sessionId + ".jsonl");
             Files.writeString(file, json + "\n",
@@ -78,10 +82,12 @@ public final class SessionHistoryStore {
     public void saveSession(AgentSession session) {
         writeLock.lock();
         try {
+            Files.createDirectories(historyDir);
             Path file = historyDir.resolve(session.id() + ".jsonl");
+            String workspaceHash = WorkspacePaths.workspaceHash(session.projectPath());
             var lines = new StringBuilder();
             for (var msg : session.messages()) {
-                lines.append(mapper.writeValueAsString(toEntry(msg))).append("\n");
+                lines.append(mapper.writeValueAsString(toEntry(msg, workspaceHash))).append("\n");
             }
             Files.writeString(file, lines.toString(),
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
@@ -109,14 +115,42 @@ public final class SessionHistoryStore {
             var lines = Files.readAllLines(file);
             for (String line : lines) {
                 if (line.isBlank()) continue;
-                var entry = mapper.readValue(line, HistoryEntry.class);
-                messages.add(fromEntry(entry));
+                try {
+                    var entry = mapper.readValue(line, HistoryEntry.class);
+                    messages.add(fromEntry(entry));
+                } catch (IOException e) {
+                    log.warn("Skipping malformed history line for session {}: {}", sessionId, e.getMessage());
+                }
             }
             log.debug("Loaded session history: id={}, messages={}", sessionId, messages.size());
         } catch (IOException e) {
             log.warn("Failed to load session {}: {}", sessionId, e.getMessage());
         }
         return messages;
+    }
+
+    /**
+     * Lists persisted sessions for the given workspace hash.
+     */
+    public List<String> listSessionsForWorkspace(String workspaceHash) {
+        Objects.requireNonNull(workspaceHash, "workspaceHash");
+        if (workspaceHash.isBlank()) {
+            throw new IllegalArgumentException("workspaceHash must not be blank");
+        }
+
+        var sessionIds = new LinkedHashSet<String>();
+        try (var stream = Files.list(historyDir)) {
+            stream.filter(p -> p.toString().endsWith(".jsonl"))
+                    .forEach(path -> workspaceHashOf(path).ifPresent(entryWorkspaceHash -> {
+                        if (workspaceHash.equals(entryWorkspaceHash)) {
+                            String name = path.getFileName().toString();
+                            sessionIds.add(name.substring(0, name.length() - ".jsonl".length()));
+                        }
+                    }));
+        } catch (IOException e) {
+            log.debug("No history directory or error listing workspace sessions: {}", e.getMessage());
+        }
+        return List.copyOf(sessionIds);
     }
 
     /**
@@ -169,14 +203,14 @@ public final class SessionHistoryStore {
 
     // -- internal --------------------------------------------------------
 
-    private static HistoryEntry toEntry(AgentSession.ConversationMessage msg) {
+    private static HistoryEntry toEntry(AgentSession.ConversationMessage msg, String workspaceHash) {
         return switch (msg) {
             case AgentSession.ConversationMessage.User u ->
-                    new HistoryEntry("user", u.content(), u.timestamp());
+                    new HistoryEntry("user", u.content(), u.timestamp(), workspaceHash);
             case AgentSession.ConversationMessage.Assistant a ->
-                    new HistoryEntry("assistant", a.content(), a.timestamp());
+                    new HistoryEntry("assistant", a.content(), a.timestamp(), workspaceHash);
             case AgentSession.ConversationMessage.System s ->
-                    new HistoryEntry("system", s.content(), s.timestamp());
+                    new HistoryEntry("system", s.content(), s.timestamp(), workspaceHash);
         };
     }
 
@@ -189,6 +223,23 @@ public final class SessionHistoryStore {
         };
     }
 
+    private java.util.Optional<String> workspaceHashOf(Path file) {
+        try {
+            for (String line : Files.readAllLines(file)) {
+                if (line == null || line.isBlank()) {
+                    continue;
+                }
+                var entry = mapper.readValue(line, HistoryEntry.class);
+                if (entry.workspaceHash != null && !entry.workspaceHash.isBlank()) {
+                    return java.util.Optional.of(entry.workspaceHash);
+                }
+            }
+        } catch (IOException e) {
+            log.debug("Failed to inspect history workspace hash for {}: {}", file.getFileName(), e.getMessage());
+        }
+        return java.util.Optional.empty();
+    }
+
     @JsonIgnoreProperties(ignoreUnknown = true)
-    record HistoryEntry(String role, String content, Instant timestamp) {}
+    record HistoryEntry(String role, String content, Instant timestamp, String workspaceHash) {}
 }

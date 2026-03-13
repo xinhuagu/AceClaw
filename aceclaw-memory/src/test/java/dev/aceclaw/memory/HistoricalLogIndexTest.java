@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -172,5 +173,58 @@ class HistoricalLogIndexTest {
         assertThat(index.patterns("ws-a", t0.minusSeconds(1), t0.plusSeconds(120)))
                 .extracting(HistoricalLogIndex.PatternEntry::sessionId)
                 .containsOnly("session-a");
+    }
+
+    @Test
+    void sessionIdsAndReplaceWorkspaceAreScoped() throws Exception {
+        var index = new HistoricalLogIndex(tempDir);
+        var t0 = Instant.parse("2026-03-12T10:00:00Z");
+
+        index.index(new HistoricalSessionSnapshot(
+                "old-a",
+                "ws-a",
+                t0,
+                List.of("bash old-a.sh"),
+                List.of("Command timed out"),
+                List.of(),
+                Map.of("bash", new ToolMetrics("bash", 1, 0, 1, 100, t0)),
+                false,
+                "old-a"
+        ));
+        index.index(new HistoricalSessionSnapshot(
+                "keep-b",
+                "ws-b",
+                t0.plusSeconds(60),
+                List.of("bash keep-b.sh"),
+                List.of(),
+                List.of(),
+                Map.of("bash", new ToolMetrics("bash", 2, 2, 0, 200, t0.plusSeconds(60))),
+                false,
+                "keep-b"
+        ));
+
+        assertThat(index.sessionIds("ws-a")).isEqualTo(Set.of("old-a"));
+        assertThat(index.sessionIds("ws-b")).isEqualTo(Set.of("keep-b"));
+
+        index.replaceWorkspace("ws-a", List.of(
+                new HistoricalSessionSnapshot(
+                        "new-a",
+                        "ws-a",
+                        t0.plusSeconds(120),
+                        List.of("bash new-a.sh"),
+                        List.of(),
+                        List.of(),
+                        Map.of("bash", new ToolMetrics("bash", 3, 3, 0, 300, t0.plusSeconds(120))),
+                        false,
+                        "new-a"
+                )
+        ));
+
+        assertThat(index.sessionIds("ws-a")).isEqualTo(Set.of("new-a"));
+        assertThat(index.sessionIds("ws-b")).isEqualTo(Set.of("keep-b"));
+        assertThat(index.queryByTool("bash", t0.minusSeconds(1), t0.plusSeconds(300)))
+                .extracting(HistoricalLogIndex.ToolInvocationEntry::sessionId)
+                .contains("new-a", "keep-b")
+                .doesNotContain("old-a");
     }
 }

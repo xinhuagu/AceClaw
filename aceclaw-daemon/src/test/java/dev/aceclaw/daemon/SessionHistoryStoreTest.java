@@ -1,5 +1,6 @@
 package dev.aceclaw.daemon;
 
+import dev.aceclaw.memory.WorkspacePaths;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -113,6 +114,24 @@ class SessionHistoryStoreTest {
     }
 
     @Test
+    void saveSessionPersistsWorkspaceHashAndListsScopedSessions() {
+        var workspaceA = tempDir.resolve("workspace-a");
+        var workspaceB = tempDir.resolve("workspace-b");
+        var sessionA = AgentSession.withId("session-a", workspaceA);
+        var sessionB = AgentSession.withId("session-b", workspaceB);
+        sessionA.addMessage(new AgentSession.ConversationMessage.User("A"));
+        sessionB.addMessage(new AgentSession.ConversationMessage.User("B"));
+
+        store.saveSession(sessionA);
+        store.saveSession(sessionB);
+
+        String workspaceHashA = WorkspacePaths.workspaceHash(workspaceA);
+        String workspaceHashB = WorkspacePaths.workspaceHash(workspaceB);
+        assertThat(store.listSessionsForWorkspace(workspaceHashA)).containsExactly("session-a");
+        assertThat(store.listSessionsForWorkspace(workspaceHashB)).containsExactly("session-b");
+    }
+
+    @Test
     void saveSessionOverwritesPrevious() {
         var session = AgentSession.withId("overwrite", tempDir);
         session.addMessage(new AgentSession.ConversationMessage.User("First"));
@@ -156,12 +175,8 @@ class SessionHistoryStoreTest {
                 "NOT VALID JSON\n" +
                 "{\"role\":\"assistant\",\"content\":\"also good\",\"timestamp\":\"2025-01-01T00:00:01Z\"}\n");
 
-        // Should load what it can, skip malformed lines
         var loaded = store.loadSession("malformed");
-        // loadSession currently throws on malformed JSON, so it returns partial results up to the error
-        // The implementation wraps the entire readAllLines loop in one try-catch
-        // so a parse error on line 2 will cause the method to return what was loaded before the error
-        assertThat(loaded).hasSizeGreaterThanOrEqualTo(1);
+        assertThat(loaded).hasSize(2);
     }
 
     @Test
