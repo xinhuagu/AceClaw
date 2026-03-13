@@ -2798,27 +2798,28 @@ public final class TerminalRepl {
         // Suspend JLine's Status widget so its scroll region doesn't go
         // stale while ForegroundOutputSink writes directly to the terminal.
         suspendStatusPanel();
+        try {
+            // Create new foreground sink and swap it in atomically
+            var fgSink = new ForegroundOutputSink(out, markdownRenderer);
+            var oldSink = target.swapOutputSink(fgSink);
+            activeForegroundSink = fgSink;
+            taskManager.setForeground(target.taskId());
+            resumeCheckpointStore.markForeground(sessionId, target.taskId(), true);
 
-        // Create new foreground sink and swap it in atomically
-        var fgSink = new ForegroundOutputSink(out, markdownRenderer);
-        var oldSink = target.swapOutputSink(fgSink);
-        activeForegroundSink = fgSink;
-        taskManager.setForeground(target.taskId());
-        resumeCheckpointStore.markForeground(sessionId, target.taskId(), true);
+            // Replay buffered events if the task was backgrounded
+            if (oldSink instanceof BackgroundOutputBuffer bgBuffer) {
+                bgBuffer.replay(fgSink);
+            }
 
-        // Replay buffered events if the task was backgrounded
-        if (oldSink instanceof BackgroundOutputBuffer bgBuffer) {
-            bgBuffer.replay(fgSink);
+            waitForForeground(out, reader);
+            renderTaskCompletion(out, target);
+            taskManager.clearForeground();
+            activeForegroundSink = null;
+        } finally {
+            // Restore JLine's Status widget so it recalculates scroll region
+            // based on the terminal's current state after task output.
+            restoreStatusPanel();
         }
-
-        waitForForeground(out, reader);
-        renderTaskCompletion(out, target);
-        taskManager.clearForeground();
-        activeForegroundSink = null;
-
-        // Restore JLine's Status widget so it recalculates scroll region
-        // based on the terminal's current state after task output.
-        restoreStatusPanel();
     }
 
     // -- /cancel command -----------------------------------------------------
