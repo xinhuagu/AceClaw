@@ -891,6 +891,10 @@ public final class TerminalRepl {
                     true
             );
 
+            // Suspend JLine's Status widget so its scroll region doesn't go
+            // stale while ForegroundOutputSink writes directly to the terminal.
+            suspendStatusPanel();
+
             // Start thinking spinner
             fgSink.startThinkingSpinner();
 
@@ -906,6 +910,10 @@ public final class TerminalRepl {
 
             taskManager.clearForeground();
             activeForegroundSink = null;
+
+            // Restore JLine's Status widget so it recalculates scroll region
+            // based on the terminal's current state after task output.
+            restoreStatusPanel();
 
             // Connection is closed by TaskManager.handleTaskComplete() when the task ends
 
@@ -1587,16 +1595,44 @@ public final class TerminalRepl {
                     .map(as -> clampAttributedLine(as, safeWidth, terminalWidth))
                     .toList();
 
-            // Save cursor (CSI s) before status update, restore (CSI u) after.
-            // Uses SCP/RCP stack which is separate from JLine's internal DECSC/DECRC.
-            var writer = terminal.writer();
-            writer.print("\u001B[s");
-            writer.flush();
+            // Let JLine's Status.update() handle cursor positioning internally.
+            // Do NOT wrap with SCP/RCP (\u001B[s / \u001B[u) as that conflicts
+            // with JLine's own cursor management and corrupts cursor position.
             promptStatus.update(rendered);
-            writer.print("\u001B[u");
-            writer.flush();
         }
         ensureCursorVisible();
+    }
+
+    /**
+     * Suspends JLine's Status widget before a foreground task takes over the terminal.
+     * This tears down the scroll region so direct writes don't corrupt JLine's state.
+     */
+    private void suspendStatusPanel() {
+        synchronized (uiRenderLock) {
+            if (promptStatus != null) {
+                try {
+                    promptStatus.suspend();
+                } catch (Exception e) {
+                    log.debug("Failed to suspend status panel: {}", e.getMessage());
+                }
+            }
+        }
+    }
+
+    /**
+     * Restores JLine's Status widget after a foreground task completes.
+     * This re-establishes the scroll region based on the terminal's current state.
+     */
+    private void restoreStatusPanel() {
+        synchronized (uiRenderLock) {
+            if (promptStatus != null) {
+                try {
+                    promptStatus.restore();
+                } catch (Exception e) {
+                    log.debug("Failed to restore status panel: {}", e.getMessage());
+                }
+            }
+        }
     }
 
     private void ensureCursorVisible() {
