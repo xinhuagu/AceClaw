@@ -615,7 +615,7 @@ public final class AceClawDaemon {
             final var agentHandlerForCleanup = agentHandler;
             final var sessionAnalyzer = new SessionAnalyzer();
             final var historicalIndexRebuilder = historicalLogIndex != null
-                    ? new HistoricalIndexRebuilder(historyStore, historicalLogIndex, sessionAnalyzer)
+                    ? new HistoricalIndexRebuilder(historyStore, historicalLogIndex)
                     : null;
             final var crossSessionPatternMiner = historicalLogIndex != null ? new CrossSessionPatternMiner() : null;
             final var trendDetector = historicalLogIndex != null ? new TrendDetector() : null;
@@ -693,7 +693,7 @@ public final class AceClawDaemon {
                 }
                 if (historicalLogIndex != null) {
                     try {
-                        historicalLogIndex.index(new HistoricalSessionSnapshot(
+                        var snapshot = new HistoricalSessionSnapshot(
                                 session.id(),
                                 workspaceHash,
                                 Instant.now(),
@@ -703,7 +703,9 @@ public final class AceClawDaemon {
                                 metricsSnapshot,
                                 learnings.backtrackingDetected(),
                                 learnings.endToEndStrategy()
-                        ));
+                        );
+                        historyStore.saveSnapshot(snapshot);
+                        historicalLogIndex.index(snapshot);
                     } catch (Exception e) {
                         log.warn("Failed to index session history: {}", e.getMessage());
                     }

@@ -1,5 +1,6 @@
 package dev.aceclaw.daemon;
 
+import dev.aceclaw.memory.HistoricalSessionSnapshot;
 import dev.aceclaw.memory.WorkspacePaths;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -129,6 +130,26 @@ class SessionHistoryStoreTest {
         String workspaceHashB = WorkspacePaths.workspaceHash(workspaceB);
         assertThat(store.listSessionsForWorkspace(workspaceHashA)).containsExactly("session-a");
         assertThat(store.listSessionsForWorkspace(workspaceHashB)).containsExactly("session-b");
+    }
+
+    @Test
+    void saveAndLoadSnapshotRoundTrip() {
+        var snapshot = new HistoricalSessionSnapshot(
+                "snapshot-session",
+                "ws-a",
+                Instant.parse("2026-03-13T10:00:00Z"),
+                List.of("./gradlew test"),
+                List.of("Command timed out"),
+                List.of("src/App.java"),
+                java.util.Map.of(),
+                false,
+                "Inspect files, then run commands."
+        );
+
+        store.saveSnapshot(snapshot);
+
+        assertThat(store.loadSnapshot("snapshot-session")).contains(snapshot);
+        assertThat(store.listSnapshotSessionsForWorkspace("ws-a")).containsExactly("snapshot-session");
     }
 
     @Test

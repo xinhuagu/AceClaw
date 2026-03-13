@@ -123,6 +123,10 @@ public final class HistoricalLogIndex {
     }
 
     public Set<String> sessionIds(String workspaceHash) {
+        Objects.requireNonNull(workspaceHash, "workspaceHash");
+        if (workspaceHash.isBlank()) {
+            throw new IllegalArgumentException("workspaceHash must not be blank");
+        }
         var ids = new LinkedHashSet<String>();
         toolInvocations(workspaceHash, null, null).forEach(entry -> ids.add(entry.sessionId()));
         errorEntries(workspaceHash, null, null).forEach(entry -> ids.add(entry.sessionId()));
@@ -130,7 +134,7 @@ public final class HistoricalLogIndex {
         return Set.copyOf(ids);
     }
 
-    public void replaceWorkspace(String workspaceHash, List<HistoricalSessionSnapshot> snapshots) throws IOException {
+    public void replaceSessions(String workspaceHash, List<HistoricalSessionSnapshot> snapshots) throws IOException {
         Objects.requireNonNull(workspaceHash, "workspaceHash");
         Objects.requireNonNull(snapshots, "snapshots");
         if (workspaceHash.isBlank()) {
@@ -139,14 +143,20 @@ public final class HistoricalLogIndex {
 
         fileLock.lock();
         try {
+            var sessionIdsToReplace = snapshots.stream()
+                    .map(HistoricalSessionSnapshot::sessionId)
+                    .collect(java.util.stream.Collectors.toSet());
             var retainedTools = new ArrayList<>(toolInvocations(null, null, null).stream()
-                    .filter(entry -> !workspaceHash.equals(entry.workspaceHash()))
+                    .filter(entry -> !workspaceHash.equals(entry.workspaceHash())
+                            || !sessionIdsToReplace.contains(entry.sessionId()))
                     .toList());
             var retainedErrors = new ArrayList<>(errorEntries(null, null, null).stream()
-                    .filter(entry -> !workspaceHash.equals(entry.workspaceHash()))
+                    .filter(entry -> !workspaceHash.equals(entry.workspaceHash())
+                            || !sessionIdsToReplace.contains(entry.sessionId()))
                     .toList());
             var retainedPatterns = new ArrayList<>(patterns(null, null, null).stream()
-                    .filter(entry -> !workspaceHash.equals(entry.workspaceHash()))
+                    .filter(entry -> !workspaceHash.equals(entry.workspaceHash())
+                            || !sessionIdsToReplace.contains(entry.sessionId()))
                     .toList());
 
             for (var snapshot : snapshots) {
@@ -269,12 +279,16 @@ public final class HistoricalLogIndex {
     }
 
     private <T> void rewrite(Path file, List<T> entries) throws IOException {
+        Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
         var builder = new StringBuilder();
         for (var entry : entries) {
             builder.append(mapper.writeValueAsString(entry)).append('\n');
         }
-        Files.writeString(file, builder.toString(),
+        Files.writeString(tmp, builder.toString(),
                 StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+        Files.move(tmp, file,
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE);
     }
 
     private <T> List<T> read(Path file, Class<T> type) {

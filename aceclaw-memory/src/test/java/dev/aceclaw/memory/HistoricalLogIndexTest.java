@@ -206,7 +206,7 @@ class HistoricalLogIndexTest {
         assertThat(index.sessionIds("ws-a")).isEqualTo(Set.of("old-a"));
         assertThat(index.sessionIds("ws-b")).isEqualTo(Set.of("keep-b"));
 
-        index.replaceWorkspace("ws-a", List.of(
+        index.replaceSessions("ws-a", List.of(
                 new HistoricalSessionSnapshot(
                         "new-a",
                         "ws-a",
@@ -220,11 +220,19 @@ class HistoricalLogIndexTest {
                 )
         ));
 
-        assertThat(index.sessionIds("ws-a")).isEqualTo(Set.of("new-a"));
+        assertThat(index.sessionIds("ws-a")).isEqualTo(Set.of("old-a", "new-a"));
         assertThat(index.sessionIds("ws-b")).isEqualTo(Set.of("keep-b"));
         assertThat(index.queryByTool("bash", t0.minusSeconds(1), t0.plusSeconds(300)))
                 .extracting(HistoricalLogIndex.ToolInvocationEntry::sessionId)
-                .contains("new-a", "keep-b")
-                .doesNotContain("old-a");
+                .contains("old-a", "new-a", "keep-b");
+    }
+
+    @Test
+    void sessionIdsRequiresNonBlankWorkspaceHash() throws Exception {
+        var index = new HistoricalLogIndex(tempDir);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> index.sessionIds(null))
+                .isInstanceOf(NullPointerException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> index.sessionIds(" "))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }
