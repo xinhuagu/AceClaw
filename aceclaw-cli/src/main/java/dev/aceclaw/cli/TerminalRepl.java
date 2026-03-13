@@ -379,9 +379,17 @@ public final class TerminalRepl {
             // Render startup banner
             renderBanner(out, terminal.getWidth());
 
-            // Override Ctrl+L: clear screen + redraw status bar below prompt
+            // Override Ctrl+L: clear screen + reset status widget + redraw
             reader.getWidgets().put("aceclaw-clear-screen", () -> {
                 reader.callWidget(LineReader.CLEAR_SCREEN);
+                // Reset JLine's Status widget so it recalculates its scroll
+                // region from the cleared screen state. Without this, the
+                // widget writes to stale positions after clear.
+                synchronized (uiRenderLock) {
+                    if (promptStatus != null) {
+                        promptStatus.reset();
+                    }
+                }
                 requestUiRender();
                 return true;
             });
