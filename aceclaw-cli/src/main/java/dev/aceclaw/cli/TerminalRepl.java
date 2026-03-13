@@ -2793,6 +2793,10 @@ public final class TerminalRepl {
         out.printf("%sBringing task #%s to foreground...%s%n", MUTED, target.taskId(), RESET);
         out.flush();
 
+        // Suspend JLine's Status widget so its scroll region doesn't go
+        // stale while ForegroundOutputSink writes directly to the terminal.
+        suspendStatusPanel();
+
         // Create new foreground sink and swap it in atomically
         var fgSink = new ForegroundOutputSink(out, markdownRenderer);
         var oldSink = target.swapOutputSink(fgSink);
@@ -2809,6 +2813,10 @@ public final class TerminalRepl {
         renderTaskCompletion(out, target);
         taskManager.clearForeground();
         activeForegroundSink = null;
+
+        // Restore JLine's Status widget so it recalculates scroll region
+        // based on the terminal's current state after task output.
+        restoreStatusPanel();
     }
 
     // -- /cancel command -----------------------------------------------------
