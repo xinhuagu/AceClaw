@@ -370,7 +370,27 @@ class TerminalReplTest {
 
         assertThat(normalized).doesNotContain("\n").doesNotContain("\r").doesNotContain("\t");
         assertThat(normalized).startsWith("line1 line2 line3 ");
-        assertThat(normalized.length()).isLessThanOrEqualTo(160);
+        // Truncated by display width (80 columns), not char count
+        assertThat(TerminalTheme.displayWidth(normalized)).isLessThanOrEqualTo(80);
+        assertThat(normalized).endsWith("...");
+    }
+
+    @Test
+    void normalizeStatusPanelField_cjkTruncatedByDisplayWidth() throws Exception {
+        // 50 CJK chars = 100 display columns, should be truncated to 80
+        String raw = "\u4e2d\u6587".repeat(50);
+
+        String normalized = (String) invokePrivate(
+                repl,
+                "normalizeStatusPanelField",
+                new Class<?>[]{String.class},
+                raw);
+
+        assertThat(TerminalTheme.displayWidth(normalized)).isLessThanOrEqualTo(80);
+        assertThat(normalized).endsWith("...");
+        // char count should be less than 50 CJK chars since we truncated by display width
+        int contentLen = normalized.length() - 3; // minus "..."
+        assertThat(contentLen).isLessThan(50);
     }
 
     /**
