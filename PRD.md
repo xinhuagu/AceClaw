@@ -246,6 +246,15 @@ For complex, multi-step tasks, AceClaw provides an **autonomous Task Planner** t
 
 See [research/task-planner-architecture.md](research/task-planner-architecture.md) for detailed design.
 
+### 4.5.3 Current Implementation Snapshot (2026-03)
+
+The sections above describe the target design. The current codebase has already implemented substantial parts of the roadmap, but several major areas remain intentionally partial:
+
+- **Resume routing**: current implementation supports `session -> workspace` routing. `client-instance` scope and the full audit payload model remain planned work.
+- **Task planner**: current implementation supports complexity estimation, LLM-generated plans, sequential execution, and replanning hooks. Full DAG execution, automatic parallel branch scheduling, and Agent Teams integration remain future work.
+- **Learning maintenance**: current implementation performs session-close extraction and historical indexing immediately, then runs consolidation, cross-session mining, and trend detection via a deferred maintenance scheduler with time/session-count/size/idle triggers.
+- **Security**: current implementation has permission policy and approval gating. OS-level sandboxing, trust-level content sandboxing, and encryption at rest remain roadmap items.
+
 ### 4.6 Project Configuration (.aceclaw/ Directory)
 
 ```

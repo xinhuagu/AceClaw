@@ -157,6 +157,7 @@ public final class AutoMemoryStore {
         // Persist to disk and update in-memory index atomically under fileLock
         // to prevent remove() from rewriting the file before entries.add() runs.
         String fileName = targetFileName(global, projectPath);
+        accessLock.lock();
         fileLock.lock();
         try {
             String json = mapper.writeValueAsString(entry);
@@ -169,6 +170,7 @@ public final class AutoMemoryStore {
             log.error("Failed to persist memory entry: {}", e.getMessage());
         } finally {
             fileLock.unlock();
+            accessLock.unlock();
         }
         return entry;
     }
@@ -180,6 +182,7 @@ public final class AutoMemoryStore {
     public Optional<MemoryEntry> addIfAbsent(MemoryEntry.Category category, String content,
                                              List<String> tags, String source,
                                              boolean global, Path projectPath) {
+        accessLock.lock();
         fileLock.lock();
         try {
             String fileName = targetFileName(global, projectPath);
@@ -212,6 +215,7 @@ public final class AutoMemoryStore {
             return Optional.empty();
         } finally {
             fileLock.unlock();
+            accessLock.unlock();
         }
     }
 
@@ -265,6 +269,7 @@ public final class AutoMemoryStore {
      * Also rewrites all backing files.
      */
     public void replaceEntries(List<MemoryEntry> newEntries, Path projectPath) {
+        accessLock.lock();
         fileLock.lock();
         try {
             var previousEntryFiles = new HashMap<>(entryFiles);
@@ -281,6 +286,7 @@ public final class AutoMemoryStore {
             }
         } finally {
             fileLock.unlock();
+            accessLock.unlock();
         }
     }
 
@@ -292,6 +298,22 @@ public final class AutoMemoryStore {
     }
 
     /**
+     * Returns the size in bytes of the largest backing JSONL file for this workspace.
+     */
+    public long largestBackingFileBytes(Path projectPath) {
+        fileLock.lock();
+        try {
+            long largest = fileSize(memoryDir.resolve(GLOBAL_FILE));
+            if (projectPath != null) {
+                largest = Math.max(largest, fileSize(memoryDir.resolve(projectHash(projectPath) + ".jsonl")));
+            }
+            return largest;
+        } finally {
+            fileLock.unlock();
+        }
+    }
+
+    /**
      * Removes a memory entry by ID. Rewrites the file without the deleted entry.
      *
      * @param id          the entry ID to remove
@@ -299,6 +321,7 @@ public final class AutoMemoryStore {
      * @return true if the entry was found and removed
      */
     public boolean remove(String id, Path projectPath) {
+        accessLock.lock();
         fileLock.lock();
         try {
             var removed = entries.stream().filter(e -> e.id().equals(id)).findFirst();
@@ -317,6 +340,16 @@ public final class AutoMemoryStore {
             return true;
         } finally {
             fileLock.unlock();
+            accessLock.unlock();
+        }
+    }
+
+    private static long fileSize(Path file) {
+        try {
+            return Files.exists(file) ? Files.size(file) : 0L;
+        } catch (IOException e) {
+            log.debug("Failed to read memory file size for {}: {}", file, e.getMessage());
+            return 0L;
         }
     }
 
