@@ -340,13 +340,16 @@ public final class AceClawDaemon {
 
         // Skill system (project + user skills from .aceclaw/skills/)
         var skillRegistry = SkillRegistry.load(workingDir);
-        if (!skillRegistry.isEmpty()) {
+        DynamicSkillGenerator dynamicSkillGenerator = null;
+        {
             var contentResolver = new SkillContentResolver(workingDir);
             var skillTool = new SkillTool(skillRegistry, contentResolver, subAgentRunner);
             toolRegistry.register(skillTool);
+            if (!skillRegistry.isEmpty()) {
             log.info("Skills registered: {}", skillRegistry.names());
-        } else {
-            log.debug("No skills found, SkillTool not registered");
+            } else {
+                log.debug("No disk-backed skills found, SkillTool registered for runtime skills only");
+            }
         }
 
         // 5. System prompt (with 8-tier memory hierarchy + daily journal + model identity + budget)
@@ -410,7 +413,7 @@ public final class AceClawDaemon {
                 promptBudget,
                 toolNames,
                 config.braveSearchApiKey() != null,
-                skillDescriptions);
+                skillRegistry::formatDescriptions);
         agentHandler.setAdaptiveContinuationConfig(
                 config.adaptiveContinuationEnabled(),
                 config.adaptiveContinuationMaxSegments(),
@@ -544,6 +547,11 @@ public final class AceClawDaemon {
                         }
                     } : null);
             agentHandler.setSelfImprovementEngine(selfImprovementEngine);
+            dynamicSkillGenerator = new DynamicSkillGenerator(
+                    llmClient,
+                    agentHandler::getModelForSession,
+                    skillRegistry);
+            agentHandler.setDynamicSkillGenerator(dynamicSkillGenerator);
             candidateStoreRef = cs;
 
             // Pass candidate store to agent handler for prompt injection
@@ -649,6 +657,7 @@ public final class AceClawDaemon {
                             scope.workspaceHash(),
                             scope.workingDir())
             );
+            final var runtimeSkillGeneratorForSessionEnd = dynamicSkillGenerator;
             sessionManager.setSessionEndCallback(session -> {
                 var sessionWorkingDir = session.projectPath().toAbsolutePath().normalize();
                 var sessionWorkspaceHash = WorkspacePaths.workspaceHash(sessionWorkingDir);
@@ -719,6 +728,16 @@ public final class AceClawDaemon {
                         learningMaintenanceScheduler.onSessionClosed(sessionWorkspaceHash, sessionWorkingDir);
                     } catch (Exception e) {
                         log.warn("Learning maintenance trigger failed: {}", e.getMessage());
+                    }
+                }
+                if (runtimeSkillGeneratorForSessionEnd != null) {
+                    try {
+                        int persistedDrafts = runtimeSkillGeneratorForSessionEnd.persistDrafts(session.id(), sessionWorkingDir);
+                        if (persistedDrafts > 0) {
+                            log.info("Persisted {} runtime skill drafts for session {}", persistedDrafts, session.id());
+                        }
+                    } catch (Exception e) {
+                        log.warn("Runtime skill draft persistence failed: {}", e.getMessage());
                     }
                 }
 

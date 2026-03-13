@@ -274,6 +274,34 @@ class SkillRegistryTest {
         assertThat(config.name()).isEqualTo("my-custom-skill");
     }
 
+    @Test
+    void runtimeSkillsAreVisibleOnlyToOwningSession() throws IOException {
+        createSkill(tempDir, "commit", "Commit staged changes", "Commit body.");
+        var registry = SkillRegistry.load(tempDir);
+
+        var runtime = new SkillConfig(
+                "runtime-review",
+                "Runtime review helper",
+                null,
+                SkillConfig.ExecutionContext.FORK,
+                null,
+                List.of("read_file", "grep"),
+                6,
+                true,
+                false,
+                "Review changed files and summarize findings.",
+                tempDir.resolve(".aceclaw/runtime-skills/runtime-review"));
+
+        assertThat(registry.registerRuntime("session-a", runtime)).isTrue();
+        assertThat(registry.names()).containsExactly("commit");
+        assertThat(registry.names("session-a")).containsExactly("commit", "runtime-review");
+        assertThat(registry.names("session-b")).containsExactly("commit");
+        assertThat(registry.get("session-a", "runtime-review")).contains(runtime);
+        assertThat(registry.get("session-b", "runtime-review")).isEmpty();
+        assertThat(registry.formatDescriptions("session-a")).contains("runtime-review");
+        assertThat(registry.formatDescriptions("session-b")).doesNotContain("runtime-review");
+    }
+
     // -- Helpers --
 
     private void createSkill(Path projectDir, String name, String description, String body)

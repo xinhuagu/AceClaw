@@ -1,0 +1,454 @@
+package dev.aceclaw.daemon;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.aceclaw.core.agent.SkillConfig;
+import dev.aceclaw.core.agent.SkillRegistry;
+import dev.aceclaw.core.agent.Turn;
+import dev.aceclaw.core.llm.ContentBlock;
+import dev.aceclaw.core.llm.LlmClient;
+import dev.aceclaw.core.llm.LlmException;
+import dev.aceclaw.core.llm.LlmRequest;
+import dev.aceclaw.core.llm.Message;
+import dev.aceclaw.memory.Insight;
+import dev.aceclaw.memory.PatternType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
+import java.util.regex.Pattern;
+
+/**
+ * Generates session-scoped runtime skills from repeated tool sequences.
+ *
+ * <p>Runtime skills are visible only to the originating session and are persisted
+ * as drafts on session end. The first implementation is intentionally conservative:
+ * it only generates FORK-mode skills from repeated tool sequences and skips any
+ * sequence that includes {@code bash}.
+ */
+public final class DynamicSkillGenerator {
+
+    private static final Logger log = LoggerFactory.getLogger(DynamicSkillGenerator.class);
+
+    static final int MAX_RUNTIME_SKILLS_PER_SESSION = 3;
+    private static final int DEFAULT_MAX_TURNS = 6;
+    private static final String DRAFTS_DIR = ".aceclaw/skills-drafts";
+    private static final Pattern CODE_FENCE = Pattern.compile(
+            "```(?:json)?\\s*\\n?(\\{.*?})\\s*```",
+            Pattern.DOTALL);
+    private static final Set<String> DISALLOWED_RUNTIME_TOOLS = Set.of("bash", "skill", "task", "task_output");
+
+    private final LlmClient llmClient;
+    private final Function<String, String> modelResolver;
+    private final SkillRegistry skillRegistry;
+    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ConcurrentHashMap<String, SessionRuntimeState> sessionStates = new ConcurrentHashMap<>();
+
+    public DynamicSkillGenerator(LlmClient llmClient,
+                                 Function<String, String> modelResolver,
+                                 SkillRegistry skillRegistry) {
+        this.llmClient = Objects.requireNonNull(llmClient, "llmClient");
+        this.modelResolver = Objects.requireNonNull(modelResolver, "modelResolver");
+        this.skillRegistry = Objects.requireNonNull(skillRegistry, "skillRegistry");
+    }
+
+    public java.util.Optional<SkillConfig> maybeGenerate(String sessionId,
+                                                         Path projectPath,
+                                                         Turn turn,
+                                                         List<AgentSession.ConversationMessage> sessionHistory,
+                                                         List<Insight> insights) {
+        Objects.requireNonNull(sessionId, "sessionId");
+        Objects.requireNonNull(projectPath, "projectPath");
+        Objects.requireNonNull(turn, "turn");
+        Objects.requireNonNull(sessionHistory, "sessionHistory");
+        Objects.requireNonNull(insights, "insights");
+
+        if (!hasRepeatedSequenceInsight(insights)) {
+            return java.util.Optional.empty();
+        }
+
+        var toolSequence = extractToolSequence(turn.newMessages());
+        if (toolSequence.size() < 3) {
+            return java.util.Optional.empty();
+        }
+
+        var allowedTools = filterAllowedTools(toolSequence);
+        if (allowedTools.isEmpty()) {
+            return java.util.Optional.empty();
+        }
+
+        String sequenceSignature = signatureOf(allowedTools);
+        var state = sessionStates.computeIfAbsent(sessionId, ignored -> new SessionRuntimeState());
+        synchronized (state) {
+            if (state.skillsByName.size() >= MAX_RUNTIME_SKILLS_PER_SESSION) {
+                return java.util.Optional.empty();
+            }
+            if (state.signatures.contains(sequenceSignature)) {
+                return java.util.Optional.empty();
+            }
+
+            var draft = generateDraft(sessionId, projectPath, allowedTools, sessionHistory);
+            String skillName = resolveRuntimeName(sessionId, draft.name(), state);
+            var config = new SkillConfig(
+                    skillName,
+                    draft.description(),
+                    draft.argumentHint(),
+                    SkillConfig.ExecutionContext.FORK,
+                    null,
+                    allowedTools,
+                    DEFAULT_MAX_TURNS,
+                    true,
+                    false,
+                    draft.body(),
+                    runtimeDirectory(projectPath, skillName));
+
+            if (!skillRegistry.registerRuntime(sessionId, config)) {
+                return java.util.Optional.empty();
+            }
+            state.signatures.add(sequenceSignature);
+            state.skillsByName.put(skillName,
+                    new RuntimeSkillRecord(config, Instant.now(), List.copyOf(allowedTools), sequenceSignature));
+            log.info("Registered runtime skill '{}' for session {}", skillName, sessionId);
+            return java.util.Optional.of(config);
+        }
+    }
+
+    public int persistDrafts(String sessionId, Path projectPath) throws IOException {
+        Objects.requireNonNull(sessionId, "sessionId");
+        Objects.requireNonNull(projectPath, "projectPath");
+
+        var state = sessionStates.remove(sessionId);
+        if (state == null) {
+            skillRegistry.clearRuntime(sessionId);
+            return 0;
+        }
+
+        int persisted = 0;
+        synchronized (state) {
+            Path draftsRoot = projectPath.resolve(DRAFTS_DIR);
+            Files.createDirectories(draftsRoot);
+            for (var record : state.skillsByName.values()) {
+                String resolvedName = resolveDraftName(draftsRoot, record.skill().name(), sessionId);
+                Path skillDir = draftsRoot.resolve(resolvedName);
+                Files.createDirectories(skillDir);
+                Path skillFile = skillDir.resolve("SKILL.md");
+                if (!Files.exists(skillFile)) {
+                    Path temp = skillDir.resolve("SKILL.md.tmp");
+                    Files.writeString(temp, renderDraftMarkdown(resolvedName, record, sessionId));
+                    Files.move(temp, skillFile,
+                            StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                    persisted++;
+                }
+            }
+        }
+
+        skillRegistry.clearRuntime(sessionId);
+        return persisted;
+    }
+
+    static List<String> extractToolSequence(List<Message> messages) {
+        var toolSequence = new ArrayList<String>();
+        for (var msg : messages) {
+            if (msg instanceof Message.AssistantMessage assistant) {
+                for (var block : assistant.content()) {
+                    if (block instanceof ContentBlock.ToolUse toolUse) {
+                        toolSequence.add(toolUse.name());
+                    }
+                }
+            }
+        }
+        return List.copyOf(toolSequence);
+    }
+
+    private static boolean hasRepeatedSequenceInsight(List<Insight> insights) {
+        return insights.stream()
+                .filter(Insight.PatternInsight.class::isInstance)
+                .map(Insight.PatternInsight.class::cast)
+                .anyMatch(insight -> insight.patternType() == PatternType.REPEATED_TOOL_SEQUENCE);
+    }
+
+    private RuntimeSkillDraft generateDraft(String sessionId,
+                                            Path projectPath,
+                                            List<String> allowedTools,
+                                            List<AgentSession.ConversationMessage> sessionHistory) {
+        try {
+            return proposeDraft(sessionId, projectPath, allowedTools, sessionHistory);
+        } catch (Exception e) {
+            log.warn("Dynamic runtime skill generation fell back to template: {}", e.getMessage());
+            return fallbackDraft(allowedTools, sessionHistory);
+        }
+    }
+
+    private RuntimeSkillDraft proposeDraft(String sessionId,
+                                           Path projectPath,
+                                           List<String> allowedTools,
+                                           List<AgentSession.ConversationMessage> sessionHistory) throws LlmException {
+        String prompt = buildPrompt(projectPath, allowedTools, sessionHistory);
+        var request = LlmRequest.builder()
+                .model(modelResolver.apply(sessionId))
+                .systemPrompt("""
+                        You create concise runtime skills for an autonomous coding agent.
+                        Return ONLY valid JSON with fields:
+                        {
+                          "name": "short-kebab-or-short-title",
+                          "description": "one sentence",
+                          "argument_hint": "<optional args or empty>",
+                          "body": "markdown instructions for a FORK-mode skill"
+                        }
+                        Rules:
+                        - Keep the skill narrow and reusable.
+                        - Do not mention bash.
+                        - Assume only the listed tools are allowed.
+                        - Focus on the repeated workflow, not the whole task.
+                        """)
+                .addMessage(Message.user(prompt))
+                .maxTokens(2048)
+                .thinkingBudget(1024)
+                .temperature(0.2)
+                .build();
+        var response = llmClient.sendMessage(request);
+        String text = response.text();
+        if (text == null || text.isBlank()) {
+            throw new LlmException("Empty runtime skill response");
+        }
+        return parseDraft(text);
+    }
+
+    private String buildPrompt(Path projectPath,
+                               List<String> allowedTools,
+                               List<AgentSession.ConversationMessage> sessionHistory) {
+        String recentPrompts = recentUserPrompts(sessionHistory, 3);
+        return """
+                Create a reusable runtime skill for a repeated workflow inside this project.
+
+                Project path: %s
+                Repeated tool sequence: %s
+                Allowed tools: %s
+
+                Recent user prompts:
+                %s
+                """.formatted(
+                projectPath,
+                String.join(" -> ", allowedTools),
+                String.join(", ", allowedTools),
+                recentPrompts.isBlank() ? "- none" : recentPrompts);
+    }
+
+    private RuntimeSkillDraft parseDraft(String text) throws LlmException {
+        try {
+            JsonNode node = objectMapper.readTree(extractJson(text));
+            String name = trimToNull(node.path("name").asText(""));
+            String description = trimToNull(node.path("description").asText(""));
+            String argumentHint = trimToNull(node.path("argument_hint").asText(""));
+            String body = trimToNull(node.path("body").asText(""));
+            if (description == null || body == null) {
+                throw new LlmException("Runtime skill response missing description/body");
+            }
+            return new RuntimeSkillDraft(
+                    name != null ? name : "runtime-workflow",
+                    description,
+                    argumentHint,
+                    body);
+        } catch (IOException e) {
+            throw new LlmException("Failed to parse runtime skill response: " + e.getMessage());
+        }
+    }
+
+    private static String extractJson(String text) {
+        var matcher = CODE_FENCE.matcher(text);
+        return matcher.find() ? matcher.group(1) : text.trim();
+    }
+
+    private static RuntimeSkillDraft fallbackDraft(List<String> allowedTools,
+                                                   List<AgentSession.ConversationMessage> sessionHistory) {
+        String name = "runtime-" + toSlug(String.join("-", allowedTools));
+        String lastPrompt = latestUserPrompt(sessionHistory);
+        String description = "Reusable workflow for " + String.join(" -> ", allowedTools);
+        StringBuilder body = new StringBuilder();
+        body.append("# Runtime Workflow\n\n");
+        if (!lastPrompt.isBlank()) {
+            body.append("Goal context: ").append(lastPrompt).append("\n\n");
+        }
+        body.append("Execute this workflow using the allowed tools only.\n\n");
+        body.append("## Steps\n");
+        for (int i = 0; i < allowedTools.size(); i++) {
+            body.append(i + 1).append(". Use `").append(allowedTools.get(i)).append("` when appropriate.\n");
+        }
+        body.append("\nReturn a concise summary of what you found or changed.");
+        return new RuntimeSkillDraft(name, description, null, body.toString());
+    }
+
+    private static List<String> filterAllowedTools(List<String> toolSequence) {
+        var allowed = new LinkedHashSet<String>();
+        for (var tool : toolSequence) {
+            if (tool == null || tool.isBlank()) {
+                continue;
+            }
+            if (DISALLOWED_RUNTIME_TOOLS.contains(tool)) {
+                return List.of();
+            }
+            allowed.add(tool);
+        }
+        return List.copyOf(allowed);
+    }
+
+    private String resolveRuntimeName(String sessionId, String rawName, SessionRuntimeState state) {
+        String base = toSlug(rawName);
+        if (base.isBlank()) {
+            base = "runtime-workflow";
+        }
+        String current = base;
+        int suffix = 2;
+        while (state.skillsByName.containsKey(current)
+                || skillRegistry.get(sessionId, current).isPresent()) {
+            current = base + "-" + suffix++;
+        }
+        return current;
+    }
+
+    private static String resolveDraftName(Path draftsRoot, String baseName, String sessionId) throws IOException {
+        String current = baseName;
+        int suffix = 2;
+        while (true) {
+            Path skillFile = draftsRoot.resolve(current).resolve("SKILL.md");
+            if (!Files.exists(skillFile)) {
+                return current;
+            }
+            String content = Files.readString(skillFile);
+            if (content.contains("source-session-id: \"" + sessionId + "\"")
+                    || content.contains("source-session-id: " + sessionId)) {
+                return current;
+            }
+            current = baseName + "-" + suffix++;
+        }
+    }
+
+    private static String renderDraftMarkdown(String skillName, RuntimeSkillRecord record, String sessionId) {
+        String allowedTools = record.allowedTools().isEmpty()
+                ? "[]"
+                : "[" + record.allowedTools().stream().map(DynamicSkillGenerator::quoted).reduce((a, b) -> a + ", " + b).orElse("") + "]";
+        return """
+                ---
+                name: %s
+                description: %s
+                context: %s
+                allowed-tools: %s
+                max-turns: %d
+                disable-model-invocation: true
+                source-session-id: %s
+                runtime-generated: true
+                source-tool-sequence: %s
+                ---
+
+                %s
+                """.formatted(
+                quoted(skillName),
+                quoted(record.skill().description()),
+                quoted(record.skill().context().name()),
+                allowedTools,
+                record.skill().maxTurns(),
+                quoted(sessionId),
+                quoted(String.join(" -> ", record.allowedTools())),
+                record.skill().body()
+        );
+    }
+
+    private static String recentUserPrompts(List<AgentSession.ConversationMessage> sessionHistory, int limit) {
+        var prompts = new ArrayList<String>();
+        for (int i = sessionHistory.size() - 1; i >= 0 && prompts.size() < limit; i--) {
+            var message = sessionHistory.get(i);
+            if (message instanceof AgentSession.ConversationMessage.User user) {
+                String text = trimToNull(user.content());
+                if (text != null) {
+                    prompts.add(0, "- " + text);
+                }
+            }
+        }
+        return String.join("\n", prompts);
+    }
+
+    private static String latestUserPrompt(List<AgentSession.ConversationMessage> sessionHistory) {
+        for (int i = sessionHistory.size() - 1; i >= 0; i--) {
+            var message = sessionHistory.get(i);
+            if (message instanceof AgentSession.ConversationMessage.User user) {
+                return user.content() == null ? "" : user.content();
+            }
+        }
+        return "";
+    }
+
+    private static String signatureOf(List<String> allowedTools) {
+        return String.join("->", allowedTools);
+    }
+
+    private static Path runtimeDirectory(Path projectPath, String skillName) {
+        return projectPath.resolve(".aceclaw").resolve("runtime-skills").resolve(skillName);
+    }
+
+    private static String toSlug(String input) {
+        if (input == null || input.isBlank()) {
+            return "runtime-workflow";
+        }
+        String raw = input.toLowerCase(Locale.ROOT)
+                .replaceAll("[^a-z0-9]+", "-")
+                .replaceAll("^-+|-+$", "");
+        return raw.isBlank() ? "runtime-workflow" : raw;
+    }
+
+    private static String quoted(String value) {
+        if (value == null) {
+            return "\"\"";
+        }
+        String escaped = value
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\r\n", "\n")
+                .replace("\r", "\n")
+                .replace("\n", "\\n");
+        return "\"" + escaped + "\"";
+    }
+
+    private static String trimToNull(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private static final class SessionRuntimeState {
+        private final LinkedHashMap<String, RuntimeSkillRecord> skillsByName = new LinkedHashMap<>();
+        private final LinkedHashSet<String> signatures = new LinkedHashSet<>();
+    }
+
+    private record RuntimeSkillRecord(
+            SkillConfig skill,
+            Instant createdAt,
+            List<String> allowedTools,
+            String signature
+    ) {
+        private RuntimeSkillRecord {
+            allowedTools = List.copyOf(allowedTools);
+        }
+    }
+
+    record RuntimeSkillDraft(
+            String name,
+            String description,
+            String argumentHint,
+            String body
+    ) {}
+}

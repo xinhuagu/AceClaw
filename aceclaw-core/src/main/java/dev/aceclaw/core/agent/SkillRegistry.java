@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
 /**
@@ -29,6 +30,8 @@ public final class SkillRegistry {
     private static final String SKILL_FILE = "SKILL.md";
 
     private final Map<String, SkillConfig> registry;
+    private final ConcurrentHashMap<String, Map<String, SkillConfig>> runtimeRegistry =
+            new ConcurrentHashMap<>();
 
     private SkillRegistry(Map<String, SkillConfig> registry) {
         this.registry = Collections.unmodifiableMap(new LinkedHashMap<>(registry));
@@ -105,6 +108,23 @@ public final class SkillRegistry {
     }
 
     /**
+     * Looks up a skill by name with session-scoped runtime overlay support.
+     * Runtime skills are visible only to the session that registered them.
+     */
+    public Optional<SkillConfig> get(String sessionId, String name) {
+        if (sessionId != null && !sessionId.isBlank()) {
+            var runtime = runtimeRegistry.get(sessionId);
+            if (runtime != null) {
+                var skill = runtime.get(name);
+                if (skill != null) {
+                    return Optional.of(skill);
+                }
+            }
+        }
+        return get(name);
+    }
+
+    /**
      * Returns all registered skill names (ordered: user skills first, then project overrides).
      */
     public List<String> names() {
@@ -112,10 +132,39 @@ public final class SkillRegistry {
     }
 
     /**
+     * Returns all registered skill names visible to the given session.
+     * Session runtime skills are appended after disk-backed skills.
+     */
+    public List<String> names(String sessionId) {
+        var names = new LinkedHashSet<>(registry.keySet());
+        if (sessionId != null && !sessionId.isBlank()) {
+            var runtime = runtimeRegistry.get(sessionId);
+            if (runtime != null && !runtime.isEmpty()) {
+                names.addAll(runtime.keySet());
+            }
+        }
+        return List.copyOf(names);
+    }
+
+    /**
      * Returns all registered skill configurations.
      */
     public List<SkillConfig> all() {
         return List.copyOf(registry.values());
+    }
+
+    /**
+     * Returns all registered skill configurations visible to the given session.
+     */
+    public List<SkillConfig> all(String sessionId) {
+        var combined = new LinkedHashMap<String, SkillConfig>(registry);
+        if (sessionId != null && !sessionId.isBlank()) {
+            var runtime = runtimeRegistry.get(sessionId);
+            if (runtime != null && !runtime.isEmpty()) {
+                runtime.forEach(combined::putIfAbsent);
+            }
+        }
+        return List.copyOf(combined.values());
     }
 
     /**
@@ -135,6 +184,54 @@ public final class SkillRegistry {
         var modelVisible = registry.values().stream()
                 .filter(s -> !s.disableModelInvocation())
                 .toList();
+        return formatDescriptions(modelVisible);
+    }
+
+    /**
+     * Formats visible skill descriptions for a given session, including runtime skills.
+     */
+    public String formatDescriptions(String sessionId) {
+        var modelVisible = all(sessionId).stream()
+                .filter(s -> !s.disableModelInvocation())
+                .toList();
+        return formatDescriptions(modelVisible);
+    }
+
+    /**
+     * Registers a runtime skill visible only to the provided session.
+     *
+     * @return true if the skill was newly added, false if a skill with that name already existed
+     */
+    public boolean registerRuntime(String sessionId, SkillConfig skill) {
+        Objects.requireNonNull(sessionId, "sessionId");
+        Objects.requireNonNull(skill, "skill");
+        if (sessionId.isBlank()) {
+            throw new IllegalArgumentException("sessionId must not be blank");
+        }
+        var sessionSkills = runtimeRegistry.computeIfAbsent(sessionId, ignored -> new ConcurrentHashMap<>());
+        return sessionSkills.putIfAbsent(skill.name(), skill) == null;
+    }
+
+    /**
+     * Returns session-scoped runtime skills.
+     */
+    public List<SkillConfig> runtimeSkills(String sessionId) {
+        Objects.requireNonNull(sessionId, "sessionId");
+        var runtime = runtimeRegistry.get(sessionId);
+        return runtime == null ? List.of() : List.copyOf(runtime.values());
+    }
+
+    /**
+     * Clears all runtime skills for the given session.
+     */
+    public void clearRuntime(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return;
+        }
+        runtimeRegistry.remove(sessionId);
+    }
+
+    private static String formatDescriptions(List<SkillConfig> modelVisible) {
 
         if (modelVisible.isEmpty()) {
             return "";

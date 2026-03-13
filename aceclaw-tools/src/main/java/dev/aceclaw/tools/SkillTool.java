@@ -37,6 +37,7 @@ public final class SkillTool implements Tool, CancellationAware {
     private final SubAgentRunner subAgentRunner;
     private volatile StreamEventHandler currentHandler;
     private volatile CancellationToken cancellationToken;
+    private volatile String currentSessionId;
 
     /**
      * Creates a skill tool.
@@ -67,6 +68,13 @@ public final class SkillTool implements Tool, CancellationAware {
         this.currentHandler = handler;
     }
 
+    /**
+     * Sets the current session ID so runtime session-scoped skills are visible.
+     */
+    public void setCurrentSessionId(String sessionId) {
+        this.currentSessionId = sessionId;
+    }
+
     @Override
     public String name() {
         return "skill";
@@ -79,7 +87,7 @@ public final class SkillTool implements Tool, CancellationAware {
 
     @Override
     public JsonNode inputSchema() {
-        var names = skillRegistry.names();
+        var names = skillRegistry.names(currentSessionId);
 
         var builder = SchemaBuilder.object()
                 .requiredProperty("name", names.isEmpty()
@@ -104,11 +112,11 @@ public final class SkillTool implements Tool, CancellationAware {
         String skillName = input.get("name").asText();
         String arguments = input.has("arguments") ? input.get("arguments").asText() : "";
 
-        var configOpt = skillRegistry.get(skillName);
+        var configOpt = skillRegistry.get(currentSessionId, skillName);
         if (configOpt.isEmpty()) {
             return new ToolResult(
                     "Unknown skill: " + skillName +
-                    ". Available skills: " + String.join(", ", skillRegistry.names()), true);
+                    ". Available skills: " + String.join(", ", skillRegistry.names(currentSessionId)), true);
         }
 
         var config = configOpt.get();

@@ -92,6 +92,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Function;
 
 /**
  * Handles {@code agent.prompt} JSON-RPC requests with streaming support.
@@ -261,6 +262,7 @@ public final class StreamingAgentHandler {
         for (var tool : toolRegistry.all()) {
             if (tool instanceof SkillTool st) {
                 st.setCurrentHandler(eventHandler);
+                st.setCurrentSessionId(sessionId);
             }
             if (tool instanceof dev.aceclaw.daemon.deferred.DeferCheckTool dct) {
                 dct.setCurrentSessionId(sessionId);
@@ -330,6 +332,7 @@ public final class StreamingAgentHandler {
             for (var tool : toolRegistry.all()) {
                 if (tool instanceof SkillTool st) {
                     st.setCurrentHandler(null);
+                    st.setCurrentSessionId(null);
                 }
                 if (tool instanceof dev.aceclaw.daemon.deferred.DeferCheckTool dct) {
                     dct.setCurrentSessionId(null);
@@ -587,6 +590,10 @@ public final class StreamingAgentHandler {
                         int persisted = selfImprovementEngine.persist(insights, sessionIdRef, projectPathRef);
                         log.debug("Self-improvement: {} insights analyzed, {} persisted (session={})",
                                 insights.size(), persisted, sessionIdRef);
+                    }
+                    if (dynamicSkillGenerator != null) {
+                        dynamicSkillGenerator.maybeGenerate(
+                                sessionIdRef, projectPathRef, turnRef, historyRef, insights);
                     }
                 } catch (Exception e) {
                     log.warn("Self-improvement analysis failed: {}", e.getMessage());
@@ -1199,7 +1206,7 @@ public final class StreamingAgentHandler {
     private SystemPromptBudget systemPromptBudget = SystemPromptBudget.DEFAULT;
     private Set<String> registeredToolNames = Set.of();
     private boolean hasBraveApiKey;
-    private String skillDescriptions = "";
+    private Function<String, String> skillDescriptionsProvider = ignored -> "";
     private int contextWindowTokens;
     private SelfImprovementEngine selfImprovementEngine;
     private HookExecutor hookExecutor;
@@ -1220,6 +1227,7 @@ public final class StreamingAgentHandler {
     private PlanCheckpointStore planCheckpointStore;
     private SkillMemoryFeedback skillMemoryFeedback;
     private SkillRefinementEngine skillRefinementEngine;
+    private DynamicSkillGenerator dynamicSkillGenerator;
 
     /**
      * Sets the LLM configuration for permission-aware agent loop creation.
@@ -1291,13 +1299,14 @@ public final class StreamingAgentHandler {
                                          SystemPromptBudget systemPromptBudget,
                                          Set<String> registeredToolNames,
                                          boolean hasBraveApiKey,
-                                         String skillDescriptions) {
+                                         Function<String, String> skillDescriptionsProvider) {
         this.markdownStore = markdownStore;
         this.provider = provider;
         this.systemPromptBudget = systemPromptBudget != null ? systemPromptBudget : SystemPromptBudget.DEFAULT;
         this.registeredToolNames = registeredToolNames != null ? Set.copyOf(registeredToolNames) : Set.of();
         this.hasBraveApiKey = hasBraveApiKey;
-        this.skillDescriptions = skillDescriptions != null ? skillDescriptions : "";
+        this.skillDescriptionsProvider = skillDescriptionsProvider != null
+                ? skillDescriptionsProvider : ignored -> "";
     }
 
     /**
@@ -1305,6 +1314,10 @@ public final class StreamingAgentHandler {
      */
     public void setSelfImprovementEngine(SelfImprovementEngine selfImprovementEngine) {
         this.selfImprovementEngine = selfImprovementEngine;
+    }
+
+    public void setDynamicSkillGenerator(DynamicSkillGenerator dynamicSkillGenerator) {
+        this.dynamicSkillGenerator = dynamicSkillGenerator;
     }
 
     /**
@@ -1565,7 +1578,7 @@ public final class StreamingAgentHandler {
                 hasBraveApiKey,
                 candidateStore,
                 config,
-                skillDescriptions,
+                skillDescriptionsProvider.apply(sessionId),
                 prompt,
                 activePaths);
         if (assembly.injectedCandidateIds().isEmpty()) {
