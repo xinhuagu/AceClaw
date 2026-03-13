@@ -2365,6 +2365,7 @@ public final class TerminalRepl {
                 out.println(INFO + "  /model" + RESET + "    Show current model (or /model <name> to switch)");
                 out.println(INFO + "  /tools" + RESET + "    List available tools");
                 out.println(INFO + "  /status" + RESET + "   Show session status");
+                out.println(INFO + "  /learning" + RESET + " Show learning summary");
                 out.println(INFO + "  /project" + RESET + "  Show current session project");
                 out.println(INFO + "  /skills" + RESET + "   List generated skill drafts (/skills inspect <name>)");
                 out.println(INFO + "  /tasks" + RESET + "    List all tasks with status");
@@ -2414,6 +2415,8 @@ public final class TerminalRepl {
                 out.println();
                 out.flush();
             }
+
+            case "/learning" -> handleLearningCommand(out);
 
             case "/project" -> {
                 out.println();
@@ -2624,6 +2627,101 @@ public final class TerminalRepl {
 
         out.println(WARNING + "Usage: /skills drafts | /skills drafts pending | /skills inspect <name>" + RESET);
         out.flush();
+    }
+
+    private void handleLearningCommand(PrintWriter out) {
+        if (client == null || !client.isConnected()) {
+            out.println(WARNING + "Not connected to daemon" + RESET);
+            out.flush();
+            return;
+        }
+        try {
+            var params = client.objectMapper().createObjectNode();
+            params.put("project", sessionInfo.project());
+            params.put("limit", 8);
+            JsonNode root = client.sendRequest("learning.summary", params);
+
+            out.println();
+            out.println(BOLD + "Learning Summary" + RESET);
+            JsonNode maintenanceTotals = root.path("maintenanceTotals");
+            out.printf("  %sMaintenance:%s deduped=%d merged=%d pruned=%d%n",
+                    MUTED, RESET,
+                    maintenanceTotals.path("deduped").asInt(0),
+                    maintenanceTotals.path("merged").asInt(0),
+                    maintenanceTotals.path("pruned").asInt(0));
+            out.printf("  %sExplanations:%s %s%n",
+                    MUTED, RESET, compactCountMap(root.path("explanationCounts")));
+            out.printf("  %sValidations:%s %s%n",
+                    MUTED, RESET, compactCountMap(root.path("validationCounts")));
+
+            out.println();
+            out.println(BOLD + "Recent Maintenance" + RESET);
+            renderLearningMaintenanceRuns(out, root.path("maintenanceRuns"));
+
+            out.println();
+            out.println(BOLD + "Recent Actions" + RESET);
+            renderLearningActionRows(out, root.path("recentActions"), "No recent learning actions.");
+
+            out.println();
+            out.println(BOLD + "Recent Validations" + RESET);
+            renderLearningValidationRows(out, root.path("recentValidations"));
+            out.println();
+            out.flush();
+        } catch (Exception e) {
+            out.println(WARNING + "Failed to load learning summary: " + sanitizeTerminalText(e.getMessage()) + RESET);
+            out.flush();
+        }
+    }
+
+    private void renderLearningMaintenanceRuns(PrintWriter out, JsonNode maintenanceRuns) {
+        if (!maintenanceRuns.isArray() || maintenanceRuns.isEmpty()) {
+            out.println("  " + MUTED + "No maintenance runs recorded yet." + RESET);
+            return;
+        }
+        for (JsonNode run : maintenanceRuns) {
+            out.printf("  %s%s%s  %s%n",
+                    MUTED,
+                    fitWidth(sanitizeTerminalText(run.path("trigger").asText("")), 18),
+                    RESET,
+                    fitWidth(sanitizeTerminalText(run.path("summary").asText("")), 96));
+        }
+    }
+
+    private void renderLearningActionRows(PrintWriter out, JsonNode actions, String emptyMessage) {
+        if (!actions.isArray() || actions.isEmpty()) {
+            out.println("  " + MUTED + emptyMessage + RESET);
+            return;
+        }
+        for (JsonNode action : actions) {
+            out.printf("  %s%-24s%s %s%n",
+                    INFO,
+                    fitWidth(sanitizeTerminalText(action.path("actionType").asText("")), 24),
+                    RESET,
+                    fitWidth(sanitizeTerminalText(action.path("summary").asText("")), 96));
+        }
+    }
+
+    private void renderLearningValidationRows(PrintWriter out, JsonNode validations) {
+        if (!validations.isArray() || validations.isEmpty()) {
+            out.println("  " + MUTED + "No recent learned-behavior validations." + RESET);
+            return;
+        }
+        for (JsonNode validation : validations) {
+            out.printf("  %s%-12s%s %s%n",
+                    INFO,
+                    fitWidth(sanitizeTerminalText(validation.path("verdict").asText("")), 12),
+                    RESET,
+                    fitWidth(sanitizeTerminalText(validation.path("summary").asText("")), 96));
+        }
+    }
+
+    private String compactCountMap(JsonNode node) {
+        if (node == null || !node.isObject() || node.isEmpty()) {
+            return "none";
+        }
+        var parts = new ArrayList<String>();
+        node.fields().forEachRemaining(entry -> parts.add(entry.getKey() + "=" + entry.getValue().asInt(0)));
+        return fitWidth(sanitizeTerminalText(String.join(", ", parts)), 96);
     }
 
     private void renderSkillDraftList(PrintWriter out, Path projectRoot, boolean pendingOnly) {
