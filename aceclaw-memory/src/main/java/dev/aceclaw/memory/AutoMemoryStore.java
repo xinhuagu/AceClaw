@@ -292,6 +292,22 @@ public final class AutoMemoryStore {
     }
 
     /**
+     * Returns the size in bytes of the largest backing JSONL file for this workspace.
+     */
+    public long largestBackingFileBytes(Path projectPath) {
+        fileLock.lock();
+        try {
+            long largest = fileSize(memoryDir.resolve(GLOBAL_FILE));
+            if (projectPath != null) {
+                largest = Math.max(largest, fileSize(memoryDir.resolve(projectHash(projectPath) + ".jsonl")));
+            }
+            return largest;
+        } finally {
+            fileLock.unlock();
+        }
+    }
+
+    /**
      * Removes a memory entry by ID. Rewrites the file without the deleted entry.
      *
      * @param id          the entry ID to remove
@@ -317,6 +333,14 @@ public final class AutoMemoryStore {
             return true;
         } finally {
             fileLock.unlock();
+        }
+    }
+
+    private static long fileSize(Path file) {
+        try {
+            return Files.exists(file) ? Files.size(file) : 0L;
+        } catch (IOException e) {
+            return 0L;
         }
     }
 

@@ -99,6 +99,7 @@ public final class AceClawDaemon {
     private String bootModel;
     private String bootSystemPrompt;
     private CronScheduler cronScheduler;
+    private LearningMaintenanceScheduler learningMaintenanceScheduler;
     private DeferredActionScheduler deferredActionScheduler;
     private DeferredActionStore deferredActionStore;
     private DeferCheckTool deferCheckTool;
@@ -616,6 +617,21 @@ public final class AceClawDaemon {
             final var crossSessionPatternMiner = historicalLogIndex != null ? new CrossSessionPatternMiner() : null;
             final var trendDetector = historicalLogIndex != null ? new TrendDetector() : null;
             final var workspaceHash = WorkspacePaths.workspaceHash(workingDir);
+            learningMaintenanceScheduler = new LearningMaintenanceScheduler(
+                    LearningMaintenanceScheduler.Config.defaults(Duration.ofSeconds(config.schedulerTickSeconds())),
+                    java.time.Clock.systemUTC(),
+                    sessionManager::sessionCount,
+                    () -> memoryStore.largestBackingFileBytes(workingDir),
+                    trigger -> runLearningMaintenancePipeline(
+                            trigger,
+                            memoryStore,
+                            archiveDir,
+                            extractionJournal,
+                            crossSessionPatternMiner,
+                            trendDetector,
+                            workspaceHash,
+                            workingDir)
+            );
             sessionManager.setSessionEndCallback(session -> {
                 var extracted = SessionEndExtractor.extract(session.messages());
                 for (var mem : extracted) {
@@ -676,50 +692,12 @@ public final class AceClawDaemon {
                         log.warn("Failed to index session history: {}", e.getMessage());
                     }
                 }
-                if (crossSessionPatternMiner != null && historicalLogIndex != null) {
+                if (learningMaintenanceScheduler != null) {
                     try {
-                        var mined = crossSessionPatternMiner.mine(
-                                historicalLogIndex, memoryStore, workspaceHash, workingDir);
-                        if ((!mined.frequentErrorChains().isEmpty()
-                                || !mined.stableWorkflows().isEmpty()
-                                || !mined.convergingStrategies().isEmpty()
-                                || !mined.degradationSignals().isEmpty())
-                                && extractionJournal != null) {
-                            extractionJournal.append("Cross-session miner: "
-                                    + mined.frequentErrorChains().size() + " error chains, "
-                                    + mined.stableWorkflows().size() + " stable workflows, "
-                                    + mined.convergingStrategies().size() + " converging strategies, "
-                                    + mined.degradationSignals().size() + " degradation signals");
-                        }
+                        learningMaintenanceScheduler.onSessionClosed();
                     } catch (Exception e) {
-                        log.warn("Cross-session pattern mining failed: {}", e.getMessage());
+                        log.warn("Learning maintenance trigger failed: {}", e.getMessage());
                     }
-                }
-                if (trendDetector != null && historicalLogIndex != null) {
-                    try {
-                        var trends = trendDetector.detect(
-                                historicalLogIndex, memoryStore, workspaceHash, workingDir);
-                        if (!trends.isEmpty() && extractionJournal != null) {
-                            extractionJournal.append("Trend detector: " + trends.size()
-                                    + " significant trends. " + summarizeTrends(trends));
-                        }
-                    } catch (Exception e) {
-                        log.warn("Trend detection failed: {}", e.getMessage());
-                    }
-                }
-
-                // Run memory consolidation after extraction
-                try {
-                    var result = MemoryConsolidator.consolidate(
-                            memoryStore, workingDir, archiveDir);
-                    if (result.hasChanges() && extractionJournal != null) {
-                        extractionJournal.append("Memory consolidated: " +
-                                result.deduped() + " deduped, " +
-                                result.merged() + " merged, " +
-                                result.pruned() + " pruned");
-                    }
-                } catch (Exception e) {
-                    log.warn("Memory consolidation failed: {}", e.getMessage());
                 }
 
                 // Clean up session-scoped resources in the agent handler
@@ -1626,6 +1604,19 @@ public final class AceClawDaemon {
             log.debug("Cron scheduler disabled via config");
         }
 
+        if (learningMaintenanceScheduler != null) {
+            try {
+                learningMaintenanceScheduler.start();
+                shutdownManager.register(new ShutdownManager.ShutdownParticipant() {
+                    @Override public String name() { return "Learning Maintenance Scheduler"; }
+                    @Override public int priority() { return 87; }
+                    @Override public void onShutdown() { learningMaintenanceScheduler.stop(); }
+                });
+            } catch (Exception e) {
+                log.error("Learning maintenance scheduler startup failed (daemon will continue): {}", e.getMessage(), e);
+            }
+        }
+
         // 5.5. Start deferred action scheduler
         if (config.deferredActionEnabled() && deferredActionScheduler != null) {
             try {
@@ -1778,5 +1769,61 @@ public final class AceClawDaemon {
                 .limit(3)
                 .map(TrendDetector.Trend::description)
                 .collect(java.util.stream.Collectors.joining(" | "));
+    }
+
+    private void runLearningMaintenancePipeline(
+            String trigger,
+            AutoMemoryStore memoryStore,
+            Path archiveDir,
+            DailyJournal journal,
+            CrossSessionPatternMiner crossSessionPatternMiner,
+            TrendDetector trendDetector,
+            String workspaceHash,
+            Path workingDir
+    ) {
+        try {
+            var result = MemoryConsolidator.consolidate(memoryStore, workingDir, archiveDir);
+            if (result.hasChanges() && journal != null) {
+                journal.append("Memory consolidated (" + trigger + "): "
+                        + result.deduped() + " deduped, "
+                        + result.merged() + " merged, "
+                        + result.pruned() + " pruned");
+            }
+        } catch (Exception e) {
+            log.warn("Memory consolidation failed (trigger={}): {}", trigger, e.getMessage());
+        }
+
+        if (crossSessionPatternMiner != null && historicalLogIndex != null) {
+            try {
+                var mined = crossSessionPatternMiner.mine(
+                        historicalLogIndex, memoryStore, workspaceHash, workingDir);
+                if ((!mined.frequentErrorChains().isEmpty()
+                        || !mined.stableWorkflows().isEmpty()
+                        || !mined.convergingStrategies().isEmpty()
+                        || !mined.degradationSignals().isEmpty())
+                        && journal != null) {
+                    journal.append("Cross-session miner (" + trigger + "): "
+                            + mined.frequentErrorChains().size() + " error chains, "
+                            + mined.stableWorkflows().size() + " stable workflows, "
+                            + mined.convergingStrategies().size() + " converging strategies, "
+                            + mined.degradationSignals().size() + " degradation signals");
+                }
+            } catch (Exception e) {
+                log.warn("Cross-session pattern mining failed (trigger={}): {}", trigger, e.getMessage());
+            }
+        }
+
+        if (trendDetector != null && historicalLogIndex != null) {
+            try {
+                var trends = trendDetector.detect(
+                        historicalLogIndex, memoryStore, workspaceHash, workingDir);
+                if (!trends.isEmpty() && journal != null) {
+                    journal.append("Trend detector (" + trigger + "): " + trends.size()
+                            + " significant trends. " + summarizeTrends(trends));
+                }
+            } catch (Exception e) {
+                log.warn("Trend detection failed (trigger={}): {}", trigger, e.getMessage());
+            }
+        }
     }
 }
