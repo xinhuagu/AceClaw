@@ -141,7 +141,9 @@ public final class SkillRegistry {
         if (sessionId != null && !sessionId.isBlank()) {
             var runtime = runtimeRegistry.get(sessionId);
             if (runtime != null && !runtime.isEmpty()) {
-                names.addAll(runtime.keySet());
+                runtime.keySet().stream()
+                        .sorted()
+                        .forEach(names::add);
             }
         }
         return List.copyOf(names);
@@ -162,7 +164,9 @@ public final class SkillRegistry {
         if (sessionId != null && !sessionId.isBlank()) {
             var runtime = runtimeRegistry.get(sessionId);
             if (runtime != null && !runtime.isEmpty()) {
-                runtime.forEach(combined::put);
+                runtime.entrySet().stream()
+                        .sorted(Map.Entry.comparingByKey())
+                        .forEach(entry -> combined.put(entry.getKey(), entry.getValue()));
             }
         }
         return List.copyOf(combined.values());

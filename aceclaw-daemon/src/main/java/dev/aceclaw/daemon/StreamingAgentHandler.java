@@ -1355,7 +1355,11 @@ public final class StreamingAgentHandler {
         this.registeredToolNames = registeredToolNames != null ? Set.copyOf(registeredToolNames) : Set.of();
         this.hasBraveApiKey = hasBraveApiKey;
         this.skillDescriptionsProvider = skillDescriptionsProvider != null
-                ? skillDescriptionsProvider : ignored -> "";
+                ? sessionId -> {
+                    var descriptions = skillDescriptionsProvider.apply(sessionId);
+                    return descriptions != null ? descriptions : "";
+                }
+                : ignored -> "";
     }
 
     /**
