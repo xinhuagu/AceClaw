@@ -1511,15 +1511,7 @@ public final class TerminalRepl {
 
         int ctxWindow = sessionInfo.contextWindowTokens();
         if (ctxWindow > 0) {
-            // Use live input tokens from foreground task if available
-            long displayTokens = latestInputTokens;
-            var fgTask = taskManager.foregroundTask();
-            if (fgTask != null && fgTask.isRunning()) {
-                long live = fgTask.liveInputTokens();
-                if (live > 0) {
-                    displayTokens = live;
-                }
-            }
+            long displayTokens = effectiveContextTokens();
             sb.append(MUTED).append(" | ").append(RESET);
             long pct = displayTokens * 100 / ctxWindow;
             sb.append(WARNING).append(formatTokenCount(displayTokens))
@@ -2355,6 +2347,17 @@ public final class TerminalRepl {
                 "\u23F3");
     }
 
+    private long effectiveContextTokens() {
+        var fgTask = taskManager.foregroundTask();
+        if (fgTask != null && fgTask.isRunning()) {
+            long live = fgTask.liveInputTokens();
+            if (live > 0) {
+                return live;
+            }
+        }
+        return latestInputTokens;
+    }
+
     private static String formatTokenCount(long tokens) {
         if (tokens < 1000) return String.valueOf(tokens);
         double k = tokens / 1000.0;
@@ -2420,12 +2423,7 @@ public final class TerminalRepl {
                 if (statusBranch != null) {
                     out.printf("  %sGit branch:%s  %s%n", MUTED, RESET, statusBranch);
                 }
-                long ctxTokens = latestInputTokens;
-                var fgCtx = taskManager.foregroundTask();
-                if (fgCtx != null && fgCtx.isRunning()) {
-                    long live = fgCtx.liveInputTokens();
-                    if (live > 0) ctxTokens = live;
-                }
+                long ctxTokens = effectiveContextTokens();
                 out.printf("  %sContext:%s     %s / %s (%d%%)%n", MUTED, RESET,
                         formatTokenCount(ctxTokens),
                         formatTokenCount(sessionInfo.contextWindowTokens()),
