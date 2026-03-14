@@ -1370,11 +1370,12 @@ public final class AceClawDaemon {
                 recentValidations.add(node);
             }
 
-            for (var review : learningSignalReviewStore.recent(projectPath, REVIEW_COUNT_WINDOW)) {
+            var reviewsForSummary = learningSignalReviewStore.recent(projectPath, Math.max(REVIEW_COUNT_WINDOW, limit));
+            for (var review : reviewsForSummary.stream().limit(REVIEW_COUNT_WINDOW).toList()) {
                 var key = review.action().name().toLowerCase(Locale.ROOT);
                 reviewCounts.put(key, reviewCounts.path(key).asInt(0) + 1);
             }
-            for (var review : learningSignalReviewStore.recent(projectPath, limit)) {
+            for (var review : reviewsForSummary.stream().limit(limit).toList()) {
                 var key = review.action().name().toLowerCase(Locale.ROOT);
                 var node = objectMapper.createObjectNode();
                 node.put("timestamp", review.timestamp().toString());
@@ -1519,7 +1520,13 @@ public final class AceClawDaemon {
             if (targetType.isBlank() || targetId.isBlank() || actionText.isBlank()) {
                 throw new IllegalArgumentException("targetType, targetId, and action are required");
             }
-            var action = LearningSignalReview.Action.valueOf(actionText.toUpperCase(Locale.ROOT));
+            LearningSignalReview.Action action;
+            try {
+                action = LearningSignalReview.Action.valueOf(actionText.toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException("Invalid action: " + actionText
+                        + ". Valid values: " + java.util.Arrays.toString(LearningSignalReview.Action.values()));
+            }
             String summary = "Human review marked " + targetType + " '" + targetId + "' as "
                     + action.name().toLowerCase(Locale.ROOT).replace('_', '-') + ".";
             learningExplanationRecorder.recordHumanReview(projectPath, targetType, targetId, action, note, reviewer, sessionId);

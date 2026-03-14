@@ -15,7 +15,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * Persistent JSONL store for human review of learned signals.
@@ -26,12 +28,14 @@ public final class LearningSignalReviewStore {
 
     private final ObjectMapper mapper = new ObjectMapper().registerModule(new JavaTimeModule());
     private final ReentrantLock writeLock = new ReentrantLock();
+    private final ReadWriteLock rwLock = new ReentrantReadWriteLock();
 
     public void append(Path projectRoot, LearningSignalReview review) throws IOException {
         Objects.requireNonNull(projectRoot, "projectRoot");
         Objects.requireNonNull(review, "review");
         Path file = reviewsFile(projectRoot);
         Files.createDirectories(file.getParent());
+        rwLock.writeLock().lock();
         writeLock.lock();
         try {
             try (var channel = FileChannel.open(file,
@@ -44,6 +48,7 @@ public final class LearningSignalReviewStore {
             }
         } finally {
             writeLock.unlock();
+            rwLock.writeLock().unlock();
         }
     }
 
@@ -54,6 +59,7 @@ public final class LearningSignalReviewStore {
         if (!Files.isRegularFile(file)) {
             return List.of();
         }
+        rwLock.readLock().lock();
         try {
             var rows = new ArrayList<LearningSignalReview>();
             for (var line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
@@ -72,6 +78,8 @@ public final class LearningSignalReviewStore {
                     .toList();
         } catch (Exception ignored) {
             return List.of();
+        } finally {
+            rwLock.readLock().unlock();
         }
     }
 
