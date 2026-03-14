@@ -34,7 +34,7 @@ OpenClaw is useful here as a contrast. OpenClaw is strong at explicit memory, ga
 
 That leads to a different default architecture.
 
-![AceClaw vs OpenClaw learning architecture](docs/img/context_compaction_openclaw_vs_aceclaw.png)
+![AceClaw daemon architecture](docs/img/aceclaw_daemon_architecture.png)
 
 Original diagrams used for the current docs live in [`docs/img/`](docs/img).
 
