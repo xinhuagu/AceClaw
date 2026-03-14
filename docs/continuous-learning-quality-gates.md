@@ -2,6 +2,16 @@
 
 This document defines the hard quality gate metrics used by CI (`preMergeCheck`) for self-learning changes.
 
+These gates sit at the end of the governed-learning path:
+
+```mermaid
+flowchart LR
+  a["Replay cases"] --> b["Replay report"]
+  b --> c["Quality-gate metrics"]
+  c --> d["preMergeCheck"]
+  d --> e["Allow or block merge"]
+```
+
 ## Canonical Metrics
 
 These metrics are emitted in `.aceclaw/metrics/continuous-learning/replay-latest.json` under `metrics`.

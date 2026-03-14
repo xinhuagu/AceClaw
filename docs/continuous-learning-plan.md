@@ -1,19 +1,35 @@
 # Continuous Learning Baseline Plan
 
 ## Purpose
-This document defines the v1 measurement framework for AceClaw continuous learning. The goal is to establish reproducible baseline metrics before enabling aggressive autonomous promotion and rollback policies.
+This document defines the measurement framework for AceClaw continuous learning. The goal is to establish reproducible effectiveness metrics for the self-learning system that now exists on `main`, especially the downstream promotion, validation, and rollout path for learned behavior.
 
-This plan aligns with PRD success metrics and the continuous-learning implementation track (`#52`-`#65`).
+This plan aligns with the current self-learning implementation:
+
+- phase 1: behavior extraction, session retrospectives, historical indexing, patterns, trends, adaptive skills
+- phase 2: explainability, validation semantics, observability, noise control, runtime governance, rebuild recovery, human review
+
 Operational controls and rollback procedures are documented in `docs/continuous-learning-operations.md`.
 
+## Where This Fits
+
+```mermaid
+flowchart LR
+  a["Behavior signals"] --> b["Learning stores"]
+  b --> c["Candidate / draft / runtime governance"]
+  c --> d["Validation and release"]
+  d --> e["Quality gates and effectiveness metrics"]
+```
+
+This document focuses on the last step: how to decide whether the learning system is actually improving behavior.
+
 ## Scope
-In scope for baseline v1:
+In scope:
 - Metric dictionary with formulas and thresholds.
 - Collection points and output schema.
 - A local baseline collection command.
 - A reporting template for before/after comparisons.
 
-Out of scope for baseline v1:
+Out of scope:
 - Real-time dashboarding.
 - Provider-specific optimization.
 - Automatic threshold tuning.
@@ -108,7 +124,7 @@ Useful flags:
    - `./gradlew preMergeCheck -PreplayGateStrict=true -PreplayReport=...`
 3. Gate fails if replay report is missing, metrics are non-measured, source manifest verification fails, or thresholds are violated.
 
-## Known Gaps (v1)
+## Known Gaps
 - Some metrics are not fully instrumented yet and will be emitted as `pending_instrumentation`.
 - Replay case/reports are automated; remaining work is stronger dataset governance at scale.
 - Outcome enforcement closure (`#62`) is now implemented for candidate-level outcome writeback,
