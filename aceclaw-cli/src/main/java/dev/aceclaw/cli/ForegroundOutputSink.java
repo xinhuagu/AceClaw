@@ -164,6 +164,7 @@ public final class ForegroundOutputSink implements OutputSink {
             }
             stopSpinner();
             statusRenderer.hide();
+            bottomBar.hide();
             out.printf("%s[stream error: %s]%s%n", ERROR, error, RESET);
             out.flush();
             statusRenderer.refresh();
@@ -730,7 +731,6 @@ public final class ForegroundOutputSink implements OutputSink {
             double pct = (double) inputTokens / contextWindow * 100.0;
             int filled = (int) Math.round(pct / 100.0 * BAR_WIDTH);
             filled = Math.max(0, Math.min(filled, BAR_WIDTH));
-            int empty = BAR_WIDTH - filled;
 
             // Color thresholds: green 0-60%, yellow 60-85%, red 85%+
             String barColor;
@@ -742,15 +742,22 @@ public final class ForegroundOutputSink implements OutputSink {
                 barColor = SUCCESS;
             }
 
-            String filledBar = "\u2588".repeat(filled);
-            String emptyBar = "\u2591".repeat(empty);
             String tokenStr = formatTokenCount(inputTokens);
             String windowStr = formatTokenCount(contextWindow);
+            String pctStr = String.format(Locale.ROOT, "%.0f", Math.min(pct, 100.0));
+            String suffix = " " + tokenStr + "/" + windowStr + " (" + pctStr + "%)";
 
-            // Build the bar line, truncate to terminal width
+            // Visible prefix " ⏺ ctx " = 7 chars; adjust bar width to fit terminal
+            int overhead = 7 + suffix.length(); // " ⏺ ctx " + suffix
+            int effectiveBarWidth = Math.min(BAR_WIDTH, Math.max(0, cols - overhead));
+            filled = Math.min(filled, effectiveBarWidth);
+            int empty = effectiveBarWidth - filled;
+
+            String filledBar = "\u2588".repeat(filled);
+            String emptyBar = "\u2591".repeat(empty);
+
             String line = " \u23FA ctx " + barColor + filledBar + MUTED + emptyBar + RESET
-                    + " " + tokenStr + "/" + windowStr
-                    + " (" + String.format(Locale.ROOT, "%.0f", Math.min(pct, 100.0)) + "%)";
+                    + suffix;
 
             // Save cursor, go to bottom row, draw, clear rest of line, restore cursor
             out.print("\033[s");                         // save cursor
