@@ -40,22 +40,30 @@ public final class ForegroundOutputSink implements OutputSink {
 
     private final StreamStatusRenderer statusRenderer;
     private final ContextMonitor contextMonitor;
+    private final Runnable uiRenderCallback;
 
     public ForegroundOutputSink(PrintWriter out, TerminalMarkdownRenderer markdownRenderer) {
-        this(out, markdownRenderer, null, null);
+        this(out, markdownRenderer, null, null, null);
     }
 
     public ForegroundOutputSink(PrintWriter out, TerminalMarkdownRenderer markdownRenderer,
                                 Terminal terminal) {
-        this(out, markdownRenderer, terminal, null);
+        this(out, markdownRenderer, terminal, null, null);
     }
 
     public ForegroundOutputSink(PrintWriter out, TerminalMarkdownRenderer markdownRenderer,
                                 Terminal terminal, ContextMonitor contextMonitor) {
+        this(out, markdownRenderer, terminal, contextMonitor, null);
+    }
+
+    public ForegroundOutputSink(PrintWriter out, TerminalMarkdownRenderer markdownRenderer,
+                                Terminal terminal, ContextMonitor contextMonitor,
+                                Runnable uiRenderCallback) {
         this.out = Objects.requireNonNull(out, "out");
         this.markdownRenderer = Objects.requireNonNull(markdownRenderer, "markdownRenderer");
         this.statusRenderer = new StreamStatusRenderer(out);
         this.contextMonitor = contextMonitor;
+        this.uiRenderCallback = uiRenderCallback;
     }
 
     /**
@@ -189,7 +197,10 @@ public final class ForegroundOutputSink implements OutputSink {
             if (contextMonitor != null) {
                 contextMonitor.recordStreamingUsage(inputTokens);
             }
-            // Context usage is displayed in the status panel, no separate bottom bar needed
+        }
+        // Trigger status bar refresh outside the lock to show updated context %
+        if (uiRenderCallback != null) {
+            uiRenderCallback.run();
         }
     }
 

@@ -884,7 +884,7 @@ public final class TerminalRepl {
             }
             var conn = client.openTaskConnection();
             int ctxWindow = sessionInfo != null ? sessionInfo.contextWindowTokens() : 0;
-            var fgSink = new ForegroundOutputSink(out, markdownRenderer, activeTerminal, contextMonitor);
+            var fgSink = new ForegroundOutputSink(out, markdownRenderer, activeTerminal, contextMonitor, this::requestUiRender);
             activeForegroundSink = fgSink;
 
             promptStartNanos = System.nanoTime();
@@ -3133,7 +3133,7 @@ public final class TerminalRepl {
         ForegroundOutputSink fgSink = null;
         try {
             // Create new foreground sink and swap it in atomically
-            fgSink = new ForegroundOutputSink(out, markdownRenderer, activeTerminal, contextMonitor);
+            fgSink = new ForegroundOutputSink(out, markdownRenderer, activeTerminal, contextMonitor, this::requestUiRender);
             var oldSink = target.swapOutputSink(fgSink);
             activeForegroundSink = fgSink;
             taskManager.setForeground(target.taskId());
