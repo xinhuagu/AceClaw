@@ -33,9 +33,10 @@ The result is a learning loop that stays cheap on the hot path while still build
             │          ┌──────────┼───────────────────────┘
             │          ▼          ▼
             │  ┌────────────────────────────────┐
-            │  │   SelfImprovementEngine        │
-            │  │ ErrorDetector + PatternDetector│
-            │  └──────────────┬─────────────────┘
+            │  │   SelfImprovementEngine                  │
+            │  │ ErrorDetector + PatternDetector            │
+            │  │              + FailureSignalDetector       │
+            │  └──────────────┬────────────────────────────┘
             │                 │
             │                 ▼
             │          ┌──────────────────────┐
@@ -88,7 +89,8 @@ All self-learning outputs converge on a single sealed interface:
 
 ```java
 public sealed interface Insight
-    permits Insight.ErrorInsight, Insight.SuccessInsight, Insight.PatternInsight {
+    permits Insight.ErrorInsight, Insight.SuccessInsight,
+        Insight.PatternInsight, Insight.RecoveryRecipe, Insight.FailureInsight {
 
     String description();
     List<String> tags();
@@ -97,7 +99,7 @@ public sealed interface Insight
 }
 ```
 
-The compiler enforces exhaustive handling — every `switch` over `Insight` must cover all three variants.
+The compiler enforces exhaustive handling — every `switch` over `Insight` must cover all five variants.
 
 ### ErrorInsight
 
@@ -144,6 +146,45 @@ Target category varies by `PatternType`:
 | `ERROR_CORRECTION` | `ERROR_RECOVERY` |
 | `USER_PREFERENCE` | `PREFERENCE` |
 | `WORKFLOW` | `PATTERN` |
+
+### RecoveryRecipe
+
+Produced when multi-step error-correction sequences are detected. Captures a reusable recovery procedure for a specific error pattern.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `triggerPattern` | `String` | The error pattern that triggers this recipe |
+| `steps` | `List<RecoveryStep>` | Ordered recovery steps (must not be empty) |
+| `toolName` | `String` | The primary tool involved (for indexing) |
+| `confidence` | `double` | Confidence score in [0.0, 1.0] |
+
+Each `RecoveryStep` contains:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `description` | `String` | Human-readable description of the step |
+| `toolName` | `String` | Tool to use for this step (nullable) |
+| `parameterHint` | `String` | Hint about parameters (nullable) |
+
+Target category: `RECOVERY_RECIPE`
+
+### FailureInsight
+
+Produced by `FailureSignalDetector` from normalized runtime failure signals in tool results.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `FailureType` | Normalized failure taxonomy (7 values — see below) |
+| `source` | `String` | Signal origin (e.g. `"permission-gate"`, `"tool"`, `"background-task"`, `"sub-agent"`) |
+| `toolOrAgent` | `String` | Tool or sub-agent name associated with the failure |
+| `reason` | `String` | Human-readable reason (sanitized, max 400 chars) |
+| `retryable` | `boolean` | Whether retry is likely useful |
+| `timestamp` | `Instant` | Event timestamp |
+| `confidence` | `double` | Confidence score in [0.0, 1.0] (0.85–0.95 depending on type) |
+
+**FailureType values:** `PERMISSION_DENIED`, `PERMISSION_PENDING_TIMEOUT`, `TIMEOUT`, `DEPENDENCY_MISSING`, `CAPABILITY_MISMATCH`, `BROKEN`, `CANCELLED`
+
+Target category: `FAILURE_SIGNAL`
 
 ---
 
@@ -224,8 +265,9 @@ The `SelfImprovementEngine` is the facade that orchestrates all detectors into a
 **Pipeline:**
 ```
 Agent Turn
-  ├── ErrorDetector  → ErrorInsights
-  └── PatternDetector → PatternInsights
+  ├── ErrorDetector          → ErrorInsights
+  ├── PatternDetector        → PatternInsights
+  └── FailureSignalDetector  → FailureInsights
         ↓
   SelfImprovementEngine (deduplicate + filter)
         ↓
@@ -236,7 +278,7 @@ Agent Turn
 
 | Step | Description |
 |------|-------------|
-| **Analyze** | Runs both detectors, collects all insights |
+| **Analyze** | Runs all three detectors, collects all insights |
 | **Deduplicate** | Groups by category + Jaccard similarity (>= 0.7), keeps highest-confidence |
 | **Filter** | Only insights with `confidence >= 0.7` pass to persistence |
 | **Memory dedup** | Checks existing `AutoMemoryStore` entries before writing (avoids duplicates) |
@@ -335,13 +377,76 @@ After session-close extraction and indexing complete, the learning maintenance s
 - **Size-based**: when memory backing files exceed 50 KB
 - **Idle-based**: after 5 minutes with no active sessions
 
-The maintenance pipeline currently runs:
+The maintenance pipeline currently runs six steps in order:
 
-1. **Memory consolidation**
-2. **Cross-session pattern mining**
-3. **Trend detection**
+1. **Memory consolidation** — 3-pass dedup/merge/prune via `MemoryConsolidator`
+2. **Correction rule promotion** — `CorrectionRulePromoter` groups similar CORRECTION/MISTAKE entries (Jaccard >= 0.50), promotes groups with 2+ occurrences to `.aceclaw/ACECLAW.md` rules (Tier 6 auto-memory → Tier 3 workspace memory)
+3. **Historical index rebuild** — `HistoricalIndexRebuilder` rebuilds workspace-scoped historical index entries from persisted session snapshots when stale
+4. **Cross-session pattern mining** — `CrossSessionPatternMiner` finds frequent error chains, stable workflows, converging strategies, and degradation signals
+5. **Trend detection** — `TrendDetector` identifies rising/falling/stable trends across sessions
+6. **Candidate pipeline bridge** — `LearningMaintenanceCandidateBridge` converts mining results and trends into candidate observations for the learning candidate pipeline
 
 This keeps session teardown fast while still preserving a self-maintaining memory system.
+
+---
+
+## Correction Rule Auto-Promotion
+
+The `CorrectionRulePromoter` closes the self-learning loop by detecting when the agent makes the same mistake 2+ times across sessions and automatically elevating those corrections from Tier 6 (auto-memory) to Tier 3 (workspace memory in `.aceclaw/ACECLAW.md`).
+
+**Lifecycle:**
+1. Scan auto-memory for `CORRECTION` and `MISTAKE` category entries
+2. Group similar entries using Jaccard token similarity (threshold >= 0.50)
+3. For groups with 2+ entries, generate a rule with a deterministic SHA-256 fingerprint
+4. Skip rules whose fingerprint is already present in ACECLAW.md (idempotent)
+5. Append new rules under the `## Auto-Promoted Rules` section in `.aceclaw/ACECLAW.md`
+
+**Key constants:**
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `MIN_OCCURRENCES` | 2 | Minimum similar corrections before promoting |
+| `SIMILARITY_THRESHOLD` | 0.50 | Jaccard similarity for grouping (looser than consolidation's 0.80) |
+| `SECTION_MARKER` | `## Auto-Promoted Rules` | Section header in ACECLAW.md |
+| `FINGERPRINT_PREFIX` | `<!-- rule-fingerprint: ` | HTML comment prefix for dedup across runs |
+
+**Output format in ACECLAW.md:**
+```markdown
+## Auto-Promoted Rules
+
+> Rules below were auto-promoted from repeated corrections.
+> They indicate mistakes made 2+ times across sessions.
+
+<!-- rule-fingerprint: a1b2c3d4 -->
+### JAVA / API
+**Process.getInputStream() not inputStream()**
+
+_Sources: 3 corrections across sessions. Tags: java, api_
+```
+
+**Triggered by:** The deferred learning maintenance scheduler (step 2 of the 6-step pipeline).
+
+---
+
+## Failure Signal Detection
+
+The `FailureSignalDetector` produces normalized runtime failure signals (`FailureInsight`) from structured tool results. It is the third detector in the `SelfImprovementEngine` pipeline, alongside `ErrorDetector` and `PatternDetector`.
+
+**Classification:** Each failed tool result is classified into one of 7 `FailureType` values using keyword matching on the error content:
+
+| FailureType | Trigger Keywords | Retryable | Base Confidence |
+|-------------|-----------------|-----------|-----------------|
+| `PERMISSION_DENIED` | "permission denied" | No | 0.95 |
+| `PERMISSION_PENDING_TIMEOUT` | "permission pending timeout" | Yes | 0.95 |
+| `DEPENDENCY_MISSING` | "no module named", "command not found", "not installed" | Yes | 0.90 |
+| `CAPABILITY_MISMATCH` | "unsupported", "invalid format", "cannot parse" | Yes | 0.90 |
+| `TIMEOUT` | "timed out", "timeout" | Yes | 0.85 |
+| `BROKEN` | "status: failed", "sub-agent error", "broken pipe" | Yes | 0.85 |
+| `CANCELLED` | "cancelled", "canceled" | Yes | 0.85 |
+
+**Source mapping:** The `source` field is derived from the tool name — `"permission-gate"` for permission failures, `"background-task"` for `task_output`, `"sub-agent"` for `task`, and `"tool"` for everything else.
+
+**Integration:** Wired into `SelfImprovementEngine` via the 3-arg and higher constructors. Failure signals that don't match any classification are silently dropped (null return from `classify()`).
 
 ---
 
@@ -350,7 +455,7 @@ This keeps session teardown fast while still preserving a self-maintaining memor
 | Property | Benefit |
 |----------|---------|
 | **Zero LLM cost** | All detection is heuristic — regex patterns, order-based matching, atomic counters. No API calls for learning. |
-| **Type-safe insights** | Sealed `Insight` interface with compiler-enforced exhaustiveness. Adding a new insight type is a compile error until all handlers are updated. |
+| **Type-safe insights** | Sealed `Insight` interface (5 permits) with compiler-enforced exhaustiveness. Adding a new insight type is a compile error until all handlers are updated. |
 | **Cross-session accumulation** | Confidence grows over sessions. First-time patterns start below threshold; only reinforced patterns persist. |
 | **Automatic strategy evolution** | Errors become insights, insights become anti-patterns, anti-patterns prevent future errors — a closed feedback loop. |
 | **Thread-safe metrics** | Lock-free `ConcurrentHashMap` + atomic counters. No synchronization overhead during the ReAct loop. |
@@ -366,5 +471,7 @@ This keeps session teardown fast while still preserving a self-maintaining memor
 | #14 | ErrorDetector for error-correction patterns | Done (PR #20) |
 | #15 | PatternDetector for recurring tool sequences and workflows | Done (PR #21) |
 | #16 | SelfImprovementEngine orchestrator + daemon integration | Done (PR #22) |
-| #17 | StrategyRefinement — anti-pattern generation and preference strengthening | Planned |
-| #18 | E2E integration test for self-learning pipeline | Planned |
+| #17 | StrategyRefinement — anti-pattern generation and preference strengthening | Done (PR #23) |
+| #18 | E2E integration test for self-learning pipeline | Done (PR #24) |
+| #25 | Self-Learning Gaps (P0-P3): charset, RecoveryRecipe, strategy injection, ErrorClass | Done (PR #26) |
+| #259 | CorrectionRulePromoter — auto-promote repeated corrections to ACECLAW.md rules | Done |

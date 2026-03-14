@@ -106,13 +106,13 @@ The central memory persistence engine. Thread-safe via `CopyOnWriteArrayList`.
 
 ### 3.2 MemoryEntry
 
-Immutable Java record with 21 categories and access tracking:
+Immutable Java record with 23 categories and access tracking:
 
 ```java
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record MemoryEntry(
     String id,                // UUID
-    Category category,        // 21 enum values
+    Category category,        // 23 enum values
     String content,           // Natural language insight (1-2 sentences)
     List<String> tags,        // Searchable tags (e.g. "gradle", "java")
     Instant createdAt,        // Creation timestamp
@@ -161,6 +161,8 @@ public record MemoryEntry(
 | `SUCCESSFUL_STRATEGY` | Proven strategies | "3-pass consolidation: dedup, merge, prune" |
 | `ANTI_PATTERN` | Approaches to avoid | "Don't include mutable fields in HMAC payload" |
 | `USER_FEEDBACK` | User feedback on agent | "User liked the evaluation summary format" |
+| `RECOVERY_RECIPE` | Multi-step recovery procedure | "Recovery recipe for 'encoding error': detect encoding → re-read with UTF-8" |
+| `FAILURE_SIGNAL` | Normalized runtime failure signal | "permission_denied source=permission-gate tool=bash" |
 
 ### 3.3 MemorySearchEngine
 
@@ -323,7 +325,7 @@ String memorySection = MemoryTierLoader.assembleForSystemPrompt(
 
 ## 4. Memory Write Pipelines
 
-There are **four independent pipelines** that write memories:
+There are **five independent pipelines** that write memories:
 
 ### 4.1 Agent Active Memory (MemoryTool)
 
@@ -384,6 +386,17 @@ After session-close extraction and indexing complete, the consolidator runs as p
 3. **Age prune** — Entries >90 days old with 0 access count → archived to `archived.jsonl`
 
 This prevents memory pollution from accumulating duplicate or stale entries over many sessions without slowing down session teardown.
+
+### 4.5 Correction Rule Promotion (CorrectionRulePromoter)
+
+When the agent makes the same mistake 2+ times across sessions, `CorrectionRulePromoter` automatically elevates those corrections from Tier 6 (auto-memory JSONL) to Tier 3 (workspace `.aceclaw/ACECLAW.md`). This closes the self-learning loop — repeated corrections become permanent rules visible in every system prompt.
+
+- **Trigger:** Runs as step 2 of the deferred learning maintenance pipeline
+- **Input:** `CORRECTION` and `MISTAKE` category entries from `AutoMemoryStore`
+- **Grouping:** Jaccard token similarity >= 0.50 (looser than consolidation's 0.80)
+- **Threshold:** 2+ similar entries required before promotion
+- **Dedup:** SHA-256 fingerprint comments in ACECLAW.md prevent duplicate rules across runs
+- **Output:** Appends rules under `## Auto-Promoted Rules` section in `.aceclaw/ACECLAW.md`
 
 ---
 
@@ -649,7 +662,7 @@ This prevents the pathological case where a 80K-token system prompt + 85% trigge
 
   Retrieval:   Hybrid search engine              Key lookup
                TF-IDF + recency decay            No ranking
-               21 categories + tags              Untyped
+               23 categories + tags              Untyped
                Access tracking per entry
 
   Injection:   8-tier system prompt assembly     Manual context
@@ -756,7 +769,7 @@ SystemPromptLoader
   └── uses RuleEngine (path-based rules)
 
 MemoryTool (aceclaw-tools)
-  └── uses AutoMemoryStore (21 categories)
+  └── uses AutoMemoryStore (23 categories)
 
 SessionEndExtractor (aceclaw-daemon)
   └── produces entries → AutoMemoryStore.add()
@@ -764,6 +777,12 @@ SessionEndExtractor (aceclaw-daemon)
 
 MemoryConsolidator (aceclaw-memory)
   └── runs at session end → dedup/merge/prune
+
+CorrectionRulePromoter (aceclaw-memory)
+  ├── scans AutoMemoryStore for CORRECTION/MISTAKE entries
+  ├── groups by Jaccard similarity (>= 0.50)
+  ├── generates rules for groups with 2+ occurrences
+  └── appends to .aceclaw/ACECLAW.md (Tier 6 → Tier 3 promotion)
 
 MessageCompactor (aceclaw-core)
   └── Phase 0 extractContextItems → persisted via StreamingAgentHandler
@@ -803,7 +822,7 @@ MessageCompactor (aceclaw-core)
 | Phase | Feature | Status |
 |-------|---------|--------|
 | P1 | 8-tier hierarchy, HMAC signing, hybrid search | **Done** |
-| P1 | Agent memory tool (21 categories), session-end extraction (6 types), journal | **Done** |
+| P1 | Agent memory tool (23 categories), session-end extraction (6 types), journal | **Done** |
 | P1 | Context compaction with memory flush | **Done** |
 | P1 | MarkdownMemoryStore (MEMORY.md + topic files) | **Done** |
 | P1 | PathBasedRule + RuleEngine (conditional rules per file type) | **Done** |
