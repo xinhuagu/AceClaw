@@ -34,21 +34,7 @@ OpenClaw is useful here as a contrast. OpenClaw is strong at explicit memory, ga
 
 That leads to a different default architecture.
 
-```mermaid
-flowchart LR
-  subgraph OC["OpenClaw default path"]
-    oc1["Files, notes, and gateway state"] --> oc2["Retrieve relevant context"]
-    oc2 --> oc3["Inject into the next run"]
-  end
-
-  subgraph AC["AceClaw default path"]
-    ac1["Tool results, retries, user corrections"] --> ac2["Detectors and session retrospective"]
-    ac2 --> ac3["Historical index and memory"]
-    ac3 --> ac4["Maintenance: consolidation, patterns, trends"]
-    ac4 --> ac5["Validation, governance, and human review"]
-    ac5 --> ac6["Runtime skills, refinements, and better future behavior"]
-  end
-```
+![AceClaw vs OpenClaw learning architecture](docs/img/learning/context_compaction_openclaw_vs_aceclaw.png)
 
 Original diagrams used for the current docs live in [`docs/img/learning/`](docs/img/learning).
 
