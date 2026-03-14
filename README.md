@@ -213,4 +213,4 @@ Java 21 (preview features) · Gradle 8.14 · Picocli 4.7.6 · JLine3 3.27.1 · J
 
 ## License
 
-TBD
+[Apache License 2.0](LICENSE)
