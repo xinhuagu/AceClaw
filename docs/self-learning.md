@@ -38,24 +38,25 @@ That does not mean OpenClaw cannot support richer learning. It means the documen
 
 ## The Big Picture
 
-```mermaid
-flowchart TD
-  turn["Turn execution"] --> detect["Detectors + tool metrics"]
-  detect --> session["Session retrospective + historical snapshot"]
-  session --> memory["Memory + historical index"]
-  memory --> maintenance["Deferred maintenance scheduler"]
-  maintenance --> patterns["Patterns + trends + candidate observations"]
-  patterns --> adapt["Runtime skills + refinement + candidate transitions"]
-  adapt --> explain["Explanations + validations"]
-  explain --> review["Human review surface"]
-  review --> next["Better future behavior"]
-```
+The clearest way to understand AceClaw is to compare the architecture boundary directly.
 
-The system is designed so that hot-path learning stays cheap, while heavier maintenance runs in the background.
+<p align="center">
+  <img src="img/aceclaw_daemon_architecture.png" alt="AceClaw daemon architecture" width="47%">
+  <img src="img/openclaw_gateway_architecture.png" alt="OpenClaw gateway architecture" width="47%">
+</p>
 
-Reference daemon architecture:
+This is the big-picture difference:
 
-![AceClaw daemon architecture](img/aceclaw_daemon_architecture.png)
+- **AceClaw** is built as a local, security-first daemon whose learning loop sits inside the harness.
+- **OpenClaw** is built more like a broader runtime gateway and execution platform.
+
+That architectural choice explains why AceClaw's self-learning loop is centered on behavior:
+
+- the `StreamingAgentLoop` is treated as the ReAct core
+- detectors and retrospectives sit close to tool execution
+- background maintenance turns behavior into memory, patterns, trends, and adaptive skills
+
+In other words, AceClaw does not treat self-learning as an add-on memory feature. It treats learning as part of the harness itself.
 
 ## What AceClaw Means By Self-Learning
 
