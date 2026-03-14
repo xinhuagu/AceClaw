@@ -111,6 +111,13 @@ The end-to-end flow today looks like this:
 
 AceClaw and OpenClaw use similar raw ingredients, but they frame the loop differently.
 
+![OpenClaw agent loop vs AceClaw ReAct loop](img/agent_loop_openclaw_vs_aceclaw.png)
+
+The diagram shows the architectural boundary clearly:
+
+- **OpenClaw** treats the loop as the full execution pipeline of an agent run.
+- **AceClaw** treats the loop as the behavioral core from which learning signals are extracted.
+
 ### OpenClaw
 
 In the currently documented default path, OpenClaw's "agent loop" is best understood as the **full execution pipeline** of an agent run:
