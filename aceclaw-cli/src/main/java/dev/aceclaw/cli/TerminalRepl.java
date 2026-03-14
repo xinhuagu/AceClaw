@@ -921,8 +921,7 @@ public final class TerminalRepl {
             taskManager.clearForeground();
             activeForegroundSink = null;
 
-            // Hide the bottom context bar before restoring JLine's Status widget
-            fgSink.hideBottomBar();
+            // Status panel will be restored by the caller
 
             // Restore JLine's Status widget so it recalculates scroll region
             // based on the terminal's current state after task output.
@@ -1067,11 +1066,9 @@ public final class TerminalRepl {
 
             // Use the per-call liveInputTokens for context display (actual context occupation).
             // The JSON-RPC result's inputTokens is cumulative across all API calls in the turn,
-            // which would cause erratic usage % jumps if used for context %.
+            // NOT the per-call value — using it would cause erratic usage % jumps.
+            // If no streaming usage was received, keep the monitor's existing per-call value (0 means "no update").
             long perCallContext = handle.liveInputTokens();
-            if (perCallContext <= 0) {
-                perCallContext = turnIn; // fallback if no streaming usage was received
-            }
             contextMonitor.recordTurnComplete(turnIn, turnOut, perCallContext);
             contextMonitor.checkThresholds(log);
 
@@ -1360,9 +1357,6 @@ public final class TerminalRepl {
                     int bgTurnIn = bgUsage.path("inputTokens").asInt(0);
                     int bgTurnOut = bgUsage.path("outputTokens").asInt(0);
                     long bgPerCall = handle.liveInputTokens();
-                    if (bgPerCall <= 0) {
-                        bgPerCall = bgTurnIn;
-                    }
                     contextMonitor.recordTurnComplete(bgTurnIn, bgTurnOut, bgPerCall);
                 }
             }
@@ -1536,10 +1530,7 @@ public final class TerminalRepl {
         if (ctxWindow > 0) {
             long displayTokens = effectiveContextTokens();
             sb.append(MUTED).append(" | ").append(RESET);
-            long pct = displayTokens * 100 / ctxWindow;
-            sb.append(WARNING).append(formatTokenCount(displayTokens))
-              .append("/").append(formatTokenCount(ctxWindow))
-              .append(" (").append(pct).append("%)").append(RESET);
+            sb.append(buildContextBar(displayTokens, ctxWindow));
         }
 
         // Show running task count if > 0
@@ -2370,23 +2361,14 @@ public final class TerminalRepl {
                 "\u23F3");
     }
 
+    /**
+     * Returns the best current estimate of context window occupation (per-call input tokens).
+     *
+     * <p>Single source of truth: {@link ContextMonitor}. During streaming, the monitor
+     * is updated in real-time via {@code stream.usage} notifications. After the turn,
+     * it holds the last per-call value from {@code recordTurnComplete}.
+     */
     private long effectiveContextTokens() {
-        var fgTask = taskManager.foregroundTask();
-        if (fgTask != null && fgTask.isRunning()) {
-            long live = fgTask.liveInputTokens();
-            if (live > 0) {
-                return live;
-            }
-        }
-        // Fall back to any running task (e.g. auto-backgrounded)
-        for (var task : taskManager.list()) {
-            if (task.isRunning()) {
-                long live = task.liveInputTokens();
-                if (live > 0) {
-                    return live;
-                }
-            }
-        }
         return contextMonitor.currentContextTokens();
     }
 
@@ -2396,6 +2378,41 @@ public final class TerminalRepl {
         if (k >= 100) return String.format("%.0fK", k);
         if (k >= 10) return String.format("%.0fK", k);
         return String.format("%.1fK", k);
+    }
+
+    /**
+     * Builds a compact context usage bar with colored blocks for the status panel,
+     * matching the visual style of the context usage display.
+     *
+     * <p>Format: {@code ctx ████░░░░ 10K/200K (5%)}
+     */
+    private static String buildContextBar(long inputTokens, int contextWindow) {
+        if (contextWindow <= 0) return "";
+
+        double pct = (double) inputTokens / contextWindow * 100.0;
+        int barWidth = 10; // compact bar for status panel
+        int filled = (int) Math.round(pct / 100.0 * barWidth);
+        filled = Math.max(0, Math.min(filled, barWidth));
+        int empty = barWidth - filled;
+
+        // Color thresholds: green 0-60%, yellow 60-85%, red 85%+
+        String barColor;
+        if (pct >= 85.0) {
+            barColor = ERROR;
+        } else if (pct >= 60.0) {
+            barColor = WARNING;
+        } else {
+            barColor = SUCCESS;
+        }
+
+        String filledBar = "\u2588".repeat(filled);
+        String emptyBar = "\u2591".repeat(empty);
+        String pctStr = String.format(java.util.Locale.ROOT, "%.0f", Math.min(pct, 100.0));
+
+        return "ctx " + barColor + filledBar + MUTED + emptyBar + RESET
+                + " " + formatTokenCount(inputTokens)
+                + "/" + formatTokenCount(contextWindow)
+                + " (" + pctStr + "%)";
     }
 
     // -- Slash commands -------------------------------------------------------
@@ -3132,10 +3149,6 @@ public final class TerminalRepl {
             taskManager.clearForeground();
             activeForegroundSink = null;
         } finally {
-            // Hide bottom bar before restoring JLine's Status widget
-            if (fgSink != null) {
-                fgSink.hideBottomBar();
-            }
             // Restore JLine's Status widget so it recalculates scroll region
             // based on the terminal's current state after task output.
             restoreStatusPanel();

@@ -1,6 +1,7 @@
 package dev.aceclaw.cli;
 
 import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Single source of truth for context window usage tracking.
@@ -16,6 +17,8 @@ import org.slf4j.Logger;
  * usage % jumps caused by mixing the two.
  */
 public final class ContextMonitor {
+
+    private static final Logger log = LoggerFactory.getLogger(ContextMonitor.class);
 
     private final int contextWindowTokens;
 
@@ -42,6 +45,9 @@ public final class ContextMonitor {
      * This is the actual context window occupation for the most recent LLM call.
      */
     public synchronized void recordStreamingUsage(long perCallInputTokens) {
+        log.debug("recordStreamingUsage: perCall={} (was {}), window={}, pct={}%",
+                perCallInputTokens, lastRealInputTokens, contextWindowTokens,
+                contextWindowTokens > 0 ? String.format("%.1f", (double) perCallInputTokens / contextWindowTokens * 100.0) : "0.0");
         this.lastRealInputTokens = perCallInputTokens;
     }
 
@@ -50,13 +56,21 @@ public final class ContextMonitor {
      *
      * @param turnCumulativeIn   cumulative input tokens for the entire turn
      * @param turnCumulativeOut  cumulative output tokens for the entire turn
-     * @param lastPerCallInputTokens per-call input tokens from the last LLM call in the turn
+     * @param lastPerCallInputTokens per-call input tokens from the last LLM call in the turn;
+     *                               if {@code <= 0}, the existing per-call value is preserved
+     *                               (avoids overwriting a valid streaming value with a zero fallback)
      */
     public synchronized void recordTurnComplete(long turnCumulativeIn, long turnCumulativeOut,
                                                  long lastPerCallInputTokens) {
         this.totalInputTokens += turnCumulativeIn;
         this.totalOutputTokens += turnCumulativeOut;
-        this.lastRealInputTokens = lastPerCallInputTokens;
+        if (lastPerCallInputTokens > 0) {
+            this.lastRealInputTokens = lastPerCallInputTokens;
+        }
+        log.debug("recordTurnComplete: turnIn={}, turnOut={}, perCall={}, totalIn={}, totalOut={}, ctxPct={}%",
+                turnCumulativeIn, turnCumulativeOut, lastPerCallInputTokens,
+                totalInputTokens, totalOutputTokens,
+                contextWindowTokens > 0 ? String.format("%.1f", (double) lastRealInputTokens / contextWindowTokens * 100.0) : "0.0");
     }
 
     /**
