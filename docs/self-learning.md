@@ -55,7 +55,7 @@ The system is designed so that hot-path learning stays cheap, while heavier main
 
 Reference daemon architecture:
 
-![AceClaw daemon architecture](img/learning/aceclaw_daemon_architecture.png)
+![AceClaw daemon architecture](img/aceclaw_daemon_architecture.png)
 
 ## What AceClaw Means By Self-Learning
 
@@ -365,13 +365,13 @@ That leads to a different emphasis:
 
 The original comparison diagrams used during this work are checked into:
 
-- [`img/learning/openclaw_gateway_architecture.png`](img/learning/openclaw_gateway_architecture.png)
-- [`img/learning/aceclaw_daemon_architecture.png`](img/learning/aceclaw_daemon_architecture.png)
-- [`img/learning/context_compaction_openclaw_vs_aceclaw.png`](img/learning/context_compaction_openclaw_vs_aceclaw.png)
+- [`img/openclaw_gateway_architecture.png`](img/openclaw_gateway_architecture.png)
+- [`img/aceclaw_daemon_architecture.png`](img/aceclaw_daemon_architecture.png)
+- [`img/context_compaction_openclaw_vs_aceclaw.png`](img/context_compaction_openclaw_vs_aceclaw.png)
 
 Comparison reference:
 
-![OpenClaw and AceClaw comparison sketch](img/learning/context_compaction_openclaw_vs_aceclaw.png)
+![OpenClaw and AceClaw comparison sketch](img/context_compaction_openclaw_vs_aceclaw.png)
 
 ## What To Measure Next
 
