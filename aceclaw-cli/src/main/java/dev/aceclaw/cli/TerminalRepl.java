@@ -921,8 +921,6 @@ public final class TerminalRepl {
             taskManager.clearForeground();
             activeForegroundSink = null;
 
-            // Status panel will be restored by the caller
-
             // Restore JLine's Status widget so it recalculates scroll region
             // based on the terminal's current state after task output.
             restoreStatusPanel();
@@ -1072,6 +1070,10 @@ public final class TerminalRepl {
             contextMonitor.recordTurnComplete(turnIn, turnOut, perCallContext);
             contextMonitor.checkThresholds(log);
 
+            // For display, use the monitor's authoritative value which handles the
+            // perCallContext=0 case by preserving the last known streaming value.
+            long displayContext = contextMonitor.currentContextTokens();
+
             long elapsedMs = (System.nanoTime() - promptStartNanos) / 1_000_000;
             String elapsed = elapsedMs >= 1000
                     ? String.format("%.1fs", elapsedMs / 1000.0)
@@ -1081,7 +1083,7 @@ public final class TerminalRepl {
             out.printf("%s%s  %d in / %d out  %s%s%n",
                     MUTED, elapsed, turnIn, turnOut,
                     sessionInfo.contextWindowTokens() > 0
-                            ? "context " + formatTokenCount(perCallContext) + "/"
+                            ? "context " + formatTokenCount(displayContext) + "/"
                               + formatTokenCount(sessionInfo.contextWindowTokens())
                             : "",
                     RESET);
@@ -2395,9 +2397,9 @@ public final class TerminalRepl {
         filled = Math.max(0, Math.min(filled, barWidth));
         int empty = barWidth - filled;
 
-        // Color thresholds: green 0-60%, yellow 60-85%, red 85%+
+        // Color thresholds: green 0-60%, yellow 60-85%, red >85%
         String barColor;
-        if (pct >= 85.0) {
+        if (pct > 85.0) {
             barColor = ERROR;
         } else if (pct >= 60.0) {
             barColor = WARNING;
@@ -2407,7 +2409,8 @@ public final class TerminalRepl {
 
         String filledBar = "\u2588".repeat(filled);
         String emptyBar = "\u2591".repeat(empty);
-        String pctStr = String.format(java.util.Locale.ROOT, "%.0f", Math.min(pct, 100.0));
+        // Show actual percentage even if >100% (context overflow is useful diagnostic info)
+        String pctStr = String.format(java.util.Locale.ROOT, "%.0f", pct);
 
         return "ctx " + barColor + filledBar + MUTED + emptyBar + RESET
                 + " " + formatTokenCount(inputTokens)
