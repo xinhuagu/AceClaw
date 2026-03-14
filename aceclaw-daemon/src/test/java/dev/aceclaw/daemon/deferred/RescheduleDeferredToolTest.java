@@ -115,6 +115,16 @@ class RescheduleDeferredToolTest {
     }
 
     @Test
+    void failedCallAfterSuccessClearsPending() throws Exception {
+        tool.execute("{\"delaySeconds\": 60, \"reason\": \"first\"}");
+        assertNotNull(tool.pendingRequest());
+
+        // Invalid call should clear the previous pending request
+        tool.execute("{\"delaySeconds\": 2}");
+        assertNull(tool.pendingRequest());
+    }
+
+    @Test
     void noPendingRequestBeforeExecute() {
         assertNull(tool.pendingRequest());
     }

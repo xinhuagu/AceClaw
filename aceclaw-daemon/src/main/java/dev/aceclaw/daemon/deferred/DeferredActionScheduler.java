@@ -446,10 +446,11 @@ public final class DeferredActionScheduler {
                 var rescheduleReq = rescheduleTool.pendingRequest();
                 if (rescheduleReq != null) {
                     Instant newRunAt = Instant.now().plusSeconds(rescheduleReq.delaySeconds());
+                    Instant newExpiresAt = newRunAt.plus(DEFAULT_EXPIRY_OFFSET);
                     var rescheduledAction = new DeferredAction(
                             action.actionId(), action.sessionId(),
                             action.idempotencyKey(), action.createdAt(),
-                            newRunAt, action.expiresAt(), action.goal(),
+                            newRunAt, newExpiresAt, action.goal(),
                             action.maxRetries(), action.attempts(),
                             DeferredActionState.PENDING, null, action.lastOutput());
                     store.put(rescheduledAction);

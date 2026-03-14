@@ -851,6 +851,15 @@ public final class TerminalRepl {
                 yield WARNING + "[deferred cancelled] " + RESET + actionId
                         + (reason.isBlank() ? "" : " - " + reason);
             }
+            case "rescheduled" -> {
+                String reason = sanitizeCronSummary(event.path("reason").asText(""));
+                int delay = event.path("delaySeconds").asInt(0);
+                String newRunAt = event.path("newRunAt").asText("");
+                yield MUTED + "[deferred rescheduled] " + actionId
+                        + " - re-check in " + delay + "s"
+                        + (reason.isBlank() ? "" : " (" + reason + ")")
+                        + (newRunAt.isBlank() ? "" : " @ " + newRunAt) + RESET;
+            }
             case "queued" -> {
                 String reason = sanitizeCronSummary(event.path("reason").asText(""));
                 yield MUTED + "[deferred queued] " + actionId

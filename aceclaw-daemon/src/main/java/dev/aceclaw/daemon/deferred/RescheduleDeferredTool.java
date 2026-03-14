@@ -87,6 +87,7 @@ public final class RescheduleDeferredTool implements Tool {
 
     @Override
     public ToolResult execute(String inputJson) throws Exception {
+        pending.set(null);
         var input = MAPPER.readTree(inputJson);
         if (input == null || !input.isObject()) {
             return new ToolResult("Invalid input: expected JSON object", true);

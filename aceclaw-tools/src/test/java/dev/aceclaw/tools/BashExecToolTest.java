@@ -198,7 +198,7 @@ class BashExecToolTest {
     @DisabledOnOs(OS.WINDOWS)
     void sleepPollPatternProducesWarning() throws Exception {
         var input = MAPPER.writeValueAsString(
-                MAPPER.createObjectNode().put("command", "sleep 60 && echo done"));
+                MAPPER.createObjectNode().put("command", "sleep 0 && echo done"));
 
         var result = tool.execute(input);
 
@@ -210,7 +210,7 @@ class BashExecToolTest {
     @DisabledOnOs(OS.WINDOWS)
     void sleepNotAtStartNoWarning() throws Exception {
         var input = MAPPER.writeValueAsString(
-                MAPPER.createObjectNode().put("command", "echo hello && sleep 5"));
+                MAPPER.createObjectNode().put("command", "echo hello && sleep 0"));
 
         var result = tool.execute(input);
 
