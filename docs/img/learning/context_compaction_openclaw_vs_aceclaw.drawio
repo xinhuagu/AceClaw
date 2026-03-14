@@ -1,0 +1,163 @@
+<mxGraphModel>
+  <root>
+    <mxCell id="0"/>
+    <mxCell id="1" parent="0"/>
+    <mxCell id="2" value="Context Compaction: OpenClaw vs AceClaw" style="text;fontSize=20;fontStyle=1;align=center;fillColor=none;strokeColor=none;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="100" y="10" width="600" height="30" as="geometry"/>
+    </mxCell>
+    <mxCell id="L0" value="OpenClaw — Product-Grade Context Governance" style="text;fontSize=14;fontStyle=1;align=center;fillColor=none;strokeColor=none;fontColor=#0C447C;" vertex="1" parent="1">
+      <mxGeometry x="20" y="50" width="370" height="24" as="geometry"/>
+    </mxCell>
+    <mxCell id="L10" value="Bootstrap Injection&#xa;AGENTS.md · SOUL.md · TOOLS.md&#xa;MEMORY.md · USER.md · BOOTSTRAP.md" style="rounded=1;fillColor=#E6F1FB;strokeColor=#185FA5;fontSize=10;fontColor=#0C447C;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="50" y="82" width="300" height="52" as="geometry"/>
+    </mxCell>
+    <mxCell id="La1" style="endArrow=classic;strokeColor=#185FA5;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="200" y="134" as="sourcePoint"/>
+        <mxPoint x="200" y="150" as="targetPoint"/>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="L20" value="Session Running&#xa;Agent loop + tool calls" style="rounded=1;fillColor=#E6F1FB;strokeColor=#185FA5;fontSize=10;fontColor=#0C447C;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="90" y="150" width="220" height="38" as="geometry"/>
+    </mxCell>
+    <mxCell id="La2" style="endArrow=classic;strokeColor=#185FA5;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="200" y="188" as="sourcePoint"/>
+        <mxPoint x="200" y="204" as="targetPoint"/>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="L30" value="① Session Pruning (lightweight)&#xa;Only old toolResults trimmed&#xa;TTL/cache-aware · transcript untouched&#xa;softTrimRatio=0.3 · hardClearRatio=0.5" style="rounded=1;fillColor=#E1F5EE;strokeColor=#0F6E56;fontSize=10;fontColor=#085041;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="30" y="204" width="340" height="60" as="geometry"/>
+    </mxCell>
+    <mxCell id="La3" style="endArrow=classic;strokeColor=#0F6E56;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="200" y="264" as="sourcePoint"/>
+        <mxPoint x="200" y="280" as="targetPoint"/>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="L35" value="Context &gt; threshold?" style="rhombus;fillColor=#FAEEDA;strokeColor=#854F0B;fontSize=10;fontColor=#633806;" vertex="1" parent="1">
+      <mxGeometry x="120" y="280" width="160" height="50" as="geometry"/>
+    </mxCell>
+    <mxCell id="La4" value="yes" style="endArrow=classic;strokeColor=#854F0B;fontSize=9;fontColor=#854F0B;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="200" y="330" as="sourcePoint"/>
+        <mxPoint x="200" y="348" as="targetPoint"/>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="L40" value="② Pre-Compaction Memory Flush&#xa;Silent turn (NO_REPLY)&#xa;Model writes durable notes to MEMORY.md&#xa;Runs once per compaction cycle" style="rounded=1;fillColor=#FAEEDA;strokeColor=#854F0B;fontSize=10;fontColor=#633806;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="30" y="348" width="340" height="62" as="geometry"/>
+    </mxCell>
+    <mxCell id="La5" style="endArrow=classic;strokeColor=#854F0B;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="200" y="410" as="sourcePoint"/>
+        <mxPoint x="200" y="428" as="targetPoint"/>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="L50" value="③ Compaction&#xa;LLM summarization → JSONL transcript&#xa;Keep recent messages · /compact manual&#xa;Auto-retry on overflow" style="rounded=1;fillColor=#EEEDFE;strokeColor=#534AB7;fontSize=10;fontColor=#3C3489;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="30" y="428" width="340" height="60" as="geometry"/>
+    </mxCell>
+    <mxCell id="La6" style="endArrow=classic;strokeColor=#534AB7;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="200" y="488" as="sourcePoint"/>
+        <mxPoint x="200" y="506" as="targetPoint"/>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="L60" value="Observability + Control&#xa;/status · /context list · /context detail&#xa;/compact · plugin context engine" style="rounded=1;fillColor=#F1EFE8;strokeColor=#888780;fontSize=10;fontColor=#5F5E5A;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="50" y="506" width="300" height="50" as="geometry"/>
+    </mxCell>
+    <mxCell id="L70" value="Design center: manage context well&#xa;Prune → Flush → Compress → Observe" style="text;fontSize=10;fontStyle=2;align=center;fillColor=none;strokeColor=none;fontColor=#0C447C;" vertex="1" parent="1">
+      <mxGeometry x="50" y="566" width="300" height="30" as="geometry"/>
+    </mxCell>
+    <mxCell id="R0" value="AceClaw — Learning-Oriented Compaction" style="text;fontSize=14;fontStyle=1;align=center;fillColor=none;strokeColor=none;fontColor=#3C3489;" vertex="1" parent="1">
+      <mxGeometry x="410" y="50" width="370" height="24" as="geometry"/>
+    </mxCell>
+    <mxCell id="R10" value="System Prompt Assembly&#xa;Base prompt · env context · git context&#xa;8-tier memory · path rules · model identity&#xa;MEMORY.md first 200 lines · journal" style="rounded=1;fillColor=#EEEDFE;strokeColor=#534AB7;fontSize=10;fontColor=#3C3489;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="430" y="82" width="340" height="62" as="geometry"/>
+    </mxCell>
+    <mxCell id="Ra1" style="endArrow=classic;strokeColor=#534AB7;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="600" y="144" as="sourcePoint"/>
+        <mxPoint x="600" y="160" as="targetPoint"/>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="R20" value="ReAct Loop Running&#xa;reason → act → observe → reason" style="rounded=1;fillColor=#EEEDFE;strokeColor=#534AB7;fontSize=10;fontColor=#3C3489;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="480" y="160" width="240" height="38" as="geometry"/>
+    </mxCell>
+    <mxCell id="Ra2" style="endArrow=classic;strokeColor=#534AB7;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="600" y="198" as="sourcePoint"/>
+        <mxPoint x="600" y="214" as="targetPoint"/>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="R25" value="inputTokens &gt;&#xa;85% effective window?" style="rhombus;fillColor=#FAEEDA;strokeColor=#854F0B;fontSize=10;fontColor=#633806;" vertex="1" parent="1">
+      <mxGeometry x="510" y="214" width="180" height="56" as="geometry"/>
+    </mxCell>
+    <mxCell id="Ra3" value="yes" style="endArrow=classic;strokeColor=#854F0B;fontSize=9;fontColor=#854F0B;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="600" y="270" as="sourcePoint"/>
+        <mxPoint x="600" y="288" as="targetPoint"/>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="R30" value="Phase 0: Memory Flush&#xa;Heuristic extraction from history&#xa;modified files · bash cmds · errors&#xa;→ AutoMemoryStore.add()" style="rounded=1;fillColor=#FAEEDA;strokeColor=#854F0B;fontSize=10;fontStyle=1;fontColor=#633806;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="430" y="288" width="340" height="58" as="geometry"/>
+    </mxCell>
+    <mxCell id="Ra3b" value="feeds learning" style="endArrow=classic;strokeColor=#D85A30;fontSize=9;fontColor=#D85A30;fontStyle=2;dashed=1;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="770" y="317" as="sourcePoint"/>
+        <mxPoint x="770" y="540" as="targetPoint"/>
+        <Array as="points">
+          <mxPoint x="790" y="317"/>
+          <mxPoint x="790" y="540"/>
+        </Array>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="Ra4" style="endArrow=classic;strokeColor=#854F0B;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="600" y="346" as="sourcePoint"/>
+        <mxPoint x="600" y="362" as="targetPoint"/>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="R40" value="Phase 1: Prune&#xa;Stub old tool results (first 200 chars)&#xa;Remove old thinking blocks&#xa;Protect last N turns" style="rounded=1;fillColor=#E1F5EE;strokeColor=#0F6E56;fontSize=10;fontColor=#085041;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="430" y="362" width="340" height="58" as="geometry"/>
+    </mxCell>
+    <mxCell id="Ra5" style="endArrow=classic;strokeColor=#0F6E56;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="600" y="420" as="sourcePoint"/>
+        <mxPoint x="600" y="436" as="targetPoint"/>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="R50" value="Phase 2: Summarize (if still over)&#xa;LLM continuation summary&#xa;Replace old msgs with [COMPACTED]&#xa;Anti-re-summarization marker" style="rounded=1;fillColor=#EEEDFE;strokeColor=#534AB7;fontSize=10;fontColor=#3C3489;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="430" y="436" width="340" height="58" as="geometry"/>
+    </mxCell>
+    <mxCell id="Ra6" style="endArrow=classic;strokeColor=#534AB7;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="600" y="494" as="sourcePoint"/>
+        <mxPoint x="600" y="512" as="targetPoint"/>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="R60" value="→ Self-Learning Pipeline&#xa;Session-close extraction · indexing&#xa;Cross-session mining · trend detection&#xa;Candidate promotion · skill validation" style="rounded=1;fillColor=#FAECE7;strokeColor=#993C1D;fontSize=10;fontStyle=1;fontColor=#712B13;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="430" y="512" width="340" height="62" as="geometry"/>
+    </mxCell>
+    <mxCell id="R70" value="Design center: turn context crisis into learning&#xa;Flush (learn) → Prune → Compress → Feed pipeline" style="text;fontSize=10;fontStyle=2;align=center;fillColor=none;strokeColor=none;fontColor=#3C3489;" vertex="1" parent="1">
+      <mxGeometry x="430" y="582" width="340" height="30" as="geometry"/>
+    </mxCell>
+    <mxCell id="DIV" value="" style="endArrow=none;strokeColor=#B4B2A9;dashed=1;dashPattern=4 4;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="400" y="50" as="sourcePoint"/>
+        <mxPoint x="400" y="610" as="targetPoint"/>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="B0" value="" style="rounded=1;fillColor=#F1EFE8;strokeColor=#888780;dashed=1;" vertex="1" parent="1">
+      <mxGeometry x="20" y="620" width="770" height="130" as="geometry"/>
+    </mxCell>
+    <mxCell id="B1" value="Key Difference Summary" style="text;fontSize=13;fontStyle=1;align=center;fillColor=none;strokeColor=none;fontColor=#444441;" vertex="1" parent="1">
+      <mxGeometry x="260" y="625" width="280" height="20" as="geometry"/>
+    </mxCell>
+    <mxCell id="B2" value="OpenClaw: 'How to manage context well'&#xa;  • Pruning as independent, cache-aware layer&#xa;  • Silent flush: remind model to save notes&#xa;  • Rich observability (/status, /context list)&#xa;  • Plugin-replaceable context engine" style="text;fontSize=10;align=left;fillColor=none;strokeColor=none;fontColor=#0C447C;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="40" y="650" width="350" height="90" as="geometry"/>
+    </mxCell>
+    <mxCell id="B3" value="AceClaw: 'How to turn context crisis into learning'&#xa;  • Phase 0 extracts behavior signals before prune&#xa;  • Heuristic flush: system grabs experience itself&#xa;  • Compaction feeds self-learning pipeline&#xa;  • Compaction is part of the learning loop" style="text;fontSize=10;align=left;fillColor=none;strokeColor=none;fontColor=#3C3489;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="420" y="650" width="350" height="90" as="geometry"/>
+    </mxCell>
+  </root>
+</mxGraphModel>

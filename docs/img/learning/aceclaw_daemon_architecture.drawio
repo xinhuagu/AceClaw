@@ -1,0 +1,61 @@
+<mxGraphModel>
+  <root>
+    <mxCell id="0"/>
+    <mxCell id="1" parent="0"/>
+    <mxCell id="2" value="AceClaw: Self-Learning Daemon Architecture" style="text;fontSize=18;fontStyle=1;align=center;fillColor=none;strokeColor=none;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="100" y="10" width="600" height="30" as="geometry"/>
+    </mxCell>
+    <mxCell id="10" value="CLI / REPL" style="rounded=1;fillColor=#F1EFE8;strokeColor=#888780;fontSize=12;fontStyle=1;fontColor=#444441;" vertex="1" parent="1">
+      <mxGeometry x="270" y="55" width="180" height="38" as="geometry"/>
+    </mxCell>
+    <mxCell id="11" value="UDS only (no network surface)" style="text;fontSize=10;align=center;fillColor=none;strokeColor=none;fontColor=#888780;fontStyle=2;" vertex="1" parent="1">
+      <mxGeometry x="240" y="98" width="240" height="18" as="geometry"/>
+    </mxCell>
+    <mxCell id="12" style="endArrow=classic;strokeColor=#5F5E5A;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="10" target="100"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="100" value="" style="rounded=1;fillColor=none;strokeColor=#888780;fontSize=12;dashed=1;dashPattern=8 4;" vertex="1" parent="1">
+      <mxGeometry x="60" y="120" width="600" height="420" as="geometry"/>
+    </mxCell>
+    <mxCell id="101" value="Persistent JVM Daemon" style="text;fontSize=13;fontStyle=1;align=center;fillColor=none;strokeColor=none;fontColor=#444441;" vertex="1" parent="1">
+      <mxGeometry x="240" y="126" width="240" height="22" as="geometry"/>
+    </mxCell>
+    <mxCell id="200" value="ReAct Loop&#xa;reason → act → observe → reason" style="rounded=1;fillColor=#EEEDFE;strokeColor=#534AB7;fontSize=12;fontStyle=1;fontColor=#3C3489;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="100" y="158" width="480" height="46" as="geometry"/>
+    </mxCell>
+    <mxCell id="210" value="Behavior Detectors&#xa;errors · recoveries · patterns · user corrections" style="rounded=1;fillColor=#EEEDFE;strokeColor=#534AB7;fontSize=11;fontColor=#3C3489;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="100" y="228" width="480" height="46" as="geometry"/>
+    </mxCell>
+    <mxCell id="211" style="endArrow=classic;strokeColor=#534AB7;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="200" target="210"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="220" value="Self-Learning Engine&#xa;score → promote → inject → validate" style="rounded=1;fillColor=#EEEDFE;strokeColor=#534AB7;fontSize=12;fontStyle=1;fontColor=#3C3489;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="100" y="298" width="480" height="50" as="geometry"/>
+    </mxCell>
+    <mxCell id="221" style="endArrow=classic;strokeColor=#534AB7;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="210" target="220"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="230" value="Governed Memory&#xa;8-tier hierarchy&#xa;HMAC signed" style="rounded=1;fillColor=#FAEEDA;strokeColor=#854F0B;fontSize=11;fontStyle=1;fontColor=#633806;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="100" y="378" width="220" height="60" as="geometry"/>
+    </mxCell>
+    <mxCell id="231" style="endArrow=classic;strokeColor=#854F0B;exitX=0.3;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="220" target="230"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="240" value="Validated Skills&#xa;shadow → canary → active&#xa;auto-rollback" style="rounded=1;fillColor=#FAEEDA;strokeColor=#854F0B;fontSize=11;fontStyle=1;fontColor=#633806;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="360" y="378" width="220" height="60" as="geometry"/>
+    </mxCell>
+    <mxCell id="241" style="endArrow=classic;strokeColor=#854F0B;exitX=0.7;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="220" target="240"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="250" value="promote" style="endArrow=classic;strokeColor=#854F0B;fontSize=10;fontColor=#854F0B;fontStyle=2;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="230" target="240"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="260" value="inject into&#xa;next run" style="endArrow=classic;strokeColor=#534AB7;fontSize=9;fontColor=#534AB7;fontStyle=2;dashed=1;dashPattern=4 3;exitX=1;exitY=0;entryX=1;entryY=0.5;curved=1;" edge="1" parent="1" source="240" target="200">
+      <mxGeometry x="0.3" y="10" relative="1" as="geometry">
+        <mxPoint x="600" y="300" as="sourcePoint"/>
+        <mxPoint x="600" y="181" as="targetPoint"/>
+        <Array as="points">
+          <mxPoint x="620" y="370"/>
+          <mxPoint x="620" y="181"/>
+        </Array>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="270" value="4-level permissions · workspace isolation · HMAC integrity" style="rounded=1;fillColor=#F1EFE8;strokeColor=#888780;fontSize=10;fontColor=#5F5E5A;" vertex="1" parent="1">
+      <mxGeometry x="100" y="460" width="480" height="26" as="geometry"/>
+    </mxCell>
+    <mxCell id="280" value="rollback if regression" style="text;fontSize=9;align=center;fillColor=none;strokeColor=none;fontColor=#854F0B;fontStyle=2;" vertex="1" parent="1">
+      <mxGeometry x="400" y="440" width="140" height="16" as="geometry"/>
+    </mxCell>
+    <mxCell id="290" value="Sealed local daemon · JVM · UDS-only · zero network surface · coding-first" style="text;fontSize=11;align=center;fillColor=none;strokeColor=none;fontColor=#888780;" vertex="1" parent="1">
+      <mxGeometry x="120" y="550" width="480" height="20" as="geometry"/>
+    </mxCell>
+  </root>
+</mxGraphModel>

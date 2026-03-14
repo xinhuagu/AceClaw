@@ -1,6 +1,6 @@
 <h1 align="center">AceClaw</h1>
 
-<p align="center">Self-learning agent harness — learns from every session, evolves its own strategies, and gets better over time</p>
+<p align="center">Self-learning agent harness for long-running coding work</p>
 
 <p align="center">
   <a href="https://github.com/xinhuagu/AceClaw/actions/workflows/ci.yml"><img src="https://github.com/xinhuagu/AceClaw/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -9,13 +9,58 @@
   <img src="https://img.shields.io/badge/Gradle-8.14-02303A?logo=gradle&logoColor=white" alt="Gradle 8.14">
 </p>
 
-An **agent harness** is the orchestration layer that turns LLMs into persistent, self-correcting workers — the loop that reasons, acts, observes, recovers, and remembers. Most harnesses treat each session as a blank slate. **AceClaw doesn't.** It detects what worked, what failed, and what the user corrected — then carries those lessons forward as typed, confidence-scored insights that compound across sessions.
+AceClaw is a persistent JVM daemon built for workflows that run for hours, not seconds. It is an **agent harness**: the layer that turns LLM calls into a long-running loop that can reason, act, observe, recover, and remember.
 
-AceClaw is a persistent JVM daemon built for workflows that run for hours, not seconds. Pure Java 21, zero network attack surface. Inspired by [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) and [OpenClaw](https://github.com/openclaw), built from scratch with three key differentiators:
+What makes AceClaw different is that it does not stop at memory. It treats runtime behavior as learning data. Tool failures, recoveries, repeated workflows, validation results, and human reviews are all turned into durable signals that can change future behavior.
 
-1. **Self-Learning** — Zero-cost heuristic detectors, session retrospectives, historical indexing, cross-session pattern mining, and trend detection turn agent behavior into durable learning signals. The agent evolves its own strategies without extra LLM calls in the hot path.
-2. **Security** — UDS-only communication, sealed 4-level permissions, HMAC-signed memory
-3. **Long-Term Memory** — 8-tier hierarchy, hybrid search, automated consolidation
+Inspired by [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) and [OpenClaw](https://github.com/openclaw), AceClaw is built around three ideas:
+
+1. **Self-learning by default** — The harness learns from what the agent actually does, not only from what it writes down.
+2. **Long-running execution** — A persistent daemon keeps context, state, and maintenance loops alive across sessions.
+3. **Safe local control** — UDS-only communication, sealed permissions, signed memory, and strict workspace isolation keep the system inspectable.
+
+## Why AceClaw
+
+Most agent projects are strongest at one of these two things:
+
+- **Context management** — storing notes, loading rules, and keeping the prompt usable.
+- **Behavior improvement** — turning runtime experience into better future behavior.
+
+AceClaw is built around the second problem.
+
+OpenClaw is useful here as a contrast. OpenClaw is strong at explicit memory, gateway orchestration, and making context operational. AceClaw starts one layer later. It asks:
+
+> What in the agent's behavior should become reusable knowledge?
+
+That leads to a different default architecture.
+
+```mermaid
+flowchart LR
+  subgraph OC["OpenClaw default path"]
+    oc1["Files, notes, and gateway state"] --> oc2["Retrieve relevant context"]
+    oc2 --> oc3["Inject into the next run"]
+  end
+
+  subgraph AC["AceClaw default path"]
+    ac1["Tool results, retries, user corrections"] --> ac2["Detectors and session retrospective"]
+    ac2 --> ac3["Historical index and memory"]
+    ac3 --> ac4["Maintenance: consolidation, patterns, trends"]
+    ac4 --> ac5["Validation, governance, and human review"]
+    ac5 --> ac6["Runtime skills, refinements, and better future behavior"]
+  end
+```
+
+Original diagrams used for the current docs live in [`docs/img/learning/`](docs/img/learning).
+
+## At A Glance
+
+| Question | OpenClaw-style default | AceClaw default |
+|----------|-------------------------|-----------------|
+| What is the main unit of reuse? | Retrieved context | Reused behavior |
+| What gets stored first? | Notes and explicit memory | Explanations, validations, trends, and governed signals |
+| What changes the next run? | Better prompt context | Better prompt context plus runtime adaptation |
+| What is the hard problem? | Context management | Learning effectiveness |
+| Operator role | Inspect what goes in | Inspect, validate, suppress, and pin learned signals |
 
 ## Security First
 
@@ -31,16 +76,26 @@ See [Security Details](#security-details) for the full breakdown and [Security R
 
 ## Self-Learning
 
-AceClaw learns from its own behavior — no LLM calls required. Every tool execution, error recovery, and user correction is analyzed by heuristic detectors that produce type-safe insights.
+AceClaw now has a full self-learning loop in `main`.
 
-- **Automatic pattern detection** — `ErrorDetector` matches tool failures to subsequent retries. `SessionEndExtractor` captures user corrections and preferences via regex-based passes. `SessionAnalyzer`, `HistoricalLogIndex`, `CrossSessionPatternMiner`, and `TrendDetector` extend that learning across sessions.
-- **Cross-session accumulation** — Insights start at 0.4 confidence and gain +0.2 per recurrence. Only patterns reaching 0.7 confidence are persisted.
-- **Strategy evolution** — Errors become `ErrorInsight`s, recurring sequences become `SuccessInsight`s, unresolved errors become anti-patterns, and underperforming skills are refined or rolled back. A closed feedback loop: detect → persist → recall → refine.
-- **Type-safe insight hierarchy** — `Insight` is a sealed interface (`ErrorInsight | SuccessInsight | PatternInsight`). The compiler enforces exhaustive handling.
-- **Deferred maintenance scheduler** — Session end performs extraction and indexing immediately; heavier consolidation, pattern mining, and trend detection run through background maintenance triggers (time, session count, size, idle).
-- **Baseline evaluation** — Continuous-learning KPIs and collection workflow are documented in `docs/continuous-learning-plan.md` with report templates and sample output.
+It learns in three layers:
 
-See [Self-Learning Pipeline](docs/self-learning.md) for the full architecture.
+1. **Turn-time learning** — detect failures, recoveries, repeated tool sequences, and skill outcomes while the agent is working.
+2. **Session-close learning** — write a retrospective summary, append historical snapshots, and persist lightweight signals immediately.
+3. **Deferred maintenance** — consolidate memory, mine cross-session patterns, detect trends, rebuild stale indexes, and recover interrupted maintenance work in the background.
+
+Then it adds a governance layer on top:
+
+- **Explainability** — every adaptive action can be traced to a trigger and evidence.
+- **Validation semantics** — learned behavior is tagged as provisional, useful, pass, hold, reject, or rollback.
+- **Observability** — `/learning` shows maintenance runs, recent actions, validations, and reviews.
+- **Noise control** — low-value or stale signals can be pruned, merged, decayed, or suppressed.
+- **Runtime skill governance** — repeated workflows can become session-scoped runtime skills, but only with promotion, suppression, expiration, and durable-draft rules.
+- **Human review** — operators can list reviewable signals and mark them `useful`, `pin`, `suppress`, `low_value`, or `incorrect`.
+
+The result is not just "memory." It is a system that tries to turn runtime experience into reusable knowledge.
+
+See [Self-Learning Pipeline](docs/self-learning.md) for the full architecture and operator workflow.
 
 ## Long-Term Memory
 
@@ -104,12 +159,30 @@ Daemon (persistent JVM, separate process group)
   ├─ Permission Manager   → sealed 4-level gate (READ/WRITE/EXECUTE/DANGEROUS)
   ├─ Tool Registry        → 12 native tools + MCP (filtered per sub-agent)
   ├─ Memory System        → 8-tier hierarchy, HMAC-signed, hybrid search
-  ├─ Self-Learning        → ErrorDetector, ToolMetrics, SessionAnalyzer, historical index, pattern mining, trend detection, skill feedback
+  ├─ Self-Learning        → detectors, retrospectives, historical index, trends, validation, runtime skills, human review
   ├─ Context Compactor    → 3-phase (prune → summarize → memory flush)
   ├─ Scheduler            → persistent cron jobs, heartbeat runner, learning maintenance
   ├─ Hook System          → BOOT.md startup, command hooks
   └─ LLM Client Factory   → 8 providers, extended thinking, prompt caching
 ```
+
+### Self-Learning Flow
+
+```
+Turn execution
+  → detectors + metrics
+  → session retrospective + historical snapshot
+  → deferred maintenance
+  → explanations + validations
+  → runtime skills / refinement / candidate transitions
+  → human review and suppression
+```
+
+For the source diagrams behind the current architecture work, see:
+
+- [`docs/img/learning/aceclaw_daemon_architecture.png`](docs/img/learning/aceclaw_daemon_architecture.png)
+- [`docs/img/learning/openclaw_gateway_architecture.png`](docs/img/learning/openclaw_gateway_architecture.png)
+- [`docs/img/learning/context_compaction_openclaw_vs_aceclaw.png`](docs/img/learning/context_compaction_openclaw_vs_aceclaw.png)
 
 ### Modules
 
@@ -123,6 +196,19 @@ Daemon (persistent JVM, separate process group)
 | `aceclaw-mcp` | MCP client integration for external tools |
 | `aceclaw-daemon` | Daemon process, UDS listener, streaming handler, [self-learning detectors](docs/self-learning.md) |
 | `aceclaw-cli` | CLI entry point, REPL, daemon lifecycle |
+
+## Operator Commands
+
+The CLI now exposes a small operator surface for learning:
+
+```text
+/learning
+/learning signals
+/learning reviews
+/learning review <action> <targetType> <targetId> [note]
+```
+
+Use it to inspect what the system recently learned, review adaptive signals, and suppress or pin behavior that should not be treated as reusable knowledge.
 
 ## Security Details
 
@@ -182,6 +268,7 @@ DANGEROUS   → always prompt, never remembered
 - [x] Self-learning: insight hierarchy, error/pattern detection, self-improvement engine
 - [x] Historical learning: session retrospectives, historical index, cross-session pattern mining, trend detection
 - [x] Adaptive skills: metrics, skill memory feedback, refinement, rollback
+- [x] Self-learning phase 2: explainability, validation semantics, observability, noise control, runtime skill governance, recovery, human review
 - [x] Candidate pipeline: injected-candidate outcome writeback, clock-injected gates, stale cleanup, score decay
 - [x] Hook system: BOOT.md startup execution, command hooks, persistent cron, heartbeat runner
 - [x] Task planner: complexity estimation, LLM plan generation, sequential execution
