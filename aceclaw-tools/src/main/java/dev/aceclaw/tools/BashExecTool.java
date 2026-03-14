@@ -2,16 +2,21 @@ package dev.aceclaw.tools;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.aceclaw.core.agent.CancellationAware;
+import dev.aceclaw.core.agent.CancellationToken;
 import dev.aceclaw.core.agent.Tool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Executes a shell command and returns stdout/stderr.
@@ -21,7 +26,7 @@ import java.util.concurrent.TimeUnit;
  * On Windows, commands are executed via {@code cmd.exe /c}.
  * Timeout is configurable; output is captured and truncated if it exceeds size limits.
  */
-public final class BashExecTool implements Tool {
+public final class BashExecTool implements Tool, CancellationAware {
 
     private static final Logger log = LoggerFactory.getLogger(BashExecTool.class);
 
@@ -52,10 +57,18 @@ public final class BashExecTool implements Tool {
     /** Prefer bash, fall back to sh for Alpine/BusyBox. */
     static final String UNIX_SHELL = Files.exists(Path.of("/bin/bash")) ? "/bin/bash" : "/bin/sh";
 
+    private static final File DEV_NULL = new File(IS_WINDOWS ? "NUL" : "/dev/null");
+
     private final Path workingDir;
+    private volatile CancellationToken cancellationToken;
 
     public BashExecTool(Path workingDir) {
         this.workingDir = workingDir;
+    }
+
+    @Override
+    public void setCancellationToken(CancellationToken token) {
+        this.cancellationToken = token;
     }
 
     @Override
@@ -103,6 +116,12 @@ public final class BashExecTool implements Tool {
     }
 
     private ToolResult runCommand(String command, int timeoutSeconds) throws IOException {
+        // Short-circuit if already cancelled before starting the process
+        var token = this.cancellationToken;
+        if (token != null && token.isCancelled()) {
+            return new ToolResult("Command cancelled", true);
+        }
+
         ProcessBuilder processBuilder;
         if (IS_WINDOWS) {
             processBuilder = new ProcessBuilder("cmd.exe", "/c", command);
@@ -110,49 +129,102 @@ public final class BashExecTool implements Tool {
             processBuilder = new ProcessBuilder(UNIX_SHELL, "-c", command);
         }
         processBuilder.directory(workingDir.toFile())
-                .redirectErrorStream(true);
+                .redirectErrorStream(true)
+                .redirectInput(ProcessBuilder.Redirect.from(DEV_NULL));
 
         var process = processBuilder.start();
 
-        String output;
-        try (var reader = process.getInputStream()) {
-            output = new String(reader.readAllBytes());
-        }
+        // Read stdout in a virtual thread so it doesn't block the timeout
+        var outputHolder = new AtomicReference<>("");
+        var readerThread = Thread.ofVirtual().name("bash-stdout-reader").start(() -> {
+            try (var is = process.getInputStream()) {
+                outputHolder.set(new String(is.readAllBytes()));
+            } catch (IOException ignored) {
+                // process destroyed — partial output already in holder
+            }
+        });
 
-        boolean completed;
+        // Track whether the cancel-watcher actually killed the process
+        var cancelledByWatcher = new AtomicBoolean(false);
+
+        // Spawn cancel-watcher if a cancellation token is present
+        var cancelWatcher = (token != null)
+                ? Thread.ofVirtual().name("bash-cancel-watcher").start(() -> {
+                    try {
+                        while (process.isAlive() && !token.isCancelled()) {
+                            Thread.sleep(200);
+                        }
+                        if (token.isCancelled() && process.isAlive()) {
+                            log.debug("Cancellation requested — destroying process tree");
+                            cancelledByWatcher.set(true);
+                            destroyProcessTree(process);
+                        }
+                    } catch (InterruptedException ignored) {
+                        // shutting down
+                    }
+                })
+                : null;
+
         try {
-            completed = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
+            boolean completed;
+            try {
+                completed = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                destroyProcessTree(process);
+                readerThread.join(2000);
+                return new ToolResult("Command interrupted", true);
+            }
+
+            if (!completed) {
+                destroyProcessTree(process);
+                readerThread.join(2000);
+                var truncated = truncateOutput(outputHolder.get());
+                return new ToolResult(
+                        truncated + "\n\n(Command timed out after " + timeoutSeconds + " seconds)",
+                        true);
+            }
+
+            // Only report "cancelled" if the watcher actually killed the process
+            if (cancelledByWatcher.get()) {
+                readerThread.join(2000);
+                return new ToolResult("Command cancelled", true);
+            }
+
+            readerThread.join(5000);
+            String output = outputHolder.get();
+            int exitCode = process.exitValue();
+            var truncated = truncateOutput(output);
+
+            if (exitCode != 0) {
+                boolean benign = exitCode == 1 && isBenignExit1Command(command);
+                if (benign) {
+                    String hint = isDiffCommand(command)
+                            ? "(exit code: 1 — files differ)"
+                            : "(exit code: 1 — no match found)";
+                    return new ToolResult(truncated + "\n\n" + hint, false);
+                }
+                return new ToolResult(
+                        truncated + "\n\n(exit code: " + exitCode + ")",
+                        true);
+            }
+
+            return new ToolResult(truncated, false);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            process.destroyForcibly();
+            destroyProcessTree(process);
             return new ToolResult("Command interrupted", true);
-        }
-
-        if (!completed) {
-            process.destroyForcibly();
-            var truncated = truncateOutput(output);
-            return new ToolResult(
-                    truncated + "\n\n(Command timed out after " + timeoutSeconds + " seconds)",
-                    true);
-        }
-
-        int exitCode = process.exitValue();
-        var truncated = truncateOutput(output);
-
-        if (exitCode != 0) {
-            boolean benign = exitCode == 1 && isBenignExit1Command(command);
-            if (benign) {
-                String hint = isDiffCommand(command)
-                        ? "(exit code: 1 — files differ)"
-                        : "(exit code: 1 — no match found)";
-                return new ToolResult(truncated + "\n\n" + hint, false);
+        } finally {
+            if (cancelWatcher != null) {
+                cancelWatcher.interrupt();
             }
-            return new ToolResult(
-                    truncated + "\n\n(exit code: " + exitCode + ")",
-                    true);
         }
+    }
 
-        return new ToolResult(truncated, false);
+    private static void destroyProcessTree(Process process) {
+        var handle = process.toHandle();
+        handle.descendants().forEach(ProcessHandle::destroyForcibly);
+        handle.destroyForcibly();
     }
 
     /**
