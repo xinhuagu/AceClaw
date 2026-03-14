@@ -11,8 +11,18 @@ public sealed interface StreamEvent {
 
     /**
      * The stream has started and the message metadata is available.
+     *
+     * @param id    message identifier
+     * @param model model name
+     * @param usage initial usage stats (contains {@code input_tokens} from Anthropic {@code message_start});
+     *              may be {@code null} for providers that don't report usage at stream start
      */
-    record MessageStart(String id, String model) implements StreamEvent {}
+    record MessageStart(String id, String model, Usage usage) implements StreamEvent {
+        /** Convenience constructor for providers/tests that don't supply start-of-stream usage. */
+        public MessageStart(String id, String model) {
+            this(id, model, null);
+        }
+    }
 
     /**
      * A new content block has started at the given index.

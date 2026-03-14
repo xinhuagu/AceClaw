@@ -169,7 +169,8 @@ final class AnthropicStreamSession implements StreamSession {
         JsonNode message = root.path("message");
         String id = message.path("id").asText("");
         String model = message.path("model").asText("");
-        handler.onMessageStart(new StreamEvent.MessageStart(id, model));
+        Usage usage = mapper.parseUsage(message.path("usage"));
+        handler.onMessageStart(new StreamEvent.MessageStart(id, model, usage));
     }
 
     private void handleContentBlockStart(String data, StreamEventHandler handler) throws Exception {

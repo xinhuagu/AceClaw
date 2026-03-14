@@ -897,7 +897,10 @@ public final class StreamingAgentLoop {
         private boolean inThinking;
 
         StopReason stopReason;
+        /** Final merged usage: input_tokens from message_start + output_tokens from message_delta. */
         Usage usage;
+        /** Usage from message_start (carries accurate input_tokens for Anthropic). */
+        private Usage startUsage;
         LlmException error;
 
         StreamAccumulator(StreamEventHandler delegate) {
@@ -906,6 +909,9 @@ public final class StreamingAgentLoop {
 
         @Override
         public void onMessageStart(StreamEvent.MessageStart event) {
+            if (event.usage() != null) {
+                this.startUsage = event.usage();
+            }
             delegate.onMessageStart(event);
         }
 
@@ -970,8 +976,25 @@ public final class StreamingAgentLoop {
         @Override
         public void onMessageDelta(StreamEvent.MessageDelta event) {
             this.stopReason = event.stopReason();
-            this.usage = event.usage();
+            // Merge: input_tokens from message_start + output_tokens from message_delta.
+            // Anthropic sends input_tokens only in message_start, and output_tokens only in message_delta.
+            this.usage = mergeUsage(startUsage, event.usage());
             delegate.onMessageDelta(event);
+        }
+
+        /**
+         * Merges usage from {@code message_start} (which carries {@code input_tokens})
+         * with usage from {@code message_delta} (which carries {@code output_tokens}).
+         * If either is null, returns the other. Cache tokens are summed from both.
+         */
+        private static Usage mergeUsage(Usage start, Usage delta) {
+            if (start == null) return delta;
+            if (delta == null) return start;
+            return new Usage(
+                    Math.max(start.inputTokens(), delta.inputTokens()),
+                    Math.max(start.outputTokens(), delta.outputTokens()),
+                    start.cacheCreationInputTokens() + delta.cacheCreationInputTokens(),
+                    start.cacheReadInputTokens() + delta.cacheReadInputTokens());
         }
 
         @Override
