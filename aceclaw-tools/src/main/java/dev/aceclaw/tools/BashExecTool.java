@@ -61,7 +61,6 @@ public final class BashExecTool implements Tool, CancellationAware {
 
     private final Path workingDir;
     private volatile CancellationToken cancellationToken;
-    private volatile Process activeProcess;
 
     public BashExecTool(Path workingDir) {
         this.workingDir = workingDir;
@@ -134,7 +133,6 @@ public final class BashExecTool implements Tool, CancellationAware {
                 .redirectInput(ProcessBuilder.Redirect.from(DEV_NULL));
 
         var process = processBuilder.start();
-        activeProcess = process;
 
         // Read stdout in a virtual thread so it doesn't block the timeout
         var outputHolder = new AtomicReference<>("");
@@ -217,7 +215,6 @@ public final class BashExecTool implements Tool, CancellationAware {
             destroyProcessTree(process);
             return new ToolResult("Command interrupted", true);
         } finally {
-            activeProcess = null;
             if (cancelWatcher != null) {
                 cancelWatcher.interrupt();
             }

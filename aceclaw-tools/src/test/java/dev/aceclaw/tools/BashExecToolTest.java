@@ -238,13 +238,12 @@ class BashExecToolTest {
         assertThat(elapsed).isLessThan(10_000);
 
         // Verify the child process is actually dead
-        if (Files.exists(pidFile)) {
-            long pid = Long.parseLong(Files.readString(pidFile).strip());
-            Thread.sleep(500); // brief grace period for OS cleanup
-            assertThat(ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false))
-                    .as("child process (PID %d) should be dead after timeout", pid)
-                    .isFalse();
-        }
+        assertThat(Files.exists(pidFile)).as("PID file should have been written").isTrue();
+        long pid = Long.parseLong(Files.readString(pidFile).strip());
+        Thread.sleep(500); // brief grace period for OS cleanup
+        assertThat(ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false))
+                .as("child process (PID %d) should be dead after timeout", pid)
+                .isFalse();
     }
 
     @Test
@@ -279,12 +278,11 @@ class BashExecToolTest {
         assertThat(resultHolder[0].output()).contains("cancelled");
 
         // Verify the child process is actually dead
-        if (Files.exists(pidFile)) {
-            long pid = Long.parseLong(Files.readString(pidFile).strip());
-            Thread.sleep(500); // brief grace period for OS cleanup
-            assertThat(ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false))
-                    .as("child process (PID %d) should be dead after cancellation", pid)
-                    .isFalse();
-        }
+        assertThat(Files.exists(pidFile)).as("PID file should have been written").isTrue();
+        long pid = Long.parseLong(Files.readString(pidFile).strip());
+        Thread.sleep(500); // brief grace period for OS cleanup
+        assertThat(ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false))
+                .as("child process (PID %d) should be dead after cancellation", pid)
+                .isFalse();
     }
 }
