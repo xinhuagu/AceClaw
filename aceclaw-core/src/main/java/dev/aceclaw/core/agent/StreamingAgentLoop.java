@@ -294,7 +294,7 @@ public final class StreamingAgentLoop {
                     totalOutputTokens += accumulator.usage.outputTokens();
                     totalCacheCreationTokens += accumulator.usage.cacheCreationInputTokens();
                     totalCacheReadTokens += accumulator.usage.cacheReadInputTokens();
-                    lastInputTokens = accumulator.usage.inputTokens();
+                    lastInputTokens = accumulator.usage.effectiveInputTokens();
                     eventHandler.onUsageUpdate(lastInputTokens, totalInputTokens, totalOutputTokens);
                 }
 

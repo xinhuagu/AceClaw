@@ -78,6 +78,12 @@ public interface OutputSink {
     /** Called when a watchdog budget limit is reached. */
     default void onBudgetExhausted(JsonNode params) {}
 
-    /** Called when a usage update is received during streaming. */
+    /**
+     * Called when a usage update is received during streaming.
+     *
+     * @param inputTokens   effective input tokens (input + cache creation + cache read)
+     *                       representing actual context window occupation for this LLM call
+     * @param contextWindow configured context window size in tokens
+     */
     default void onUsageUpdate(long inputTokens, long contextWindow) {}
 }

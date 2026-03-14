@@ -52,11 +52,13 @@ public interface StreamEventHandler {
 
     /**
      * Called after each LLM call with the per-call token usage.
-     * {@code lastInputTokens} reflects the context window consumed by the
-     * most recent API call (grows as conversation history accumulates).
+     * {@code lastInputTokens} reflects the effective context window occupation
+     * (input + cache creation + cache read tokens) from the most recent API call.
+     * This value grows as conversation history accumulates within a turn.
      *
-     * @param lastInputTokens  input tokens from the most recent LLM call
-     * @param totalInputTokens cumulative input tokens across all calls in this turn
+     * @param lastInputTokens   effective input tokens (input + cacheCreation + cacheRead)
+     *                           from the most recent LLM call
+     * @param totalInputTokens  cumulative input tokens across all calls in this turn
      * @param totalOutputTokens cumulative output tokens across all calls in this turn
      */
     default void onUsageUpdate(long lastInputTokens, long totalInputTokens, long totalOutputTokens) {}

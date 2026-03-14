@@ -28,4 +28,15 @@ public record Usage(
     public int totalTokens() {
         return inputTokens + outputTokens;
     }
+
+    /**
+     * Effective context window occupation: input_tokens + cache tokens.
+     *
+     * <p>With Anthropic prompt caching, {@code input_tokens} only counts
+     * non-cached tokens (often just 1-2). The real context occupation is
+     * {@code input_tokens + cache_creation_input_tokens + cache_read_input_tokens}.
+     */
+    public int effectiveInputTokens() {
+        return inputTokens + cacheCreationInputTokens + cacheReadInputTokens;
+    }
 }
