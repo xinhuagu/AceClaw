@@ -34,7 +34,9 @@ OpenClaw is useful here as a contrast. OpenClaw is strong at explicit memory, ga
 
 That leads to a different default architecture.
 
-![AceClaw daemon architecture](docs/img/aceclaw_daemon_architecture.png)
+<p align="center">
+  <img src="docs/img/aceclaw_daemon_architecture.png" alt="AceClaw daemon architecture">
+</p>
 
 This architecture is also why AceClaw is **security-first by design**.
 
