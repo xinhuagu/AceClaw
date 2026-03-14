@@ -12,6 +12,8 @@ AceClaw learns from its own behavior across three layers:
 
 The result is a learning loop that stays cheap on the hot path while still building long-term signals for adaptive skills and historical analysis.
 
+> Current state: these are three different cadences, not one strictly linear pipeline. `SelfImprovementEngine` runs after each turn, `SessionEndExtractor` runs once when the session closes, and deferred maintenance runs later when time/session-count/size/idle triggers fire.
+
 ---
 
 ## Architecture

@@ -124,7 +124,7 @@ Daemon (persistent JVM, separate process group)
   ├─ Tool Registry        → 12 native tools + MCP (filtered per sub-agent)
   ├─ Memory System        → 8-tier hierarchy, HMAC-signed, hybrid search
   ├─ Self-Learning        → ErrorDetector, ToolMetrics, SessionAnalyzer, historical index, pattern mining, trend detection, skill feedback
-  ├─ Context Compactor    → 3-phase (prune → summarize → memory flush)
+  ├─ Context Compactor    → 3-phase (memory flush → prune → summarize)
   ├─ Scheduler            → persistent cron jobs, heartbeat runner, learning maintenance
   ├─ Hook System          → BOOT.md startup, command hooks
   └─ LLM Client Factory   → 8 providers, extended thinking, prompt caching

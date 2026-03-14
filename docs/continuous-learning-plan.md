@@ -3,8 +3,21 @@
 ## Purpose
 This document defines the v1 measurement framework for AceClaw continuous learning. The goal is to establish reproducible baseline metrics before enabling aggressive autonomous promotion and rollback policies.
 
-This plan aligns with PRD success metrics and the continuous-learning implementation track (`#52`-`#65`).
+This plan aligns with PRD success metrics and the current governed-learning implementation.
 Operational controls and rollback procedures are documented in `docs/continuous-learning-operations.md`.
+
+## Current State
+
+Implemented today:
+- replay case generation and replay report aggregation
+- candidate promotion / demotion / rollback tracking
+- draft validation and auto-release guardrails
+- baseline collection script and report templates
+
+Still intentionally incomplete:
+- some metrics still emit `pending_instrumentation`
+- replay dataset governance is still growing
+- threshold tuning still requires operator judgment
 
 ## Scope
 In scope for baseline v1:
@@ -111,10 +124,9 @@ Useful flags:
 ## Known Gaps (v1)
 - Some metrics are not fully instrumented yet and will be emitted as `pending_instrumentation`.
 - Replay case/reports are automated; remaining work is stronger dataset governance at scale.
-- Outcome enforcement closure (`#62`) is now implemented for candidate-level outcome writeback,
-  deterministic time-gating (`Clock`), lifecycle cleanup/decay, and concurrency hardening.
-- Automated release-controller and policy-pack layers still require issues `#60`-`#61`.
+- Outcome writeback, deterministic time-gating (`Clock`), lifecycle cleanup/decay, and concurrency hardening are implemented.
+- Remaining work is mostly in stronger release policy packs and richer production-scale replay coverage.
 
 ## Versioning
 - Document version: `v1.0`
-- Last updated: `2026-02-24`
+- Last updated: `2026-03-14`

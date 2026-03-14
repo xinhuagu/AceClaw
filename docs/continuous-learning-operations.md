@@ -1,19 +1,19 @@
 # Continuous Learning Operations Runbook
 
-This runbook covers runtime controls, rollback, and configuration persistence for the candidate pipeline introduced in issue `#78`.
+This runbook covers runtime controls, rollback, and configuration persistence for the current governed-learning pipeline.
 
 ## Scope
 
 - Candidate lifecycle: `shadow -> promoted -> demoted/rejected`
 - Prompt injection: promoted-only candidates
 - Runtime controls: kill-switch, token budget updates, manual rollback
-- Outcome enforcement closure (`#62`): injected candidate outcome writeback, deterministic gate timing, lifecycle maintenance
-- Autonomous draft validation (`#60`): deterministic `pass/hold/block` gate with machine-readable reason codes
-- Automated skill release (`#61`): `shadow -> canary -> active` rollout with guardrail-based auto-rollback
-- Governance closure (`#65`): process/safety/rollback baseline and status-event protocol
+- Outcome enforcement: injected candidate outcome writeback, deterministic gate timing, lifecycle maintenance
+- Autonomous draft validation: deterministic `pass/hold/block` gate with machine-readable reason codes
+- Automated skill release: `shadow -> canary -> active` rollout with guardrail-based auto-rollback
+- Governance baseline: process/safety/rollback rules plus status-event protocol
 
 Related document:
-- [Continuous-Learning Governance Closure](docs/continuous-learning-governance.md)
+- [Continuous-Learning Governance](docs/continuous-learning-governance.md)
 
 ## Configuration
 
