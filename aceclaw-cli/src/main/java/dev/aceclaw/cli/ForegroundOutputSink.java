@@ -66,7 +66,7 @@ public final class ForegroundOutputSink implements OutputSink {
     @Override
     public void onThinkingDelta(String delta) {
         synchronized (lock) {
-            stopSpinner();
+            stopSpinnerInternal();
             statusRenderer.hide();
             out.print(THINKING + delta + RESET);
             out.flush();
@@ -77,7 +77,7 @@ public final class ForegroundOutputSink implements OutputSink {
     @Override
     public void onTextDelta(String delta) {
         synchronized (lock) {
-            stopSpinner();
+            stopSpinnerInternal();
             statusRenderer.hide();
 
             if (wasThinking) {
@@ -134,7 +134,7 @@ public final class ForegroundOutputSink implements OutputSink {
                 out.println();
                 wasThinking = false;
             }
-            stopSpinner();
+            stopSpinnerInternal();
             emitToolTraceStart(toolName, summary);
             if (TOOL_STATUS_PANEL_ENABLED) {
                 statusRenderer.onToolStarted(toolId, toolName, summary);
@@ -162,7 +162,7 @@ public final class ForegroundOutputSink implements OutputSink {
                 inCodeFence = false;
                 receivedTextOutput = false;
             }
-            stopSpinner();
+            stopSpinnerInternal();
             statusRenderer.hide();
             bottomBar.hide();
             out.printf("%s[stream error: %s]%s%n", ERROR, error, RESET);
@@ -174,7 +174,7 @@ public final class ForegroundOutputSink implements OutputSink {
     @Override
     public void onStreamCancelled() {
         synchronized (lock) {
-            stopSpinner();
+            stopSpinnerInternal();
             bottomBar.hide();
             statusRenderer.onCancelled();
         }
@@ -190,7 +190,7 @@ public final class ForegroundOutputSink implements OutputSink {
     @Override
     public void onTurnComplete(JsonNode message, boolean hasError) {
         synchronized (lock) {
-            stopSpinner();
+            stopSpinnerInternal();
             statusRenderer.hide();
             bottomBar.hide();
 
@@ -235,7 +235,7 @@ public final class ForegroundOutputSink implements OutputSink {
     @Override
     public void onConnectionClosed() {
         synchronized (lock) {
-            stopSpinner();
+            stopSpinnerInternal();
             statusRenderer.hide();
             bottomBar.hide();
             flushMarkdown();
@@ -258,7 +258,7 @@ public final class ForegroundOutputSink implements OutputSink {
     @Override
     public void onBudgetExhausted(JsonNode params) {
         synchronized (lock) {
-            stopSpinner();
+            stopSpinnerInternal();
             statusRenderer.hide();
             String reason = params != null ? params.path("reason").asText("unknown") : "unknown";
             out.printf("%s[budget exhausted: %s]%s%n", ERROR, reason, RESET);
@@ -303,16 +303,33 @@ public final class ForegroundOutputSink implements OutputSink {
     }
 
     /**
+     * Fully detaches this sink from the foreground, cleaning up all visual artifacts.
+     * Called when a task is backgrounded (/bg or auto-background).
+     */
+    public void detach() {
+        synchronized (lock) {
+            stopSpinnerInternal();
+            statusRenderer.hide();
+            bottomBar.hide();
+        }
+    }
+
+    /**
      * Stops the active spinner if one is running.
      * Synchronized because this can be called from the signal handler thread (Ctrl+C).
      */
     public void stopSpinner() {
         synchronized (lock) {
-            var s = spinner;
-            if (s != null && s.isSpinning()) {
-                s.clear();
-                spinner = null;
-            }
+            stopSpinnerInternal();
+        }
+    }
+
+    /** Must be called while holding {@code lock}. */
+    private void stopSpinnerInternal() {
+        var s = spinner;
+        if (s != null && s.isSpinning()) {
+            s.clear();
+            spinner = null;
         }
     }
 
@@ -747,9 +764,14 @@ public final class ForegroundOutputSink implements OutputSink {
             String pctStr = String.format(Locale.ROOT, "%.0f", Math.min(pct, 100.0));
             String suffix = " " + tokenStr + "/" + windowStr + " (" + pctStr + "%)";
 
-            // Visible prefix " ⏺ ctx " = 7 chars; adjust bar width to fit terminal
-            int overhead = 7 + suffix.length(); // " ⏺ ctx " + suffix
-            int effectiveBarWidth = Math.min(BAR_WIDTH, Math.max(0, cols - overhead));
+            // Keep full rendered line within terminal width (prefix + bar + suffix)
+            final int prefixWidth = 7; // " ⏺ ctx "
+            if (prefixWidth + suffix.length() >= cols) {
+                // Terminal too narrow for even prefix+suffix; truncate suffix
+                int maxSuffix = Math.max(0, cols - prefixWidth - 1);
+                suffix = maxSuffix > 0 ? suffix.substring(0, Math.min(suffix.length(), maxSuffix)) : "";
+            }
+            int effectiveBarWidth = Math.min(BAR_WIDTH, Math.max(0, cols - prefixWidth - suffix.length()));
             filled = Math.min(filled, effectiveBarWidth);
             int empty = effectiveBarWidth - filled;
 

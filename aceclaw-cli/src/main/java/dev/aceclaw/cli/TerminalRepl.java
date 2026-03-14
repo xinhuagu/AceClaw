@@ -1040,7 +1040,7 @@ public final class TerminalRepl {
 
         var oldSink = fgHandle.swapOutputSink(new BackgroundOutputBuffer());
         if (oldSink instanceof ForegroundOutputSink fgSink) {
-            fgSink.stopSpinner();
+            fgSink.detach();
         }
         resumeCheckpointStore.markForeground(sessionId, fgHandle.taskId(), false);
         taskManager.clearForeground();
@@ -1292,7 +1292,7 @@ public final class TerminalRepl {
             return null;
         }
 
-        fgSink.stopSpinner();
+        fgSink.detach();
         var buffer = new BackgroundOutputBuffer();
         var previous = handle.swapOutputSink(buffer);
         if (!(previous instanceof ForegroundOutputSink previousFgSink)) {
@@ -2355,6 +2355,15 @@ public final class TerminalRepl {
                 return live;
             }
         }
+        // Fall back to any running task (e.g. auto-backgrounded)
+        for (var task : taskManager.list()) {
+            if (task.isRunning()) {
+                long live = task.liveInputTokens();
+                if (live > 0) {
+                    return live;
+                }
+            }
+        }
         return latestInputTokens;
     }
 
@@ -2900,7 +2909,7 @@ public final class TerminalRepl {
         // events will be buffered silently instead of rendering to terminal.
         var oldSink = fgHandle.swapOutputSink(new BackgroundOutputBuffer());
         if (oldSink instanceof ForegroundOutputSink fgSink) {
-            fgSink.stopSpinner();
+            fgSink.detach();
         }
         resumeCheckpointStore.markForeground(sessionId, fgHandle.taskId(), false);
         taskManager.clearForeground();
