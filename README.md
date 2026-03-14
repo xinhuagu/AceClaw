@@ -1,6 +1,6 @@
 <h1 align="center">AceClaw</h1>
 
-<p align="center">Self-learning agent harness — learns from every session, evolves its own strategies, and gets better over time</p>
+<p align="center">A self-learning agent harness for long-running work</p>
 
 <p align="center">
   <a href="https://github.com/xinhuagu/AceClaw/actions/workflows/ci.yml"><img src="https://github.com/xinhuagu/AceClaw/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -9,13 +9,21 @@
   <img src="https://img.shields.io/badge/Gradle-8.14-02303A?logo=gradle&logoColor=white" alt="Gradle 8.14">
 </p>
 
-An **agent harness** is the orchestration layer that turns LLMs into persistent, self-correcting workers — the loop that reasons, acts, observes, recovers, and remembers. Most harnesses treat each session as a blank slate. **AceClaw doesn't.** It detects what worked, what failed, and what the user corrected — then carries those lessons forward as typed, confidence-scored insights that compound across sessions.
+> **AceClaw exists because long-running tasks demand learning.**
+>
+> When an agent runs for minutes or hours, context is not enough. It must absorb experience while it works, reuse what succeeds, and govern what it learns so it does not become noisy or unsafe.
+
+An **agent harness** is the orchestration layer that turns LLMs into persistent, self-correcting workers — the loop that reasons, acts, observes, recovers, and remembers. Most harnesses treat each session as a blank slate. **AceClaw doesn't.** It is built for long-running execution, where repeated failures, recoveries, tool sequences, and user corrections must become reusable knowledge instead of disappearing at the end of the session.
 
 <p align="center">
   <img src="docs/img/aceclaw_daemon_architecture.drawio.png" alt="AceClaw Self-Learning Daemon Architecture" width="600">
 </p>
 
-AceClaw is a persistent JVM daemon built for workflows that run for hours, not seconds. Pure Java 21, zero network attack surface. Inspired by [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) and [OpenClaw](https://github.com/openclaw), built from scratch with three key differentiators:
+AceClaw is a persistent JVM daemon built for workflows that run for hours, not seconds. Pure Java 21, zero network attack surface. Inspired by [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) and [OpenClaw](https://github.com/openclaw), built from scratch around one idea:
+
+**Memory helps an agent remember. Self-learning helps an agent improve.**
+
+That is the spirit of AceClaw, and it drives three key differentiators:
 
 1. **Self-Learning** — Zero-cost heuristic detectors, session retrospectives, historical indexing, cross-session pattern mining, and trend detection turn agent behavior into durable learning signals. The agent evolves its own strategies without extra LLM calls in the hot path.
 2. **Security** — UDS-only communication, sealed 4-level permissions, HMAC-signed memory
