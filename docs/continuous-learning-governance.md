@@ -1,6 +1,6 @@
-# Continuous-Learning Governance Closure (`#65`)
+# Continuous-Learning Governance
 
-This document defines the operational governance baseline for continuous-learning rollout:
+This document defines the operational governance baseline for the current continuous-learning rollout:
 process controls, safety controls, rollback controls, and status event protocol.
 
 ## 1) Process Controls

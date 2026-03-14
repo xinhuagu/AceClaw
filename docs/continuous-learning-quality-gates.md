@@ -2,6 +2,8 @@
 
 This document defines the hard quality gate metrics used by CI (`preMergeCheck`) for self-learning changes.
 
+Current state: these gates focus on replay quality and governed-learning safety. They are the canonical CI checks for candidate promotion, anti-pattern gating, and rollback health; they are not a full production SLO spec yet.
+
 ## Canonical Metrics
 
 These metrics are emitted in `.aceclaw/metrics/continuous-learning/replay-latest.json` under `metrics`.

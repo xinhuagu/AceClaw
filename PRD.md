@@ -9,6 +9,11 @@
 
 ---
 
+> This PRD is future-facing product design, not the canonical current-state implementation spec.
+> For what is implemented on `main`, use `README.md`, `docs/self-learning.md`, `docs/memory-system-design.md`, and the continuous-learning runbooks.
+
+---
+
 ## Table of Contents
 
 1. [Product Vision](#1-product-vision)

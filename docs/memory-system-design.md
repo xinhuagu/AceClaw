@@ -1,6 +1,6 @@
 # AceClaw Memory System Design
 
-> Version 2.1 | 2026-02-18
+> Version 2.2 | 2026-03-14
 
 ## Architecture Overview
 
@@ -136,7 +136,7 @@ public record MemoryEntry(
 }
 ```
 
-**21 Categories:**
+**23 Categories:**
 
 | Category | Purpose | Example |
 |----------|---------|---------|
@@ -536,176 +536,93 @@ This complements auto-memory by providing a human-readable, editable knowledge b
 
 ## 8. System Prompt Size Budget
 
-### 8.1 Problem Statement
+The system prompt budget is implemented today. AceClaw assembles memory tiers, path-based rules, environment context, tool guidance, and runtime learning sections, then applies a character budget before the request is sent.
 
-The 8-tier memory hierarchy, path-based rules, tool descriptions, and environment context are all injected into the system prompt. Without aggregate size control, the system prompt can grow unboundedly:
+### 8.1 Current Budget Model
 
-- Large `ACECLAW.md` files (no per-file limit on human-authored tiers T1-T5)
-- 50 auto-memory entries formatted as markdown
-- MEMORY.md first 200 lines
-- Daily journal 2-day window (~1000 lines)
-- Path-based rules for all matching files
+`SystemPromptBudget` provides two caps:
 
-If the system prompt consumes 80K+ tokens, the effective conversation space shrinks dramatically. Context compaction (MessageCompactor) only prunes **conversation history**, not the system prompt.
-
-### 8.2 Industry Comparison
-
-| Mechanism | OpenClaw | Claude Code | AceClaw (Planned) |
-|-----------|----------|-------------|-------------------|
-| **Per-file char cap** | 20,000 chars | Recommended ≤150 lines | 20,000 chars |
-| **Total char cap** | 150,000 chars | No explicit cap | 150,000 chars |
-| **Truncation strategy** | 70/20/10 (head/tail/marker) | None (size by convention) | 70/20/10 per tier |
-| **Low-priority loading** | Daily memory on-demand via tools | Subdirectory CLAUDE.md lazy-load | Journal on-demand if budget exceeded |
-| **Context-aware budget** | Tool output scales with model window | autocompact_pct override | Effective window deducts actual prompt size |
-| **Precise token counting** | ~4 chars/token estimate | API `/v1/messages/count_tokens` | ~4 chars/token + actual API usage |
-
-**Key insight:** Neither OpenClaw nor Claude Code uses a precise token budget for the system prompt. Character-based caps are sufficient and proven in production.
-
-### 8.3 Design: Two-Tier Character Budget
-
-Adopt OpenClaw's proven approach:
-
-```
-SystemPromptBudget:
-  maxPerTierChars:   20,000   # Per-tier character cap
-  maxTotalChars:    150,000   # Total system prompt character cap (all tiers + base prompt)
+```text
+maxPerTierChars = 20,000
+maxTotalChars   = 150,000
 ```
 
-**Truncation priority** (lowest priority truncated first):
+For smaller context windows, `SystemPromptBudget.forContextWindow(...)` scales the budget down so the full system prompt does not consume an excessive share of the model window.
 
-```
-When total > maxTotalChars:
-  1. Truncate T8 Journal     (priority 50)  → 70/20/10 split
-  2. Truncate T7 Markdown    (priority 55)  → 70/20/10 split
-  3. Truncate T6 Auto-Memory (priority 60)  → reduce maxEntries from 50 → 25 → 10
-  4. Truncate T5 Local       (priority 65)  → 70/20/10 split
-  5. Truncate T4 User        (priority 70)  → 70/20/10 split
-  6. Truncate T3 Workspace   (priority 80)  → 70/20/10 split
-  7. T2 Managed Policy       (priority 90)  → NEVER truncated
-  8. T1 Soul                 (priority 100) → NEVER truncated
-```
+### 8.2 Truncation Strategy
 
-**70/20/10 split** (from OpenClaw):
-- 70% of budget from the **head** (core instructions)
-- 20% from the **tail** (most recent updates)
-- 10% reserved for truncation marker: `<!-- [TRUNCATED] Original: {N} chars, showing first {X} + last {Y} chars -->`
+When a tier exceeds its cap, or the total assembled prompt exceeds the global cap, `TierTruncator` applies priority-aware truncation:
 
-### 8.4 Design: Context-Aware Effective Window
+- lower-priority tiers are truncated before higher-priority tiers
+- truncation keeps a 70/20/10 split of head / tail / marker
+- `Soul` and `Managed Policy` remain the hardest tiers to displace
 
-CompactionConfig must account for actual system prompt size:
+This is an intentionally simple character-budget model. AceClaw does not require exact token accounting for every tier before assembly.
 
-```java
-// Before (wrong): fixed effective window
-effectiveWindow = contextWindowTokens - maxOutputTokens;
+### 8.3 Context-Aware Compaction Boundary
 
-// After (correct): deduct actual system prompt
-int systemPromptTokens = ContextEstimator.estimateTokens(systemPrompt);
-effectiveWindow = contextWindowTokens - maxOutputTokens - systemPromptTokens;
-compactionTrigger = (int)(effectiveWindow * 0.85);
-```
-
-This prevents the pathological case where a 80K-token system prompt + 85% trigger = compaction fires after only ~76K tokens of conversation.
+`MessageCompactor` manages conversation history, not tier assembly, but the two systems are linked by the effective window calculation. `CompactionConfig` deducts output budget and can also account for system-prompt size when the caller passes it in, so compaction does not assume the entire model window is available for conversation history.
 
 ---
 
-## 9. AceClaw vs OpenClaw Memory Comparison
+## 9. AceClaw vs OpenClaw
 
-### 9.1 Architecture Overview
+This section compares AceClaw's current memory-and-learning design with OpenClaw's currently documented default path. It is not a claim that OpenClaw cannot support richer behavior through plugins or alternative context engines.
 
-| Dimension | AceClaw | OpenClaw |
-|-----------|---------|----------|
-| **Architecture** | 8-tier sealed hierarchy (`MemoryTier`) | Single flat gateway state |
-| **Persistence** | JSONL files + HMAC signing + MEMORY.md | In-memory only (lost on restart) |
-| **Cross-session** | Full cross-session learning | No cross-session memory |
-| **Workspace isolation** | SHA-256 hash per project | None (single global state) |
-| **Memory categories** | 21 typed categories | Untyped key-value pairs |
-| **Search** | Hybrid TF-IDF + recency + frequency | None (key lookup only) |
-| **Consolidation** | 3-pass (dedup + merge + prune) | None |
-| **Conditional rules** | Path-based glob matching | None |
+### 9.1 High-Level Difference
 
-### 9.2 Feature-by-Feature Comparison
+![Architecture Comparison](img/architecture_comparison_openclaw_vs_aceclaw_1.drawio.png)
 
-| Feature | AceClaw | OpenClaw | Winner |
-|---------|---------|----------|--------|
-| **Persistent storage** | JSONL files + MEMORY.md survive daemon restart, OS reboot | In-memory gateway state lost on restart | AceClaw |
-| **Memory hierarchy** | 8 tiers (Soul to Journal) with priority ordering | Flat: ClawHub registry + gateway state | AceClaw |
-| **Tamper detection** | HMAC-SHA256 per entry, constant-time verify | None | AceClaw |
-| **Search/retrieval** | Hybrid ranking (TF-IDF 0.50 + recency 0.35 + frequency 0.15) | Key-based lookup, no ranking | AceClaw |
-| **Agent active memory** | Built-in `memory` tool (save/search/list) | No agent memory tool | AceClaw |
-| **Session-end extraction** | Heuristic extraction (20+ regex patterns, no LLM) | No session-end learning | AceClaw |
-| **Context compaction** | 3-phase (flush + prune + summarize) | None | AceClaw |
-| **Daily journal** | Append-only per-day markdown, 500-line cap | None | AceClaw |
-| **Workspace scoping** | SHA-256 isolated directories per project | None | AceClaw |
-| **Category taxonomy** | 21 typed categories | Untyped | AceClaw |
-| **Markdown memory** | MEMORY.md + topic files (first 200 lines injected) | None | AceClaw |
-| **Conditional rules** | Path-based glob matching from `.aceclaw/rules/*.md` | None | AceClaw |
-| **Memory consolidation** | 3-pass (dedup + similarity merge + age prune) | None | AceClaw |
-| **Access tracking** | Per-entry accessCount + lastAccessedAt | None | AceClaw |
-| **Community knowledge** | Not yet (planned P3) | ClawHub: 700+ community skills | OpenClaw |
-| **Multi-platform channels** | CLI + daemon (planned: web) | WhatsApp, Telegram, Slack, Discord | OpenClaw |
-| **Skill marketplace** | Not yet (planned P3) | ClawHub registry with pull-based updates | OpenClaw |
+OpenClaw is stronger as a broader context and retrieval product. AceClaw is stronger as a behavior-centric learning kernel.
 
-### 9.3 Memory Lifecycle Comparison
+In practice:
+- OpenClaw emphasizes explicit memory, retrieval, context observability, and platform breadth.
+- AceClaw emphasizes governed memory, behavior-derived insights, rule promotion, and long-running learning loops.
 
-```
-                    AceClaw                           OpenClaw
-                    ───────                           ────────
-  Creation:    4 pipelines:                      Gateway.setState()
-               - Agent tool (explicit)            (manual only)
-               - Session-end (heuristic, 6 types)
-               - Compaction flush (Phase 0)
-               - Markdown files (MEMORY.md)
+### 9.2 Comparison Table
 
-  Storage:     JSONL + HMAC-SHA256               In-memory Map
-               MEMORY.md + topic files           Single flat store
-               Per-project + global files
+| Dimension | AceClaw today | OpenClaw documented core path |
+|-----------|---------------|-------------------------------|
+| **Primary focus** | Learn from runtime behavior and feed it back into future runs | Persist, retrieve, and inspect durable memory/context |
+| **Memory model** | 8-tier hierarchy with policy vs learned-memory separation | Disk-backed memory plus platform context surfaces |
+| **Persistence** | JSONL auto-memory + HMAC, `MEMORY.md`, journal, rules | Markdown memory, session transcripts, retrieval index |
+| **Retrieval** | Hybrid search plus tiered prompt injection | Mature hybrid retrieval and operator-facing memory tools |
+| **Context observability** | Limited today; stronger internal structure than external surface | Strong operator surface (`/context`, `/status`, compaction visibility) |
+| **Learning loop** | Per-turn detectors, session-close extraction, deferred maintenance | Default path is more memory-centric than behavior-centric |
+| **Governance** | Confidence thresholds, consolidation, candidate bridge, rule promotion, validation/rollback around adaptive skills | Strong context/runtime product controls; learning governance depends more on extensions |
+| **Platform breadth** | Local daemon + CLI + coding-first workflow | Wider channels, broader platform surface, larger ecosystem |
 
-  Retrieval:   Hybrid search engine              Key lookup
-               TF-IDF + recency decay            No ranking
-               23 categories + tags              Untyped
-               Access tracking per entry
+### 9.3 Where AceClaw is Stronger
 
-  Injection:   8-tier system prompt assembly     Manual context
-               MemoryTierLoader orchestration    No auto-injection
-               Path-based conditional rules
-               MEMORY.md first 200 lines
+AceClaw is stronger in the places that matter most for long-running task execution:
 
-  Maintenance: 3-pass consolidation              None
-               Dedup + merge + prune
-               Access-count-aware pruning
+1. **Behavior-derived memory** — learnings come from failures, recoveries, repeated sequences, and user corrections, not only from explicit note writing.
+2. **Governed promotion** — confidence thresholds, consolidation, correction-rule promotion, candidate bridging, and skill validation reduce the chance of learning raw noise.
+3. **Policy separation** — human-authored tiers stay separate from agent-authored tiers, which keeps learning subordinate to operator intent.
 
-  Lifecycle:   Persistent (survives restart)     Volatile (lost on restart)
-               500-line journal cap              No growth control
-               50KB/file, 500KB/workspace cap    No size limits
-               HMAC tamper detection             No integrity checks
+### 9.4 Where OpenClaw is Stronger
 
-  Evolution:   Agent learns across sessions      No cross-session learning
-               Pattern/correction detection      Static skill catalog
-               Daily journal continuity          No activity tracking
-               Self-maintaining via consolidation
+OpenClaw is still stronger in several context-engineering areas:
+
+1. **Retrieval maturity** — its documented default path is richer in retrieval tooling and operator-facing memory inspection.
+2. **Context observability** — OpenClaw exposes a clearer product surface for prompt composition and compaction behavior.
+3. **Platform surface** — it reaches more channels and product scenarios than AceClaw currently does.
+
+### 9.5 The Design Tradeoff
+
+AceClaw is intentionally narrower. It treats memory as one layer of a larger long-running learning system:
+
+```text
+behavior -> typed insight -> persisted memory -> promoted rule/candidate -> future run
 ```
 
-### 9.4 Why AceClaw's Approach is Better for Enterprise
+OpenClaw's documented default path is closer to:
 
-1. **Auditability** — Every memory entry is signed, timestamped, and source-tagged. Enterprise compliance teams can inspect `global.jsonl` and verify integrity via HMAC.
+```text
+write memory -> index memory -> retrieve memory -> reuse memory
+```
 
-2. **Policy layering** — The 8-tier hierarchy lets organizations enforce policies (Tier 2: Managed Policy) that cannot be overridden by project or user memories. Local tier (T5) provides per-developer customization without affecting team config.
-
-3. **Workspace isolation** — SHA-256 hashed directories prevent one project's learned knowledge from leaking into another. Critical for consulting firms working on multiple clients.
-
-4. **Deterministic extraction** — Session-end extraction uses regex patterns (no LLM), making it predictable and auditable. OpenClaw has no automated knowledge capture.
-
-5. **Growth control** — Journal caps (500 lines/day), markdown file limits (50KB/file, 500KB/workspace), formatted entry limits, 3-pass consolidation, and access-based pruning prevent memory bloat.
-
-6. **Conditional compliance** — Path-based rules enforce per-file-type standards (test conventions, API guidelines, security practices) without polluting the global system prompt.
-
-### 9.5 Where OpenClaw Excels
-
-1. **Community ecosystem** — ClawHub's 700+ skills provide a marketplace that AceClaw lacks. However, OpenClaw's marketplace has had security issues (credential stealers within 48 hours of going viral).
-
-2. **Multi-channel support** — OpenClaw supports WhatsApp, Telegram, Slack, Discord as first-class channels. AceClaw is CLI-only (web/API planned for P3).
-
-3. **Provider diversity** — OpenClaw's pi-ai SDK supports 20+ providers natively. AceClaw supports 8 providers (Anthropic, OpenAI, OpenAI Codex OAuth, Groq, Together, Mistral, Copilot, Ollama) via `LlmClientFactory`.
+Both are valid. AceClaw's design matters if the goal is not just to remember more, but to improve behavior over time under governance.
 
 ---
 
@@ -717,7 +634,7 @@ MemoryTier (sealed interface)
   │   LocalMemory, AutoMemory, MarkdownMemory, Journal
 
 MemoryEntry (record)
-  └── Category (enum, 21 values)
+  └── Category (enum, 23 values)
   └── accessCount, lastAccessedAt (mutable tracking, excluded from HMAC)
 
 MemorySigner
@@ -776,7 +693,7 @@ SessionEndExtractor (aceclaw-daemon)
   └── 6 extraction types (corrections, preferences, files, errors, strategies, feedback)
 
 MemoryConsolidator (aceclaw-memory)
-  └── runs at session end → dedup/merge/prune
+  └── runs in deferred learning maintenance → dedup/merge/prune
 
 CorrectionRulePromoter (aceclaw-memory)
   ├── scans AutoMemoryStore for CORRECTION/MISTAKE entries
@@ -811,9 +728,9 @@ MessageCompactor (aceclaw-core)
 | List default limit | 20 | Default results for memory list |
 | Max limit | 50 | Maximum results for any query |
 | Auto-memory max entries | 50 | Max entries injected into system prompt |
-| **System prompt per-tier cap** | **20,000 chars** | **Max chars per memory tier (planned P1.5)** |
-| **System prompt total cap** | **150,000 chars** | **Max total chars for all tiers + base prompt (planned P1.5)** |
-| **Truncation split** | **70/20/10** | **Head/tail/marker ratio when truncating a tier (planned P1.5)** |
+| **System prompt per-tier cap** | **20,000 chars** | **Max chars per memory tier** |
+| **System prompt total cap** | **150,000 chars** | **Max total chars for all tiers + base prompt** |
+| **Truncation split** | **70/20/10** | **Head/tail/marker ratio when truncating a tier** |
 
 ---
 
@@ -829,8 +746,8 @@ MessageCompactor (aceclaw-core)
 | P1 | MemoryConsolidator (dedup + merge + prune) | **Done** |
 | P1 | Access tracking (accessCount, lastAccessedAt) | **Done** |
 | P1 | Local Memory tier (ACECLAW.local.md, gitignored) | **Done** |
-| **P1.5** | **System prompt budget (150K char cap, per-tier 20K cap, 70/20/10 truncation)** | **Next** |
-| **P1.5** | **Context-aware effective window (deduct actual prompt size from compaction calc)** | **Next** |
+| P1 | System prompt budget (150K char cap, per-tier 20K cap, 70/20/10 truncation) | **Done** |
+| P1 | Context-aware effective window / prompt-budget-aware compaction | **Done** |
 | P2 | Dynamic rule matching during tool execution (per-file injection) | Planned |
 | P2 | CLAUDE.md import system (`@path/to/file`) | Planned |
 | P3 | Skill-based memory (skills remember their own patterns) | Planned |
