@@ -2197,7 +2197,7 @@ public final class AceClawDaemon {
 
         // Correction → Rule auto-promotion: detect repeated corrections and promote to ACECLAW.md rules
         try {
-            var aceClawMdPath = workingDir.resolve("ACECLAW.md");
+            var aceClawMdPath = workingDir.resolve(".aceclaw").resolve("ACECLAW.md");
             var existingFingerprints = CorrectionRulePromoter.loadExistingFingerprints(aceClawMdPath);
             var allEntries = memoryStore.all();
             var promotionResult = CorrectionRulePromoter.detectRepeatedCorrections(
