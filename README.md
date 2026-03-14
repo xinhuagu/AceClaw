@@ -36,6 +36,10 @@ That leads to a different default architecture.
 
 ![AceClaw daemon architecture](docs/img/aceclaw_daemon_architecture.png)
 
+This architecture is also why AceClaw is **security-first by design**.
+
+The core boundary is not an HTTP service or a browser session. It is a local daemon behind a Unix Domain Socket, with an explicit permission gate, isolated sessions, filtered tool registries, signed memory, and a clear split between human-authored policy and agent-authored learning. The harness is designed so that autonomy grows inside a controlled local runtime, not across an open network surface.
+
 Original diagrams used for the current docs live in [`docs/img/`](docs/img).
 
 ## At A Glance
@@ -138,7 +142,7 @@ export OPENAI_API_KEY="sk-..."
 ```
 CLI (Picocli + JLine3)
   │ JSON-RPC 2.0 over UDS only ← zero network surface
-Daemon (persistent JVM, separate process group)
+Daemon (persistent JVM, separate process group, local trust boundary)
   ├─ Request Router       → method dispatch
   ├─ Session Manager      → per-project sessions (isolated state)
   ├─ Streaming Agent Loop → ReAct loop (max 25 iterations)
