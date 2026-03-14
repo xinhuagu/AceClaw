@@ -220,9 +220,11 @@ class BashExecToolTest {
 
     @Test
     @DisabledOnOs(OS.WINDOWS)
-    void timeoutActuallyFiresForLongRunningCommand() throws Exception {
+    void timeoutActuallyFiresAndKillsChildProcess() throws Exception {
+        // Write PID to a file so we can verify the child was killed
+        var pidFile = workDir.resolve("sleep.pid");
         var node = MAPPER.createObjectNode();
-        node.put("command", "sleep 300");
+        node.put("command", "echo $$ > " + pidFile + " && sleep 300");
         node.put("timeout", 1);
         var input = MAPPER.writeValueAsString(node);
 
@@ -234,6 +236,15 @@ class BashExecToolTest {
         assertThat(result.output()).contains("timed out");
         // Should finish within ~3s (1s timeout + overhead), not 300s
         assertThat(elapsed).isLessThan(10_000);
+
+        // Verify the child process is actually dead
+        if (Files.exists(pidFile)) {
+            long pid = Long.parseLong(Files.readString(pidFile).strip());
+            Thread.sleep(500); // brief grace period for OS cleanup
+            assertThat(ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false))
+                    .as("child process (PID %d) should be dead after timeout", pid)
+                    .isFalse();
+        }
     }
 
     @Test
@@ -242,8 +253,10 @@ class BashExecToolTest {
         var token = new CancellationToken();
         tool.setCancellationToken(token);
 
+        // Write PID to a file so we can verify the child was killed
+        var pidFile = workDir.resolve("cancel.pid");
         var node = MAPPER.createObjectNode();
-        node.put("command", "sleep 300");
+        node.put("command", "echo $$ > " + pidFile + " && sleep 300");
         node.put("timeout", 60);
         var input = MAPPER.writeValueAsString(node);
 
@@ -264,5 +277,14 @@ class BashExecToolTest {
         assertThat(resultHolder[0]).isNotNull();
         assertThat(resultHolder[0].isError()).isTrue();
         assertThat(resultHolder[0].output()).contains("cancelled");
+
+        // Verify the child process is actually dead
+        if (Files.exists(pidFile)) {
+            long pid = Long.parseLong(Files.readString(pidFile).strip());
+            Thread.sleep(500); // brief grace period for OS cleanup
+            assertThat(ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false))
+                    .as("child process (PID %d) should be dead after cancellation", pid)
+                    .isFalse();
+        }
     }
 }

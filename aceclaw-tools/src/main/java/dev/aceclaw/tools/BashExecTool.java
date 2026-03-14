@@ -15,6 +15,7 @@ import java.nio.file.Path;
 import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -116,6 +117,12 @@ public final class BashExecTool implements Tool, CancellationAware {
     }
 
     private ToolResult runCommand(String command, int timeoutSeconds) throws IOException {
+        // Short-circuit if already cancelled before starting the process
+        var token = this.cancellationToken;
+        if (token != null && token.isCancelled()) {
+            return new ToolResult("Command cancelled", true);
+        }
+
         ProcessBuilder processBuilder;
         if (IS_WINDOWS) {
             processBuilder = new ProcessBuilder("cmd.exe", "/c", command);
@@ -139,8 +146,10 @@ public final class BashExecTool implements Tool, CancellationAware {
             }
         });
 
+        // Track whether the cancel-watcher actually killed the process
+        var cancelledByWatcher = new AtomicBoolean(false);
+
         // Spawn cancel-watcher if a cancellation token is present
-        var token = this.cancellationToken;
         var cancelWatcher = (token != null)
                 ? Thread.ofVirtual().name("bash-cancel-watcher").start(() -> {
                     try {
@@ -148,8 +157,9 @@ public final class BashExecTool implements Tool, CancellationAware {
                             Thread.sleep(200);
                         }
                         if (token.isCancelled() && process.isAlive()) {
-                            log.debug("Cancellation requested — destroying process");
-                            process.destroyForcibly();
+                            log.debug("Cancellation requested — destroying process tree");
+                            cancelledByWatcher.set(true);
+                            destroyProcessTree(process);
                         }
                     } catch (InterruptedException ignored) {
                         // shutting down
@@ -163,13 +173,13 @@ public final class BashExecTool implements Tool, CancellationAware {
                 completed = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                process.destroyForcibly();
+                destroyProcessTree(process);
                 readerThread.join(2000);
                 return new ToolResult("Command interrupted", true);
             }
 
             if (!completed) {
-                process.destroyForcibly();
+                destroyProcessTree(process);
                 readerThread.join(2000);
                 var truncated = truncateOutput(outputHolder.get());
                 return new ToolResult(
@@ -177,8 +187,8 @@ public final class BashExecTool implements Tool, CancellationAware {
                         true);
             }
 
-            // Check if we were cancelled (process exited due to destroyForcibly from watcher)
-            if (token != null && token.isCancelled()) {
+            // Only report "cancelled" if the watcher actually killed the process
+            if (cancelledByWatcher.get()) {
                 readerThread.join(2000);
                 return new ToolResult("Command cancelled", true);
             }
@@ -204,7 +214,7 @@ public final class BashExecTool implements Tool, CancellationAware {
             return new ToolResult(truncated, false);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            process.destroyForcibly();
+            destroyProcessTree(process);
             return new ToolResult("Command interrupted", true);
         } finally {
             activeProcess = null;
@@ -212,6 +222,12 @@ public final class BashExecTool implements Tool, CancellationAware {
                 cancelWatcher.interrupt();
             }
         }
+    }
+
+    private static void destroyProcessTree(Process process) {
+        var handle = process.toHandle();
+        handle.descendants().forEach(ProcessHandle::destroyForcibly);
+        handle.destroyForcibly();
     }
 
     /**
