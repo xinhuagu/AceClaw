@@ -177,7 +177,7 @@ public final class ReplayCasesRunnerMain {
             var permissionBridge = new PermissionBridge();
             var sink = new NullOutputSink();
 
-            var handle = taskManager.submit(c.prompt, taskConn, sessionId, sink, permissionBridge);
+            var handle = taskManager.submit(c.prompt, taskConn, sessionId, sink, permissionBridge, 0);
 
             boolean timedOut = false;
             long deadline = System.currentTimeMillis() + timeoutMs;

@@ -886,12 +886,13 @@ public final class TerminalRepl {
                 lastTaskPrompt = effectiveInput;
             }
             var conn = client.openTaskConnection();
-            var fgSink = new ForegroundOutputSink(out, markdownRenderer);
+            int ctxWindow = sessionInfo != null ? sessionInfo.contextWindowTokens() : 0;
+            var fgSink = new ForegroundOutputSink(out, markdownRenderer, activeTerminal);
             activeForegroundSink = fgSink;
 
             promptStartNanos = System.nanoTime();
 
-            var handle = taskManager.submit(effectiveInput, conn, sessionId, fgSink, permissionBridge);
+            var handle = taskManager.submit(effectiveInput, conn, sessionId, fgSink, permissionBridge, ctxWindow);
             taskManager.setForeground(handle.taskId());
             resumeCheckpointStore.recordTaskSubmitted(
                     sessionId,
@@ -2959,7 +2960,7 @@ public final class TerminalRepl {
         suspendStatusPanel();
         try {
             // Create new foreground sink and swap it in atomically
-            var fgSink = new ForegroundOutputSink(out, markdownRenderer);
+            var fgSink = new ForegroundOutputSink(out, markdownRenderer, activeTerminal);
             var oldSink = target.swapOutputSink(fgSink);
             activeForegroundSink = fgSink;
             taskManager.setForeground(target.taskId());

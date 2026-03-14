@@ -216,6 +216,10 @@ public final class TaskStreamReader implements Runnable {
                     long inputTokens = params.path("inputTokens").asLong(0);
                     handle.setLiveInputTokens(inputTokens);
                     handle.markActivity("streaming");
+                    int ctxWindow = handle.contextWindow();
+                    if (ctxWindow > 0) {
+                        sink.onUsageUpdate(inputTokens, ctxWindow);
+                    }
                 }
             }
             case "stream.compaction" -> {
