@@ -1351,6 +1351,22 @@ public final class TerminalRepl {
         if (!handle.markNotified()) return;
 
         try {
+            // Record turn usage in ContextMonitor (background tasks skip renderTaskCompletion)
+            JsonNode bgResult = handle.result();
+            if (bgResult != null) {
+                JsonNode bgUsageResult = bgResult.get("result");
+                if (bgUsageResult != null && bgUsageResult.has("usage")) {
+                    var bgUsage = bgUsageResult.get("usage");
+                    int bgTurnIn = bgUsage.path("inputTokens").asInt(0);
+                    int bgTurnOut = bgUsage.path("outputTokens").asInt(0);
+                    long bgPerCall = handle.liveInputTokens();
+                    if (bgPerCall <= 0) {
+                        bgPerCall = bgTurnIn;
+                    }
+                    contextMonitor.recordTurnComplete(bgTurnIn, bgTurnOut, bgPerCall);
+                }
+            }
+
             var sb = new StringBuilder();
 
             // Header

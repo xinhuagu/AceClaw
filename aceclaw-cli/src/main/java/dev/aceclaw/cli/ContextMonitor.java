@@ -20,7 +20,7 @@ public final class ContextMonitor {
     private final int contextWindowTokens;
 
     /** Per-call input tokens from the most recent LLM call (context occupation). */
-    private volatile long lastRealInputTokens;
+    private long lastRealInputTokens;
 
     /** Cumulative input tokens across all turns in the session. */
     private long totalInputTokens;
@@ -63,7 +63,7 @@ public final class ContextMonitor {
      * Returns the most recent per-call input tokens, representing actual
      * context window occupation. This is the correct value for context % display.
      */
-    public long currentContextTokens() {
+    public synchronized long currentContextTokens() {
         return lastRealInputTokens;
     }
 
@@ -77,7 +77,7 @@ public final class ContextMonitor {
     /**
      * Returns the current context usage as a percentage (0.0 - 100.0+).
      */
-    public double usagePercent() {
+    public synchronized double usagePercent() {
         if (contextWindowTokens <= 0) return 0.0;
         return (double) lastRealInputTokens / contextWindowTokens * 100.0;
     }
