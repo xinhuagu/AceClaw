@@ -1,12 +1,12 @@
 # AceClaw Memory System Design
 
-> Version 2.1 | 2026-02-18
+> Version 2.2 | 2026-03-14
 
 ## Architecture Overview
 
 ![Memory System Architecture](img/memory-architecture.png)
 
-The AceClaw memory system enables **cross-session learning** through an 8-tier hierarchical memory model, HMAC-signed persistent storage, hybrid search, markdown memory files, path-based conditional rules, memory consolidation, and multiple automated extraction pipelines. The agent accumulates knowledge over time — mistakes to avoid, codebase patterns, user preferences, error recovery strategies — and applies them automatically in future sessions.
+The AceClaw memory system enables **cross-session learning** through an 8-tier hierarchical memory model, HMAC-signed persistent storage, hybrid search, markdown memory files, path-based conditional rules, memory consolidation, historical indexing, explanations, validations, and human review. The agent accumulates knowledge over time — mistakes to avoid, codebase patterns, user preferences, error recovery strategies, reusable workflows — and applies them automatically in future sessions.
 
 ---
 
@@ -18,8 +18,9 @@ The AceClaw memory system enables **cross-session learning** through an 8-tier h
 | **Tamper detection, not encryption** | Memories are HMAC-SHA256 signed. Tampered entries are silently skipped on load. Users can inspect JSONL files freely. |
 | **Workspace isolation** | Each project gets its own memory directory via SHA-256 hash. No cross-project leakage. |
 | **Concise over exhaustive** | System prompt injection is capped. Auto-memory entries are 1-2 sentences. MEMORY.md injects first 200 lines. The journal caps at 500 lines/day. |
-| **No LLM calls for basic ops** | Memory save, search, load, consolidation, session-end extraction, historical indexing, and trend detection are all pure-Java heuristic operations. Only context compaction and skill refinement use LLM calls. |
+| **No LLM calls for basic ops** | Memory save, search, load, consolidation, session-end extraction, historical indexing, trend detection, explainability persistence, validation persistence, and human review are all pure-Java heuristic operations. Only context compaction, runtime skill drafting, and skill refinement use LLM calls. |
 | **Self-maintaining** | Session close performs extraction and indexing immediately; heavier consolidation and historical maintenance run via the background learning maintenance scheduler. |
+| **Governed learning** | Learned behavior is not only stored. It can be explained, validated, suppressed, pinned, or reviewed by a human operator. |
 
 ---
 
@@ -537,7 +538,7 @@ If the system prompt consumes 80K+ tokens, the effective conversation space shri
 
 ### 8.2 Industry Comparison
 
-| Mechanism | OpenClaw | Claude Code | AceClaw (Planned) |
+| Mechanism | OpenClaw | Claude Code | AceClaw |
 |-----------|----------|-------------|-------------------|
 | **Per-file char cap** | 20,000 chars | Recommended ≤150 lines | 20,000 chars |
 | **Total char cap** | 150,000 chars | No explicit cap | 150,000 chars |
@@ -599,77 +600,51 @@ This prevents the pathological case where a 80K-token system prompt + 85% trigge
 
 ### 9.1 Architecture Overview
 
+![Architecture comparison: OpenClaw vs AceClaw](img/architecture_comparison_openclaw_vs_aceclaw.png)
+
 | Dimension | AceClaw | OpenClaw |
 |-----------|---------|----------|
-| **Architecture** | 8-tier sealed hierarchy (`MemoryTier`) | Single flat gateway state |
-| **Persistence** | JSONL files + HMAC signing + MEMORY.md | In-memory only (lost on restart) |
-| **Cross-session** | Full cross-session learning | No cross-session memory |
-| **Workspace isolation** | SHA-256 hash per project | None (single global state) |
-| **Memory categories** | 21 typed categories | Untyped key-value pairs |
-| **Search** | Hybrid TF-IDF + recency + frequency | None (key lookup only) |
-| **Consolidation** | 3-pass (dedup + merge + prune) | None |
-| **Conditional rules** | Path-based glob matching | None |
+| **Center of gravity** | behavior-derived memory and governed learning | explicit context and gateway state |
+| **Architecture** | 8-tier sealed hierarchy + learning stores | gateway-centric state and memory files |
+| **Persistence** | JSONL + HMAC + MEMORY.md + explanations + validations + reviews | explicit memory files and gateway state |
+| **Cross-session** | historical index, pattern mining, trends, rebuild recovery | explicit recall and operational retrieval |
+| **Workspace isolation** | SHA-256 hash per project | gateway-scoped state |
+| **Search** | hybrid TF-IDF + recency + frequency | retrieval-oriented memory flow |
+| **Governance** | validation, suppression, pinning, human review | stronger on explicit context visibility than governed learning |
 
 ### 9.2 Feature-by-Feature Comparison
 
 | Feature | AceClaw | OpenClaw | Winner |
 |---------|---------|----------|--------|
-| **Persistent storage** | JSONL files + MEMORY.md survive daemon restart, OS reboot | In-memory gateway state lost on restart | AceClaw |
-| **Memory hierarchy** | 8 tiers (Soul to Journal) with priority ordering | Flat: ClawHub registry + gateway state | AceClaw |
-| **Tamper detection** | HMAC-SHA256 per entry, constant-time verify | None | AceClaw |
-| **Search/retrieval** | Hybrid ranking (TF-IDF 0.50 + recency 0.35 + frequency 0.15) | Key-based lookup, no ranking | AceClaw |
-| **Agent active memory** | Built-in `memory` tool (save/search/list) | No agent memory tool | AceClaw |
-| **Session-end extraction** | Heuristic extraction (20+ regex patterns, no LLM) | No session-end learning | AceClaw |
-| **Context compaction** | 3-phase (flush + prune + summarize) | None | AceClaw |
-| **Daily journal** | Append-only per-day markdown, 500-line cap | None | AceClaw |
-| **Workspace scoping** | SHA-256 isolated directories per project | None | AceClaw |
-| **Category taxonomy** | 21 typed categories | Untyped | AceClaw |
-| **Markdown memory** | MEMORY.md + topic files (first 200 lines injected) | None | AceClaw |
-| **Conditional rules** | Path-based glob matching from `.aceclaw/rules/*.md` | None | AceClaw |
-| **Memory consolidation** | 3-pass (dedup + similarity merge + age prune) | None | AceClaw |
-| **Access tracking** | Per-entry accessCount + lastAccessedAt | None | AceClaw |
-| **Community knowledge** | Not yet (planned P3) | ClawHub: 700+ community skills | OpenClaw |
-| **Multi-platform channels** | CLI + daemon (planned: web) | WhatsApp, Telegram, Slack, Discord | OpenClaw |
-| **Skill marketplace** | Not yet (planned P3) | ClawHub registry with pull-based updates | OpenClaw |
+| **Persistent memory** | JSONL entries, markdown memory, journal, and historical snapshots survive daemon restarts | explicit memory is operational and inspectable | Tie |
+| **Behavior learning** | session retrospectives, historical index, pattern mining, trends, runtime skills | not the default center of gravity | AceClaw |
+| **Governed learning** | explanations, validations, review actions, suppression, pinning | lighter built-in governance | AceClaw |
+| **Operator visibility** | `/learning` summary, signals, reviews, review actions | strong context and gateway visibility | Tie |
+| **Memory hierarchy** | 8 tiers with priority ordering | flatter memory model | AceClaw |
+| **Tamper detection** | HMAC-SHA256 per entry | not AceClaw-style signed JSONL | AceClaw |
+| **Conditional rules** | path-based rules from `.aceclaw/rules/*.md` | different emphasis | AceClaw |
 
 ### 9.3 Memory Lifecycle Comparison
 
 ```
                     AceClaw                           OpenClaw
                     ───────                           ────────
-  Creation:    4 pipelines:                      Gateway.setState()
-               - Agent tool (explicit)            (manual only)
-               - Session-end (heuristic, 6 types)
-               - Compaction flush (Phase 0)
-               - Markdown files (MEMORY.md)
+  Observation: failures, retries, corrections    explicit context capture
+               repeated workflows                 gateway and memory files
 
-  Storage:     JSONL + HMAC-SHA256               In-memory Map
-               MEMORY.md + topic files           Single flat store
-               Per-project + global files
+  Structuring: session retrospective             retrieve memory into the run
+               historical snapshots
+               typed memory categories
 
-  Retrieval:   Hybrid search engine              Key lookup
-               TF-IDF + recency decay            No ranking
-               21 categories + tags              Untyped
-               Access tracking per entry
+  Maintenance: consolidation, mining, trends     context management focus
+               rebuild and recovery
 
-  Injection:   8-tier system prompt assembly     Manual context
-               MemoryTierLoader orchestration    No auto-injection
-               Path-based conditional rules
-               MEMORY.md first 200 lines
+  Governance:  explanations + validations        operator-inspectable context
+               runtime skill rules               lighter built-in learning governance
+               human review actions
 
-  Maintenance: 3-pass consolidation              None
-               Dedup + merge + prune
-               Access-count-aware pruning
-
-  Lifecycle:   Persistent (survives restart)     Volatile (lost on restart)
-               500-line journal cap              No growth control
-               50KB/file, 500KB/workspace cap    No size limits
-               HMAC tamper detection             No integrity checks
-
-  Evolution:   Agent learns across sessions      No cross-session learning
-               Pattern/correction detection      Static skill catalog
-               Daily journal continuity          No activity tracking
-               Self-maintaining via consolidation
+  Reuse:       memory + runtime adaptation       memory + context retrieval
+               refined skills + durable drafts
 ```
 
 ### 9.4 Why AceClaw's Approach is Better for Enterprise
@@ -680,19 +655,41 @@ This prevents the pathological case where a 80K-token system prompt + 85% trigge
 
 3. **Workspace isolation** — SHA-256 hashed directories prevent one project's learned knowledge from leaking into another. Critical for consulting firms working on multiple clients.
 
-4. **Deterministic extraction** — Session-end extraction uses regex patterns (no LLM), making it predictable and auditable. OpenClaw has no automated knowledge capture.
+4. **Deterministic extraction** — Session-end extraction, indexing, trend detection, reviews, and most maintenance logic are heuristic and auditable. The learning system stays inspectable.
 
-5. **Growth control** — Journal caps (500 lines/day), markdown file limits (50KB/file, 500KB/workspace), formatted entry limits, 3-pass consolidation, and access-based pruning prevent memory bloat.
+5. **Governed learning** — Not every observed signal gets equal weight. AceClaw adds validation, suppression, pinning, and human review on top of memory persistence.
 
 6. **Conditional compliance** — Path-based rules enforce per-file-type standards (test conventions, API guidelines, security practices) without polluting the global system prompt.
 
 ### 9.5 Where OpenClaw Excels
 
-1. **Community ecosystem** — ClawHub's 700+ skills provide a marketplace that AceClaw lacks. However, OpenClaw's marketplace has had security issues (credential stealers within 48 hours of going viral).
+1. **Context visibility** — OpenClaw is especially good at making operator-visible memory and gateway state feel concrete and operational.
 
-2. **Multi-channel support** — OpenClaw supports WhatsApp, Telegram, Slack, Discord as first-class channels. AceClaw is CLI-only (web/API planned for P3).
+2. **Memory-first ergonomics** — OpenClaw's explicit memory workflow is easier to reason about if the main problem is context management rather than adaptive behavior.
 
-3. **Provider diversity** — OpenClaw's pi-ai SDK supports 20+ providers natively. AceClaw supports 8 providers (Anthropic, OpenAI, OpenAI Codex OAuth, Groq, Together, Mistral, Copilot, Ollama) via `LlmClientFactory`.
+3. **Ecosystem orientation** — OpenClaw is more obviously shaped around an ecosystem and gateway model. AceClaw is still centered on a local daemon and harness runtime.
+
+### 9.6 Context And Compaction Comparison
+
+The memory comparison is only part of the story. The two systems also differ in how they handle context pressure.
+
+| Topic | AceClaw | OpenClaw |
+|------|---------|----------|
+| **Primary compaction question** | How can compression preserve learning value? | How can compression preserve usable context? |
+| **Design style** | compaction is linked to memory and learning extraction | compaction is more clearly productized as context management |
+| **Pruning role** | part of a multi-phase compaction pipeline | more clearly separated from full compaction |
+| **Pre-compaction behavior** | extract useful signals before summarization | flush or preserve durable memory before context loss |
+| **Operator view** | learning summaries and review surface | stronger context-specific visibility and inspection |
+
+This is a useful shorthand:
+
+- **OpenClaw** is stronger at context hygiene, retrieval, and observability.
+- **AceClaw** is stronger at connecting context pressure back into a self-learning loop.
+
+That difference mirrors the larger architectural contrast:
+
+- OpenClaw is more memory-centric by default.
+- AceClaw is more behavior-centric by default.
 
 ---
 

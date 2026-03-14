@@ -1,6 +1,23 @@
 # Continuous Learning Operations Runbook
 
-This runbook covers runtime controls, rollback, and configuration persistence for the candidate pipeline introduced in issue `#78`.
+This runbook covers runtime controls, rollback, and configuration persistence for the governed-learning path inside AceClaw's self-learning system.
+
+It focuses on the downstream operational layer:
+
+- candidate lifecycle
+- skill draft validation
+- automated release and rollback
+- replay-backed quality gates
+- runtime override and emergency controls
+
+```mermaid
+flowchart LR
+  a["Learned signal"] --> b["Candidate state"]
+  b --> c["Draft generation"]
+  c --> d["Validation gate"]
+  d --> e["Shadow / canary / active"]
+  e --> f["Rollback or steady state"]
+```
 
 ## Scope
 
@@ -14,6 +31,8 @@ This runbook covers runtime controls, rollback, and configuration persistence fo
 
 Related document:
 - [Continuous-Learning Governance Closure](docs/continuous-learning-governance.md)
+
+This runbook does **not** describe the whole self-learning loop. For the upstream learning path, see `docs/self-learning.md`.
 
 ## Configuration
 

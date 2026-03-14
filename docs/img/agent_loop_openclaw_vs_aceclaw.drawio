@@ -1,0 +1,148 @@
+<mxGraphModel>
+  <root>
+    <mxCell id="0"/>
+    <mxCell id="1" parent="0"/>
+    <mxCell id="2" value="Agent Loop: OpenClaw vs AceClaw" style="text;fontSize=20;fontStyle=1;align=center;fillColor=none;strokeColor=none;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="120" y="10" width="560" height="30" as="geometry"/>
+    </mxCell>
+    <mxCell id="3" value="OpenClaw: loop = full execution pipeline&#xa;AceClaw: loop = behavioral core for learning" style="text;fontSize=11;align=center;fillColor=none;strokeColor=none;fontColor=#888780;fontStyle=2;" vertex="1" parent="1">
+      <mxGeometry x="160" y="38" width="480" height="30" as="geometry"/>
+    </mxCell>
+    <mxCell id="L0" value="OpenClaw — Runtime Orchestration Loop" style="text;fontSize=14;fontStyle=1;align=center;fillColor=none;strokeColor=none;fontColor=#0C447C;" vertex="1" parent="1">
+      <mxGeometry x="20" y="76" width="370" height="22" as="geometry"/>
+    </mxCell>
+    <mxCell id="L01" value="Control plane / execution pipeline" style="text;fontSize=10;align=center;fillColor=none;strokeColor=none;fontColor=#888780;fontStyle=2;" vertex="1" parent="1">
+      <mxGeometry x="60" y="96" width="280" height="16" as="geometry"/>
+    </mxCell>
+    <mxCell id="L10" value="① Request Intake&#xa;Channel message → Gateway routing" style="rounded=1;fillColor=#E6F1FB;strokeColor=#185FA5;fontSize=10;fontColor=#0C447C;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="40" y="120" width="320" height="40" as="geometry"/>
+    </mxCell>
+    <mxCell id="La1" style="endArrow=classic;strokeColor=#185FA5;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry"><mxPoint x="200" y="160" as="sourcePoint"/><mxPoint x="200" y="174" as="targetPoint"/></mxGeometry>
+    </mxCell>
+    <mxCell id="L20" value="② Session Resolve&#xa;Serialized, one run per session, queue" style="rounded=1;fillColor=#E6F1FB;strokeColor=#185FA5;fontSize=10;fontColor=#0C447C;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="40" y="174" width="320" height="40" as="geometry"/>
+    </mxCell>
+    <mxCell id="La2" style="endArrow=classic;strokeColor=#185FA5;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry"><mxPoint x="200" y="214" as="sourcePoint"/><mxPoint x="200" y="228" as="targetPoint"/></mxGeometry>
+    </mxCell>
+    <mxCell id="L30" value="③ Context Assembly&#xa;Bootstrap files → system prompt → memory" style="rounded=1;fillColor=#E1F5EE;strokeColor=#0F6E56;fontSize=10;fontColor=#085041;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="40" y="228" width="320" height="40" as="geometry"/>
+    </mxCell>
+    <mxCell id="La3" style="endArrow=classic;strokeColor=#0F6E56;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry"><mxPoint x="200" y="268" as="sourcePoint"/><mxPoint x="200" y="282" as="targetPoint"/></mxGeometry>
+    </mxCell>
+    <mxCell id="L40" value="④ Pi Runtime (inference + tools)&#xa;Model think → tool call → observe → stream" style="rounded=1;fillColor=#EEEDFE;strokeColor=#534AB7;fontSize=10;fontColor=#3C3489;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="40" y="282" width="320" height="44" as="geometry"/>
+    </mxCell>
+    <mxCell id="La4" style="endArrow=classic;strokeColor=#534AB7;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry"><mxPoint x="200" y="326" as="sourcePoint"/><mxPoint x="200" y="340" as="targetPoint"/></mxGeometry>
+    </mxCell>
+    <mxCell id="L50" value="⑤ Streaming + Hooks + Events&#xa;Bridge tool/assistant/lifecycle events" style="rounded=1;fillColor=#E6F1FB;strokeColor=#185FA5;fontSize=10;fontColor=#0C447C;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="40" y="340" width="320" height="40" as="geometry"/>
+    </mxCell>
+    <mxCell id="La5" style="endArrow=classic;strokeColor=#185FA5;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry"><mxPoint x="200" y="380" as="sourcePoint"/><mxPoint x="200" y="394" as="targetPoint"/></mxGeometry>
+    </mxCell>
+    <mxCell id="L60" value="⑥ Persistence + Retries&#xa;JSONL transcript · timeout · compaction" style="rounded=1;fillColor=#E6F1FB;strokeColor=#185FA5;fontSize=10;fontColor=#0C447C;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="40" y="394" width="320" height="40" as="geometry"/>
+    </mxCell>
+    <mxCell id="La6" style="endArrow=classic;strokeColor=#185FA5;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry"><mxPoint x="200" y="434" as="sourcePoint"/><mxPoint x="200" y="448" as="targetPoint"/></mxGeometry>
+    </mxCell>
+    <mxCell id="L70" value="⑦ Memory Write&#xa;Model saves durable notes → MEMORY.md" style="rounded=1;fillColor=#E1F5EE;strokeColor=#0F6E56;fontSize=10;fontColor=#085041;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="40" y="448" width="320" height="40" as="geometry"/>
+    </mxCell>
+    <mxCell id="L80" value="" style="rounded=1;fillColor=#F1EFE8;strokeColor=#888780;dashed=1;" vertex="1" parent="1">
+      <mxGeometry x="30" y="502" width="340" height="90" as="geometry"/>
+    </mxCell>
+    <mxCell id="L81" value="Loop cares about:" style="text;fontSize=11;fontStyle=1;align=left;fillColor=none;strokeColor=none;fontColor=#444441;" vertex="1" parent="1">
+      <mxGeometry x="44" y="508" width="200" height="16" as="geometry"/>
+    </mxCell>
+    <mxCell id="L82" value="• Session consistency &amp; serialization&#xa;• Queueing &amp; timeout&#xa;• Stream bridging &amp; hooks&#xa;• Retries &amp; compaction&#xa;• Persistence &amp; observability" style="text;fontSize=10;align=left;fillColor=none;strokeColor=none;fontColor=#0C447C;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="44" y="526" width="310" height="62" as="geometry"/>
+    </mxCell>
+    <mxCell id="R0" value="AceClaw — Behavioral Learning Loop" style="text;fontSize=14;fontStyle=1;align=center;fillColor=none;strokeColor=none;fontColor=#3C3489;" vertex="1" parent="1">
+      <mxGeometry x="410" y="76" width="370" height="22" as="geometry"/>
+    </mxCell>
+    <mxCell id="R01" value="Cognitive core / learning substrate" style="text;fontSize=10;align=center;fillColor=none;strokeColor=none;fontColor=#888780;fontStyle=2;" vertex="1" parent="1">
+      <mxGeometry x="450" y="96" width="280" height="16" as="geometry"/>
+    </mxCell>
+    <mxCell id="R10" value="ReAct Loop (StreamingAgentLoop)&#xa;reason → act → observe → reason" style="rounded=1;fillColor=#EEEDFE;strokeColor=#534AB7;fontSize=11;fontStyle=1;fontColor=#3C3489;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="430" y="120" width="340" height="44" as="geometry"/>
+    </mxCell>
+    <mxCell id="Ra1" value="per turn" style="endArrow=classic;strokeColor=#534AB7;fontSize=9;fontColor=#534AB7;fontStyle=2;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry"><mxPoint x="520" y="164" as="sourcePoint"/><mxPoint x="520" y="182" as="targetPoint"/></mxGeometry>
+    </mxCell>
+    <mxCell id="Ra1b" value="per turn" style="endArrow=classic;strokeColor=#534AB7;fontSize=9;fontColor=#534AB7;fontStyle=2;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry"><mxPoint x="680" y="164" as="sourcePoint"/><mxPoint x="680" y="182" as="targetPoint"/></mxGeometry>
+    </mxCell>
+    <mxCell id="R20" value="ErrorDetector&#xa;error→fix patterns" style="rounded=1;fillColor=#FAECE7;strokeColor=#993C1D;fontSize=10;fontColor=#712B13;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="430" y="182" width="160" height="40" as="geometry"/>
+    </mxCell>
+    <mxCell id="R21" value="PatternDetector&#xa;repeated tool sequences" style="rounded=1;fillColor=#FAECE7;strokeColor=#993C1D;fontSize=10;fontColor=#712B13;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="610" y="182" width="160" height="40" as="geometry"/>
+    </mxCell>
+    <mxCell id="R22" value="ToolMetricsCollector&#xa;success/failure rates" style="rounded=1;fillColor=#FAECE7;strokeColor=#993C1D;fontSize=10;fontColor=#712B13;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="430" y="236" width="160" height="40" as="geometry"/>
+    </mxCell>
+    <mxCell id="R23" value="SkillOutcomeTracker&#xa;skill effectiveness" style="rounded=1;fillColor=#FAECE7;strokeColor=#993C1D;fontSize=10;fontColor=#712B13;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="610" y="236" width="160" height="40" as="geometry"/>
+    </mxCell>
+    <mxCell id="Ra2" style="endArrow=classic;strokeColor=#993C1D;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry"><mxPoint x="510" y="276" as="sourcePoint"/><mxPoint x="510" y="296" as="targetPoint"/></mxGeometry>
+    </mxCell>
+    <mxCell id="Ra2b" style="endArrow=classic;strokeColor=#993C1D;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry"><mxPoint x="690" y="276" as="sourcePoint"/><mxPoint x="690" y="296" as="targetPoint"/></mxGeometry>
+    </mxCell>
+    <mxCell id="R30" value="Session-Close Retrospective&#xa;SessionEndExtractor · SessionAnalyzer&#xa;corrections · preferences · feedback" style="rounded=1;fillColor=#FAEEDA;strokeColor=#854F0B;fontSize=10;fontStyle=1;fontColor=#633806;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="430" y="296" width="340" height="50" as="geometry"/>
+    </mxCell>
+    <mxCell id="Ra3" style="endArrow=classic;strokeColor=#854F0B;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry"><mxPoint x="600" y="346" as="sourcePoint"/><mxPoint x="600" y="362" as="targetPoint"/></mxGeometry>
+    </mxCell>
+    <mxCell id="R40" value="SelfImprovementEngine&#xa;Typed insights · confidence scoring&#xa;dedup · filter · promote / demote" style="rounded=1;fillColor=#EEEDFE;strokeColor=#534AB7;fontSize=10;fontStyle=1;fontColor=#3C3489;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="430" y="362" width="340" height="50" as="geometry"/>
+    </mxCell>
+    <mxCell id="Ra4" style="endArrow=classic;strokeColor=#534AB7;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry"><mxPoint x="600" y="412" as="sourcePoint"/><mxPoint x="600" y="428" as="targetPoint"/></mxGeometry>
+    </mxCell>
+    <mxCell id="R50" value="Deferred Maintenance (background)&#xa;MemoryConsolidator · CrossSessionPatternMiner&#xa;TrendDetector · SkillRefinementEngine" style="rounded=1;fillColor=#E1F5EE;strokeColor=#0F6E56;fontSize=10;fontColor=#085041;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="430" y="428" width="340" height="50" as="geometry"/>
+    </mxCell>
+    <mxCell id="Ra5" value="adapt future&#xa;behavior" style="endArrow=classic;strokeColor=#534AB7;fontSize=9;fontColor=#534AB7;fontStyle=2;dashed=1;dashPattern=4 3;curved=1;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="780" y="453" as="sourcePoint"/>
+        <mxPoint x="780" y="142" as="targetPoint"/>
+        <Array as="points">
+          <mxPoint x="795" y="400"/>
+          <mxPoint x="795" y="200"/>
+        </Array>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="R80" value="" style="rounded=1;fillColor=#F1EFE8;strokeColor=#888780;dashed=1;" vertex="1" parent="1">
+      <mxGeometry x="430" y="502" width="340" height="90" as="geometry"/>
+    </mxCell>
+    <mxCell id="R81" value="Loop cares about:" style="text;fontSize=11;fontStyle=1;align=left;fillColor=none;strokeColor=none;fontColor=#444441;" vertex="1" parent="1">
+      <mxGeometry x="444" y="508" width="200" height="16" as="geometry"/>
+    </mxCell>
+    <mxCell id="R82" value="• Error→fix detection&#xa;• Repeated tool sequences&#xa;• User corrections &amp; preferences&#xa;• Confidence accumulation&#xa;• Memory promotion &amp; skill refinement" style="text;fontSize=10;align=left;fillColor=none;strokeColor=none;fontColor=#3C3489;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="444" y="526" width="310" height="62" as="geometry"/>
+    </mxCell>
+    <mxCell id="DIV" value="" style="endArrow=none;strokeColor=#B4B2A9;dashed=1;dashPattern=4 4;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="400" y="76" as="sourcePoint"/>
+        <mxPoint x="400" y="600" as="targetPoint"/>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="B0" value="" style="rounded=1;fillColor=#F1EFE8;strokeColor=#888780;dashed=1;" vertex="1" parent="1">
+      <mxGeometry x="20" y="610" width="770" height="70" as="geometry"/>
+    </mxCell>
+    <mxCell id="B1" value="One-Line Summary" style="text;fontSize=12;fontStyle=1;align=center;fillColor=none;strokeColor=none;fontColor=#444441;" vertex="1" parent="1">
+      <mxGeometry x="280" y="614" width="240" height="18" as="geometry"/>
+    </mxCell>
+    <mxCell id="B2" value="OpenClaw treats the loop as the full execution pipeline of an agent run.&#xa;AceClaw treats the loop as the behavioral core from which learning signals are extracted." style="text;fontSize=11;align=center;fillColor=none;strokeColor=none;fontColor=#333333;fontStyle=2;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="50" y="636" width="700" height="36" as="geometry"/>
+    </mxCell>
+  </root>
+</mxGraphModel>

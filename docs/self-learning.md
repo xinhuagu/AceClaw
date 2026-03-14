@@ -1,370 +1,399 @@
 # AceClaw Self-Learning Pipeline
 
-> Version 2.0 | 2026-03-13
+> Version 3.0 | 2026-03-14
 
 ## Overview
 
-AceClaw learns from its own behavior across three layers:
+AceClaw's self-learning system is built around one idea:
 
-1. **Per-turn detectors** capture tool failures, recoveries, and recurring local patterns.
-2. **Session-close retrospectives** summarize what happened in the finished session and append a historical snapshot.
-3. **Deferred maintenance** consolidates memory, mines cross-session patterns, and detects trends on background triggers.
+> runtime behavior should become reusable knowledge only after it is observed, explained, validated, and governed.
 
-The result is a learning loop that stays cheap on the hot path while still building long-term signals for adaptive skills and historical analysis.
+This is why AceClaw is not only a memory system. It is a learning system built into the agent harness itself.
 
----
+Today the learning loop on `main` already includes:
 
-## Architecture
+- turn-time detectors and tool metrics
+- session-close retrospectives and historical snapshots
+- deferred maintenance for consolidation, mining, and trend detection
+- explainability and validation records for adaptive actions
+- runtime skill generation and governance
+- human review for learned signals
 
+## Memory Is Not Self-Learning
+
+Memory matters, but AceClaw treats memory as only one layer in a larger loop.
+
+The distinction is simple:
+
+> Memory stores what happened. Self-learning changes what happens next.
+
+That is why AceClaw does not start from "what should be written down?" It starts from "what in the agent's behavior should become reusable knowledge?"
+
+This is also the most useful way to compare AceClaw with OpenClaw's currently documented default path:
+
+- **OpenClaw** is strongest when the problem is explicit memory, context recall, and operational retrieval.
+- **AceClaw** is strongest when the problem is turning runtime behavior into governed, reusable learning.
+
+That does not mean OpenClaw cannot support richer learning. It means the documented center of gravity is different.
+
+## The Big Picture
+
+The clearest way to understand AceClaw is to compare the architecture boundary directly.
+
+![Architecture comparison: OpenClaw vs AceClaw](img/architecture_comparison_openclaw_vs_aceclaw.png)
+
+This is the big-picture difference:
+
+- **AceClaw** is built as a local, security-first daemon whose learning loop sits inside the harness.
+- **OpenClaw** is built more like a broader runtime gateway and execution platform.
+
+That architectural choice explains why AceClaw's self-learning loop is centered on behavior:
+
+- the `StreamingAgentLoop` is treated as the ReAct core
+- detectors and retrospectives sit close to tool execution
+- background maintenance turns behavior into memory, patterns, trends, and adaptive skills
+
+In other words, AceClaw does not treat self-learning as an add-on memory feature. It treats learning as part of the harness itself.
+
+## What AceClaw Means By Self-Learning
+
+AceClaw separates three layers of knowledge:
+
+| Layer | Meaning | Example |
+|-------|---------|---------|
+| **Fact memory** | What should be remembered | a user preference, an important file, a design decision |
+| **Behavior memory** | What the agent learned from acting | a failure pattern, a recovery path, a stable tool sequence |
+| **Skill memory** | Behavior validated enough to guide execution | a refined skill, a durable draft, a governed runtime workflow |
+
+Most agent systems are strongest on fact memory. AceClaw pushes further into behavior memory, and then tries to turn some of that into governed skill memory.
+
+## Phase 1 And Phase 2
+
+Self-learning on `main` now includes both the original learning loop and the second-phase governance work.
+
+### Phase 1: learn from behavior
+
+- `SessionAnalyzer`
+- `HistoricalLogIndex`
+- `CrossSessionPatternMiner`
+- `TrendDetector`
+- `LearningMaintenanceScheduler`
+- skill metrics, skill memory feedback, and skill refinement
+- runtime dynamic skill generation
+
+### Phase 2: make learning effective and governable
+
+- `LearningExplanationStore` and `LearningExplanationRecorder`
+- `LearningValidationStore` and `LearningValidationRecorder`
+- `LearningMaintenanceRunStore`
+- noise control and aging
+- runtime skill governance
+- rebuild and recovery hardening
+- human review surface
+
+## Current Runtime Flow
+
+The end-to-end flow today looks like this:
+
+1. The agent executes tools and accumulates tool metrics.
+2. Per-turn detectors observe failures, recoveries, and repeated sequences.
+3. The handler records skill outcomes and post-turn adaptive actions.
+4. Session close writes a retrospective summary and a historical session snapshot.
+5. `HistoricalLogIndex` appends normalized rows for later mining.
+6. `LearningMaintenanceScheduler` runs heavier work on time, session-count, size, idle, or recovery triggers.
+7. Maintenance consolidates memory, mines cross-session patterns, detects trends, and bridges useful signals downstream.
+8. `DynamicSkillGenerator` can create session-scoped runtime skills from repeated workflows.
+9. Explanations, validations, and human reviews make those actions inspectable and governable.
+
+## ReAct Loop vs Agent Loop
+
+AceClaw and OpenClaw use similar raw ingredients, but they frame the loop differently.
+
+![OpenClaw agent loop vs AceClaw ReAct loop](img/agent_loop_openclaw_vs_aceclaw.png)
+
+The diagram shows the architectural boundary clearly:
+
+- **OpenClaw** treats the loop as the full execution pipeline of an agent run.
+- **AceClaw** treats the loop as the behavioral core from which learning signals are extracted.
+
+### OpenClaw
+
+In the currently documented default path, OpenClaw's "agent loop" is best understood as the **full execution pipeline** of an agent run:
+
+- request intake
+- context assembly
+- model inference
+- tool execution
+- streaming replies
+- retries, hooks, compaction, and persistence
+
+That is a runtime orchestration loop.
+
+### AceClaw
+
+AceClaw's `StreamingAgentLoop` is explicitly treated as the **ReAct-style behavioral core**:
+
+- reason
+- act
+- observe
+- detect failures, recoveries, and corrections
+- turn those observations into learning signals
+
+That is why AceClaw uses the loop itself as a learning substrate.
+
+In short:
+
+- **OpenClaw** treats the loop more like the full operating pipeline of an agent run.
+- **AceClaw** treats the loop more like the behavioral core from which learning signals are extracted.
+
+## Core Components
+
+### 1. Turn-Time Learning
+
+The hot path stays mostly heuristic and cheap.
+
+- tool metrics are collected per session
+- detector output is converted into typed learning signals
+- skill outcomes are tracked for success, failure, rollback, and correction
+
+This layer is meant to notice behavior while the work is still happening.
+
+### 2. Session-Close Learning
+
+Session close is where AceClaw writes down structured experience:
+
+- retrospective summary
+- extracted session-level memory
+- historical session snapshot
+- immediate index updates
+
+This keeps the next session from starting as a blank slate.
+
+### 3. Deferred Maintenance
+
+Maintenance is intentionally deferred so session teardown stays fast.
+
+The current scheduler supports:
+
+- time trigger
+- session-count trigger
+- size trigger
+- idle trigger
+- recovery trigger
+
+The background pipeline currently covers:
+
+- `MemoryConsolidator`
+- `HistoricalIndexRebuilder`
+- `CrossSessionPatternMiner`
+- `TrendDetector`
+- learning candidate bridging
+
+## Explainability
+
+Every important adaptive action can now leave a structured explanation record.
+
+`LearningExplanation` captures:
+
+- `actionType`
+- `targetType`
+- `targetId`
+- `trigger`
+- `summary`
+- evidence references
+
+Typical explanation actions include:
+
+- memory writes
+- candidate observations and transitions
+- runtime skill creation
+- runtime skill suppression or expiration
+- skill draft creation
+- human review application
+
+This means you can now answer:
+
+- why did this runtime skill appear?
+- why was this signal suppressed?
+- what evidence caused this transition?
+
+## Validation Semantics
+
+AceClaw now records validation decisions for learned behavior instead of treating every adaptive action as equally trustworthy.
+
+`LearningValidation` tracks:
+
+- target type and id
+- validation policy
+- verdict
+- reasons
+- evidence
+
+Current verdicts include:
+
+- `OBSERVED_USEFUL`
+- `PROVISIONAL`
+- `PASS`
+- `HOLD`
+- `REJECT`
+- `ROLLBACK`
+
+This is the layer that turns "the system noticed something" into "the system has a reason to trust or distrust it."
+
+## Runtime Skill Lifecycle
+
+Runtime skills are the clearest example of behavior becoming reusable knowledge.
+
+The current lifecycle is:
+
+1. detect repeated non-bash workflow
+2. generate a session-scoped runtime skill
+3. record explanation + validation
+4. observe runtime success, failure, or user correction
+5. suppress, expire, or keep the runtime skill
+6. only allow durable draft promotion after enough useful evidence
+
+This keeps runtime adaptation fast, but still governed.
+
+## Human Review Surface
+
+Operators can now inspect and review learned signals from the CLI.
+
+Available commands:
+
+```text
+/learning
+/learning signals
+/learning reviews
+/learning review <action> <targetType> <targetId> [note]
 ```
-                         ┌─────────────────────┐
-                         │ StreamingAgentLoop  │
-                         │   (ReAct loop)      │
-                         └─────────┬───────────┘
-                                   │
-              ┌────────────────────┼────────────────────┐
-              ▼                    ▼                     ▼
-   ┌──────────────────┐  ┌────────────────┐  ┌──────────────────────┐
-   │ ToolMetrics       │  │ Turn           │  │ Conversation History │
-   │ Collector         │  │ (messages,     │  │ (full session)       │
-   │                   │  │  tool results) │  │                      │
-   └────────┬─────────┘  └───────┬────────┘  └──────────┬───────────┘
-            │                     │                       │
-            │          ┌──────────┼───────────────────────┘
-            │          ▼          ▼
-            │  ┌────────────────────────────────┐
-            │  │   SelfImprovementEngine        │
-            │  │ ErrorDetector + PatternDetector│
-            │  └──────────────┬─────────────────┘
-            │                 │
-            │                 ▼
-            │          ┌──────────────────────┐
-            │          │ SessionEndExtractor   │
-            │          │ SessionAnalyzer       │
-            │          └──────────┬────────────┘
-            │                     │
-            │                     ▼
-            │          ┌──────────────────────┐
-            │          │ HistoricalLogIndex    │
-            │          │ (session snapshots)   │
-            │          └──────────┬────────────┘
-            │                     │
-            └─────────────────────┼─────────────────────────────┐
-                                  ▼                             │
-                         ┌─────────────────┐                    │
-                         │ AutoMemoryStore │                    │
-                         │  (JSONL + HMAC) │                    │
-                         └────────┬────────┘                    │
-                                  ▼                             │
-                      ┌─────────────────────────┐               │
-                      │ LearningMaintenance     │◀──────────────┘
-                      │ Scheduler               │
-                      │ (time/session/size/idle)│
-                      └────────┬────────────────┘
-                               ▼
-        ┌──────────────────────────────────────────────────────────────┐
-        │ MemoryConsolidator → CrossSessionPatternMiner → TrendDetector│
-        └──────────────────────────────────────────────────────────────┘
-```
-
-**Data flow:** The agent loop produces raw signals. Per-turn detectors and session-close retrospectives persist immediate learnings and historical snapshots. Heavier maintenance work then runs asynchronously through the learning maintenance scheduler instead of blocking session teardown.
-
-## Current Learning Loop
-
-The current end-to-end loop is:
-
-1. **Turn-time detection**: `ErrorDetector` and `PatternDetector` emit typed insights.
-2. **Outcome tracking**: `SkillOutcomeTracker` records success, failure, and user correction for invoked skills.
-3. **Session-close retrospective**: `SessionEndExtractor` and `SessionAnalyzer` summarize the finished session.
-4. **Historical indexing**: `HistoricalLogIndex` stores normalized snapshots for later mining.
-5. **Deferred maintenance**: `LearningMaintenanceScheduler` triggers `MemoryConsolidator`, `CrossSessionPatternMiner`, and `TrendDetector`.
-6. **Skill adaptation**: metrics and memory feedback feed `SkillRefinementEngine`, which can refine, rollback, or deprecate skills.
-
----
-
-## Insight Type Hierarchy
-
-All self-learning outputs converge on a single sealed interface:
-
-```java
-public sealed interface Insight
-    permits Insight.ErrorInsight, Insight.SuccessInsight, Insight.PatternInsight {
-
-    String description();
-    List<String> tags();
-    MemoryEntry.Category targetCategory();
-    double confidence();   // [0.0, 1.0]
-}
-```
-
-The compiler enforces exhaustive handling — every `switch` over `Insight` must cover all three variants.
-
-### ErrorInsight
-
-Produced when a tool fails and is subsequently retried successfully.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `toolName` | `String` | The tool that failed |
-| `errorMessage` | `String` | Truncated error output (max 500 chars) |
-| `resolution` | `String` | How the error was resolved |
-| `confidence` | `double` | 0.4 base + 0.2 per cross-session match (max 1.0) |
-
-Target category: `ERROR_RECOVERY`
-
-### SuccessInsight
-
-Produced when a multi-tool sequence completes a task successfully.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `toolSequence` | `List<String>` | Ordered list of tool names (immutable) |
-| `taskDescription` | `String` | What the sequence accomplished |
-| `confidence` | `double` | Confidence score in [0.0, 1.0] |
 
-Target category: `SUCCESSFUL_STRATEGY`
+Current review actions:
 
-### PatternInsight
+- `useful`
+- `pin`
+- `suppress`
+- `low_value`
+- `incorrect`
+- `unsuppress`
+- `unpin`
 
-Produced when recurring behavioral patterns are detected across sessions.
+Human review is written back into:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `patternType` | `PatternType` | One of 4 pattern types (see below) |
-| `description` | `String` | Human-readable pattern description |
-| `frequency` | `int` | How many times the pattern was observed |
-| `confidence` | `double` | Confidence score in [0.0, 1.0] |
-| `evidence` | `List<String>` | Traces like `"session:abc turn 5: grep->read->edit"` |
+- explanation history
+- validation history
+- durable review records
 
-Target category varies by `PatternType`:
+So review is not only a note. It becomes part of the learning system itself.
 
-| PatternType | Category |
-|-------------|----------|
-| `REPEATED_TOOL_SEQUENCE` | `PATTERN` |
-| `ERROR_CORRECTION` | `ERROR_RECOVERY` |
-| `USER_PREFERENCE` | `PREFERENCE` |
-| `WORKFLOW` | `PATTERN` |
+## Recovery And Rebuild Hardening
 
----
+Learning data is no longer treated as best-effort only.
 
-## Detection Strategies
+The current code now hardens:
 
-### 1. Error-Correction Detection (`ErrorDetector`)
+- stale historical index rebuild
+- partial write safety for session snapshots
+- corrupted snapshot tolerance
+- maintenance interruption recovery
+- restart-time recovery pickup
+- per-workspace rebuild consistency
 
-**Location:** `aceclaw-daemon` module
+This matters because a self-learning system is only useful if it can survive interruption without silently forgetting what it learned.
 
-Analyzes a single turn's messages to find error→fix pairs:
+## Heuristics vs LLM Calls
 
-1. Collects all `ToolUse` and `ToolResult` blocks, preserving message order.
-2. Identifies `ToolResult` blocks where `isError() == true`.
-3. For each error, finds the earliest subsequent success for the **same tool name**.
-4. Produces an `ErrorInsight` with the error message and resolution.
-5. Cross-session boosting: queries `AutoMemoryStore` for prior `ERROR_RECOVERY` entries matching the tool name. Each match adds +0.2 to confidence (capped at 1.0).
+AceClaw keeps most learning logic deterministic.
 
-**Confidence calculation:**
-```
-confidence = BASE (0.4) + cross_session_matches * BOOST (0.2)
-           = min(result, 1.0)
-```
+### Pure Java / heuristic path
 
-A first-time error correction starts at 0.4 confidence. If the same tool has failed and recovered in 3 prior sessions, confidence reaches 1.0.
+- save and search memory
+- session-close extraction
+- historical indexing
+- consolidation
+- pattern mining
+- trend detection
+- rebuild and recovery
+- review storage and learning summaries
 
-### 2. Repeated Sequence Detection
+### LLM-assisted path
 
-**PatternType:** `REPEATED_TOOL_SEQUENCE`
+- context compaction
+- skill refinement
+- runtime skill drafting
 
-Detects when the same 3+ tool sequence appears 3+ times across sessions. Example: `grep → read_file → edit_file` appearing in 5 different sessions suggests a stable workflow worth remembering.
+The goal is simple: use heuristics for cheap, auditable signal handling; use LLM calls only where synthesis is worth the cost.
 
-### 3. User Preference Detection
+## Context Compaction vs Learning
 
-**PatternType:** `USER_PREFERENCE`
+Context compaction is another place where the design difference becomes visible.
 
-Detects when the user corrects agent behavior 2+ times in the same way. The `SessionEndExtractor` identifies corrections via regex patterns (`"^no,"`, `"wrong"`, `"actually"`, `"should be"`) and explicit preferences (`"always"`, `"never"`, `"from now on"`).
+### OpenClaw
 
-### 4. Workflow Detection
+OpenClaw's context system is more productized and operator-facing:
 
-**PatternType:** `WORKFLOW`
+- explicit context visibility
+- explicit memory flush before compaction
+- pruning and compaction as separate concerns
+- a stronger documented focus on retrieval quality and context inspection
 
-Detects multi-step operations performed 3+ times with similar structure. Higher-level than repeated sequences — captures intent patterns rather than exact tool chains.
+This is a strong answer to the problem: **how do I keep context usable and debuggable?**
 
----
+### AceClaw
 
-## Tool Metrics Collection
+AceClaw's context compaction is more tightly connected to self-learning:
 
-The `ToolMetricsCollector` tracks per-tool execution statistics in real time using lock-free atomic counters (`ConcurrentHashMap` + `AtomicInteger`/`AtomicLong`):
+- Phase 0 extracts useful signals before compression
+- later phases prune and summarize old conversation state
+- extracted behavior can flow back into memory and later learning stages
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `totalInvocations` | `int` | Total calls to this tool |
-| `successCount` | `int` | Calls that returned `isError=false` |
-| `errorCount` | `int` | Calls that returned `isError=true` or threw exceptions |
-| `totalExecutionMs` | `long` | Cumulative wall-clock execution time |
-| `lastUsed` | `Instant` | Timestamp of most recent invocation |
+This is a strong answer to the problem: **how do I turn context pressure into reusable experience?**
 
-**Derived metrics:**
-- `avgExecutionMs()` — average latency per invocation
-- `successRate()` — success count / total invocations (0.0–1.0)
+That is why OpenClaw currently looks stronger as a context-management product, while AceClaw looks stronger as a behavior-learning harness.
 
-**Integration:** Wired into `StreamingAgentLoop` via `AgentLoopConfig.metricsCollector()`. After every tool execution — success or exception — metrics are recorded automatically. The collector is session-scoped (one instance per `AgentSession`).
+## AceClaw vs OpenClaw
 
-```
-StreamingAgentLoop
-  └─ after tool execution → metricsCollector.record(toolName, success, durationMs)
+OpenClaw is a helpful contrast.
 
-AgentLoopConfig
-  └─ metricsCollector: ToolMetricsCollector  (nullable — null = disabled)
-```
+OpenClaw is strong at explicit memory, gateway orchestration, and operational context management. AceClaw starts from a different question: how does behavior become reusable knowledge?
 
----
+That leads to a different emphasis:
 
-## SelfImprovementEngine
+| Topic | OpenClaw-style default | AceClaw default |
+|-------|------------------------|-----------------|
+| Main concern | context and retrieval | behavior and adaptation |
+| What gets persisted first | notes and gateway state | explanations, validations, and governed signals |
+| What changes the next run | better context injection | better context injection plus adaptive behavior |
+| How the loop is framed | full execution pipeline | ReAct behavior and learning loop |
+| How compaction is framed | context hygiene and observability | compression plus learning signal extraction |
+| Operator tool | inspect context | inspect and review learned signals |
 
-The `SelfImprovementEngine` is the facade that orchestrates all detectors into a unified post-turn learning pipeline. Located in `aceclaw-daemon`, it runs asynchronously on a virtual thread after each agent turn.
+The original comparison diagrams used during this work are checked into:
 
-**Pipeline:**
-```
-Agent Turn
-  ├── ErrorDetector  → ErrorInsights
-  └── PatternDetector → PatternInsights
-        ↓
-  SelfImprovementEngine (deduplicate + filter)
-        ↓
-  AutoMemoryStore.add() (persist high-confidence insights)
-```
+- [`img/architecture_comparison_openclaw_vs_aceclaw.png`](img/architecture_comparison_openclaw_vs_aceclaw.png)
+- [`img/openclaw_gateway_architecture.png`](img/openclaw_gateway_architecture.png)
+- [`img/aceclaw_daemon_architecture.png`](img/aceclaw_daemon_architecture.png)
+- [`img/context_compaction_openclaw_vs_aceclaw.png`](img/context_compaction_openclaw_vs_aceclaw.png)
 
-**Key behaviors:**
+Comparison reference:
 
-| Step | Description |
-|------|-------------|
-| **Analyze** | Runs both detectors, collects all insights |
-| **Deduplicate** | Groups by category + Jaccard similarity (>= 0.7), keeps highest-confidence |
-| **Filter** | Only insights with `confidence >= 0.7` pass to persistence |
-| **Memory dedup** | Checks existing `AutoMemoryStore` entries before writing (avoids duplicates) |
-| **Persist** | Writes to AutoMemoryStore with `self-improve:{sessionId}` source tag |
+![OpenClaw and AceClaw architecture comparison](img/architecture_comparison_openclaw_vs_aceclaw.png)
 
-**Integration points:**
-- `StreamingAgentHandler` — holds engine reference via `setSelfImprovementEngine()`, fires async virtual thread after each turn completes
-- `AceClawDaemon.wireAgentHandler()` — creates `ErrorDetector`, `PatternDetector`, and `SelfImprovementEngine`, wires into handler when `memoryStore` is available
+Compaction-specific comparison:
 
-**Failure isolation:** All exceptions are caught and logged — the engine never propagates errors to the agent session or blocks the response to the user.
+![OpenClaw and AceClaw context compaction comparison](img/context_compaction_openclaw_vs_aceclaw.png)
 
----
+## What To Measure Next
 
-## Strategy Refinement
+Now that the full mechanism is in `main`, the next question is effectiveness.
 
-The `DetectedPattern` record bridges raw detection into the `Insight` hierarchy:
+Useful metrics include:
 
-```java
-public record DetectedPattern(
-    PatternType type,
-    String description,
-    int frequency,
-    double confidence,
-    List<String> evidence
-) {
-    public Insight.PatternInsight toInsight() { ... }
-}
-```
+- signal-to-action latency
+- runtime skill hit rate
+- runtime skill success rate
+- refinement success delta
+- suppress / incorrect review rate
+- conversion from learned signal to durable behavior
 
-Refinement strategies applied to accumulated insights:
-
-| Strategy | Input | Output |
-|----------|-------|--------|
-| **Error consolidation** | Multiple `ErrorInsight`s for the same tool | Merged entry with boosted confidence |
-| **Sequence optimization** | Repeated `SuccessInsight` tool sequences | Canonical workflow pattern |
-| **Anti-pattern generation** | Recurring errors without resolution | `ANTI_PATTERN` memory entry |
-| **Preference strengthening** | Same user correction seen multiple times | Higher-confidence `PREFERENCE` entry |
-
----
-
-## Persistence Rules
-
-### Confidence Threshold
-
-Only insights with `confidence >= 0.7` are persisted to long-term memory. Lower-confidence insights remain session-local unless reinforced by later detections.
-
-### Cross-Session Accumulation
-
-Each time a pattern is re-detected across sessions, its confidence increases:
-- **Base confidence** for a first-time detection: 0.4
-- **Cross-session boost** per matching prior memory: +0.2
-- **Maximum confidence**: 1.0
-
-This means a pattern must be observed in at least 2 sessions before reaching the 0.7 persistence threshold, preventing one-off flukes from polluting long-term memory.
-
-### Debounce
-
-Memory entries are deduplicated during deferred 3-pass consolidation:
-1. **Dedup** — Exact content matches are merged (higher confidence wins).
-2. **Similarity merge** — Entries with >80% text similarity are consolidated.
-3. **Age prune** — Entries older than 90 days with zero access are archived.
-
-### Storage Format
-
-All persisted insights become `MemoryEntry` records stored in HMAC-SHA256 signed JSONL files under `~/.aceclaw/workspaces/{hash}/memory/`. Each entry includes:
-- Category (from `Insight.targetCategory()`)
-- Tags (from `Insight.tags()`)
-- Content (from `Insight.description()`)
-- Confidence score
-- Timestamp and access counters
-
-See [Memory System Design](memory-system-design.md) for the full storage architecture.
-
----
-
-## Session-End Extraction
-
-The `SessionEndExtractor` complements the per-turn detectors by scanning the full conversation history at session close. The `SessionAnalyzer` then produces a compact retrospective summary and normalized historical snapshot. Five regex-based extraction passes still feed the memory path:
-
-| Pass | Pattern | Category |
-|------|---------|----------|
-| 1 | User corrections (`"no,"`, `"wrong"`, `"actually"`) | `CORRECTION` |
-| 2 | Explicit preferences (`"always"`, `"never"`, `"from now on"`) | `PREFERENCE` |
-| 3 | Modified files (3+ `write_file`/`edit_file` calls) | `CODEBASE_INSIGHT` |
-| 4 | Error recovery / success phrases (`"fixed by"`, `"build succeeded"`) | `ERROR_RECOVERY` / `SUCCESSFUL_STRATEGY` |
-| 5 | User feedback (`"great"`, `"that's right"` / `"that's wrong"`) | `USER_FEEDBACK` |
-
-All extracted entries are capped at 200 characters and tagged for searchability.
-
-## Deferred Learning Maintenance
-
-After session-close extraction and indexing complete, the learning maintenance scheduler runs heavier background passes using four triggers:
-
-- **Time-based**: every 6 hours
-- **Session-count**: every 10 closed sessions
-- **Size-based**: when memory backing files exceed 50 KB
-- **Idle-based**: after 5 minutes with no active sessions
-
-The maintenance pipeline currently runs:
-
-1. **Memory consolidation**
-2. **Cross-session pattern mining**
-3. **Trend detection**
-
-This keeps session teardown fast while still preserving a self-maintaining memory system.
-
----
-
-## Key Advantages
-
-| Property | Benefit |
-|----------|---------|
-| **Zero LLM cost** | All detection is heuristic — regex patterns, order-based matching, atomic counters. No API calls for learning. |
-| **Type-safe insights** | Sealed `Insight` interface with compiler-enforced exhaustiveness. Adding a new insight type is a compile error until all handlers are updated. |
-| **Cross-session accumulation** | Confidence grows over sessions. First-time patterns start below threshold; only reinforced patterns persist. |
-| **Automatic strategy evolution** | Errors become insights, insights become anti-patterns, anti-patterns prevent future errors — a closed feedback loop. |
-| **Thread-safe metrics** | Lock-free `ConcurrentHashMap` + atomic counters. No synchronization overhead during the ReAct loop. |
-| **Tamper-resistant storage** | All persisted insights are HMAC-SHA256 signed. Corrupted entries are rejected on load. |
-
----
-
-## Related Issues
-
-| Issue | Title | Status |
-|-------|-------|--------|
-| #13 | Insight type hierarchy + DetectedPattern + ToolMetricsCollector | Done (PR #19) |
-| #14 | ErrorDetector for error-correction patterns | Done (PR #20) |
-| #15 | PatternDetector for recurring tool sequences and workflows | Done (PR #21) |
-| #16 | SelfImprovementEngine orchestrator + daemon integration | Done (PR #22) |
-| #17 | StrategyRefinement — anti-pattern generation and preference strengthening | Planned |
-| #18 | E2E integration test for self-learning pipeline | Planned |
+That is how AceClaw moves from "active learning" to "effective learning."

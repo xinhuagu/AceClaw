@@ -3,6 +3,15 @@
 This document defines the operational governance baseline for continuous-learning rollout:
 process controls, safety controls, rollback controls, and status event protocol.
 
+In the current architecture, this governance layer sits *after* the main self-learning loop. It governs what happens once behavior-derived signals start affecting prompts, drafts, and runtime adaptation.
+
+```mermaid
+flowchart LR
+  a["Behavior-derived signal"] --> b["Candidate / runtime skill / draft"]
+  b --> c["Validation and release gate"]
+  c --> d["Promotion, rollback, or suppression"]
+```
+
 ## 1) Process Controls
 
 - Required merge gates for continuous-learning changes:
@@ -18,6 +27,8 @@ process controls, safety controls, rollback controls, and status event protocol.
   - rollback command path.
 
 ## 2) Safety Controls
+
+These controls exist because AceClaw treats learning as a governed runtime system, not as uncontrolled note accumulation.
 
 - Runtime kill switch:
   - disable candidate injection immediately via `candidate.injection.set(enabled=false)`.
