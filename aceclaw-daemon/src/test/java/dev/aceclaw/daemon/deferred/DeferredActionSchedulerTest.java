@@ -350,7 +350,31 @@ class DeferredActionSchedulerTest {
         assertTrue(result.output().contains("not available"));
     }
 
+    // -- Reschedule tool registration test --
+
+    @Test
+    void rescheduleCheckToolName() {
+        var tool = new RescheduleDeferredTool();
+        assertEquals("reschedule_check", tool.name());
+    }
+
+    @Test
+    void rescheduleDeferredToolNoPendingByDefault() {
+        var tool = new RescheduleDeferredTool();
+        assertNull(tool.pendingRequest());
+    }
+
     // -- DeferEvent tests --
+
+    @Test
+    void deferEventRescheduledRecordCompiles() {
+        var rescheduled = new DeferEvent.ActionRescheduled(
+                "a1", "s1", "not ready", 120,
+                Instant.now().plusSeconds(120), Instant.now());
+        assertEquals("a1", rescheduled.actionId());
+        assertEquals(120, rescheduled.delaySeconds());
+        assertEquals("not ready", rescheduled.reason());
+    }
 
     @Test
     void deferEventRecordsCompile() {

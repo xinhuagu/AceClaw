@@ -412,6 +412,10 @@ public final class DeferredActionScheduler {
                     }
                 }
 
+                // Register a fresh reschedule tool for this execution
+                var rescheduleTool = new RescheduleDeferredTool();
+                isolatedRegistry.register(rescheduleTool);
+
                 var loopConfig = AgentLoopConfig.builder()
                         .sessionId("deferred-" + action.actionId())
                         .maxIterations(15)
@@ -426,6 +430,10 @@ public final class DeferredActionScheduler {
                         Goal: %s
 
                         Review the current state and take appropriate action. Report your findings.
+
+                        IMPORTANT: If the condition is not yet met, do NOT use `sleep` in bash \
+                        commands to wait. Instead, use the `reschedule_check` tool to schedule \
+                        a re-check after a delay.
                         """.formatted(action.goal());
 
                 var turn = agentLoop.runTurn(deferPrompt, conversationSnapshot,
@@ -433,6 +441,29 @@ public final class DeferredActionScheduler {
 
                 String output = summarizeTurnOutput(turn);
                 long durationMs = Duration.ofNanos(System.nanoTime() - startNanos).toMillis();
+
+                // Check if the agent requested a reschedule instead of completing
+                var rescheduleReq = rescheduleTool.pendingRequest();
+                if (rescheduleReq != null) {
+                    Instant newRunAt = Instant.now().plusSeconds(rescheduleReq.delaySeconds());
+                    var rescheduledAction = new DeferredAction(
+                            action.actionId(), action.sessionId(),
+                            action.idempotencyKey(), action.createdAt(),
+                            newRunAt, action.expiresAt(), action.goal(),
+                            action.maxRetries(), action.attempts(),
+                            DeferredActionState.PENDING, null, action.lastOutput());
+                    store.put(rescheduledAction);
+                    saveQuietly();
+
+                    publishEvent(new DeferEvent.ActionRescheduled(
+                            action.actionId(), action.sessionId(),
+                            rescheduleReq.reason(), rescheduleReq.delaySeconds(),
+                            newRunAt, Instant.now()));
+                    log.info("Deferred action '{}' rescheduled: re-check in {}s (reason: {})",
+                            action.actionId(), rescheduleReq.delaySeconds(),
+                            rescheduleReq.reason());
+                    return;
+                }
 
                 // Result stays in DeferredAction store + EventFeed — not written to session
                 store.put(action.withSuccess(truncate(output, MAX_OUTPUT_CHARS)));

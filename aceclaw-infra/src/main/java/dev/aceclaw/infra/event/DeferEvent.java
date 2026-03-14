@@ -13,6 +13,7 @@ import java.time.Instant;
  *   <li>{@link ActionFailed} — a deferred action has failed (with optional retry info)</li>
  *   <li>{@link ActionExpired} — a deferred action expired before it could run</li>
  *   <li>{@link ActionCancelled} — a deferred action was cancelled by the user or system</li>
+ *   <li>{@link ActionRescheduled} — a deferred action was voluntarily rescheduled by the agent</li>
  * </ul>
  */
 public sealed interface DeferEvent extends AceClawEvent {
@@ -40,4 +41,8 @@ public sealed interface DeferEvent extends AceClawEvent {
 
     record ActionCancelled(String actionId, String sessionId, String reason,
                            Instant timestamp) implements DeferEvent {}
+
+    record ActionRescheduled(String actionId, String sessionId, String reason,
+                             int delaySeconds, Instant newRunAt,
+                             Instant timestamp) implements DeferEvent {}
 }
