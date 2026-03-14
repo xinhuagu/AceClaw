@@ -17,6 +17,7 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Pattern;
 
 /**
  * Executes a shell command and returns stdout/stderr.
@@ -58,6 +59,13 @@ public final class BashExecTool implements Tool, CancellationAware {
     static final String UNIX_SHELL = Files.exists(Path.of("/bin/bash")) ? "/bin/bash" : "/bin/sh";
 
     private static final File DEV_NULL = new File(IS_WINDOWS ? "NUL" : "/dev/null");
+
+    /** Detects the anti-pattern of using sleep to poll in deferred actions. */
+    static final Pattern SLEEP_POLL_PATTERN = Pattern.compile("^\\s*sleep\\s+\\d+\\s*&&");
+
+    private static final String SLEEP_WARNING =
+            "Warning: using 'sleep' to wait wastes resources. " +
+            "Use the reschedule_check tool for deferred polling.\n\n";
 
     private final Path workingDir;
     private volatile CancellationToken cancellationToken;
@@ -107,8 +115,14 @@ public final class BashExecTool implements Tool, CancellationAware {
 
         log.debug("Executing shell command: {} (timeout: {}s, windows: {})", command, timeoutSeconds, IS_WINDOWS);
 
+        boolean warnSleep = SLEEP_POLL_PATTERN.matcher(command).find();
+
         try {
-            return runCommand(command, timeoutSeconds);
+            var result = runCommand(command, timeoutSeconds);
+            if (warnSleep) {
+                return new ToolResult(SLEEP_WARNING + result.output(), result.isError());
+            }
+            return result;
         } catch (IOException e) {
             log.error("Failed to execute command: {}", e.getMessage());
             return new ToolResult("Failed to execute command: " + e.getMessage(), true);

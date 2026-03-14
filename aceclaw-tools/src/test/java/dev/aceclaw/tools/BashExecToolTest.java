@@ -195,6 +195,38 @@ class BashExecToolTest {
     }
 
     @Test
+    @DisabledOnOs(OS.WINDOWS)
+    void sleepPollPatternProducesWarning() throws Exception {
+        var input = MAPPER.writeValueAsString(
+                MAPPER.createObjectNode().put("command", "sleep 0 && echo done"));
+
+        var result = tool.execute(input);
+
+        assertThat(result.output()).startsWith("Warning: using 'sleep' to wait wastes resources.");
+        assertThat(result.output()).contains("done");
+    }
+
+    @Test
+    @DisabledOnOs(OS.WINDOWS)
+    void sleepNotAtStartNoWarning() throws Exception {
+        var input = MAPPER.writeValueAsString(
+                MAPPER.createObjectNode().put("command", "echo hello && sleep 0"));
+
+        var result = tool.execute(input);
+
+        assertThat(result.output()).doesNotContain("Warning");
+        assertThat(result.isError()).isFalse();
+    }
+
+    @Test
+    void sleepPollPatternDetection() {
+        assertThat(BashExecTool.SLEEP_POLL_PATTERN.matcher("sleep 120 && curl ...").find()).isTrue();
+        assertThat(BashExecTool.SLEEP_POLL_PATTERN.matcher("  sleep 60 && echo hi").find()).isTrue();
+        assertThat(BashExecTool.SLEEP_POLL_PATTERN.matcher("echo hello && sleep 5").find()).isFalse();
+        assertThat(BashExecTool.SLEEP_POLL_PATTERN.matcher("echo sleep 10 && ok").find()).isFalse();
+    }
+
+    @Test
     void inputSchemaHasRequiredCommand() {
         var schema = tool.inputSchema();
 

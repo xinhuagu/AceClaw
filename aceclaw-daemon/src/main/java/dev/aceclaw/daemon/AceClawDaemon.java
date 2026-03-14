@@ -1219,6 +1219,12 @@ public final class AceClawDaemon {
                         node.put("type", "cancelled");
                         node.put("reason", e.reason());
                     }
+                    case DeferEvent.ActionRescheduled e -> {
+                        node.put("type", "rescheduled");
+                        node.put("reason", e.reason());
+                        node.put("delaySeconds", e.delaySeconds());
+                        node.put("newRunAt", e.newRunAt().toString());
+                    }
                 }
                 events.add(node);
             }
