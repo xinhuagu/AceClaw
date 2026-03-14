@@ -204,6 +204,27 @@ public final class LearningValidationRecorder {
                 List.of(new LearningValidation.EvidenceRef("skill", skillName, reason))));
     }
 
+    public void recordHumanReview(Path projectRoot,
+                                  String targetType,
+                                  String targetId,
+                                  LearningSignalReview.Action action,
+                                  String note,
+                                  String reviewer,
+                                  String sessionId) {
+        append(projectRoot, new LearningValidation(
+                java.time.Instant.now(),
+                targetType,
+                targetId,
+                sessionId,
+                "human-review",
+                "human-review-policy",
+                mapHumanReviewVerdict(action),
+                "Human review marked " + targetType + " '" + targetId + "' as "
+                        + action.name().toLowerCase().replace('_', '-') + ".",
+                List.of(new LearningValidation.Reason(action.name(), note)),
+                List.of(new LearningValidation.EvidenceRef("reviewer", reviewer, note))));
+    }
+
     private static LearningValidation.Verdict mapDraftVerdict(ValidationGateEngine.Verdict verdict) {
         return switch (verdict) {
             case PASS -> LearningValidation.Verdict.PASS;
@@ -239,6 +260,14 @@ public final class LearningValidationRecorder {
 
     private static String stageName(AutoReleaseController.Stage stage) {
         return stage == null ? "none" : stage.name().toLowerCase();
+    }
+
+    private static LearningValidation.Verdict mapHumanReviewVerdict(LearningSignalReview.Action action) {
+        return switch (action) {
+            case SUPPRESS, LOW_VALUE, INCORRECT -> LearningValidation.Verdict.REJECT;
+            case PIN, USEFUL -> LearningValidation.Verdict.PASS;
+            case UNSUPPRESS, UNPIN -> LearningValidation.Verdict.HOLD;
+        };
     }
 
     private void append(Path projectRoot, LearningValidation validation) {

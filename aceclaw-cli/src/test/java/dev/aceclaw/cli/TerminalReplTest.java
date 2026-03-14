@@ -60,6 +60,9 @@ class TerminalReplTest {
         assertThat(output).contains("/model");
         assertThat(output).contains("/tools");
         assertThat(output).contains("/learning");
+        assertThat(output).contains("/learning signals");
+        assertThat(output).contains("/learning reviews");
+        assertThat(output).contains("/learning review <action> <type> <id> [note]");
         assertThat(output).contains("/project");
         assertThat(output).contains("/skills");
         assertThat(output).contains("/tasks");
@@ -130,6 +133,27 @@ class TerminalReplTest {
     @Test
     void learningWithNoClient_showsNotConnectedWhenNullClient() {
         boolean shouldExit = repl.handleSlashCommand(out, "/learning", null);
+        assertThat(shouldExit).isFalse();
+        assertThat(outputBuffer.toString()).contains("Not connected to daemon");
+    }
+
+    @Test
+    void learningSignalsWithNoClient_showsNotConnectedWhenNullClient() {
+        boolean shouldExit = repl.handleSlashCommand(out, "/learning signals", null);
+        assertThat(shouldExit).isFalse();
+        assertThat(outputBuffer.toString()).contains("Not connected to daemon");
+    }
+
+    @Test
+    void learningReviewsWithNoClient_showsNotConnectedWhenNullClient() {
+        boolean shouldExit = repl.handleSlashCommand(out, "/learning reviews", null);
+        assertThat(shouldExit).isFalse();
+        assertThat(outputBuffer.toString()).contains("Not connected to daemon");
+    }
+
+    @Test
+    void learningReviewApplyWithNoClient_showsNotConnectedWhenNullClient() {
+        boolean shouldExit = repl.handleSlashCommand(out, "/learning review suppress trend foo too-noisy", null);
         assertThat(shouldExit).isFalse();
         assertThat(outputBuffer.toString()).contains("Not connected to daemon");
     }

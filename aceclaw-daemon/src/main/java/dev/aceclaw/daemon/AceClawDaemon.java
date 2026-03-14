@@ -85,6 +85,7 @@ public final class AceClawDaemon {
     private final LearningExplanationRecorder learningExplanationRecorder;
     private final LearningValidationStore learningValidationStore;
     private final LearningValidationRecorder learningValidationRecorder;
+    private final LearningSignalReviewStore learningSignalReviewStore;
     private final LearningMaintenanceRunStore learningMaintenanceRunStore;
     private final LearningMaintenanceRecoveryStore learningMaintenanceRecoveryStore;
     private final MarkdownMemoryStore markdownStore;
@@ -162,6 +163,7 @@ public final class AceClawDaemon {
         this.learningExplanationRecorder = new LearningExplanationRecorder(learningExplanationStore);
         this.learningValidationStore = new LearningValidationStore();
         this.learningValidationRecorder = new LearningValidationRecorder(learningValidationStore);
+        this.learningSignalReviewStore = new LearningSignalReviewStore();
         this.learningMaintenanceRunStore = new LearningMaintenanceRunStore();
         this.learningMaintenanceRecoveryStore = new LearningMaintenanceRecoveryStore();
 
@@ -1319,9 +1321,12 @@ public final class AceClawDaemon {
             var result = objectMapper.createObjectNode();
             var explanationCounts = objectMapper.createObjectNode();
             var validationCounts = objectMapper.createObjectNode();
+            var reviewCounts = objectMapper.createObjectNode();
             var recentActions = objectMapper.createArrayNode();
             var recentValidations = objectMapper.createArrayNode();
+            var recentReviews = objectMapper.createArrayNode();
             var maintenanceRuns = objectMapper.createArrayNode();
+            var latestReviews = learningSignalReviewStore.latestByTarget(projectPath, 200);
 
             for (var explanation : learningExplanationStore.recent(projectPath, 100)) {
                 explanationCounts.put(
@@ -1340,6 +1345,7 @@ public final class AceClawDaemon {
                 node.put("targetId", explanation.targetId());
                 node.put("summary", explanation.summary());
                 node.put("trigger", explanation.trigger());
+                applyReviewMetadata(node, explanation.targetType(), explanation.targetId(), latestReviews);
                 recentActions.add(node);
                 if (recentActions.size() >= limit) {
                     break;
@@ -1358,7 +1364,22 @@ public final class AceClawDaemon {
                 node.put("verdict", validation.verdict().name().toLowerCase());
                 node.put("policy", validation.policy());
                 node.put("summary", validation.summary());
+                applyReviewMetadata(node, validation.targetType(), validation.targetId(), latestReviews);
                 recentValidations.add(node);
+            }
+
+            for (var review : learningSignalReviewStore.recent(projectPath, limit)) {
+                var key = review.action().name().toLowerCase(Locale.ROOT);
+                reviewCounts.put(key, reviewCounts.path(key).asInt(0) + 1);
+                var node = objectMapper.createObjectNode();
+                node.put("timestamp", review.timestamp().toString());
+                node.put("targetType", review.targetType());
+                node.put("targetId", review.targetId());
+                node.put("action", key);
+                node.put("summary", review.summary());
+                node.put("note", review.note());
+                node.put("reviewer", review.reviewer());
+                recentReviews.add(node);
             }
 
             int totalDeduped = 0;
@@ -1393,9 +1414,125 @@ public final class AceClawDaemon {
             result.set("maintenanceTotals", maintenanceTotals);
             result.set("explanationCounts", explanationCounts);
             result.set("validationCounts", validationCounts);
+            result.set("reviewCounts", reviewCounts);
             result.set("recentActions", recentActions);
             result.set("recentValidations", recentValidations);
+            result.set("recentReviews", recentReviews);
             result.set("maintenanceRuns", maintenanceRuns);
+            return result;
+        });
+
+        router.register("learning.review.list", params -> {
+            Path projectPath = workingDir;
+            int limit = 20;
+            if (params != null) {
+                if (params.has("project") && !params.get("project").asText("").isBlank()) {
+                    projectPath = Path.of(params.get("project").asText()).toAbsolutePath().normalize();
+                }
+                if (params.has("limit")) {
+                    limit = Math.max(1, Math.min(100, params.get("limit").asInt(20)));
+                }
+            }
+
+            var result = objectMapper.createObjectNode();
+            var reviews = objectMapper.createArrayNode();
+            for (var review : learningSignalReviewStore.recent(projectPath, limit)) {
+                var node = objectMapper.createObjectNode();
+                node.put("timestamp", review.timestamp().toString());
+                node.put("targetType", review.targetType());
+                node.put("targetId", review.targetId());
+                node.put("action", review.action().name().toLowerCase(Locale.ROOT));
+                node.put("summary", review.summary());
+                node.put("note", review.note());
+                node.put("reviewer", review.reviewer());
+                node.put("sessionId", review.sessionId());
+                reviews.add(node);
+            }
+            result.set("reviews", reviews);
+            return result;
+        });
+
+        router.register("learning.reviewable.list", params -> {
+            Path projectPath = workingDir;
+            int limit = 20;
+            if (params != null) {
+                if (params.has("project") && !params.get("project").asText("").isBlank()) {
+                    projectPath = Path.of(params.get("project").asText()).toAbsolutePath().normalize();
+                }
+                if (params.has("limit")) {
+                    limit = Math.max(1, Math.min(100, params.get("limit").asInt(20)));
+                }
+            }
+
+            var result = objectMapper.createObjectNode();
+            var signals = objectMapper.createArrayNode();
+            var latestReviews = learningSignalReviewStore.latestByTarget(projectPath, 200);
+            var seen = new java.util.LinkedHashSet<String>();
+            for (var explanation : learningExplanationStore.recent(projectPath, 200)) {
+                if (explanation.targetType().isBlank() || explanation.targetId().isBlank()) {
+                    continue;
+                }
+                String key = explanation.targetType() + ":" + explanation.targetId();
+                if (!seen.add(key)) {
+                    continue;
+                }
+                var node = objectMapper.createObjectNode();
+                node.put("kind", "explanation");
+                node.put("timestamp", explanation.timestamp().toString());
+                node.put("actionType", explanation.actionType());
+                node.put("targetType", explanation.targetType());
+                node.put("targetId", explanation.targetId());
+                node.put("summary", explanation.summary());
+                node.put("trigger", explanation.trigger());
+                applyReviewMetadata(node, explanation.targetType(), explanation.targetId(), latestReviews);
+                signals.add(node);
+                if (signals.size() >= limit) {
+                    break;
+                }
+            }
+            result.set("signals", signals);
+            return result;
+        });
+
+        router.register("learning.review.apply", params -> {
+            if (params == null) {
+                throw new IllegalArgumentException("learning.review.apply requires params");
+            }
+            Path projectPath = workingDir;
+            if (params.has("project") && !params.get("project").asText("").isBlank()) {
+                projectPath = Path.of(params.get("project").asText()).toAbsolutePath().normalize();
+            }
+            String targetType = params.path("targetType").asText("").trim();
+            String targetId = params.path("targetId").asText("").trim();
+            String actionText = params.path("action").asText("").trim();
+            String note = params.path("note").asText("").trim();
+            String reviewer = params.path("reviewer").asText("human").trim();
+            String sessionId = params.path("sessionId").asText("").trim();
+            if (targetType.isBlank() || targetId.isBlank() || actionText.isBlank()) {
+                throw new IllegalArgumentException("targetType, targetId, and action are required");
+            }
+            var action = LearningSignalReview.Action.valueOf(actionText.toUpperCase(Locale.ROOT));
+            String summary = "Human review marked " + targetType + " '" + targetId + "' as "
+                    + action.name().toLowerCase(Locale.ROOT).replace('_', '-') + ".";
+            learningSignalReviewStore.append(projectPath, new LearningSignalReview(
+                    Instant.now(),
+                    targetType,
+                    targetId,
+                    action,
+                    summary,
+                    note,
+                    reviewer,
+                    sessionId,
+                    List.of("human-review", action.name().toLowerCase(Locale.ROOT), targetType)));
+            learningExplanationRecorder.recordHumanReview(projectPath, targetType, targetId, action, note, reviewer, sessionId);
+            learningValidationRecorder.recordHumanReview(projectPath, targetType, targetId, action, note, reviewer, sessionId);
+
+            var result = objectMapper.createObjectNode();
+            result.put("applied", true);
+            result.put("targetType", targetType);
+            result.put("targetId", targetId);
+            result.put("action", action.name().toLowerCase(Locale.ROOT));
+            result.put("summary", summary);
             return result;
         });
 
@@ -1998,9 +2135,25 @@ public final class AceClawDaemon {
     private static boolean isOperatorFacingAction(String actionType) {
         return switch (actionType) {
             case "runtime_skill_created", "runtime_skill_persisted", "skill_refinement",
+                    "human_review_applied",
                     "skill_draft_created", "candidate_transition" -> true;
             default -> false;
         };
+    }
+
+    private void applyReviewMetadata(com.fasterxml.jackson.databind.node.ObjectNode node,
+                                     String targetType,
+                                     String targetId,
+                                     Map<String, LearningSignalReview> latestReviews) {
+        if (targetType == null || targetType.isBlank() || targetId == null || targetId.isBlank()) {
+            return;
+        }
+        var review = latestReviews.get(targetType + ":" + targetId);
+        if (review == null) {
+            return;
+        }
+        node.put("reviewAction", review.action().name().toLowerCase(Locale.ROOT));
+        node.put("reviewSummary", review.summary());
     }
 
     private void runLearningMaintenancePipeline(

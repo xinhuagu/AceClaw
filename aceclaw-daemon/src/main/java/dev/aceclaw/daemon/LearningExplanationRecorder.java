@@ -221,6 +221,28 @@ public final class LearningExplanationRecorder {
                 List.of(new LearningExplanation.EvidenceRef("reason", action, reason))));
     }
 
+    public void recordHumanReview(Path projectRoot,
+                                  String targetType,
+                                  String targetId,
+                                  LearningSignalReview.Action action,
+                                  String note,
+                                  String reviewer,
+                                  String sessionId) {
+        append(projectRoot, new LearningExplanation(
+                Instant.now(),
+                "human_review_applied",
+                targetType,
+                targetId,
+                sessionId,
+                "human-review",
+                "Human review marked " + targetType + " '" + targetId + "' as "
+                        + action.name().toLowerCase().replace('_', '-') + ".",
+                List.of("human-review", action.name().toLowerCase(), targetType),
+                List.of(
+                        new LearningExplanation.EvidenceRef("reviewer", reviewer, ""),
+                        new LearningExplanation.EvidenceRef("note", note, ""))));
+    }
+
     private void append(Path projectRoot, LearningExplanation explanation) {
         if (projectRoot == null || explanation == null) {
             return;

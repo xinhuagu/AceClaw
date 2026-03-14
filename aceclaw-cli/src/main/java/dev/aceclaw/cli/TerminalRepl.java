@@ -1066,7 +1066,10 @@ public final class TerminalRepl {
             int turnOut = usage.path("outputTokens").asInt(0);
             totalInputTokens += turnIn;
             totalOutputTokens += turnOut;
-            latestInputTokens = turnIn;
+            // Prefer the live input tokens from streaming (= actual context window usage)
+            // over turnIn which is the cumulative total across all API calls in the turn.
+            long liveTokens = handle.liveInputTokens();
+            latestInputTokens = liveTokens > 0 ? liveTokens : turnIn;
 
             long elapsedMs = (System.nanoTime() - promptStartNanos) / 1_000_000;
             String elapsed = elapsedMs >= 1000
@@ -1074,10 +1077,11 @@ public final class TerminalRepl {
                     : elapsedMs + "ms";
 
             out.println();
+            long contextTokens = liveTokens > 0 ? liveTokens : turnIn;
             out.printf("%s%s  %d in / %d out  %s%s%n",
                     MUTED, elapsed, turnIn, turnOut,
                     sessionInfo.contextWindowTokens() > 0
-                            ? "context " + formatTokenCount(turnIn) + "/"
+                            ? "context " + formatTokenCount(contextTokens) + "/"
                               + formatTokenCount(sessionInfo.contextWindowTokens())
                             : "",
                     RESET);
@@ -2396,6 +2400,9 @@ public final class TerminalRepl {
                 out.println(INFO + "  /tools" + RESET + "    List available tools");
                 out.println(INFO + "  /status" + RESET + "   Show session status");
                 out.println(INFO + "  /learning" + RESET + " Show learning summary");
+                out.println(INFO + "  /learning signals" + RESET + " Show recent reviewable learned signals");
+                out.println(INFO + "  /learning reviews" + RESET + " Show recent human reviews");
+                out.println(INFO + "  /learning review <action> <type> <id> [note]" + RESET + " Apply human review");
                 out.println(INFO + "  /project" + RESET + "  Show current session project");
                 out.println(INFO + "  /skills" + RESET + "   List generated skill drafts (/skills inspect <name>)");
                 out.println(INFO + "  /tasks" + RESET + "    List all tasks with status");
@@ -2447,7 +2454,7 @@ public final class TerminalRepl {
                 out.flush();
             }
 
-            case "/learning" -> handleLearningCommand(out);
+            case "/learning" -> handleLearningCommand(out, arg);
 
             case "/project" -> {
                 out.println();
@@ -2660,10 +2667,23 @@ public final class TerminalRepl {
         out.flush();
     }
 
-    private void handleLearningCommand(PrintWriter out) {
+    private void handleLearningCommand(PrintWriter out, String arg) {
         if (client == null || !client.isConnected()) {
             out.println(WARNING + "Not connected to daemon" + RESET);
             out.flush();
+            return;
+        }
+        String trimmedArg = arg == null ? "" : arg.trim();
+        if (trimmedArg.equalsIgnoreCase("signals")) {
+            handleLearningSignalsCommand(out);
+            return;
+        }
+        if (trimmedArg.equalsIgnoreCase("reviews")) {
+            handleLearningReviewsCommand(out);
+            return;
+        }
+        if (!trimmedArg.isBlank() && trimmedArg.regionMatches(true, 0, "review ", 0, "review ".length())) {
+            handleLearningReviewApplyCommand(out, trimmedArg.substring("review ".length()).trim());
             return;
         }
         try {
@@ -2684,6 +2704,8 @@ public final class TerminalRepl {
                     MUTED, RESET, compactCountMap(root.path("explanationCounts")));
             out.printf("  %sValidations:%s %s%n",
                     MUTED, RESET, compactCountMap(root.path("validationCounts")));
+            out.printf("  %sReviews:%s     %s%n",
+                    MUTED, RESET, compactCountMap(root.path("reviewCounts")));
 
             out.println();
             out.println(BOLD + "Recent Maintenance" + RESET);
@@ -2696,10 +2718,73 @@ public final class TerminalRepl {
             out.println();
             out.println(BOLD + "Recent Validations" + RESET);
             renderLearningValidationRows(out, root.path("recentValidations"));
+
+            out.println();
+            out.println(BOLD + "Recent Reviews" + RESET);
+            renderLearningReviewRows(out, root.path("recentReviews"), "No human reviews yet.");
             out.println();
             out.flush();
         } catch (Exception e) {
             out.println(WARNING + "Failed to load learning summary: " + sanitizeTerminalText(e.getMessage()) + RESET);
+            out.flush();
+        }
+    }
+
+    private void handleLearningSignalsCommand(PrintWriter out) {
+        try {
+            var params = client.objectMapper().createObjectNode();
+            params.put("project", sessionInfo.project());
+            params.put("limit", 12);
+            JsonNode root = client.sendRequest("learning.reviewable.list", params);
+            out.println();
+            out.println(BOLD + "Reviewable Learned Signals" + RESET);
+            renderLearningSignals(out, root.path("signals"));
+            out.println();
+            out.flush();
+        } catch (Exception e) {
+            out.println(WARNING + "Failed to load reviewable signals: " + sanitizeTerminalText(e.getMessage()) + RESET);
+            out.flush();
+        }
+    }
+
+    private void handleLearningReviewsCommand(PrintWriter out) {
+        try {
+            var params = client.objectMapper().createObjectNode();
+            params.put("project", sessionInfo.project());
+            params.put("limit", 12);
+            JsonNode root = client.sendRequest("learning.review.list", params);
+            out.println();
+            out.println(BOLD + "Human Reviews" + RESET);
+            renderLearningReviewRows(out, root.path("reviews"), "No human reviews yet.");
+            out.println();
+            out.flush();
+        } catch (Exception e) {
+            out.println(WARNING + "Failed to load learning reviews: " + sanitizeTerminalText(e.getMessage()) + RESET);
+            out.flush();
+        }
+    }
+
+    private void handleLearningReviewApplyCommand(PrintWriter out, String arg) {
+        String[] parts = arg.split("\\s+", 4);
+        if (parts.length < 3) {
+            out.println(WARNING + "Usage: /learning review <action> <targetType> <targetId> [note]" + RESET);
+            out.flush();
+            return;
+        }
+        try {
+            var params = client.objectMapper().createObjectNode();
+            params.put("project", sessionInfo.project());
+            params.put("action", parts[0]);
+            params.put("targetType", parts[1]);
+            params.put("targetId", parts[2]);
+            params.put("note", parts.length >= 4 ? parts[3] : "");
+            params.put("reviewer", "cli");
+            params.put("sessionId", sessionId);
+            JsonNode result = client.sendRequest("learning.review.apply", params);
+            out.println(INFO + sanitizeTerminalText(result.path("summary").asText("Review applied.")) + RESET);
+            out.flush();
+        } catch (Exception e) {
+            out.println(WARNING + "Failed to apply learning review: " + sanitizeTerminalText(e.getMessage()) + RESET);
             out.flush();
         }
     }
@@ -2743,6 +2828,38 @@ public final class TerminalRepl {
                     fitWidth(sanitizeTerminalText(validation.path("verdict").asText("")), 12),
                     RESET,
                     fitWidth(sanitizeTerminalText(validation.path("summary").asText("")), 96));
+        }
+    }
+
+    private void renderLearningReviewRows(PrintWriter out, JsonNode reviews, String emptyMessage) {
+        if (!reviews.isArray() || reviews.isEmpty()) {
+            out.println("  " + MUTED + emptyMessage + RESET);
+            return;
+        }
+        for (JsonNode review : reviews) {
+            out.printf("  %s%-12s%s %s%n",
+                    INFO,
+                    fitWidth(sanitizeTerminalText(review.path("action").asText("")), 12),
+                    RESET,
+                    fitWidth(sanitizeTerminalText(review.path("summary").asText("")), 96));
+        }
+    }
+
+    private void renderLearningSignals(PrintWriter out, JsonNode signals) {
+        if (!signals.isArray() || signals.isEmpty()) {
+            out.println("  " + MUTED + "No recent reviewable learned signals." + RESET);
+            return;
+        }
+        for (JsonNode signal : signals) {
+            String left = signal.path("targetType").asText("") + ":" + signal.path("targetId").asText("");
+            String review = signal.path("reviewAction").asText("");
+            String suffix = review.isBlank() ? "" : " [" + review + "]";
+            out.printf("  %s%s%s %s%s%n",
+                    INFO,
+                    fitWidth(sanitizeTerminalText(left), 32),
+                    RESET,
+                    fitWidth(sanitizeTerminalText(signal.path("summary").asText("")), 72),
+                    sanitizeTerminalText(suffix));
         }
     }
 
