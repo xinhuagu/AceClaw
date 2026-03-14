@@ -5,8 +5,10 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.io.IOException;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class LearningMaintenanceRecoveryStoreTest {
 
@@ -46,5 +48,18 @@ class LearningMaintenanceRecoveryStoreTest {
 
         assertThat(store.load(workspace)).isEmpty();
         assertThat(store.needsRecovery(workspace, "ws-a")).isFalse();
+    }
+
+    @Test
+    void unreadableExistingStateIsTreatedAsRecoveryNeeded() throws Exception {
+        var store = new LearningMaintenanceRecoveryStore();
+        var workspace = tempDir.resolve("workspace");
+        Files.createDirectories(workspace);
+        Files.createDirectories(store.stateFile(workspace).getParent());
+        Files.writeString(store.stateFile(workspace), "{not-json");
+
+        assertThatThrownBy(() -> store.load(workspace))
+                .isInstanceOf(IOException.class);
+        assertThat(store.needsRecovery(workspace, "ws-a")).isTrue();
     }
 }

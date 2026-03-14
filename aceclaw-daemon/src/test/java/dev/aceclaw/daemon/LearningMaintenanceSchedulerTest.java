@@ -226,6 +226,7 @@ class LearningMaintenanceSchedulerTest {
         try {
             scheduler.registerWorkspace("ws-a", workspace);
             waitForTriggers(triggers, 1);
+            waitForMaintenanceToSettle(scheduler);
 
             assertThat(triggers).containsExactly("recovery:ws-a");
             assertThat(recoveryStore.load(workspace)).isEmpty();

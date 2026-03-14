@@ -8,10 +8,12 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -186,8 +188,11 @@ public final class LearningMaintenanceScheduler {
         int sessionsAtStart = trigger == Trigger.RECOVERY ? 0 : sessionsSinceLastRun.get();
 
         Thread.ofVirtual().name("learning-maintenance-" + trigger.id()).start(() -> {
+            var completedScopes = new HashSet<WorkspaceScope>();
+            WorkspaceScope activeScope = null;
             try {
                 for (var scope : scopesToRun) {
+                    activeScope = scope;
                     if (recoveryStore != null) {
                         recoveryStore.markStarted(scope.workingDir(), scope.workspaceHash(), trigger.id());
                     }
@@ -195,11 +200,12 @@ public final class LearningMaintenanceScheduler {
                     if (recoveryStore != null) {
                         recoveryStore.clear(scope.workingDir());
                     }
+                    pendingScopes.remove(scope.workspaceHash(), scope);
+                    recoveryScopes.remove(scope.workspaceHash(), scope);
+                    completedScopes.add(scope);
                 }
                 lastRunAt = clock.instant();
                 sessionsSinceLastRun.updateAndGet(current -> Math.max(0, current - sessionsAtStart));
-                scopesToRun.forEach(scope -> pendingScopes.remove(scope.workspaceHash(), scope));
-                scopesToRun.forEach(scope -> recoveryScopes.remove(scope.workspaceHash(), scope));
                 if (trigger == Trigger.SIZE_THRESHOLD) {
                     sizeTriggerArmed = false;
                 }
@@ -208,15 +214,18 @@ public final class LearningMaintenanceScheduler {
                 }
                 log.info("Learning maintenance completed via trigger={}", trigger.id());
             } catch (Exception e) {
-                if (recoveryStore != null) {
-                    for (var scope : scopesToRun) {
+                for (var scope : scopesToRun) {
+                    if (completedScopes.contains(scope)) {
+                        continue;
+                    }
+                    if (scope.equals(activeScope) && recoveryStore != null) {
                         try {
                             recoveryStore.markFailed(scope.workingDir(), scope.workspaceHash(), trigger.id(), e);
-                            recoveryScopes.put(scope.workspaceHash(), scope);
                         } catch (Exception ignored) {
                             // best-effort recovery metadata only
                         }
                     }
+                    recoveryScopes.put(scope.workspaceHash(), scope);
                 }
                 log.warn("Learning maintenance failed via trigger={}: {}", trigger.id(), e.getMessage());
             } finally {

@@ -77,8 +77,10 @@ public final class LearningMaintenanceRecoveryStore {
                 return Optional.empty();
             }
             return Optional.of(mapper.readValue(json, RecoveryState.class));
-        } catch (IOException | RuntimeException e) {
-            return Optional.empty();
+        } catch (IOException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            throw new IOException("Failed to parse learning maintenance recovery state: " + file, e);
         }
     }
 
@@ -94,7 +96,7 @@ public final class LearningMaintenanceRecoveryStore {
                     .filter(state -> state.status() == RecoveryStatus.RUNNING || state.status() == RecoveryStatus.FAILED)
                     .isPresent();
         } catch (IOException e) {
-            return false;
+            return Files.isRegularFile(stateFile(projectRoot));
         }
     }
 
