@@ -174,6 +174,7 @@ Turn execution
 For the source diagrams behind the current architecture work, see:
 
 - [`docs/img/aceclaw_daemon_architecture.png`](docs/img/aceclaw_daemon_architecture.png)
+- [`docs/img/architecture_comparison_openclaw_vs_aceclaw.png`](docs/img/architecture_comparison_openclaw_vs_aceclaw.png)
 - [`docs/img/agent_loop_openclaw_vs_aceclaw.png`](docs/img/agent_loop_openclaw_vs_aceclaw.png)
 - [`docs/img/openclaw_gateway_architecture.png`](docs/img/openclaw_gateway_architecture.png)
 - [`docs/img/context_compaction_openclaw_vs_aceclaw.png`](docs/img/context_compaction_openclaw_vs_aceclaw.png)

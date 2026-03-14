@@ -40,10 +40,7 @@ That does not mean OpenClaw cannot support richer learning. It means the documen
 
 The clearest way to understand AceClaw is to compare the architecture boundary directly.
 
-<p align="center">
-  <img src="img/aceclaw_daemon_architecture.png" alt="AceClaw daemon architecture" width="47%">
-  <img src="img/openclaw_gateway_architecture.png" alt="OpenClaw gateway architecture" width="47%">
-</p>
+![Architecture comparison: OpenClaw vs AceClaw](img/architecture_comparison_openclaw_vs_aceclaw.png)
 
 This is the big-picture difference:
 
@@ -373,13 +370,18 @@ That leads to a different emphasis:
 
 The original comparison diagrams used during this work are checked into:
 
+- [`img/architecture_comparison_openclaw_vs_aceclaw.png`](img/architecture_comparison_openclaw_vs_aceclaw.png)
 - [`img/openclaw_gateway_architecture.png`](img/openclaw_gateway_architecture.png)
 - [`img/aceclaw_daemon_architecture.png`](img/aceclaw_daemon_architecture.png)
 - [`img/context_compaction_openclaw_vs_aceclaw.png`](img/context_compaction_openclaw_vs_aceclaw.png)
 
 Comparison reference:
 
-![OpenClaw and AceClaw comparison sketch](img/context_compaction_openclaw_vs_aceclaw.png)
+![OpenClaw and AceClaw architecture comparison](img/architecture_comparison_openclaw_vs_aceclaw.png)
+
+Compaction-specific comparison:
+
+![OpenClaw and AceClaw context compaction comparison](img/context_compaction_openclaw_vs_aceclaw.png)
 
 ## What To Measure Next
 

@@ -600,6 +600,8 @@ This prevents the pathological case where a 80K-token system prompt + 85% trigge
 
 ### 9.1 Architecture Overview
 
+![Architecture comparison: OpenClaw vs AceClaw](img/architecture_comparison_openclaw_vs_aceclaw.png)
+
 | Dimension | AceClaw | OpenClaw |
 |-----------|---------|----------|
 | **Center of gravity** | behavior-derived memory and governed learning | explicit context and gateway state |
