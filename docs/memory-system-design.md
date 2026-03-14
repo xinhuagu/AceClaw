@@ -667,6 +667,28 @@ This prevents the pathological case where a 80K-token system prompt + 85% trigge
 
 3. **Ecosystem orientation** — OpenClaw is more obviously shaped around an ecosystem and gateway model. AceClaw is still centered on a local daemon and harness runtime.
 
+### 9.6 Context And Compaction Comparison
+
+The memory comparison is only part of the story. The two systems also differ in how they handle context pressure.
+
+| Topic | AceClaw | OpenClaw |
+|------|---------|----------|
+| **Primary compaction question** | How can compression preserve learning value? | How can compression preserve usable context? |
+| **Design style** | compaction is linked to memory and learning extraction | compaction is more clearly productized as context management |
+| **Pruning role** | part of a multi-phase compaction pipeline | more clearly separated from full compaction |
+| **Pre-compaction behavior** | extract useful signals before summarization | flush or preserve durable memory before context loss |
+| **Operator view** | learning summaries and review surface | stronger context-specific visibility and inspection |
+
+This is a useful shorthand:
+
+- **OpenClaw** is stronger at context hygiene, retrieval, and observability.
+- **AceClaw** is stronger at connecting context pressure back into a self-learning loop.
+
+That difference mirrors the larger architectural contrast:
+
+- OpenClaw is more memory-centric by default.
+- AceClaw is more behavior-centric by default.
+
 ---
 
 ## 10. Class Dependency Graph

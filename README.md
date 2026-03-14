@@ -60,6 +60,7 @@ Original diagrams used for the current docs live in [`docs/img/learning/`](docs/
 | What gets stored first? | Notes and explicit memory | Explanations, validations, trends, and governed signals |
 | What changes the next run? | Better prompt context | Better prompt context plus runtime adaptation |
 | What is the hard problem? | Context management | Learning effectiveness |
+| What is the loop centered on? | Full execution pipeline and context handling | ReAct behavior as a learning substrate |
 | Operator role | Inspect what goes in | Inspect, validate, suppress, and pin learned signals |
 
 ## Security First

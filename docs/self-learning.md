@@ -19,6 +19,23 @@ Today the learning loop on `main` already includes:
 - runtime skill generation and governance
 - human review for learned signals
 
+## Memory Is Not Self-Learning
+
+Memory matters, but AceClaw treats memory as only one layer in a larger loop.
+
+The distinction is simple:
+
+> Memory stores what happened. Self-learning changes what happens next.
+
+That is why AceClaw does not start from "what should be written down?" It starts from "what in the agent's behavior should become reusable knowledge?"
+
+This is also the most useful way to compare AceClaw with OpenClaw's currently documented default path:
+
+- **OpenClaw** is strongest when the problem is explicit memory, context recall, and operational retrieval.
+- **AceClaw** is strongest when the problem is turning runtime behavior into governed, reusable learning.
+
+That does not mean OpenClaw cannot support richer learning. It means the documented center of gravity is different.
+
 ## The Big Picture
 
 ```mermaid
@@ -89,6 +106,40 @@ The end-to-end flow today looks like this:
 7. Maintenance consolidates memory, mines cross-session patterns, detects trends, and bridges useful signals downstream.
 8. `DynamicSkillGenerator` can create session-scoped runtime skills from repeated workflows.
 9. Explanations, validations, and human reviews make those actions inspectable and governable.
+
+## ReAct Loop vs Agent Loop
+
+AceClaw and OpenClaw use similar raw ingredients, but they frame the loop differently.
+
+### OpenClaw
+
+In the currently documented default path, OpenClaw's "agent loop" is best understood as the **full execution pipeline** of an agent run:
+
+- request intake
+- context assembly
+- model inference
+- tool execution
+- streaming replies
+- retries, hooks, compaction, and persistence
+
+That is a runtime orchestration loop.
+
+### AceClaw
+
+AceClaw's `StreamingAgentLoop` is explicitly treated as the **ReAct-style behavioral core**:
+
+- reason
+- act
+- observe
+- detect failures, recoveries, and corrections
+- turn those observations into learning signals
+
+That is why AceClaw uses the loop itself as a learning substrate.
+
+In short:
+
+- **OpenClaw** treats the loop more like the full operating pipeline of an agent run.
+- **AceClaw** treats the loop more like the behavioral core from which learning signals are extracted.
 
 ## Core Components
 
@@ -268,6 +319,33 @@ AceClaw keeps most learning logic deterministic.
 
 The goal is simple: use heuristics for cheap, auditable signal handling; use LLM calls only where synthesis is worth the cost.
 
+## Context Compaction vs Learning
+
+Context compaction is another place where the design difference becomes visible.
+
+### OpenClaw
+
+OpenClaw's context system is more productized and operator-facing:
+
+- explicit context visibility
+- explicit memory flush before compaction
+- pruning and compaction as separate concerns
+- a stronger documented focus on retrieval quality and context inspection
+
+This is a strong answer to the problem: **how do I keep context usable and debuggable?**
+
+### AceClaw
+
+AceClaw's context compaction is more tightly connected to self-learning:
+
+- Phase 0 extracts useful signals before compression
+- later phases prune and summarize old conversation state
+- extracted behavior can flow back into memory and later learning stages
+
+This is a strong answer to the problem: **how do I turn context pressure into reusable experience?**
+
+That is why OpenClaw currently looks stronger as a context-management product, while AceClaw looks stronger as a behavior-learning harness.
+
 ## AceClaw vs OpenClaw
 
 OpenClaw is a helpful contrast.
@@ -281,6 +359,8 @@ That leads to a different emphasis:
 | Main concern | context and retrieval | behavior and adaptation |
 | What gets persisted first | notes and gateway state | explanations, validations, and governed signals |
 | What changes the next run | better context injection | better context injection plus adaptive behavior |
+| How the loop is framed | full execution pipeline | ReAct behavior and learning loop |
+| How compaction is framed | context hygiene and observability | compression plus learning signal extraction |
 | Operator tool | inspect context | inspect and review learned signals |
 
 The original comparison diagrams used during this work are checked into:
