@@ -29,6 +29,7 @@ import dev.aceclaw.memory.DailyJournal;
 import dev.aceclaw.memory.HistoricalLogIndex;
 import dev.aceclaw.memory.HistoricalSessionSnapshot;
 import dev.aceclaw.memory.MarkdownMemoryStore;
+import dev.aceclaw.memory.CorrectionRulePromoter;
 import dev.aceclaw.memory.MemoryConsolidator;
 import dev.aceclaw.memory.StrategyRefiner;
 import dev.aceclaw.memory.TrendDetector;
@@ -2192,6 +2193,27 @@ public final class AceClawDaemon {
             }
         } catch (Exception e) {
             log.warn("Memory consolidation failed (trigger={}): {}", trigger, e.getMessage());
+        }
+
+        // Correction → Rule auto-promotion: detect repeated corrections and promote to ACECLAW.md rules
+        try {
+            var aceClawMdPath = workingDir.resolve("ACECLAW.md");
+            var existingFingerprints = CorrectionRulePromoter.loadExistingFingerprints(aceClawMdPath);
+            var allEntries = memoryStore.all();
+            var promotionResult = CorrectionRulePromoter.detectRepeatedCorrections(
+                    allEntries, existingFingerprints);
+            if (promotionResult.hasPromotions()) {
+                int written = CorrectionRulePromoter.appendRules(aceClawMdPath, promotionResult.rules());
+                if (journal != null) {
+                    journal.append("Correction rule promotion (" + trigger + "): "
+                            + written + " rules promoted from "
+                            + promotionResult.scannedCorrections() + " corrections");
+                }
+                log.info("Auto-promoted {} correction rules to ACECLAW.md (trigger={})",
+                        written, trigger);
+            }
+        } catch (Exception e) {
+            log.warn("Correction rule promotion failed (trigger={}): {}", trigger, e.getMessage());
         }
 
         if (historicalIndexRebuilder != null) {
