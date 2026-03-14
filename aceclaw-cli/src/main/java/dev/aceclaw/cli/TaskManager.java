@@ -49,10 +49,12 @@ public final class TaskManager {
      * @param sessionId        daemon session ID
      * @param outputSink       where streaming output goes initially
      * @param permissionBridge bridge for permission requests
+     * @param contextWindow    context window size in tokens (0 if unknown)
      * @return the created TaskHandle
      */
     public TaskHandle submit(String prompt, DaemonConnection connection, String sessionId,
-                             OutputSink outputSink, PermissionBridge permissionBridge) {
+                             OutputSink outputSink, PermissionBridge permissionBridge,
+                             int contextWindow) {
         Objects.requireNonNull(prompt, "prompt");
         Objects.requireNonNull(connection, "connection");
         Objects.requireNonNull(sessionId, "sessionId");
@@ -60,7 +62,7 @@ public final class TaskManager {
         Objects.requireNonNull(permissionBridge, "permissionBridge");
 
         String taskId = String.valueOf(taskSeq.getAndIncrement());
-        var handle = new TaskHandle(taskId, prompt, connection, outputSink);
+        var handle = new TaskHandle(taskId, prompt, connection, outputSink, contextWindow);
         tasks.put(taskId, handle);
 
         // TaskStreamReader reads sink from handle.outputSink() — supports /bg and /fg swaps

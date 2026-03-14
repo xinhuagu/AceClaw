@@ -51,6 +51,17 @@ public interface StreamEventHandler {
     default void onSubAgentEnd(String agentId) {}
 
     /**
+     * Called after each LLM call with the per-call token usage.
+     * {@code lastInputTokens} reflects the context window consumed by the
+     * most recent API call (grows as conversation history accumulates).
+     *
+     * @param lastInputTokens  input tokens from the most recent LLM call
+     * @param totalInputTokens cumulative input tokens across all calls in this turn
+     * @param totalOutputTokens cumulative output tokens across all calls in this turn
+     */
+    default void onUsageUpdate(long lastInputTokens, long totalInputTokens, long totalOutputTokens) {}
+
+    /**
      * Called periodically to signal the agent is still active during long
      * operations (e.g. tool execution, LLM streaming).
      */

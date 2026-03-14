@@ -2,6 +2,8 @@ package dev.aceclaw.cli;
 
 import com.fasterxml.jackson.databind.JsonNode;
 
+import org.jline.terminal.Terminal;
+
 import java.io.PrintWriter;
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -37,11 +39,18 @@ public final class ForegroundOutputSink implements OutputSink {
     private volatile TerminalSpinner spinner;
 
     private final StreamStatusRenderer statusRenderer;
+    private final BottomContextBar bottomBar;
 
     public ForegroundOutputSink(PrintWriter out, TerminalMarkdownRenderer markdownRenderer) {
+        this(out, markdownRenderer, null);
+    }
+
+    public ForegroundOutputSink(PrintWriter out, TerminalMarkdownRenderer markdownRenderer,
+                                Terminal terminal) {
         this.out = Objects.requireNonNull(out, "out");
         this.markdownRenderer = Objects.requireNonNull(markdownRenderer, "markdownRenderer");
         this.statusRenderer = new StreamStatusRenderer(out);
+        this.bottomBar = new BottomContextBar(out, terminal);
     }
 
     /**
@@ -57,7 +66,7 @@ public final class ForegroundOutputSink implements OutputSink {
     @Override
     public void onThinkingDelta(String delta) {
         synchronized (lock) {
-            stopSpinner();
+            stopSpinnerInternal();
             statusRenderer.hide();
             out.print(THINKING + delta + RESET);
             out.flush();
@@ -68,7 +77,7 @@ public final class ForegroundOutputSink implements OutputSink {
     @Override
     public void onTextDelta(String delta) {
         synchronized (lock) {
-            stopSpinner();
+            stopSpinnerInternal();
             statusRenderer.hide();
 
             if (wasThinking) {
@@ -125,7 +134,7 @@ public final class ForegroundOutputSink implements OutputSink {
                 out.println();
                 wasThinking = false;
             }
-            stopSpinner();
+            stopSpinnerInternal();
             emitToolTraceStart(toolName, summary);
             if (TOOL_STATUS_PANEL_ENABLED) {
                 statusRenderer.onToolStarted(toolId, toolName, summary);
@@ -153,8 +162,9 @@ public final class ForegroundOutputSink implements OutputSink {
                 inCodeFence = false;
                 receivedTextOutput = false;
             }
-            stopSpinner();
+            stopSpinnerInternal();
             statusRenderer.hide();
+            bottomBar.hide();
             out.printf("%s[stream error: %s]%s%n", ERROR, error, RESET);
             out.flush();
             statusRenderer.refresh();
@@ -164,16 +174,25 @@ public final class ForegroundOutputSink implements OutputSink {
     @Override
     public void onStreamCancelled() {
         synchronized (lock) {
-            stopSpinner();
+            stopSpinnerInternal();
+            bottomBar.hide();
             statusRenderer.onCancelled();
+        }
+    }
+
+    @Override
+    public void onUsageUpdate(long inputTokens, long contextWindow) {
+        synchronized (lock) {
+            bottomBar.update(inputTokens, contextWindow);
         }
     }
 
     @Override
     public void onTurnComplete(JsonNode message, boolean hasError) {
         synchronized (lock) {
-            stopSpinner();
+            stopSpinnerInternal();
             statusRenderer.hide();
+            bottomBar.hide();
 
             if (receivedTextOutput) {
                 flushMarkdown();
@@ -216,8 +235,9 @@ public final class ForegroundOutputSink implements OutputSink {
     @Override
     public void onConnectionClosed() {
         synchronized (lock) {
-            stopSpinner();
+            stopSpinnerInternal();
             statusRenderer.hide();
+            bottomBar.hide();
             flushMarkdown();
             out.println("\n[Connection closed]");
             out.flush();
@@ -238,7 +258,7 @@ public final class ForegroundOutputSink implements OutputSink {
     @Override
     public void onBudgetExhausted(JsonNode params) {
         synchronized (lock) {
-            stopSpinner();
+            stopSpinnerInternal();
             statusRenderer.hide();
             String reason = params != null ? params.path("reason").asText("unknown") : "unknown";
             out.printf("%s[budget exhausted: %s]%s%n", ERROR, reason, RESET);
@@ -283,16 +303,33 @@ public final class ForegroundOutputSink implements OutputSink {
     }
 
     /**
+     * Fully detaches this sink from the foreground, cleaning up all visual artifacts.
+     * Called when a task is backgrounded (/bg or auto-background).
+     */
+    public void detach() {
+        synchronized (lock) {
+            stopSpinnerInternal();
+            statusRenderer.hide();
+            bottomBar.hide();
+        }
+    }
+
+    /**
      * Stops the active spinner if one is running.
      * Synchronized because this can be called from the signal handler thread (Ctrl+C).
      */
     public void stopSpinner() {
         synchronized (lock) {
-            var s = spinner;
-            if (s != null && s.isSpinning()) {
-                s.clear();
-                spinner = null;
-            }
+            stopSpinnerInternal();
+        }
+    }
+
+    /** Must be called while holding {@code lock}. */
+    private void stopSpinnerInternal() {
+        var s = spinner;
+        if (s != null && s.isSpinning()) {
+            s.clear();
+            spinner = null;
         }
     }
 
@@ -681,6 +718,98 @@ public final class ForegroundOutputSink implements OutputSink {
 
         private static String formatSeconds(long durationMs) {
             return String.format(Locale.ROOT, "%.1fs", durationMs / 1000.0);
+        }
+    }
+
+    /**
+     * Renders a single-line context usage bar at the terminal's bottom row
+     * using raw ANSI escape sequences, bypassing JLine to avoid scroll region conflicts.
+     */
+    private static final class BottomContextBar {
+
+        private static final int BAR_WIDTH = 20;
+
+        private final PrintWriter out;
+        private final Terminal terminal;
+        private boolean visible;
+
+        BottomContextBar(PrintWriter out, Terminal terminal) {
+            this.out = out;
+            this.terminal = terminal;
+        }
+
+        void update(long inputTokens, long contextWindow) {
+            if (terminal == null || contextWindow <= 0) return;
+
+            int rows = terminal.getHeight();
+            int cols = terminal.getWidth();
+            if (rows <= 0 || cols <= 0) return;
+
+            double pct = (double) inputTokens / contextWindow * 100.0;
+            int filled = (int) Math.round(pct / 100.0 * BAR_WIDTH);
+            filled = Math.max(0, Math.min(filled, BAR_WIDTH));
+
+            // Color thresholds: green 0-60%, yellow 60-85%, red 85%+
+            String barColor;
+            if (pct >= 85.0) {
+                barColor = ERROR;
+            } else if (pct >= 60.0) {
+                barColor = WARNING;
+            } else {
+                barColor = SUCCESS;
+            }
+
+            String tokenStr = formatTokenCount(inputTokens);
+            String windowStr = formatTokenCount(contextWindow);
+            String pctStr = String.format(Locale.ROOT, "%.0f", Math.min(pct, 100.0));
+            String suffix = " " + tokenStr + "/" + windowStr + " (" + pctStr + "%)";
+
+            // Keep full rendered line within terminal width (prefix + bar + suffix)
+            final int prefixWidth = 7; // " ⏺ ctx "
+            if (prefixWidth + suffix.length() >= cols) {
+                // Terminal too narrow for even prefix+suffix; truncate suffix
+                int maxSuffix = Math.max(0, cols - prefixWidth - 1);
+                suffix = maxSuffix > 0 ? suffix.substring(0, Math.min(suffix.length(), maxSuffix)) : "";
+            }
+            int effectiveBarWidth = Math.min(BAR_WIDTH, Math.max(0, cols - prefixWidth - suffix.length()));
+            filled = Math.min(filled, effectiveBarWidth);
+            int empty = effectiveBarWidth - filled;
+
+            String filledBar = "\u2588".repeat(filled);
+            String emptyBar = "\u2591".repeat(empty);
+
+            String line = " \u23FA ctx " + barColor + filledBar + MUTED + emptyBar + RESET
+                    + suffix;
+
+            // Save cursor, go to bottom row, draw, clear rest of line, restore cursor
+            out.print("\033[s");                         // save cursor
+            out.print("\033[" + rows + ";1H");           // move to bottom row
+            out.print("\033[K");                         // clear line
+            out.print(line);
+            out.print("\033[u");                         // restore cursor
+            out.flush();
+            visible = true;
+        }
+
+        void hide() {
+            if (!visible || terminal == null) return;
+            int rows = terminal.getHeight();
+            if (rows <= 0) return;
+
+            out.print("\033[s");                         // save cursor
+            out.print("\033[" + rows + ";1H");           // move to bottom row
+            out.print("\033[K");                         // clear line
+            out.print("\033[u");                         // restore cursor
+            out.flush();
+            visible = false;
+        }
+
+        private static String formatTokenCount(long tokens) {
+            if (tokens < 1000) return String.valueOf(tokens);
+            double k = tokens / 1000.0;
+            if (k >= 100) return String.format("%.0fK", k);
+            if (k >= 10) return String.format("%.0fK", k);
+            return String.format("%.1fK", k);
         }
     }
 }

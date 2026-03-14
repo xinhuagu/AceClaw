@@ -2708,6 +2708,19 @@ public final class StreamingAgentHandler {
             }
         }
 
+        @Override
+        public void onUsageUpdate(long lastInputTokens, long totalInputTokens, long totalOutputTokens) {
+            try {
+                var params = objectMapper.createObjectNode();
+                params.put("inputTokens", lastInputTokens);
+                params.put("totalInputTokens", totalInputTokens);
+                params.put("totalOutputTokens", totalOutputTokens);
+                context.sendNotification("stream.usage", params);
+            } catch (IOException e) {
+                log.debug("Failed to send usage update notification: {}", e.getMessage());
+            }
+        }
+
         private static String summarizeToolInput(String toolName, String inputJson, ObjectMapper mapper) {
             if (inputJson == null || inputJson.isBlank()) {
                 return "";

@@ -77,4 +77,7 @@ public interface OutputSink {
 
     /** Called when a watchdog budget limit is reached. */
     default void onBudgetExhausted(JsonNode params) {}
+
+    /** Called when a usage update is received during streaming. */
+    default void onUsageUpdate(long inputTokens, long contextWindow) {}
 }

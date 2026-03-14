@@ -63,11 +63,16 @@ public final class TaskHandle {
 
     /** Optional permission description shown while waiting. */
     private volatile String permissionDetail;
+
+    /** Latest per-call input tokens from the most recent LLM call (real-time). */
+    private volatile long liveInputTokens;
+    /** Context window size in tokens (0 if unknown). */
+    private final int contextWindow;
     /** Recent tool events for resume checkpointing. */
     private final Deque<ToolEvent> recentToolEvents;
 
     public TaskHandle(String taskId, String promptSummary, DaemonConnection connection,
-                      OutputSink initialSink) {
+                      OutputSink initialSink, int contextWindow) {
         this.taskId = Objects.requireNonNull(taskId, "taskId");
         this.promptSummary = promptSummary != null && promptSummary.length() > 60
                 ? promptSummary.substring(0, 60) + "..."
@@ -80,6 +85,7 @@ public final class TaskHandle {
         this.activityLabel = "starting";
         this.waitingPermission = false;
         this.permissionDetail = "";
+        this.contextWindow = Math.max(0, contextWindow);
         this.recentToolEvents = new ArrayDeque<>();
     }
 
@@ -179,6 +185,10 @@ public final class TaskHandle {
             }
         }
     }
+
+    public long liveInputTokens() { return liveInputTokens; }
+    public void setLiveInputTokens(long tokens) { this.liveInputTokens = tokens; }
+    public int contextWindow() { return contextWindow; }
 
     public boolean isRunning() { return state == TaskState.RUNNING; }
     public boolean isTerminal() {

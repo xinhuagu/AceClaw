@@ -886,12 +886,13 @@ public final class TerminalRepl {
                 lastTaskPrompt = effectiveInput;
             }
             var conn = client.openTaskConnection();
-            var fgSink = new ForegroundOutputSink(out, markdownRenderer);
+            int ctxWindow = sessionInfo != null ? sessionInfo.contextWindowTokens() : 0;
+            var fgSink = new ForegroundOutputSink(out, markdownRenderer, activeTerminal);
             activeForegroundSink = fgSink;
 
             promptStartNanos = System.nanoTime();
 
-            var handle = taskManager.submit(effectiveInput, conn, sessionId, fgSink, permissionBridge);
+            var handle = taskManager.submit(effectiveInput, conn, sessionId, fgSink, permissionBridge, ctxWindow);
             taskManager.setForeground(handle.taskId());
             resumeCheckpointStore.recordTaskSubmitted(
                     sessionId,
@@ -1039,7 +1040,7 @@ public final class TerminalRepl {
 
         var oldSink = fgHandle.swapOutputSink(new BackgroundOutputBuffer());
         if (oldSink instanceof ForegroundOutputSink fgSink) {
-            fgSink.stopSpinner();
+            fgSink.detach();
         }
         resumeCheckpointStore.markForeground(sessionId, fgHandle.taskId(), false);
         taskManager.clearForeground();
@@ -1291,7 +1292,7 @@ public final class TerminalRepl {
             return null;
         }
 
-        fgSink.stopSpinner();
+        fgSink.detach();
         var buffer = new BackgroundOutputBuffer();
         var previous = handle.swapOutputSink(buffer);
         if (!(previous instanceof ForegroundOutputSink previousFgSink)) {
@@ -1510,9 +1511,10 @@ public final class TerminalRepl {
 
         int ctxWindow = sessionInfo.contextWindowTokens();
         if (ctxWindow > 0) {
+            long displayTokens = effectiveContextTokens();
             sb.append(MUTED).append(" | ").append(RESET);
-            long pct = ctxWindow > 0 ? latestInputTokens * 100 / ctxWindow : 0;
-            sb.append(WARNING).append(formatTokenCount(latestInputTokens))
+            long pct = displayTokens * 100 / ctxWindow;
+            sb.append(WARNING).append(formatTokenCount(displayTokens))
               .append("/").append(formatTokenCount(ctxWindow))
               .append(" (").append(pct).append("%)").append(RESET);
         }
@@ -2345,6 +2347,26 @@ public final class TerminalRepl {
                 "\u23F3");
     }
 
+    private long effectiveContextTokens() {
+        var fgTask = taskManager.foregroundTask();
+        if (fgTask != null && fgTask.isRunning()) {
+            long live = fgTask.liveInputTokens();
+            if (live > 0) {
+                return live;
+            }
+        }
+        // Fall back to any running task (e.g. auto-backgrounded)
+        for (var task : taskManager.list()) {
+            if (task.isRunning()) {
+                long live = task.liveInputTokens();
+                if (live > 0) {
+                    return live;
+                }
+            }
+        }
+        return latestInputTokens;
+    }
+
     private static String formatTokenCount(long tokens) {
         if (tokens < 1000) return String.valueOf(tokens);
         double k = tokens / 1000.0;
@@ -2410,11 +2432,12 @@ public final class TerminalRepl {
                 if (statusBranch != null) {
                     out.printf("  %sGit branch:%s  %s%n", MUTED, RESET, statusBranch);
                 }
+                long ctxTokens = effectiveContextTokens();
                 out.printf("  %sContext:%s     %s / %s (%d%%)%n", MUTED, RESET,
-                        formatTokenCount(latestInputTokens),
+                        formatTokenCount(ctxTokens),
                         formatTokenCount(sessionInfo.contextWindowTokens()),
                         sessionInfo.contextWindowTokens() > 0
-                                ? latestInputTokens * 100 / sessionInfo.contextWindowTokens() : 0);
+                                ? ctxTokens * 100 / sessionInfo.contextWindowTokens() : 0);
                 out.printf("  %sTotal usage:%s %s in / %s out%n", MUTED, RESET,
                         formatTokenCount(totalInputTokens),
                         formatTokenCount(totalOutputTokens));
@@ -2886,7 +2909,7 @@ public final class TerminalRepl {
         // events will be buffered silently instead of rendering to terminal.
         var oldSink = fgHandle.swapOutputSink(new BackgroundOutputBuffer());
         if (oldSink instanceof ForegroundOutputSink fgSink) {
-            fgSink.stopSpinner();
+            fgSink.detach();
         }
         resumeCheckpointStore.markForeground(sessionId, fgHandle.taskId(), false);
         taskManager.clearForeground();
@@ -2944,7 +2967,7 @@ public final class TerminalRepl {
         suspendStatusPanel();
         try {
             // Create new foreground sink and swap it in atomically
-            var fgSink = new ForegroundOutputSink(out, markdownRenderer);
+            var fgSink = new ForegroundOutputSink(out, markdownRenderer, activeTerminal);
             var oldSink = target.swapOutputSink(fgSink);
             activeForegroundSink = fgSink;
             taskManager.setForeground(target.taskId());
