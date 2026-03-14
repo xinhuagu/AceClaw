@@ -1,6 +1,7 @@
 package dev.aceclaw.tools;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.aceclaw.core.agent.CancellationToken;
 import dev.aceclaw.core.agent.Tool;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -199,5 +200,69 @@ class BashExecToolTest {
 
         assertThat(schema.has("required")).isTrue();
         assertThat(schema.get("required").toString()).contains("command");
+    }
+
+    @Test
+    @DisabledOnOs(OS.WINDOWS)
+    void stdinRedirectedSoReadingStdinReturnsEof() throws Exception {
+        // "head -1" reads one line from stdin — with /dev/null it gets EOF immediately
+        var node = MAPPER.createObjectNode();
+        node.put("command", "head -1");
+        node.put("timeout", 5);
+        var input = MAPPER.writeValueAsString(node);
+
+        var result = tool.execute(input);
+
+        // Should complete (not hang) — output is empty because stdin was /dev/null
+        assertThat(result.output()).isEmpty();
+        assertThat(result.isError()).isFalse();
+    }
+
+    @Test
+    @DisabledOnOs(OS.WINDOWS)
+    void timeoutActuallyFiresForLongRunningCommand() throws Exception {
+        var node = MAPPER.createObjectNode();
+        node.put("command", "sleep 300");
+        node.put("timeout", 1);
+        var input = MAPPER.writeValueAsString(node);
+
+        long start = System.currentTimeMillis();
+        var result = tool.execute(input);
+        long elapsed = System.currentTimeMillis() - start;
+
+        assertThat(result.isError()).isTrue();
+        assertThat(result.output()).contains("timed out");
+        // Should finish within ~3s (1s timeout + overhead), not 300s
+        assertThat(elapsed).isLessThan(10_000);
+    }
+
+    @Test
+    @DisabledOnOs(OS.WINDOWS)
+    void cancellationKillsRunningProcess() throws Exception {
+        var token = new CancellationToken();
+        tool.setCancellationToken(token);
+
+        var node = MAPPER.createObjectNode();
+        node.put("command", "sleep 300");
+        node.put("timeout", 60);
+        var input = MAPPER.writeValueAsString(node);
+
+        // Run execute in a separate thread, cancel after 500ms
+        var resultHolder = new Tool.ToolResult[1];
+        var execThread = Thread.ofVirtual().name("cancel-test").start(() -> {
+            try {
+                resultHolder[0] = tool.execute(input);
+            } catch (Exception e) {
+                resultHolder[0] = new Tool.ToolResult("Exception: " + e.getMessage(), true);
+            }
+        });
+
+        Thread.sleep(500);
+        token.cancel();
+        execThread.join(10_000);
+
+        assertThat(resultHolder[0]).isNotNull();
+        assertThat(resultHolder[0].isError()).isTrue();
+        assertThat(resultHolder[0].output()).contains("cancelled");
     }
 }
