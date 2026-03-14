@@ -91,8 +91,7 @@ public final class SessionHistoryStore {
             for (var msg : session.messages()) {
                 lines.append(mapper.writeValueAsString(toEntry(msg, workspaceHash))).append("\n");
             }
-            Files.writeString(file, lines.toString(),
-                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            writeAtomically(file, lines.toString());
             log.debug("Saved session history: id={}, messages={}", session.id(), session.messages().size());
         } catch (IOException e) {
             log.warn("Failed to save session {}: {}", session.id(), e.getMessage());
@@ -180,7 +179,7 @@ public final class SessionHistoryStore {
                 return java.util.Optional.empty();
             }
             return java.util.Optional.of(mapper.readValue(json, HistoricalSessionSnapshot.class));
-        } catch (IOException e) {
+        } catch (IOException | RuntimeException e) {
             log.warn("Failed to load historical snapshot for session {}: {}", sessionId, e.getMessage());
             return java.util.Optional.empty();
         }
@@ -310,7 +309,7 @@ public final class SessionHistoryStore {
                 return java.util.Optional.empty();
             }
             return java.util.Optional.of(snapshot.workspaceHash());
-        } catch (IOException e) {
+        } catch (IOException | RuntimeException e) {
             log.debug("Failed to inspect snapshot workspace hash for {}: {}", file.getFileName(), e.getMessage());
             return java.util.Optional.empty();
         }

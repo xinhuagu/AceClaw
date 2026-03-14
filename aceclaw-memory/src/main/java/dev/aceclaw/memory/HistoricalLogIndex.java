@@ -139,6 +139,32 @@ public final class HistoricalLogIndex {
         }
     }
 
+    public Map<String, SessionCoverage> sessionCoverage(String workspaceHash) {
+        Objects.requireNonNull(workspaceHash, "workspaceHash");
+        if (workspaceHash.isBlank()) {
+            throw new IllegalArgumentException("workspaceHash must not be blank");
+        }
+        fileLock.lock();
+        try {
+            var coverage = new HashMap<String, MutableSessionCoverage>();
+            toolInvocations(workspaceHash, null, null).forEach(entry ->
+                    coverage.computeIfAbsent(entry.sessionId(), ignored -> new MutableSessionCoverage())
+                            .toolRows++);
+            errorEntries(workspaceHash, null, null).forEach(entry ->
+                    coverage.computeIfAbsent(entry.sessionId(), ignored -> new MutableSessionCoverage())
+                            .errorRows++);
+            patterns(workspaceHash, null, null).forEach(entry ->
+                    coverage.computeIfAbsent(entry.sessionId(), ignored -> new MutableSessionCoverage())
+                            .patternRows++);
+            var result = new HashMap<String, SessionCoverage>();
+            coverage.forEach((sessionId, counts) -> result.put(sessionId,
+                    new SessionCoverage(counts.toolRows, counts.errorRows, counts.patternRows)));
+            return Map.copyOf(result);
+        } finally {
+            fileLock.unlock();
+        }
+    }
+
     public void clearWorkspace(String workspaceHash) throws IOException {
         Objects.requireNonNull(workspaceHash, "workspaceHash");
         if (workspaceHash.isBlank()) {
@@ -392,4 +418,18 @@ public final class HistoricalLogIndex {
             String description,
             Instant timestamp
     ) {}
+
+    public record SessionCoverage(int toolRows, int errorRows, int patternRows) {
+        public SessionCoverage {
+            if (toolRows < 0 || errorRows < 0 || patternRows < 0) {
+                throw new IllegalArgumentException("coverage row counts must be non-negative");
+            }
+        }
+    }
+
+    private static final class MutableSessionCoverage {
+        private int toolRows;
+        private int errorRows;
+        private int patternRows;
+    }
 }

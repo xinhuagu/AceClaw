@@ -8,10 +8,12 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -37,6 +39,7 @@ public final class LearningMaintenanceScheduler {
     private final IntSupplier activeSessionCount;
     private final WorkspaceMemoryProbe largestMemoryFileBytes;
     private final MaintenancePipeline pipeline;
+    private final LearningMaintenanceRecoveryStore recoveryStore;
     private final Object lifecycleLock = new Object();
 
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -44,6 +47,7 @@ public final class LearningMaintenanceScheduler {
     private final AtomicInteger sessionsSinceLastRun = new AtomicInteger();
     private final Map<String, WorkspaceScope> knownScopes = new ConcurrentHashMap<>();
     private final Map<String, WorkspaceScope> pendingScopes = new ConcurrentHashMap<>();
+    private final Map<String, WorkspaceScope> recoveryScopes = new ConcurrentHashMap<>();
 
     private ScheduledExecutorService scheduler;
     private volatile Instant lastRunAt;
@@ -55,12 +59,14 @@ public final class LearningMaintenanceScheduler {
                                         Clock clock,
                                         IntSupplier activeSessionCount,
                                         WorkspaceMemoryProbe largestMemoryFileBytes,
-                                        MaintenancePipeline pipeline) {
+                                        MaintenancePipeline pipeline,
+                                        LearningMaintenanceRecoveryStore recoveryStore) {
         this.config = Objects.requireNonNull(config, "config");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.activeSessionCount = Objects.requireNonNull(activeSessionCount, "activeSessionCount");
         this.largestMemoryFileBytes = Objects.requireNonNull(largestMemoryFileBytes, "largestMemoryFileBytes");
         this.pipeline = Objects.requireNonNull(pipeline, "pipeline");
+        this.recoveryStore = recoveryStore;
         this.lastRunAt = clock.instant();
         this.lastActiveAt = clock.instant();
     }
@@ -128,11 +134,21 @@ public final class LearningMaintenanceScheduler {
         if (!running.get()) {
             return;
         }
-        var scope = new WorkspaceScope(workspaceHash, workingDir);
-        knownScopes.put(scope.workspaceHash(), scope);
-        pendingScopes.put(scope.workspaceHash(), scope);
+        var scope = registerScope(workspaceHash, workingDir);
         sessionsSinceLastRun.incrementAndGet();
+        if (recoveryScopes.containsKey(scope.workspaceHash())) {
+            tryTrigger(Trigger.RECOVERY);
+            return;
+        }
         tryTrigger(Trigger.SESSION_COUNT);
+    }
+
+    public void registerWorkspace(String workspaceHash, Path workingDir) {
+        if (!running.get()) {
+            return;
+        }
+        registerScope(workspaceHash, workingDir);
+        tryTrigger(Trigger.RECOVERY);
     }
 
     void tick() {
@@ -146,6 +162,7 @@ public final class LearningMaintenanceScheduler {
                 lastActiveAt = now;
                 idleTriggerArmed = true;
             }
+            tryTrigger(Trigger.RECOVERY);
             tryTrigger(Trigger.SIZE_THRESHOLD);
             tryTrigger(Trigger.TIME_INTERVAL);
             tryTrigger(Trigger.IDLE_INTERVAL);
@@ -168,16 +185,27 @@ public final class LearningMaintenanceScheduler {
         if (!maintenanceRunning.compareAndSet(false, true)) {
             return;
         }
-        int sessionsAtStart = sessionsSinceLastRun.get();
+        int sessionsAtStart = trigger == Trigger.RECOVERY ? 0 : sessionsSinceLastRun.get();
 
         Thread.ofVirtual().name("learning-maintenance-" + trigger.id()).start(() -> {
+            var completedScopes = new HashSet<WorkspaceScope>();
+            WorkspaceScope activeScope = null;
             try {
                 for (var scope : scopesToRun) {
+                    activeScope = scope;
+                    if (recoveryStore != null) {
+                        recoveryStore.markStarted(scope.workingDir(), scope.workspaceHash(), trigger.id());
+                    }
                     pipeline.run(trigger.id(), scope);
+                    if (recoveryStore != null) {
+                        recoveryStore.clear(scope.workingDir());
+                    }
+                    pendingScopes.remove(scope.workspaceHash(), scope);
+                    recoveryScopes.remove(scope.workspaceHash(), scope);
+                    completedScopes.add(scope);
                 }
                 lastRunAt = clock.instant();
                 sessionsSinceLastRun.updateAndGet(current -> Math.max(0, current - sessionsAtStart));
-                scopesToRun.forEach(scope -> pendingScopes.remove(scope.workspaceHash(), scope));
                 if (trigger == Trigger.SIZE_THRESHOLD) {
                     sizeTriggerArmed = false;
                 }
@@ -186,6 +214,19 @@ public final class LearningMaintenanceScheduler {
                 }
                 log.info("Learning maintenance completed via trigger={}", trigger.id());
             } catch (Exception e) {
+                for (var scope : scopesToRun) {
+                    if (completedScopes.contains(scope)) {
+                        continue;
+                    }
+                    if (scope.equals(activeScope) && recoveryStore != null) {
+                        try {
+                            recoveryStore.markFailed(scope.workingDir(), scope.workspaceHash(), trigger.id(), e);
+                        } catch (Exception ignored) {
+                            // best-effort recovery metadata only
+                        }
+                    }
+                    recoveryScopes.put(scope.workspaceHash(), scope);
+                }
                 log.warn("Learning maintenance failed via trigger={}: {}", trigger.id(), e.getMessage());
             } finally {
                 maintenanceRunning.set(false);
@@ -195,6 +236,7 @@ public final class LearningMaintenanceScheduler {
 
     private boolean shouldTrigger(Trigger trigger) {
         return switch (trigger) {
+            case RECOVERY -> !recoveryScopes.isEmpty();
             case SESSION_COUNT ->
                     config.sessionCountTrigger() > 0
                             && sessionsSinceLastRun.get() >= config.sessionCountTrigger()
@@ -218,8 +260,22 @@ public final class LearningMaintenanceScheduler {
     }
 
     private List<WorkspaceScope> scopesFor(Trigger trigger) {
-        var source = trigger == Trigger.SESSION_COUNT ? pendingScopes : knownScopes;
+        var source = switch (trigger) {
+            case RECOVERY -> recoveryScopes;
+            case SESSION_COUNT -> pendingScopes;
+            default -> knownScopes;
+        };
         return List.copyOf(new ArrayList<>(new LinkedHashMap<>(source).values()));
+    }
+
+    private WorkspaceScope registerScope(String workspaceHash, Path workingDir) {
+        var scope = new WorkspaceScope(workspaceHash, workingDir);
+        knownScopes.put(scope.workspaceHash(), scope);
+        pendingScopes.put(scope.workspaceHash(), scope);
+        if (recoveryStore != null && recoveryStore.needsRecovery(scope.workingDir(), scope.workspaceHash())) {
+            recoveryScopes.put(scope.workspaceHash(), scope);
+        }
+        return scope;
     }
 
     @FunctionalInterface
@@ -280,6 +336,7 @@ public final class LearningMaintenanceScheduler {
     }
 
     enum Trigger {
+        RECOVERY("recovery"),
         TIME_INTERVAL("scheduled"),
         SESSION_COUNT("session-count"),
         SIZE_THRESHOLD("size-threshold"),
