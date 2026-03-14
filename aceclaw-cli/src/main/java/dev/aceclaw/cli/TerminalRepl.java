@@ -127,12 +127,8 @@ public final class TerminalRepl {
     /** The permission request currently owning the terminal, if any. */
     private volatile String activePermissionRequestId;
 
-    /** Cumulative token counters across turns. */
-    private long totalInputTokens = 0;
-    private long totalOutputTokens = 0;
-
-    /** Latest input tokens from the most recent API call (= context consumed). */
-    private long latestInputTokens = 0;
+    /** Central, thread-safe tracker for context usage across turns. */
+    private volatile ContextMonitor contextMonitor;
 
     /** Timestamp when the current prompt was sent (nanos). */
     private long promptStartNanos = 0;
@@ -316,6 +312,7 @@ public final class TerminalRepl {
         this.sessionId = sessionId;
         this.sessionInfo = sessionInfo;
         this.effectiveModel = sessionInfo.model();
+        this.contextMonitor = new ContextMonitor(sessionInfo.contextWindowTokens());
         this.markdownRenderer = new TerminalMarkdownRenderer();
         this.taskManager = new TaskManager();
         this.permissionBridge = new PermissionBridge();
@@ -887,7 +884,7 @@ public final class TerminalRepl {
             }
             var conn = client.openTaskConnection();
             int ctxWindow = sessionInfo != null ? sessionInfo.contextWindowTokens() : 0;
-            var fgSink = new ForegroundOutputSink(out, markdownRenderer, activeTerminal);
+            var fgSink = new ForegroundOutputSink(out, markdownRenderer, activeTerminal, contextMonitor);
             activeForegroundSink = fgSink;
 
             promptStartNanos = System.nanoTime();
@@ -923,6 +920,9 @@ public final class TerminalRepl {
 
             taskManager.clearForeground();
             activeForegroundSink = null;
+
+            // Hide the bottom context bar before restoring JLine's Status widget
+            fgSink.hideBottomBar();
 
             // Restore JLine's Status widget so it recalculates scroll region
             // based on the terminal's current state after task output.
@@ -1064,12 +1064,16 @@ public final class TerminalRepl {
             var usage = result.get("usage");
             int turnIn = usage.path("inputTokens").asInt(0);
             int turnOut = usage.path("outputTokens").asInt(0);
-            totalInputTokens += turnIn;
-            totalOutputTokens += turnOut;
-            // Prefer the live input tokens from streaming (= actual context window usage)
-            // over turnIn which is the cumulative total across all API calls in the turn.
-            long liveTokens = handle.liveInputTokens();
-            latestInputTokens = liveTokens > 0 ? liveTokens : turnIn;
+
+            // Use the per-call liveInputTokens for context display (actual context occupation).
+            // The JSON-RPC result's inputTokens is cumulative across all API calls in the turn,
+            // which would cause erratic usage % jumps if used for context %.
+            long perCallContext = handle.liveInputTokens();
+            if (perCallContext <= 0) {
+                perCallContext = turnIn; // fallback if no streaming usage was received
+            }
+            contextMonitor.recordTurnComplete(turnIn, turnOut, perCallContext);
+            contextMonitor.checkThresholds(log);
 
             long elapsedMs = (System.nanoTime() - promptStartNanos) / 1_000_000;
             String elapsed = elapsedMs >= 1000
@@ -1077,11 +1081,10 @@ public final class TerminalRepl {
                     : elapsedMs + "ms";
 
             out.println();
-            long contextTokens = liveTokens > 0 ? liveTokens : turnIn;
             out.printf("%s%s  %d in / %d out  %s%s%n",
                     MUTED, elapsed, turnIn, turnOut,
                     sessionInfo.contextWindowTokens() > 0
-                            ? "context " + formatTokenCount(contextTokens) + "/"
+                            ? "context " + formatTokenCount(perCallContext) + "/"
                               + formatTokenCount(sessionInfo.contextWindowTokens())
                             : "",
                     RESET);
@@ -2368,7 +2371,7 @@ public final class TerminalRepl {
                 }
             }
         }
-        return latestInputTokens;
+        return contextMonitor.currentContextTokens();
     }
 
     private static String formatTokenCount(long tokens) {
@@ -2446,8 +2449,8 @@ public final class TerminalRepl {
                         sessionInfo.contextWindowTokens() > 0
                                 ? ctxTokens * 100 / sessionInfo.contextWindowTokens() : 0);
                 out.printf("  %sTotal usage:%s %s in / %s out%n", MUTED, RESET,
-                        formatTokenCount(totalInputTokens),
-                        formatTokenCount(totalOutputTokens));
+                        formatTokenCount(contextMonitor.totalInput()),
+                        formatTokenCount(contextMonitor.totalOutput()));
                 out.printf("  %sTasks:%s       %d running%n", MUTED, RESET,
                         taskManager.runningCount());
                 out.println();
@@ -3094,9 +3097,10 @@ public final class TerminalRepl {
         // Suspend JLine's Status widget so its scroll region doesn't go
         // stale while ForegroundOutputSink writes directly to the terminal.
         suspendStatusPanel();
+        ForegroundOutputSink fgSink = null;
         try {
             // Create new foreground sink and swap it in atomically
-            var fgSink = new ForegroundOutputSink(out, markdownRenderer, activeTerminal);
+            fgSink = new ForegroundOutputSink(out, markdownRenderer, activeTerminal, contextMonitor);
             var oldSink = target.swapOutputSink(fgSink);
             activeForegroundSink = fgSink;
             taskManager.setForeground(target.taskId());
@@ -3112,6 +3116,10 @@ public final class TerminalRepl {
             taskManager.clearForeground();
             activeForegroundSink = null;
         } finally {
+            // Hide bottom bar before restoring JLine's Status widget
+            if (fgSink != null) {
+                fgSink.hideBottomBar();
+            }
             // Restore JLine's Status widget so it recalculates scroll region
             // based on the terminal's current state after task output.
             restoreStatusPanel();

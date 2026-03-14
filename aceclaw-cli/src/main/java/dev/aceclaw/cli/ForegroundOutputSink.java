@@ -40,17 +40,24 @@ public final class ForegroundOutputSink implements OutputSink {
 
     private final StreamStatusRenderer statusRenderer;
     private final BottomContextBar bottomBar;
+    private final ContextMonitor contextMonitor;
 
     public ForegroundOutputSink(PrintWriter out, TerminalMarkdownRenderer markdownRenderer) {
-        this(out, markdownRenderer, null);
+        this(out, markdownRenderer, null, null);
     }
 
     public ForegroundOutputSink(PrintWriter out, TerminalMarkdownRenderer markdownRenderer,
                                 Terminal terminal) {
+        this(out, markdownRenderer, terminal, null);
+    }
+
+    public ForegroundOutputSink(PrintWriter out, TerminalMarkdownRenderer markdownRenderer,
+                                Terminal terminal, ContextMonitor contextMonitor) {
         this.out = Objects.requireNonNull(out, "out");
         this.markdownRenderer = Objects.requireNonNull(markdownRenderer, "markdownRenderer");
         this.statusRenderer = new StreamStatusRenderer(out);
         this.bottomBar = new BottomContextBar(out, terminal);
+        this.contextMonitor = contextMonitor;
     }
 
     /**
@@ -183,6 +190,9 @@ public final class ForegroundOutputSink implements OutputSink {
     @Override
     public void onUsageUpdate(long inputTokens, long contextWindow) {
         synchronized (lock) {
+            if (contextMonitor != null) {
+                contextMonitor.recordStreamingUsage(inputTokens);
+            }
             bottomBar.update(inputTokens, contextWindow);
         }
     }
@@ -192,7 +202,9 @@ public final class ForegroundOutputSink implements OutputSink {
         synchronized (lock) {
             stopSpinnerInternal();
             statusRenderer.hide();
-            bottomBar.hide();
+            // Bottom bar intentionally NOT hidden here — it persists with the
+            // final per-call context usage until explicitly hidden via hideBottomBar()
+            // before the status panel is restored.
 
             if (receivedTextOutput) {
                 flushMarkdown();
@@ -310,6 +322,16 @@ public final class ForegroundOutputSink implements OutputSink {
         synchronized (lock) {
             stopSpinnerInternal();
             statusRenderer.hide();
+            bottomBar.hide();
+        }
+    }
+
+    /**
+     * Explicitly hides the bottom context bar. Called before restoring
+     * the JLine status panel so the raw ANSI bar doesn't overlap.
+     */
+    public void hideBottomBar() {
+        synchronized (lock) {
             bottomBar.hide();
         }
     }
