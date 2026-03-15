@@ -3,6 +3,11 @@
     <mxCell id="0"/>
     <mxCell id="1" parent="0"/>
 
+    <!-- White background -->
+    <mxCell id="bg" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=none;" vertex="1" parent="1">
+      <mxGeometry x="0" y="0" width="720" height="560" as="geometry"/>
+    </mxCell>
+
     <!-- Title -->
     <mxCell id="title" value="AceClaw: Self-Learning Daemon Architecture" style="text;html=1;fontSize=16;fontStyle=1;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;" vertex="1" parent="1">
       <mxGeometry x="100" y="10" width="500" height="30" as="geometry"/>
@@ -28,7 +33,7 @@
       <mxGeometry x="40" y="110" width="620" height="400" as="geometry"/>
     </mxCell>
 
-    <!-- Row 1: Plan → Execute → Replan (NEW - small addition in warm orange) -->
+    <!-- Row 1: Plan → Execute → Replan -->
     <mxCell id="plan-box" value="&lt;b&gt;Plan → Execute → Replan&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px&quot;&gt;complexity estimation → task plan → sequential execution → adaptive replan → checkpoint&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;align=center;verticalAlign=middle;" vertex="1" parent="1">
       <mxGeometry x="80" y="145" width="540" height="45" as="geometry"/>
     </mxCell>
@@ -53,7 +58,6 @@
       <mxGeometry x="80" y="335" width="540" height="45" as="geometry"/>
     </mxCell>
 
-    <!-- Row 5: Two boxes side by side -->
     <!-- Governed Memory -->
     <mxCell id="memory" value="&lt;b&gt;Governed Memory&lt;/b&gt;&lt;br&gt;&lt;span style=&quot;font-size:10px&quot;&gt;8-tier hierarchy&lt;br&gt;HMAC-signed&lt;br&gt;promote / rollback&lt;/span&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;align=center;" vertex="1" parent="1">
       <mxGeometry x="80" y="400" width="255" height="65" as="geometry"/>
