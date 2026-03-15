@@ -20,7 +20,7 @@ An **agent harness** is the orchestration layer that turns LLMs into persistent,
   <img src="docs/img/aceclaw_daemon_architecture.drawio.png" alt="AceClaw Self-Learning Daemon Architecture" width="600">
 </p>
 
-AceClaw is a persistent JVM daemon built for workflows that run for hours, not seconds. Pure Java 21, zero network attack surface. Inspired by [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) and [OpenClaw](https://github.com/openclaw), built from scratch around one idea:
+AceClaw is a persistent JVM daemon built for workflows that run for hours, not seconds. Pure Java 21, zero network attack surface, built from scratch around one idea:
 
 **Memory helps an agent remember. Self-learning helps an agent improve.**
 
@@ -41,7 +41,7 @@ That is the spirit of AceClaw, and it drives four key differentiators:
 ## Plan → Execute → Replan
 <sub>Supported by research: <a href="https://doi.org/10.1145/3706598.3714875">Plan-Then-Execute (CHI 2025)</a></sub>
 
-Most AI coding agents rely on a flat **ReAct loop** — the model reasons and acts one step at a time. While effective for short tasks, this approach offers no explicit plan visibility, no structured failure recovery, and no crash-safe checkpointing for long-running work.
+Most AI coding agents ([Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview), [OpenClaw](https://github.com/openclaw), [Codex CLI](https://github.com/openai/codex)) rely on a flat **ReAct loop** — the model reasons and acts one step at a time. While effective for short tasks, this approach offers no explicit plan visibility, no structured failure recovery, and no crash-safe checkpointing for long-running work.
 
 AceClaw takes a fundamentally different approach: it **layers an explicit planning pipeline on top of ReAct**. Each individual step is still executed by the same ReAct loop (reason → act → observe), which remains the best mechanism for single-step tool use. The difference is that AceClaw wraps those steps in a higher-order plan that provides direction, budget control, and structured recovery — something a flat ReAct loop cannot do on its own.
 
