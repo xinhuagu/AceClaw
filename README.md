@@ -39,6 +39,7 @@ That is the spirit of AceClaw, and it drives four key differentiators:
 - **Everything is sealed** — `Insight` (5 permits), `PermissionDecision` (3 permits), `MemoryTier` (8 permits), `StreamEvent`, `ContentBlock` — the compiler enforces exhaustive handling everywhere. Adding a new variant is a compile error until all switches are updated.
 
 ## Plan → Execute → Replan
+<sub>Supported by research: <a href="https://doi.org/10.1145/3706598.3714875">Plan-Then-Execute (CHI 2025)</a></sub>
 
 Most AI coding agents (Claude Code, OpenClaw, Codex CLI) run a flat **ReAct loop** — the model decides what to do one step at a time, with no upfront plan and no structured recovery. This works for short tasks but breaks down on long-running work: the model drifts, loses context, and cannot recover gracefully from failures.
 
