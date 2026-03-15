@@ -24,11 +24,12 @@ AceClaw is a persistent JVM daemon built for workflows that run for hours, not s
 
 **Memory helps an agent remember. Self-learning helps an agent improve.**
 
-That is the spirit of AceClaw, and it drives three key differentiators:
+That is the spirit of AceClaw, and it drives four key differentiators:
 
-1. **Self-Learning** — Zero-cost heuristic detectors, session retrospectives, historical indexing, cross-session pattern mining, and trend detection turn agent behavior into durable learning signals. The agent evolves its own strategies without extra LLM calls in the hot path.
-2. **Security** — UDS-only communication, sealed 4-level permissions, HMAC-signed memory
-3. **Long-Term Memory** — 8-tier hierarchy, hybrid search, automated consolidation
+1. **Plan → Execute → Replan** — Unlike Claude Code and OpenClaw which use a flat ReAct loop (think → act → observe, one step at a time), AceClaw generates an **explicit task plan** before execution, runs it step by step with per-step budgets, and **adaptively replans** when steps fail. Plans are streamed to the user in real time, checkpointed to disk for crash recovery, and resumable across sessions. This gives AceClaw a structural advantage in long-running tasks — the agent has a visible roadmap instead of hoping the model stays on track turn by turn.
+2. **Self-Learning** — Zero-cost heuristic detectors, session retrospectives, historical indexing, cross-session pattern mining, and trend detection turn agent behavior into durable learning signals. The agent evolves its own strategies without extra LLM calls in the hot path.
+3. **Security** — UDS-only communication, sealed 4-level permissions, HMAC-signed memory
+4. **Long-Term Memory** — 8-tier hierarchy, hybrid search, automated consolidation
 
 **What makes this architecture different:**
 
@@ -36,6 +37,36 @@ That is the spirit of AceClaw, and it drives three key differentiators:
 - **Behavior-centric, not memory-centric** — Most agent memory systems store facts. AceClaw observes *behavior* — error-recovery sequences, tool usage patterns, user corrections — and distills them into typed, confidence-scored insights. The agent doesn't just remember what happened; it learns *how it should act differently next time*.
 - **Closed feedback loop** — Detectors emit typed insights → insights accumulate confidence across sessions → high-confidence insights get persisted → persisted memory is injected back into the next run. Repeated corrections auto-promote from auto-memory (Tier 6) to workspace rules (Tier 3).
 - **Everything is sealed** — `Insight` (5 permits), `PermissionDecision` (3 permits), `MemoryTier` (8 permits), `StreamEvent`, `ContentBlock` — the compiler enforces exhaustive handling everywhere. Adding a new variant is a compile error until all switches are updated.
+
+## Plan → Execute → Replan
+
+Most AI coding agents (Claude Code, OpenClaw, Codex CLI) run a flat **ReAct loop** — the model decides what to do one step at a time, with no upfront plan and no structured recovery. This works for short tasks but breaks down on long-running work: the model drifts, loses context, and cannot recover gracefully from failures.
+
+AceClaw takes a fundamentally different approach with an **explicit planning pipeline**:
+
+```
+Task → Complexity Estimator → Plan Generation (LLM) → Sequential Execution → Adaptive Replan
+                                     │                        │                      │
+                                     ▼                        ▼                      ▼
+                              Structured JSON plan     Per-step budgets        On failure: LLM
+                              streamed to user         + wall-clock limits     regenerates remaining
+                                                                               steps or escalates
+```
+
+| Component | What it does |
+|-----------|-------------|
+| `ComplexityEstimator` | Scores task complexity; only triggers planning above a configurable threshold |
+| `LLMTaskPlanner` | Generates a structured JSON plan with ordered, named steps |
+| `SequentialPlanExecutor` | Executes steps one by one with per-step and total wall-clock budgets |
+| `AdaptiveReplanner` | When a step fails, makes a dedicated LLM call to regenerate remaining steps or escalate |
+| `PlanCheckpoint` | Persists progress to disk; resumes from the last completed step after crash or restart |
+
+**Why this matters for long tasks:**
+
+- **Visibility** — The user sees "Step 3/7: Refactor authentication module" in real time, not a stream of opaque tool calls.
+- **Structured recovery** — When step N fails, the replanner receives full context (completed steps, failure reason, remaining plan) and produces either a revised plan or a graceful escalation. No guessing.
+- **Crash safety** — `FilePlanCheckpointStore` writes plan state to disk. `ResumeRouter` detects incomplete plans on next session start and picks up where it left off.
+- **Budget control** — Each step has its own iteration and wall-clock budget, preventing any single step from consuming the entire session.
 
 ## Security First
 
