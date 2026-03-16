@@ -26,8 +26,8 @@ AceClaw is a persistent JVM daemon built for workflows that run for hours, not s
 
 That is the spirit of AceClaw, and it drives four key differentiators:
 
-1. **Plan → Execute → Replan** — Most agent harnesses use a flat ReAct loop (think → act → observe, one step at a time). AceClaw generates an **explicit task plan** before execution, runs it step by step with per-step budgets, and **adaptively replans** when steps fail. Plans are streamed to the user in real time, checkpointed to disk for crash recovery, and resumable across sessions. This gives AceClaw a structural advantage in long-running tasks — the agent has a visible roadmap instead of hoping the model stays on track turn by turn.
-2. **Self-Learning** — Zero-cost heuristic detectors, session retrospectives, historical indexing, cross-session pattern mining, and trend detection turn agent behavior into durable learning signals. The agent evolves its own strategies without extra LLM calls in the hot path.
+1. **Plan → Execute → Replan** — Most agent harnesses use a flat ReAct loop (think → act → observe, one step at a time). AceClaw generates an **explicit task plan** before execution, runs it step by step with per-step iteration budgets, and **replans inline** when steps fail. Plans are streamed to the user in real time. This gives AceClaw a structural advantage in long-running tasks — the agent has a visible roadmap instead of hoping the model stays on track turn by turn.
+2. **Self-Learning** — Zero-cost heuristic detectors and session-end retrospectives turn agent behavior into durable learning signals. The agent evolves its own strategies without extra LLM calls in the hot path.
 3. **Security** — UDS-only communication, sealed 4-level permissions, HMAC-signed memory
 4. **Long-Term Memory** — 8-tier hierarchy, hybrid search, automated consolidation
 
@@ -41,33 +41,32 @@ That is the spirit of AceClaw, and it drives four key differentiators:
 ## Plan → Execute → Replan
 <sub>Supported by research: <a href="https://arxiv.org/abs/2502.01390">Plan-Then-Execute (CHI 2025)</a></sub>
 
-Most AI coding agents ([Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview), [OpenClaw](https://github.com/openclaw), [Codex CLI](https://github.com/openai/codex)) rely on a flat **ReAct loop** — the model reasons and acts one step at a time. While effective for short tasks, this approach offers no explicit plan visibility, no structured failure recovery, and no crash-safe checkpointing for long-running work.
+Most AI coding agents ([Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview), [OpenClaw](https://github.com/openclaw), [Codex CLI](https://github.com/openai/codex)) rely on a flat **ReAct loop** — the model reasons and acts one step at a time. While effective for short tasks, this approach offers no explicit plan visibility and no structured failure recovery for long-running work.
 
 AceClaw takes a fundamentally different approach: it **layers an explicit planning pipeline on top of ReAct**. Each individual step is still executed by the same ReAct loop (reason → act → observe), which remains the best mechanism for single-step tool use. The difference is that AceClaw wraps those steps in a higher-order plan that provides direction, budget control, and structured recovery — something a flat ReAct loop cannot do on its own.
 
 ```
-Task → Complexity Estimator → Plan Generation (LLM) → Sequential Execution → Adaptive Replan
+Task → Complexity Estimator → Plan Generation (LLM) → Sequential Execution → Inline Replan
                                      │                        │                      │
                                      ▼                        ▼                      ▼
-                              Structured JSON plan     Per-step budgets        On failure: LLM
-                              streamed to user         + wall-clock limits     regenerates remaining
-                                                                               steps or escalates
+                              Structured JSON plan     Per-step iteration     On failure: executor
+                              streamed to user         budgets                retries with fallback
+                                                                              prompt or skips step
 ```
 
 | Component | What it does |
 |-----------|-------------|
 | `ComplexityEstimator` | Scores task complexity; only triggers planning above a configurable threshold |
 | `LLMTaskPlanner` | Generates a structured JSON plan with ordered, named steps |
-| `SequentialPlanExecutor` | Executes steps one by one with per-step and total wall-clock budgets |
-| `AdaptiveReplanner` | When a step fails, makes a dedicated LLM call to regenerate remaining steps or escalate |
-| `PlanCheckpoint` | Persists progress to disk; resumes from the last completed step after crash or restart |
+| `SequentialPlanExecutor` | Executes steps one by one with per-step iteration budgets, fallback support, and cancellation between steps |
 
 **Why this matters for long tasks:**
 
 - **Visibility** — The user sees "Step 3/7: Refactor authentication module" in real time, not a stream of opaque tool calls.
-- **Structured recovery** — When step N fails, the replanner receives full context (completed steps, failure reason, remaining plan) and produces either a revised plan or a graceful escalation. No guessing.
-- **Crash safety** — `FilePlanCheckpointStore` writes plan state to disk. `ResumeRouter` detects incomplete plans on next session start and picks up where it left off.
-- **Budget control** — Each step has its own iteration and wall-clock budget, preventing any single step from consuming the entire session.
+- **Structured recovery** — When step N fails, the executor retries with a fallback prompt that includes the failure reason and remaining plan context.
+- **Budget control** — Each step has its own iteration budget, preventing any single step from consuming the entire session.
+
+**Planned (not yet implemented):** Crash-safe plan checkpointing to disk, cross-session plan resumption, and wall-clock per-step budgets.
 
 ## Security First
 
@@ -85,11 +84,11 @@ See the [Security Details](docs/security.md) for the full breakdown.
 
 AceClaw learns from its own behavior — no LLM calls required. Every tool execution, error recovery, and user correction is analyzed by heuristic detectors that produce type-safe insights.
 
-- **Automatic pattern detection** — `ErrorDetector` matches tool failures to subsequent retries. `SessionEndExtractor` captures user corrections and preferences via regex-based passes. `SessionAnalyzer`, `HistoricalLogIndex`, `CrossSessionPatternMiner`, and `TrendDetector` extend that learning across sessions.
+- **Automatic pattern detection** — `ErrorDetector` matches tool failures to subsequent retries. `PatternDetector` identifies repeated sequences, error-correction pairs, and user preferences. `SessionEndExtractor` captures corrections and strategies via regex-based passes at session close.
 - **Cross-session accumulation** — Insights start at 0.4 confidence and gain +0.2 per recurrence. Only patterns reaching 0.7 confidence are persisted.
 - **Strategy evolution** — Errors become `ErrorInsight`s, recurring sequences become `SuccessInsight`s, unresolved errors become anti-patterns, and underperforming skills are refined or rolled back. A closed feedback loop: detect → persist → recall → refine.
 - **Type-safe insight hierarchy** — `Insight` is a sealed interface (`ErrorInsight | SuccessInsight | PatternInsight | RecoveryRecipe | FailureInsight`). The compiler enforces exhaustive handling.
-- **Deferred maintenance scheduler** — Session end performs extraction and indexing immediately; heavier consolidation, pattern mining, and trend detection run through background maintenance triggers (time, session count, size, idle).
+- **Strategy refinement** — `StrategyRefiner` generates anti-patterns from persistent failures, strengthens user preferences from repeated corrections, and rolls back underperforming strategies. `SelfImprovementEngine` orchestrates the full pipeline as an async post-turn hook.
 - **Baseline evaluation** — Continuous-learning KPIs and collection workflow are documented in `docs/continuous-learning-plan.md` with report templates and sample output.
 
 See [Self-Learning Pipeline](docs/self-learning.md) for the full architecture.
@@ -110,6 +109,33 @@ T7: Markdown Memory  →  T8: Daily Journal
 - **Workspace isolation** — SHA-256 hashed paths under `~/.aceclaw/workspaces/`. No cross-project leakage.
 
 See [Memory System Design](docs/memory-system-design.md) for the full architecture.
+
+## Context Engineering
+
+AceClaw actively manages what goes into the context window to keep long-running sessions effective:
+
+```
+User query → RequestFocus (symbol/file/plan extraction)
+                ↓
+System prompt → ContextAssemblyPlan (8-tier budget, priority ranking)
+                ↓
+Conversation  → Request-time pruning (transient, non-destructive)
+                ↓
+                → Context compaction (3-phase: prune → summarize → memory flush)
+                ↓
+Candidates    → CandidateStore (DRAFT → PROMOTED → IN_USE → ARCHIVED)
+```
+
+| Component | What it does |
+|-----------|-------------|
+| `SystemPromptBudget` | Enforces 150K total char cap and 20K per-tier cap; truncates lowest-priority tiers first (70% head / 20% tail / 10% marker) |
+| `ContextAssemblyPlan` | Assembles the 8-tier memory hierarchy into a single system prompt, applying budget and priority ordering |
+| `RequestFocus` | Extracts symbols, file paths, and plan signals from each user query to boost relevant context sections |
+| `MessageCompactor.pruneForRequest()` | Produces a transient pruned copy of conversation for the LLM request without mutating session history |
+| `ContextEstimator` | Tracks token usage from API responses; triggers 3-phase compaction at 85% of effective context window |
+| `CandidateStore` | Manages memory candidate lifecycle (draft → promoted → in-use → archived) with exponential decay scoring |
+
+**Observability** — The `/context` CLI command calls `context.inspect` over JSON-RPC and displays: system prompt share percentage, per-section char/token counts, inclusion reasons, active file paths, and injected candidate IDs.
 
 ## Quick Start
 
