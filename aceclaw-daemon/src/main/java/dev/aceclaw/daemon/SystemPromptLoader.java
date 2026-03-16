@@ -299,10 +299,12 @@ public final class SystemPromptLoader {
         var sections = result.sections().stream()
                 .map(section -> new ContextSection(
                         section.key(),
+                        classifySectionSource(section.key()),
                         section.priority(),
                         section.protectedSection(),
                         section.originalChars(),
                         section.finalChars(),
+                        ContextEstimator.estimateTokens(section.content()),
                         section.included(),
                         section.truncated(),
                         section.content()))
@@ -443,18 +445,40 @@ public final class SystemPromptLoader {
 
     public record ContextSection(
             String key,
+            String sourceType,
             int priority,
             boolean protectedSection,
             int originalChars,
             int finalChars,
+            int estimatedTokens,
             boolean included,
             boolean truncated,
             String content
     ) {
         public ContextSection {
             key = key != null ? key : "unknown";
+            sourceType = sourceType != null ? sourceType : "unknown";
             content = content != null ? content : "";
         }
+    }
+
+    private static String classifySectionSource(String key) {
+        if (key == null || key.isBlank()) {
+            return "unknown";
+        }
+        if (key.startsWith("memory:")) {
+            return "memory:Auto-Memory".equals(key) ? "learned-signals" : "memory";
+        }
+        return switch (key) {
+            case "base" -> "base";
+            case "rules" -> "rules";
+            case "tool-guidance" -> "tool-guidance";
+            case "environment" -> "environment";
+            case "git" -> "git";
+            case "skills" -> "skills";
+            case "candidates" -> "candidates";
+            default -> "other";
+        };
     }
 
     /**

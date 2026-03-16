@@ -316,17 +316,21 @@ class SystemPromptLoaderTest {
                 .filteredOn(section -> section.key().equals("rules"))
                 .singleElement()
                 .satisfies(section -> {
+                    assertThat(section.sourceType()).isEqualTo("rules");
                     assertThat(section.included()).isTrue();
                     assertThat(section.content()).contains("Prefer AssertJ assertions");
                     assertThat(section.finalChars()).isLessThanOrEqualTo(section.originalChars());
+                    assertThat(section.estimatedTokens()).isPositive();
                 });
         assertThat(inspection.sections())
                 .filteredOn(section -> section.key().equals("skills"))
                 .singleElement()
                 .satisfies(section -> {
+                    assertThat(section.sourceType()).isEqualTo("skills");
                     assertThat(section.originalChars()).isGreaterThan(8_000);
                     assertThat(section.truncated()).isTrue();
                     assertThat(section.finalChars()).isLessThan(section.originalChars());
+                    assertThat(section.estimatedTokens()).isPositive();
                 });
         assertThat(inspection.truncatedSectionKeys()).contains("skills");
     }
