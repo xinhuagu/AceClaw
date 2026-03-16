@@ -137,14 +137,15 @@ public final class MessageCompactor {
     public RequestPruneResult pruneForRequest(List<Message> messages, String systemPrompt,
                                               List<ToolDefinition> tools) {
         var safeMessages = messages != null ? List.copyOf(messages) : List.<Message>of();
+        var safePrompt = systemPrompt != null ? systemPrompt : "";
         var safeTools = tools != null ? List.copyOf(tools) : List.<ToolDefinition>of();
-        int originalEstimate = ContextEstimator.estimateFullContext(systemPrompt, safeTools, safeMessages);
+        int originalEstimate = ContextEstimator.estimateFullContext(safePrompt, safeTools, safeMessages);
         if (originalEstimate <= config.triggerTokens()) {
             return new RequestPruneResult(safeMessages, originalEstimate, originalEstimate, false);
         }
 
         var prunedMessages = pruneMessages(safeMessages, config.protectedTurns());
-        int prunedEstimate = ContextEstimator.estimateFullContext(systemPrompt, safeTools, prunedMessages);
+        int prunedEstimate = ContextEstimator.estimateFullContext(safePrompt, safeTools, prunedMessages);
         boolean applied = prunedEstimate < originalEstimate;
         return new RequestPruneResult(
                 applied ? prunedMessages : safeMessages,
