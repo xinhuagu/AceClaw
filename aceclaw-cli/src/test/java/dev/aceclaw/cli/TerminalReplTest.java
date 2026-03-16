@@ -211,18 +211,32 @@ class TerminalReplTest {
         var sections = mapper.createArrayNode();
         sections.add(mapper.createObjectNode()
                 .put("key", "\u001B[31mbase\u001B[0m")
+                .put("sourceType", "base")
                 .put("priority", 95)
                 .put("protected", true)
                 .put("originalChars", 12000)
                 .put("finalChars", 12000)
+                .put("estimatedTokens", 3000)
                 .put("included", true)
                 .put("truncated", false));
         sections.add(mapper.createObjectNode()
                 .put("key", "skills")
+                .put("sourceType", "skills")
                 .put("priority", 58)
                 .put("protected", false)
                 .put("originalChars", 10000)
                 .put("finalChars", 4000)
+                .put("estimatedTokens", 1000)
+                .put("included", true)
+                .put("truncated", true));
+        sections.add(mapper.createObjectNode()
+                .put("key", "memory:Auto-Memory")
+                .put("sourceType", "learned-signals")
+                .put("priority", 60)
+                .put("protected", false)
+                .put("originalChars", 2000)
+                .put("finalChars", 1500)
+                .put("estimatedTokens", 375)
                 .put("included", true)
                 .put("truncated", true));
         root.set("sections", sections);
@@ -245,9 +259,15 @@ class TerminalReplTest {
         assertThat(plain).contains("Active paths:");
         assertThat(plain).contains("Truncated:");
         assertThat(plain).contains("Last compact:");
+        assertThat(plain).contains("Saved:");
+        assertThat(plain).contains("Injection Cost");
+        assertThat(plain).contains("Effectiveness");
+        assertThat(plain).contains("Memory reuse:");
+        assertThat(plain).contains("Learned fit:");
         assertThat(plain).contains("src/main/App.java");
         assertThat(plain).contains("base");
         assertThat(plain).contains("skills");
+        assertThat(plain).contains("learned-signals");
         assertThat(plain).contains("truncated");
         assertThat(plain).contains("protected");
         assertThat(plain).contains("Use /context detail <key>");
@@ -260,10 +280,12 @@ class TerminalReplTest {
         var root = mapper.createObjectNode();
         var detail = mapper.createObjectNode();
         detail.put("key", "rules\u001B]2;pwnd\u0007");
+        detail.put("sourceType", "rules");
         detail.put("priority", 88);
         detail.put("protected", false);
         detail.put("originalChars", 1200);
         detail.put("finalChars", 900);
+        detail.put("estimatedTokens", 225);
         detail.put("truncated", true);
         detail.put("content", ("Prefer AssertJ assertions.\u001B]2;pwnd\u0007\n" + "line\n").repeat(2_000));
         root.set("detail", detail);
@@ -278,6 +300,7 @@ class TerminalReplTest {
         assertThat(output).doesNotContain("\u0007");
         assertThat(plain).contains("Context Detail");
         assertThat(plain).contains("rules");
+        assertThat(plain).contains("Source:");
         assertThat(plain).contains("Prefer AssertJ assertions.");
         assertThat(plain).contains("true");
         assertThat(plain).contains("...[truncated]");

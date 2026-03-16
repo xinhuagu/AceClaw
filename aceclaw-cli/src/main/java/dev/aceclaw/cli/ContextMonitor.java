@@ -52,6 +52,10 @@ public final class ContextMonitor {
     private long lastCompactionOriginalTokens;
     /** Most recent compaction post-compaction token estimate. */
     private long lastCompactionCompactedTokens;
+    /** Tokens reclaimed by the most recent compaction event. */
+    private long lastCompactionTokensSaved;
+    /** Cumulative tokens reclaimed across all compaction events. */
+    private long totalCompactionTokensSaved;
     /** Most recent compaction phase. */
     private String lastCompactionPhase;
     /** When the most recent compaction occurred. */
@@ -155,6 +159,8 @@ public final class ContextMonitor {
         }
         this.lastCompactionOriginalTokens = normalizedOriginal;
         this.lastCompactionCompactedTokens = normalizedCompacted;
+        this.lastCompactionTokensSaved = Math.max(0L, normalizedOriginal - normalizedCompacted);
+        this.totalCompactionTokensSaved += lastCompactionTokensSaved;
         this.lastCompactionPhase = normalizedPhase;
         this.lastCompactionAt = Instant.now();
         this.lastRealInputTokens = normalizedCompacted;
@@ -222,6 +228,18 @@ public final class ContextMonitor {
 
     public synchronized long lastCompactionCompactedTokens() {
         return lastCompactionCompactedTokens;
+    }
+
+    public synchronized long lastCompactionTokensSaved() {
+        return lastCompactionTokensSaved;
+    }
+
+    public synchronized long totalCompactionTokensSaved() {
+        return totalCompactionTokensSaved;
+    }
+
+    public synchronized long averageCompactionTokensSaved() {
+        return compactionCount == 0 ? 0L : totalCompactionTokensSaved / compactionCount;
     }
 
     public synchronized String lastCompactionPhase() {

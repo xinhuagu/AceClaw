@@ -2658,6 +2658,10 @@ public final class TerminalRepl {
     }
 
     private void renderContextList(PrintWriter out, JsonNode root) {
+        ContextCostSummary summary = summarizeContextSections(
+                root.path("sections"),
+                root.path("estimatedTokens").asLong(0));
+
         out.println(BOLD + "Context Overview" + RESET);
         out.printf("  %sSystem prompt:%s %s chars (~%s tokens)%n",
                 MUTED, RESET,
@@ -2689,6 +2693,11 @@ public final class TerminalRepl {
                     contextMonitor.lastCompactionPhase(),
                     formatTokenCount(contextMonitor.lastCompactionOriginalTokens()),
                     formatTokenCount(contextMonitor.lastCompactionCompactedTokens()));
+            out.printf("  %sSaved:%s         total=%s | avg=%s | last=%s%n",
+                    MUTED, RESET,
+                    formatTokenCount(contextMonitor.totalCompactionTokensSaved()),
+                    formatTokenCount(contextMonitor.averageCompactionTokensSaved()),
+                    formatTokenCount(contextMonitor.lastCompactionTokensSaved()));
         }
 
         JsonNode activePaths = root.path("activeFilePaths");
@@ -2702,6 +2711,28 @@ public final class TerminalRepl {
             out.printf("  %sTruncated:%s    %s%n",
                     MUTED, RESET, joinArrayValues(truncated, 6));
         }
+
+        out.println();
+        out.println(BOLD + "Injection Cost" + RESET);
+        renderContextBucket(out, "Rules", summary.rules());
+        renderContextBucket(out, "Candidates", summary.candidates());
+        renderContextBucket(out, "Skills", summary.skills());
+        renderContextBucket(out, "Learned", summary.learnedSignals());
+        renderContextBucket(out, "Memory", summary.memoryOther());
+        renderContextBucket(out, "Core", summary.coreRuntime());
+
+        out.println();
+        out.println(BOLD + "Effectiveness" + RESET);
+        out.printf("  %sMemory reuse:%s  ~%s tokens across %d sections | retained=%.1f%%%n",
+                MUTED, RESET,
+                formatTokenCount(summary.memoryReuseTokens()),
+                summary.memoryReuseSections(),
+                summary.memoryRetentionPct());
+        out.printf("  %sLearned fit:%s   ~%s tokens | retained=%.1f%% | truncated=%d%n",
+                MUTED, RESET,
+                formatTokenCount(summary.learnedSignals().tokens()),
+                summary.learnedRetentionPct(),
+                summary.learnedSignals().truncatedSections());
 
         out.println();
         out.println(BOLD + "Sections" + RESET);
@@ -2722,7 +2753,10 @@ public final class TerminalRepl {
                     formatTokenCount(original),
                     formatTokenCount(finalChars),
                     section.path("priority").asInt(0),
-                    flags.isEmpty() ? "" : MUTED + " [" + flags + "]" + RESET);
+                    (flags.isEmpty() ? "" : MUTED + " [" + flags + "]" + RESET)
+                            + MUTED + " {" + sanitizeContextField(section.path("sourceType").asText("other"))
+                            + ", ~" + formatTokenCount(section.path("estimatedTokens").asLong(0))
+                            + " tok}" + RESET);
         }
         out.println();
         out.println(MUTED + "Use /context detail <key> for full section content." + RESET);
@@ -2743,6 +2777,9 @@ public final class TerminalRepl {
         out.printf("  %sSize:%s         %s -> %s%n", MUTED, RESET,
                 formatTokenCount(detail.path("originalChars").asLong(0)),
                 formatTokenCount(detail.path("finalChars").asLong(0)));
+        out.printf("  %sSource:%s       %s (~%s tokens)%n", MUTED, RESET,
+                sanitizeContextField(detail.path("sourceType").asText("other")),
+                formatTokenCount(detail.path("estimatedTokens").asLong(0)));
         out.printf("  %sProtected:%s    %s%n", MUTED, RESET, detail.path("protected").asBoolean(false));
         out.printf("  %sTruncated:%s    %s%n", MUTED, RESET, detail.path("truncated").asBoolean(false));
         out.println();
@@ -2758,6 +2795,116 @@ public final class TerminalRepl {
             rendered.add("+" + (values.size() - limit) + " more");
         }
         return String.join(", ", rendered);
+    }
+
+    private void renderContextBucket(PrintWriter out, String label, ContextBucketCost bucket) {
+        out.printf("  %s%-12s%s ~%s tokens | %.1f%% | retained=%.1f%%%n",
+                MUTED, fitWidth(label, 12), RESET,
+                formatTokenCount(bucket.tokens()),
+                bucket.sharePct(),
+                bucket.retainedPct());
+    }
+
+    private static ContextCostSummary summarizeContextSections(JsonNode sections, long totalEstimatedTokens) {
+        ContextBucketAccumulator rules = new ContextBucketAccumulator();
+        ContextBucketAccumulator candidates = new ContextBucketAccumulator();
+        ContextBucketAccumulator skills = new ContextBucketAccumulator();
+        ContextBucketAccumulator learnedSignals = new ContextBucketAccumulator();
+        ContextBucketAccumulator memoryOther = new ContextBucketAccumulator();
+        ContextBucketAccumulator coreRuntime = new ContextBucketAccumulator();
+
+        for (JsonNode section : sections) {
+            String sourceType = section.path("sourceType").asText("other");
+            ContextBucketAccumulator bucket = switch (sourceType) {
+                case "rules" -> rules;
+                case "candidates" -> candidates;
+                case "skills" -> skills;
+                case "learned-signals" -> learnedSignals;
+                case "memory" -> memoryOther;
+                default -> coreRuntime;
+            };
+            bucket.add(section);
+        }
+
+        return new ContextCostSummary(
+                rules.build(totalEstimatedTokens),
+                candidates.build(totalEstimatedTokens),
+                skills.build(totalEstimatedTokens),
+                learnedSignals.build(totalEstimatedTokens),
+                memoryOther.build(totalEstimatedTokens),
+                coreRuntime.build(totalEstimatedTokens));
+    }
+
+    private static final class ContextBucketAccumulator {
+        private long originalChars;
+        private long finalChars;
+        private long tokens;
+        private int sections;
+        private int includedSections;
+        private int truncatedSections;
+
+        private void add(JsonNode section) {
+            originalChars += Math.max(0L, section.path("originalChars").asLong(0));
+            finalChars += Math.max(0L, section.path("finalChars").asLong(0));
+            tokens += Math.max(0L, section.path("estimatedTokens").asLong(0));
+            sections++;
+            if (section.path("included").asBoolean(false) && section.path("finalChars").asLong(0) > 0) {
+                includedSections++;
+            }
+            if (section.path("truncated").asBoolean(false)) {
+                truncatedSections++;
+            }
+        }
+
+        private ContextBucketCost build(long totalEstimatedTokens) {
+            double sharePct = totalEstimatedTokens <= 0
+                    ? 0.0
+                    : (double) tokens / totalEstimatedTokens * 100.0;
+            double retainedPct = originalChars <= 0
+                    ? 0.0
+                    : (double) finalChars / originalChars * 100.0;
+            return new ContextBucketCost(tokens, sharePct, retainedPct, sections, includedSections, truncatedSections);
+        }
+    }
+
+    private record ContextBucketCost(
+            long tokens,
+            double sharePct,
+            double retainedPct,
+            int sections,
+            int includedSections,
+            int truncatedSections
+    ) {}
+
+    private record ContextCostSummary(
+            ContextBucketCost rules,
+            ContextBucketCost candidates,
+            ContextBucketCost skills,
+            ContextBucketCost learnedSignals,
+            ContextBucketCost memoryOther,
+            ContextBucketCost coreRuntime
+    ) {
+        private long memoryReuseTokens() {
+            return learnedSignals.tokens() + memoryOther.tokens();
+        }
+
+        private int memoryReuseSections() {
+            return learnedSignals.includedSections() + memoryOther.includedSections();
+        }
+
+        private double memoryRetentionPct() {
+            long totalTokens = learnedSignals.tokens() + memoryOther.tokens();
+            if (totalTokens == 0) {
+                return 0.0;
+            }
+            double weighted = learnedSignals.retainedPct() * learnedSignals.tokens()
+                    + memoryOther.retainedPct() * memoryOther.tokens();
+            return weighted / totalTokens;
+        }
+
+        private double learnedRetentionPct() {
+            return learnedSignals.retainedPct();
+        }
     }
 
     private void handleContinueCommand(PrintWriter out, LineReader reader, String arg) {

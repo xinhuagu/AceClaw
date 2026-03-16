@@ -68,10 +68,12 @@ public final class ContextRpcHelper {
             for (var section : inspection.sections()) {
                 var node = mapper.createObjectNode();
                 node.put("key", section.key());
+                node.put("sourceType", section.sourceType());
                 node.put("priority", section.priority());
                 node.put("protected", section.protectedSection());
                 node.put("originalChars", section.originalChars());
                 node.put("finalChars", section.finalChars());
+                node.put("estimatedTokens", section.estimatedTokens());
                 node.put("included", section.included());
                 node.put("truncated", section.truncated());
                 sections.add(node);
@@ -88,6 +90,8 @@ public final class ContextRpcHelper {
                 detail.put("protected", selected.protectedSection());
                 detail.put("originalChars", selected.originalChars());
                 detail.put("finalChars", selected.finalChars());
+                detail.put("sourceType", selected.sourceType());
+                detail.put("estimatedTokens", selected.estimatedTokens());
                 detail.put("included", selected.included());
                 detail.put("truncated", selected.truncated());
                 detail.put("content", selected.content());

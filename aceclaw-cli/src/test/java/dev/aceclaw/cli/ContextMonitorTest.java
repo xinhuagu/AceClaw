@@ -47,6 +47,9 @@ class ContextMonitorTest {
         assertThat(monitor.compactionCount()).isEqualTo(1);
         assertThat(monitor.lastCompactionOriginalTokens()).isEqualTo(150_000);
         assertThat(monitor.lastCompactionCompactedTokens()).isEqualTo(62_000);
+        assertThat(monitor.lastCompactionTokensSaved()).isEqualTo(88_000);
+        assertThat(monitor.totalCompactionTokensSaved()).isEqualTo(88_000);
+        assertThat(monitor.averageCompactionTokensSaved()).isEqualTo(88_000);
         assertThat(monitor.lastCompactionPhase()).isEqualTo("SUMMARIZED");
         assertThat(monitor.pressureLevel()).isEqualTo(ContextMonitor.PressureLevel.NORMAL);
     }
@@ -86,5 +89,7 @@ class ContextMonitorTest {
         assertThat(monitor.lastCompactionPhase()).isEqualTo("PRUNED");
         assertThat(monitor.summarizedCount()).isEqualTo(1);
         assertThat(monitor.prunedCount()).isEqualTo(1);
+        assertThat(monitor.totalCompactionTokensSaved()).isEqualTo(70_000);
+        assertThat(monitor.averageCompactionTokensSaved()).isEqualTo(35_000);
     }
 }
