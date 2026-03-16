@@ -108,6 +108,8 @@ public final class TerminalRepl {
     private static final int FIXED_STATUS_LINE_COUNT = 9;
     /** Soft cap (in display columns) for daemon-provided fields rendered inside the status panel. */
     private static final int STATUS_PANEL_FIELD_MAX_COLS = 80;
+    /** Prevent /context detail from dumping arbitrarily large prompt sections into the terminal. */
+    private static final int MAX_CONTEXT_DETAIL_CHARS = 12_000;
     private final Object uiRenderLock = new Object();
     private final AtomicBoolean permissionInterruptRequested = new AtomicBoolean(false);
     private final AtomicBoolean uiRenderRequested = new AtomicBoolean(true);
@@ -2330,6 +2332,27 @@ public final class TerminalRepl {
         return sanitizeCronSummary(raw);
     }
 
+    private static String sanitizeContextField(String raw) {
+        String normalized = sanitizeTerminalText(raw);
+        if (normalized.isBlank()) {
+            return "";
+        }
+        return normalized.replace('\n', ' ')
+                .replace('\r', ' ')
+                .replace('\t', ' ')
+                .replaceAll("\\s+", " ")
+                .trim();
+    }
+
+    private static String sanitizeContextContent(String raw) {
+        String normalized = sanitizeTerminalText(raw);
+        if (normalized.length() <= MAX_CONTEXT_DETAIL_CHARS) {
+            return normalized;
+        }
+        return normalized.substring(0, MAX_CONTEXT_DETAIL_CHARS).stripTrailing()
+                + "\n...[truncated]";
+    }
+
     private TaskRuntimeInfo deriveRuntimeInfo(TaskHandle task, Instant now) {
         if (task.waitingPermission()) {
             String detail = task.permissionDetail();
@@ -2683,7 +2706,7 @@ public final class TerminalRepl {
         out.println();
         out.println(BOLD + "Sections" + RESET);
         for (JsonNode section : root.path("sections")) {
-            String key = section.path("key").asText("unknown");
+            String key = sanitizeContextField(section.path("key").asText("unknown"));
             long original = section.path("originalChars").asLong(0);
             long finalChars = section.path("finalChars").asLong(0);
             boolean truncatedSection = section.path("truncated").asBoolean(false);
@@ -2708,12 +2731,14 @@ public final class TerminalRepl {
     private void renderContextDetail(PrintWriter out, JsonNode root, String detailKey) {
         JsonNode detail = root.path("detail");
         if (detail.isMissingNode() || detail.isNull()) {
-            out.println(WARNING + "Context section not found: " + detailKey + RESET);
+            out.println(WARNING + "Context section not found: "
+                    + sanitizeContextField(detailKey) + RESET);
             return;
         }
 
         out.println(BOLD + "Context Detail" + RESET);
-        out.printf("  %sKey:%s          %s%n", MUTED, RESET, detail.path("key").asText(""));
+        out.printf("  %sKey:%s          %s%n", MUTED, RESET,
+                sanitizeContextField(detail.path("key").asText("")));
         out.printf("  %sPriority:%s     %d%n", MUTED, RESET, detail.path("priority").asInt(0));
         out.printf("  %sSize:%s         %s -> %s%n", MUTED, RESET,
                 formatTokenCount(detail.path("originalChars").asLong(0)),
@@ -2721,13 +2746,13 @@ public final class TerminalRepl {
         out.printf("  %sProtected:%s    %s%n", MUTED, RESET, detail.path("protected").asBoolean(false));
         out.printf("  %sTruncated:%s    %s%n", MUTED, RESET, detail.path("truncated").asBoolean(false));
         out.println();
-        out.println(detail.path("content").asText(""));
+        out.println(sanitizeContextContent(detail.path("content").asText("")));
     }
 
     private static String joinArrayValues(JsonNode values, int limit) {
         var rendered = new ArrayList<String>();
         for (int i = 0; i < values.size() && i < limit; i++) {
-            rendered.add(values.get(i).asText());
+            rendered.add(sanitizeContextField(values.get(i).asText("")));
         }
         if (values.size() > limit) {
             rendered.add("+" + (values.size() - limit) + " more");
@@ -3632,7 +3657,7 @@ public final class TerminalRepl {
 
     private static String sanitizeCronSummary(String raw) {
         if (raw == null || raw.isBlank()) return "";
-        String noAnsi = ANSI_CSI_PATTERN.matcher(raw).replaceAll("");
+        String noAnsi = stripTerminalEscapeSequences(raw);
         StringBuilder sb = new StringBuilder(noAnsi.length());
         for (int i = 0; i < noAnsi.length(); ) {
             int cp = noAnsi.codePointAt(i);
@@ -3643,6 +3668,44 @@ public final class TerminalRepl {
             }
         }
         return sb.toString().strip();
+    }
+
+    private static String stripTerminalEscapeSequences(String value) {
+        String noCsi = ANSI_CSI_PATTERN.matcher(value).replaceAll("");
+        var sb = new StringBuilder(noCsi.length());
+        int i = 0;
+        while (i < noCsi.length()) {
+            char ch = noCsi.charAt(i);
+            if (ch != '\u001B') {
+                sb.append(ch);
+                i++;
+                continue;
+            }
+
+            if (i + 1 >= noCsi.length()) {
+                i++;
+                continue;
+            }
+
+            char next = noCsi.charAt(i + 1);
+            if (next == ']') {
+                i += 2;
+                while (i < noCsi.length()) {
+                    char seq = noCsi.charAt(i++);
+                    if (seq == '\u0007') {
+                        break;
+                    }
+                    if (seq == '\u001B' && i < noCsi.length() && noCsi.charAt(i) == '\\') {
+                        i++;
+                        break;
+                    }
+                }
+                continue;
+            }
+
+            i += 2;
+        }
+        return sb.toString();
     }
 
     private static String normalizeStatusPanelField(String raw) {

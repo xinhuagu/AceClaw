@@ -60,7 +60,7 @@ class ContextMonitorTest {
                 40_000,
                 "\u001B[31mSUMMARIZED\u001B[0m\nnext\tstep\u0007 " + "x".repeat(140));
 
-        assertThat(monitor.lastCompactionPhase()).startsWith("SUMMARIZED next step ");
+        assertThat(monitor.lastCompactionPhase()).startsWith("SUMMARIZED NEXT STEP ");
         assertThat(monitor.lastCompactionPhase()).doesNotContain("\u001B");
         assertThat(monitor.lastCompactionPhase()).doesNotContain("\n");
         assertThat(monitor.lastCompactionPhase()).doesNotContain("\t");
@@ -74,5 +74,17 @@ class ContextMonitorTest {
         monitor.recordCompaction(100_000, 50_000, "\u001B[31m\u001B[0m \n\t");
 
         assertThat(monitor.lastCompactionPhase()).isEqualTo("UNKNOWN");
+    }
+
+    @Test
+    void recordCompactionNormalizesMixedCasePhaseForCounters() {
+        var monitor = new ContextMonitor(200_000);
+
+        monitor.recordCompaction(90_000, 45_000, "summarized");
+        monitor.recordCompaction(45_000, 20_000, "PrUnEd");
+
+        assertThat(monitor.lastCompactionPhase()).isEqualTo("PRUNED");
+        assertThat(monitor.summarizedCount()).isEqualTo(1);
+        assertThat(monitor.prunedCount()).isEqualTo(1);
     }
 }

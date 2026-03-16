@@ -1346,6 +1346,10 @@ public final class StreamingAgentHandler {
         this.contextWindowTokens = Math.max(0, contextWindowTokens);
     }
 
+    public int getContextWindowTokens() {
+        return Math.max(0, contextWindowTokens);
+    }
+
     public void setAdaptiveContinuationConfig(boolean enabled,
                                               int maxSegments,
                                               int noProgressThreshold,

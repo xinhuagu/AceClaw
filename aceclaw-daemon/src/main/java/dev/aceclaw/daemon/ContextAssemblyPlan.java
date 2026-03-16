@@ -29,12 +29,13 @@ public final class ContextAssemblyPlan {
                 continue;
             }
             String content = section.content();
+            int originalChars = content.length();
             boolean truncated = false;
             if (!section.protectedSection() && content.length() > budget.maxPerTierChars()) {
                 content = TierTruncator.truncateContent(content, budget.maxPerTierChars());
                 truncated = true;
             }
-            working.add(new SectionState(section, content, truncated));
+            working.add(new SectionState(section, originalChars, content, truncated));
         }
 
         enforceTotalBudget(working, budget.maxTotalChars(), false);
@@ -139,9 +140,9 @@ public final class ContextAssemblyPlan {
         private String content;
         private boolean truncated;
 
-        private SectionState(Section section, String content, boolean truncated) {
+        private SectionState(Section section, int originalChars, String content, boolean truncated) {
             this.section = section;
-            this.originalChars = content != null ? content.length() : 0;
+            this.originalChars = Math.max(0, originalChars);
             this.content = content;
             this.truncated = truncated;
         }

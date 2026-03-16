@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
 import java.util.ArrayDeque;
+import java.util.Locale;
 import java.util.regex.Pattern;
 
 /**
@@ -285,6 +286,7 @@ public final class ContextMonitor {
         if (normalized.length() > MAX_COMPACTION_PHASE_LENGTH) {
             normalized = normalized.substring(0, MAX_COMPACTION_PHASE_LENGTH).trim();
         }
+        normalized = normalized.toUpperCase(Locale.ROOT);
         return normalized.isEmpty() ? "UNKNOWN" : normalized;
     }
 

@@ -324,6 +324,7 @@ class SystemPromptLoaderTest {
                 .filteredOn(section -> section.key().equals("skills"))
                 .singleElement()
                 .satisfies(section -> {
+                    assertThat(section.originalChars()).isGreaterThan(8_000);
                     assertThat(section.truncated()).isTrue();
                     assertThat(section.finalChars()).isLessThan(section.originalChars());
                 });

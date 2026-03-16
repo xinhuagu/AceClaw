@@ -202,15 +202,15 @@ class TerminalReplTest {
         budget.put("maxPerTierChars", 8000);
         root.set("budget", budget);
         var activePaths = mapper.createArrayNode();
-        activePaths.add("src/main/App.java");
+        activePaths.add("src/main/App.java\u001B]2;pwnd\u0007");
         activePaths.add("src/test/AppTest.java");
         root.set("activeFilePaths", activePaths);
         var truncated = mapper.createArrayNode();
-        truncated.add("skills");
+        truncated.add("skills\u001B]2;pwnd\u0007");
         root.set("truncatedSectionKeys", truncated);
         var sections = mapper.createArrayNode();
         sections.add(mapper.createObjectNode()
-                .put("key", "base")
+                .put("key", "\u001B[31mbase\u001B[0m")
                 .put("priority", 95)
                 .put("protected", true)
                 .put("originalChars", 12000)
@@ -236,17 +236,22 @@ class TerminalReplTest {
                 out, root);
 
         String output = outputBuffer.toString();
-        assertThat(output).contains("Context Overview");
-        assertThat(output).contains("System prompt:");
-        assertThat(output).contains("Window share:");
-        assertThat(output).contains("Active paths:");
-        assertThat(output).contains("Truncated:");
-        assertThat(output).contains("Last compact:");
-        assertThat(output).contains("base");
-        assertThat(output).contains("skills");
-        assertThat(output).contains("truncated");
-        assertThat(output).contains("protected");
-        assertThat(output).contains("Use /context detail <key>");
+        String plain = stripAnsi(output);
+        assertThat(output).doesNotContain("\u001B]2;pwnd");
+        assertThat(output).doesNotContain("\u0007");
+        assertThat(plain).contains("Context Overview");
+        assertThat(plain).contains("System prompt:");
+        assertThat(plain).contains("Window share:");
+        assertThat(plain).contains("Active paths:");
+        assertThat(plain).contains("Truncated:");
+        assertThat(plain).contains("Last compact:");
+        assertThat(plain).contains("src/main/App.java");
+        assertThat(plain).contains("base");
+        assertThat(plain).contains("skills");
+        assertThat(plain).contains("truncated");
+        assertThat(plain).contains("protected");
+        assertThat(plain).contains("Use /context detail <key>");
+        assertThat(plain).doesNotContain("pwnd");
     }
 
     @Test
@@ -254,13 +259,13 @@ class TerminalReplTest {
         var mapper = new ObjectMapper();
         var root = mapper.createObjectNode();
         var detail = mapper.createObjectNode();
-        detail.put("key", "rules");
+        detail.put("key", "rules\u001B]2;pwnd\u0007");
         detail.put("priority", 88);
         detail.put("protected", false);
         detail.put("originalChars", 1200);
         detail.put("finalChars", 900);
         detail.put("truncated", true);
-        detail.put("content", "Prefer AssertJ assertions.");
+        detail.put("content", ("Prefer AssertJ assertions.\u001B]2;pwnd\u0007\n" + "line\n").repeat(2_000));
         root.set("detail", detail);
 
         invokePrivate(repl, "renderContextDetail",
@@ -268,10 +273,15 @@ class TerminalReplTest {
                 out, root, "rules");
 
         String output = outputBuffer.toString();
-        assertThat(output).contains("Context Detail");
-        assertThat(output).contains("rules");
-        assertThat(output).contains("Prefer AssertJ assertions.");
-        assertThat(output).contains("true");
+        String plain = stripAnsi(output);
+        assertThat(output).doesNotContain("\u001B]2;pwnd");
+        assertThat(output).doesNotContain("\u0007");
+        assertThat(plain).contains("Context Detail");
+        assertThat(plain).contains("rules");
+        assertThat(plain).contains("Prefer AssertJ assertions.");
+        assertThat(plain).contains("true");
+        assertThat(plain).contains("...[truncated]");
+        assertThat(plain).doesNotContain("pwnd");
     }
 
     @Test
@@ -748,5 +758,9 @@ class TerminalReplTest {
                   ]
                 }
                 """);
+    }
+
+    private static String stripAnsi(String text) {
+        return text.replaceAll("\\u001B\\[[0-?]*[ -/]*[@-~]", "");
     }
 }

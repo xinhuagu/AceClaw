@@ -1,6 +1,9 @@
 package dev.aceclaw.daemon;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.util.Objects;
+import java.util.function.IntSupplier;
 /**
  * Shared helper for registering context-observability RPC handlers.
  */
@@ -9,7 +12,12 @@ public final class ContextRpcHelper {
     private ContextRpcHelper() {}
 
     public static void registerContextInspect(RequestRouter router, ObjectMapper mapper,
-                                              StreamingAgentHandler handler, int contextWindowTokens) {
+                                              StreamingAgentHandler handler,
+                                              IntSupplier contextWindowSupplier) {
+        Objects.requireNonNull(router, "router must not be null");
+        Objects.requireNonNull(mapper, "mapper must not be null");
+        Objects.requireNonNull(handler, "handler must not be null");
+        Objects.requireNonNull(contextWindowSupplier, "contextWindowSupplier must not be null");
         router.register("context.inspect", params -> {
             if (params == null || !params.has("sessionId")) {
                 throw new IllegalArgumentException("Missing required parameter: sessionId");
@@ -17,6 +25,7 @@ public final class ContextRpcHelper {
             String sessionId = params.get("sessionId").asText();
             String queryHint = params.has("queryHint") ? params.get("queryHint").asText("") : "";
             String detailKey = params.has("detailKey") ? params.get("detailKey").asText("") : "";
+            int contextWindowTokens = Math.max(0, contextWindowSupplier.getAsInt());
 
             var inspection = handler.inspectContext(sessionId, queryHint);
             var result = mapper.createObjectNode();
