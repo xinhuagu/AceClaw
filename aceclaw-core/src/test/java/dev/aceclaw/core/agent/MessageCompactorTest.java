@@ -709,6 +709,45 @@ class MessageCompactorTest {
                 .isFalse();
     }
 
+    @Test
+    void pruneForRequestUsesLightweightPruningAboveTrigger() {
+        var config = new CompactionConfig(1_000, 100, 0.85, 0.60, 1);
+        var compactor = new MessageCompactor(null, "test-model", config);
+        String largeContent = "X".repeat(5_000);
+        var messages = List.<Message>of(
+                Message.user("Old question"),
+                Message.toolResult("tu1", largeContent, false),
+                Message.user("Latest protected turn")
+        );
+
+        var result = compactor.pruneForRequest(messages, null, List.of());
+
+        assertThat(result.applied()).isTrue();
+        assertThat(result.originalTokenEstimate()).isGreaterThan(config.triggerTokens());
+        assertThat(result.prunedTokenEstimate()).isLessThan(result.originalTokenEstimate());
+        var prunedToolResult = (Message.UserMessage) result.messages().get(1);
+        var toolResult = (ContentBlock.ToolResult) prunedToolResult.content().getFirst();
+        assertThat(toolResult.content()).contains("[content pruned during context compaction");
+        assertThat(((ContentBlock.ToolResult) ((Message.UserMessage) messages.get(1)).content().getFirst()).content())
+                .isEqualTo(largeContent);
+    }
+
+    @Test
+    void pruneForRequestNoopsBelowTrigger() {
+        var config = new CompactionConfig(10_000, 500, 0.85, 0.60, 1);
+        var compactor = new MessageCompactor(null, "test-model", config);
+        var messages = List.<Message>of(
+                Message.user("Short request"),
+                Message.assistant("Short response")
+        );
+
+        var result = compactor.pruneForRequest(messages, null, List.of());
+
+        assertThat(result.applied()).isFalse();
+        assertThat(result.messages()).containsExactlyElementsOf(messages);
+        assertThat(result.prunedTokenEstimate()).isEqualTo(result.originalTokenEstimate());
+    }
+
     // =========================================================================
     // CompactionResult tests
     // =========================================================================

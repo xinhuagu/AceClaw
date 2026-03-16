@@ -127,6 +127,33 @@ public final class MessageCompactor {
     }
 
     /**
+     * Applies the lightweight pruning phase as a request-time budget relief step.
+     *
+     * <p>Unlike {@link #compact(List, String)}, this never runs memory extraction or
+     * summarization and is intended only for the transient request assembled for the
+     * next model call. Callers should not persist the returned pruned messages back
+     * into long-lived session history.
+     */
+    public RequestPruneResult pruneForRequest(List<Message> messages, String systemPrompt,
+                                              List<ToolDefinition> tools) {
+        var safeMessages = messages != null ? List.copyOf(messages) : List.<Message>of();
+        var safeTools = tools != null ? List.copyOf(tools) : List.<ToolDefinition>of();
+        int originalEstimate = ContextEstimator.estimateFullContext(systemPrompt, safeTools, safeMessages);
+        if (originalEstimate <= config.triggerTokens()) {
+            return new RequestPruneResult(safeMessages, originalEstimate, originalEstimate, false);
+        }
+
+        var prunedMessages = pruneMessages(safeMessages, config.protectedTurns());
+        int prunedEstimate = ContextEstimator.estimateFullContext(systemPrompt, safeTools, prunedMessages);
+        boolean applied = prunedEstimate < originalEstimate;
+        return new RequestPruneResult(
+                applied ? prunedMessages : safeMessages,
+                originalEstimate,
+                applied ? prunedEstimate : originalEstimate,
+                applied);
+    }
+
+    /**
      * Runs the full 3-phase compaction pipeline.
      *
      * <p>Phase 0 (memory flush) extracts context items for the caller to persist.
@@ -353,6 +380,25 @@ public final class MessageCompactor {
 
         String stub = content.substring(0, PRUNE_STUB_CHARS);
         return stub + "\n\n" + PRUNED_MARKER;
+    }
+
+    /**
+     * Outcome of request-time pruning before formal compaction.
+     *
+     * @param messages               messages to use for the immediate request
+     * @param originalTokenEstimate  estimated full-context size before pruning
+     * @param prunedTokenEstimate    estimated full-context size after pruning
+     * @param applied                whether pruning actually reduced the request
+     */
+    public record RequestPruneResult(
+            List<Message> messages,
+            int originalTokenEstimate,
+            int prunedTokenEstimate,
+            boolean applied
+    ) {
+        public RequestPruneResult {
+            messages = messages != null ? List.copyOf(messages) : List.of();
+        }
     }
 
     // -- Phase 2: Summarize --------------------------------------------------

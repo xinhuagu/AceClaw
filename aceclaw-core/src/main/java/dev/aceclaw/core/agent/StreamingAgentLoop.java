@@ -228,6 +228,7 @@ public final class StreamingAgentLoop {
 
                 // Check if context compaction is needed before this LLM call
                 if (compactor != null) {
+                    applyRequestTimePruning(allMessages);
                     compactionResult = checkAndCompact(
                             allMessages, lastInputTokens, compactionResult, eventHandler);
                 }
@@ -491,6 +492,20 @@ public final class StreamingAgentLoop {
                 String.format("%.1f", result.reductionPercent()));
 
         return result;
+    }
+
+    private void applyRequestTimePruning(ArrayList<Message> allMessages) {
+        if (allMessages.isEmpty()) {
+            return;
+        }
+        var pruneResult = compactor.pruneForRequest(allMessages, systemPrompt, toolRegistry.toDefinitions());
+        if (!pruneResult.applied()) {
+            return;
+        }
+        allMessages.clear();
+        allMessages.addAll(pruneResult.messages());
+        log.info("Request-time pruning applied: {} -> {} estimated tokens",
+                pruneResult.originalTokenEstimate(), pruneResult.prunedTokenEstimate());
     }
 
     private LlmRequest buildRequest(List<Message> messages) {
