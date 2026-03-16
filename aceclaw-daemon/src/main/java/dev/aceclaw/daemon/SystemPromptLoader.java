@@ -17,6 +17,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -616,12 +617,15 @@ public final class SystemPromptLoader {
                 inferPlanSignals(queryHint));
     }
 
+    /** Maximum priority boost from request focus signals, preventing tier inversions. */
+    private static final int MAX_FOCUS_BOOST = 12;
+
     private static int applyRequestFocusPriority(String key, int basePriority, String content, RequestFocus focus) {
         if (focus == null) {
             return basePriority;
         }
-        int adjusted = basePriority + requestFocusBoost(key, content, focus);
-        return Math.max(0, Math.min(100, adjusted));
+        int boost = Math.min(MAX_FOCUS_BOOST, requestFocusBoost(key, content, focus));
+        return Math.max(0, Math.min(100, basePriority + boost));
     }
 
     private static int requestFocusBoost(String key, String content, RequestFocus focus) {
@@ -722,7 +726,7 @@ public final class SystemPromptLoader {
         if (queryHint == null || queryHint.isBlank()) {
             return List.of();
         }
-        var symbols = new java.util.LinkedHashSet<String>();
+        var symbols = new LinkedHashSet<String>();
         var backtickMatcher = BACKTICK_CODE.matcher(queryHint);
         while (backtickMatcher.find() && symbols.size() < 8) {
             String candidate = backtickMatcher.group(1).trim();
@@ -747,11 +751,24 @@ public final class SystemPromptLoader {
         if (candidate.contains("/") || candidate.contains("\\")) {
             return false;
         }
-        if (candidate.contains(".")) {
-            return candidate.contains("::") || candidate.endsWith("()");
+        // Strip trailing () for method references like AppService.handle()
+        String clean = candidate.endsWith("()") ? candidate.substring(0, candidate.length() - 2) : candidate;
+        // Accept dotted qualified names where each segment is a valid identifier
+        // e.g. AppService.validate, dev.aceclaw.App
+        if (clean.contains(".")) {
+            String[] segments = clean.split("\\.");
+            if (segments.length < 2 || segments.length > 6) {
+                return false;
+            }
+            for (String seg : segments) {
+                if (!seg.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+                    return false;
+                }
+            }
+            return true;
         }
-        return candidate.matches("[A-Z][A-Za-z0-9_]{2,}")
-                || candidate.matches("[a-z]+[A-Z][A-Za-z0-9_]*");
+        return clean.matches("[A-Z][A-Za-z0-9_]{2,}")
+                || clean.matches("[a-z]+[A-Z][A-Za-z0-9_]*");
     }
 
     private static List<String> inferPlanSignals(String queryHint) {
@@ -763,7 +780,7 @@ public final class SystemPromptLoader {
         if (lower.contains("continue") || lower.contains("resume") || lower.contains("next step")) {
             signals.add("continue current execution");
         }
-        if (lower.contains("plan") || lower.contains("steps")) {
+        if (lower.contains("plan") || lower.contains("next steps") || lower.contains("steps to")) {
             signals.add("planning context");
         }
         if (lower.contains("fix") || lower.contains("implement") || lower.contains("edit")
@@ -773,7 +790,7 @@ public final class SystemPromptLoader {
         if (lower.contains("test") || lower.contains("verify") || lower.contains("review")) {
             signals.add("verification requested");
         }
-        return List.copyOf(signals.stream().distinct().toList());
+        return List.copyOf(signals);
     }
 
     private record RankedSection(

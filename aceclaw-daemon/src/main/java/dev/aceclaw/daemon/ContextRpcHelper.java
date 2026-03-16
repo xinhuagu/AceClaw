@@ -1,9 +1,11 @@
 package dev.aceclaw.daemon;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.util.Objects;
 import java.util.function.IntSupplier;
+
 /**
  * Shared helper for registering context-observability RPC handlers.
  */
@@ -85,24 +87,7 @@ public final class ContextRpcHelper {
             var sections = mapper.createArrayNode();
             SystemPromptLoader.ContextSection selected = null;
             for (var section : inspection.sections()) {
-                var node = mapper.createObjectNode();
-                node.put("key", section.key());
-                node.put("sourceType", section.sourceType());
-                node.put("scopeType", section.scopeType());
-                node.put("inclusionReason", section.inclusionReason());
-                node.put("priority", section.priority());
-                node.put("protected", section.protectedSection());
-                node.put("originalChars", section.originalChars());
-                node.put("finalChars", section.finalChars());
-                node.put("estimatedTokens", section.estimatedTokens());
-                node.put("included", section.included());
-                node.put("truncated", section.truncated());
-                var evidence = mapper.createArrayNode();
-                for (var item : section.evidence()) {
-                    evidence.add(item);
-                }
-                node.set("evidence", evidence);
-                sections.add(node);
+                sections.add(sectionToNode(mapper, section, false));
                 if (!detailKey.isBlank() && detailKey.equals(section.key())) {
                     selected = section;
                 }
@@ -110,28 +95,36 @@ public final class ContextRpcHelper {
             result.set("sections", sections);
 
             if (selected != null) {
-                var detail = mapper.createObjectNode();
-                detail.put("key", selected.key());
-                detail.put("priority", selected.priority());
-                detail.put("protected", selected.protectedSection());
-                detail.put("originalChars", selected.originalChars());
-                detail.put("finalChars", selected.finalChars());
-                detail.put("sourceType", selected.sourceType());
-                detail.put("scopeType", selected.scopeType());
-                detail.put("inclusionReason", selected.inclusionReason());
-                detail.put("estimatedTokens", selected.estimatedTokens());
-                detail.put("included", selected.included());
-                detail.put("truncated", selected.truncated());
-                detail.put("content", selected.content());
-                var evidence = mapper.createArrayNode();
-                for (var item : selected.evidence()) {
-                    evidence.add(item);
-                }
-                detail.set("evidence", evidence);
-                result.set("detail", detail);
+                result.set("detail", sectionToNode(mapper, selected, true));
             }
 
             return result;
         });
+    }
+
+    private static ObjectNode sectionToNode(ObjectMapper mapper,
+                                            SystemPromptLoader.ContextSection section,
+                                            boolean includeContent) {
+        var node = mapper.createObjectNode();
+        node.put("key", section.key());
+        node.put("sourceType", section.sourceType());
+        node.put("scopeType", section.scopeType());
+        node.put("inclusionReason", section.inclusionReason());
+        node.put("priority", section.priority());
+        node.put("protected", section.protectedSection());
+        node.put("originalChars", section.originalChars());
+        node.put("finalChars", section.finalChars());
+        node.put("estimatedTokens", section.estimatedTokens());
+        node.put("included", section.included());
+        node.put("truncated", section.truncated());
+        var evidence = mapper.createArrayNode();
+        for (var item : section.evidence()) {
+            evidence.add(item);
+        }
+        node.set("evidence", evidence);
+        if (includeContent) {
+            node.put("content", section.content());
+        }
+        return node;
     }
 }

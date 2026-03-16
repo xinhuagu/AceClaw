@@ -2830,9 +2830,9 @@ public final class TerminalRepl {
             out.printf("  %sPlan:%s         %s%n", MUTED, RESET, joinArrayValues(planSignals, 4));
         }
         if (querySummary.isBlank()
-                && (focusFiles == null || focusFiles.isEmpty())
-                && (symbols == null || symbols.isEmpty())
-                && (planSignals == null || planSignals.isEmpty())) {
+                && focusFiles.isEmpty()
+                && symbols.isEmpty()
+                && planSignals.isEmpty()) {
             out.println("  " + MUTED + "No request-local focus signals detected." + RESET);
         }
     }

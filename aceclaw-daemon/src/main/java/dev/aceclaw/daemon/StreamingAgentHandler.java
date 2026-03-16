@@ -1740,15 +1740,16 @@ public final class StreamingAgentHandler {
         if (session.projectPath() == null) {
             var activePaths = inferActiveFilePaths(effectiveQuery, session.messages(), null);
             var requestFocus = SystemPromptLoader.analyzeRequestFocus(effectiveQuery, activePaths);
+            String prompt = getSystemPrompt(sessionId);
             return new SystemPromptLoader.ContextInspection(
-                    getSystemPrompt(sessionId),
+                    prompt,
                     requestFocus,
                     List.of(),
                     requestFocus.activeFilePaths(),
                     List.of(),
                     List.of(),
-                    getSystemPrompt(sessionId).length(),
-                    ContextEstimator.estimateTokens(getSystemPrompt(sessionId)),
+                    prompt.length(),
+                    ContextEstimator.estimateTokens(prompt),
                     systemPromptBudget);
         }
         var activePaths = inferActiveFilePaths(effectiveQuery, session.messages(), session.projectPath());
