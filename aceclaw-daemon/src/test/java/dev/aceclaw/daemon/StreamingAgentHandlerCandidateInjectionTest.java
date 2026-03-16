@@ -93,4 +93,26 @@ class StreamingAgentHandlerCandidateInjectionTest {
         assertThat(paths).contains("src/main/App.java", "docs/guide.md");
         assertThat(paths).anyMatch(path -> path.contains("AppTest.java"));
     }
+
+    @Test
+    void inspectContextWithoutProjectStillReturnsRequestFocus() {
+        var sessionManager = new SessionManager();
+        var handler = new StreamingAgentHandler(
+                sessionManager, null, null, null, new ObjectMapper());
+        handler.setLlmConfig(null, "test-model", "BASE_PROMPT");
+
+        var session = sessionManager.createSession(null);
+        session.addMessage(new AgentSession.ConversationMessage.User(
+                "Continue with `AppService` and review src/main/App.java"));
+
+        var inspection = handler.inspectContext(
+                session.id(),
+                "Continue with `AppService` and review src/main/App.java");
+
+        assertThat(inspection.requestFocus().querySummary()).contains("Continue with `AppService`");
+        assertThat(inspection.requestFocus().activeFilePaths()).contains("src/main/App.java");
+        assertThat(inspection.requestFocus().activeSymbols()).contains("AppService");
+        assertThat(inspection.requestFocus().planSignals()).contains("continue current execution");
+        assertThat(inspection.activeFilePaths()).contains("src/main/App.java");
+    }
 }

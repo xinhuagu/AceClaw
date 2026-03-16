@@ -289,11 +289,18 @@ class SystemPromptLoaderTest {
                 """);
 
         Files.writeString(workDir.resolve("ACECLAW.md"), "Prefer small focused patches.");
+        Path aceclawHome = tempDir.resolve(".aceclaw-home");
+        Files.createDirectories(aceclawHome);
+        var store = new AutoMemoryStore(aceclawHome);
+        store.load(workDir);
+        store.add(MemoryEntry.Category.PATTERN,
+                "AppService should keep request-local validation logic close to renderContextList.",
+                List.of("java"), "test", false, workDir);
 
         String longSkills = "# Available Skills\n\n" + "skill-line\n".repeat(10_000);
         var inspection = SystemPromptLoader.inspectRequest(
                 workDir,
-                null,
+                store,
                 null,
                 null,
                 "test-model",
@@ -304,12 +311,12 @@ class SystemPromptLoaderTest {
                 null,
                 CandidatePromptAssembler.Config.disabled(),
                 longSkills,
-                "update src/main/App.java tests",
+                "update AppService in src/main/App.java tests",
                 List.of("src/main/App.java"));
 
         assertThat(inspection.prompt().length()).isEqualTo(inspection.totalChars());
         assertThat(inspection.estimatedTokens()).isPositive();
-        assertThat(inspection.requestFocus().querySummary()).contains("update src/main/App.java tests");
+        assertThat(inspection.requestFocus().querySummary()).contains("update AppService in src/main/App.java tests");
         assertThat(inspection.activeFilePaths()).containsExactly("src/main/App.java");
         assertThat(inspection.requestFocus().activeFilePaths()).containsExactly("src/main/App.java");
         assertThat(inspection.requestFocus().planSignals()).contains("code change requested", "verification requested");
@@ -323,6 +330,15 @@ class SystemPromptLoaderTest {
                     assertThat(section.inclusionReason()).contains("Current request focus");
                     assertThat(section.evidence()).anyMatch(item -> item.contains("files="));
                     assertThat(section.content()).contains("Task Focus");
+                });
+        assertThat(inspection.sections())
+                .filteredOn(section -> section.key().equals("memory:Auto-Memory"))
+                .singleElement()
+                .satisfies(section -> {
+                    assertThat(section.scopeType()).isEqualTo("task-local");
+                    assertThat(section.priority()).isGreaterThan(60);
+                    assertThat(section.inclusionReason()).contains("referenced active request symbols");
+                    assertThat(section.evidence()).anyMatch(item -> item.contains("symbols=AppService"));
                 });
         assertThat(inspection.sections())
                 .filteredOn(section -> section.key().equals("rules"))

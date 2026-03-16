@@ -254,48 +254,65 @@ public final class SystemPromptLoader {
         var tierSections = MemoryTierLoader.formatTierSections(
                 tierResult, memoryStore, projectPath, 50, markdownMemoryDir, queryHint);
         var requestFocus = analyzeRequestFocus(queryHint, activeFilePaths);
+        var rankedTierSections = tierSections.stream()
+                .map(section -> new RankedSection(
+                        "memory:" + section.tier().displayName(),
+                        section.content(),
+                        applyRequestFocusPriority(
+                                "memory:" + section.tier().displayName(),
+                                section.tier().priority(),
+                                section.content(),
+                                requestFocus),
+                        section.tier().priority() >= 90))
+                .toList();
+        String taskFocusSection = formatTaskFocusSection(requestFocus);
 
         var plan = new ContextAssemblyPlan();
-        for (var section : tierSections) {
-            boolean highPriority = section.tier().priority() >= 60;
-            if (highPriority) {
-                plan.addSection("memory:" + section.tier().displayName(), section.content(),
-                        section.tier().priority(), section.tier().priority() >= 90);
+        for (var section : rankedTierSections) {
+            if (section.priority() >= 60) {
+                plan.addSection(section.key(), section.content(), section.priority(), section.protectedSection());
             }
         }
 
         plan.addSection("base", basePrompt().replace(DYNAMIC_TOOL_GUIDANCE_PLACEHOLDER, ""), 95, true);
-        plan.addSection("task-focus", formatTaskFocusSection(requestFocus), 89, false);
+        plan.addSection("task-focus", taskFocusSection,
+                applyRequestFocusPriority("task-focus", 89, taskFocusSection, requestFocus), false);
 
         String rulesSection = RuleEngine.loadRules(projectPath).formatForPrompt(
                 activeFilePaths != null ? activeFilePaths : List.of());
-        plan.addSection("rules", rulesSection, 88, false);
+        plan.addSection("rules", rulesSection,
+                applyRequestFocusPriority("rules", 88, rulesSection, requestFocus), false);
 
         if (registeredToolNames != null && !registeredToolNames.isEmpty()) {
             plan.addSection("tool-guidance",
                     ToolGuidanceGenerator.generate(registeredToolNames, hasBraveApiKey),
-                    82, false);
+                    applyRequestFocusPriority("tool-guidance", 82, "", requestFocus), false);
         }
 
-        plan.addSection("environment", buildEnvironmentContext(projectPath, model, provider), 72, false);
-        plan.addSection("git", buildGitContext(projectPath), 40, false);
+        String environmentSection = buildEnvironmentContext(projectPath, model, provider);
+        plan.addSection("environment", environmentSection,
+                applyRequestFocusPriority("environment", 72, environmentSection, requestFocus), false);
+        String gitSection = buildGitContext(projectPath);
+        plan.addSection("git", gitSection,
+                applyRequestFocusPriority("git", 40, gitSection, requestFocus), false);
 
-        for (var section : tierSections) {
-            boolean lowPriority = section.tier().priority() < 60;
-            if (lowPriority) {
-                plan.addSection("memory:" + section.tier().displayName(), section.content(),
-                        section.tier().priority(), false);
+        for (var section : rankedTierSections) {
+            if (section.priority() < 60) {
+                plan.addSection(section.key(), section.content(), section.priority(), false);
             }
         }
 
-        plan.addSection("skills", normalizeSection(skillDescriptions), 58, false);
+        String skillsSection = normalizeSection(skillDescriptions);
+        plan.addSection("skills", skillsSection,
+                applyRequestFocusPriority("skills", 58, skillsSection, requestFocus), false);
 
         List<String> injectedCandidateIds = List.of();
         if (candidateStore != null && candidateConfig != null && candidateConfig.enabled()) {
             var candidateAssembly = CandidatePromptAssembler.assembleWithMetadata(
                     candidateStore, candidateConfig, queryHint,
                     activeFilePaths != null ? activeFilePaths : List.of());
-            plan.addSection("candidates", candidateAssembly.section(), 54, false);
+            plan.addSection("candidates", candidateAssembly.section(),
+                    applyRequestFocusPriority("candidates", 54, candidateAssembly.section(), requestFocus), false);
             injectedCandidateIds = candidateAssembly.candidateIds();
         }
 
@@ -308,7 +325,7 @@ public final class SystemPromptLoader {
                         section.key(),
                         classifySectionSource(section.key()),
                         classifySectionScope(section.key()),
-                        describeInclusionReason(section.key(), requestFocus),
+                        describeInclusionReason(section.key(), section.content(), requestFocus),
                         collectSectionEvidence(section.key(), requestFocus),
                         section.priority(),
                         section.protectedSection(),
@@ -523,6 +540,9 @@ public final class SystemPromptLoader {
         if (key == null || key.isBlank()) {
             return "always-on";
         }
+        if ("memory:Auto-Memory".equals(key)) {
+            return "task-local";
+        }
         if (key.startsWith("memory:")) {
             return "always-on";
         }
@@ -532,13 +552,19 @@ public final class SystemPromptLoader {
         };
     }
 
-    private static String describeInclusionReason(String key, RequestFocus focus) {
+    private static String describeInclusionReason(String key, String content, RequestFocus focus) {
         if (key == null || key.isBlank()) {
             return "";
         }
         if (key.startsWith("memory:")) {
+            if (contentReferencesActiveSymbols(content, focus)) {
+                return "Memory tier priority was boosted because it referenced active request symbols.";
+            }
             if ("memory:Auto-Memory".equals(key) && !focus.querySummary().isBlank()) {
                 return "Learned signals were ranked against the current request hint.";
+            }
+            if ("memory:Daily Journal".equals(key) && !focus.planSignals().isEmpty()) {
+                return "Recent journal context was promoted because the plan signals suggest ongoing execution.";
             }
             return "Persistent memory tier kept in the system prompt hierarchy.";
         }
@@ -560,15 +586,18 @@ public final class SystemPromptLoader {
     private static List<String> collectSectionEvidence(String key, RequestFocus focus) {
         var evidence = new ArrayList<String>();
         if (!focus.activeFilePaths().isEmpty()
-                && ("task-focus".equals(key) || "rules".equals(key) || "candidates".equals(key))) {
+                && ("task-focus".equals(key) || "rules".equals(key) || "candidates".equals(key)
+                || "memory:Markdown Memory".equals(key))) {
             evidence.add("files=" + String.join(", ", focus.activeFilePaths().stream().limit(3).toList()));
         }
         if (!focus.activeSymbols().isEmpty()
-                && ("task-focus".equals(key) || "skills".equals(key) || "candidates".equals(key))) {
+                && ("task-focus".equals(key) || "skills".equals(key) || "candidates".equals(key)
+                || key.startsWith("memory:"))) {
             evidence.add("symbols=" + String.join(", ", focus.activeSymbols().stream().limit(4).toList()));
         }
         if (!focus.planSignals().isEmpty()
-                && ("task-focus".equals(key) || "git".equals(key) || "candidates".equals(key))) {
+                && ("task-focus".equals(key) || "git".equals(key) || "candidates".equals(key)
+                || "memory:Daily Journal".equals(key))) {
             evidence.add("plan=" + String.join(", ", focus.planSignals()));
         }
         if (!focus.querySummary().isBlank()
@@ -578,13 +607,78 @@ public final class SystemPromptLoader {
         return List.copyOf(evidence);
     }
 
-    private static RequestFocus analyzeRequestFocus(String queryHint, List<String> activeFilePaths) {
+    static RequestFocus analyzeRequestFocus(String queryHint, List<String> activeFilePaths) {
         String normalizedQuery = queryHint != null ? normalizeQuerySummary(queryHint) : "";
         return new RequestFocus(
                 normalizedQuery,
                 activeFilePaths != null ? List.copyOf(activeFilePaths.stream().limit(6).toList()) : List.of(),
                 extractActiveSymbols(queryHint),
                 inferPlanSignals(queryHint));
+    }
+
+    private static int applyRequestFocusPriority(String key, int basePriority, String content, RequestFocus focus) {
+        if (focus == null) {
+            return basePriority;
+        }
+        int adjusted = basePriority + requestFocusBoost(key, content, focus);
+        return Math.max(0, Math.min(100, adjusted));
+    }
+
+    private static int requestFocusBoost(String key, String content, RequestFocus focus) {
+        int boost = 0;
+        boolean symbolMatch = contentReferencesActiveSymbols(content, focus);
+        boolean hasCodeChange = focus.planSignals().contains("code change requested");
+        boolean hasVerification = focus.planSignals().contains("verification requested");
+        boolean hasContinue = focus.planSignals().contains("continue current execution");
+        boolean hasPlanning = focus.planSignals().contains("planning context");
+
+        if (key.startsWith("memory:")) {
+            if (symbolMatch) {
+                boost += 16;
+            }
+            if ("memory:Auto-Memory".equals(key) && !focus.querySummary().isBlank()) {
+                boost += 8;
+            }
+            if ("memory:Markdown Memory".equals(key) && !focus.activeFilePaths().isEmpty()) {
+                boost += 10;
+            }
+            if ("memory:Daily Journal".equals(key) && (hasContinue || hasVerification)) {
+                boost += 12;
+            }
+            return boost;
+        }
+
+        return switch (key) {
+            case "task-focus" -> (!focus.activeFilePaths().isEmpty() ? 2 : 0)
+                    + (!focus.activeSymbols().isEmpty() ? 4 : 0)
+                    + (!focus.planSignals().isEmpty() ? 4 : 0);
+            case "rules" -> (!focus.activeFilePaths().isEmpty() ? 4 : 0)
+                    + (hasCodeChange ? 3 : 0)
+                    + (hasVerification ? 2 : 0);
+            case "skills" -> (!focus.activeSymbols().isEmpty() ? 5 : 0)
+                    + (hasPlanning ? 5 : 0)
+                    + (hasCodeChange ? 2 : 0);
+            case "candidates" -> (!focus.activeSymbols().isEmpty() ? 6 : 0)
+                    + (!focus.activeFilePaths().isEmpty() ? 3 : 0)
+                    + (!focus.planSignals().isEmpty() ? 3 : 0);
+            case "git" -> (hasContinue ? 6 : 0) + (hasCodeChange ? 2 : 0);
+            case "tool-guidance" -> hasPlanning ? 2 : 0;
+            case "environment" -> (hasContinue && focus.activeFilePaths().isEmpty()) ? 2 : 0;
+            default -> 0;
+        };
+    }
+
+    private static boolean contentReferencesActiveSymbols(String content, RequestFocus focus) {
+        if (content == null || content.isBlank() || focus == null || focus.activeSymbols().isEmpty()) {
+            return false;
+        }
+        String normalizedContent = content.toLowerCase();
+        for (String symbol : focus.activeSymbols()) {
+            if (symbol != null && !symbol.isBlank() && normalizedContent.contains(symbol.toLowerCase())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String formatTaskFocusSection(RequestFocus focus) {
@@ -681,6 +775,13 @@ public final class SystemPromptLoader {
         }
         return List.copyOf(signals.stream().distinct().toList());
     }
+
+    private record RankedSection(
+            String key,
+            String content,
+            int priority,
+            boolean protectedSection
+    ) {}
 
     /**
      * Appends environment context (working dir, platform, Java version, date, model).

@@ -304,6 +304,7 @@ class TerminalReplTest {
         assertThat(plain).contains("Truncated:");
         assertThat(plain).contains("Request Focus");
         assertThat(plain).contains("Query:");
+        assertThat(plain).contains("Files:");
         assertThat(plain).contains("Symbols:");
         assertThat(plain).contains("Plan:");
         assertThat(plain).contains("Last compact:");

@@ -1736,19 +1736,21 @@ public final class StreamingAgentHandler {
         if (!session.isActive()) {
             throw new IllegalArgumentException("Session is not active: " + sessionId);
         }
+        String effectiveQuery = queryHint != null ? queryHint : "";
         if (session.projectPath() == null) {
+            var activePaths = inferActiveFilePaths(effectiveQuery, session.messages(), null);
+            var requestFocus = SystemPromptLoader.analyzeRequestFocus(effectiveQuery, activePaths);
             return new SystemPromptLoader.ContextInspection(
                     getSystemPrompt(sessionId),
-                    SystemPromptLoader.RequestFocus.empty(),
+                    requestFocus,
                     List.of(),
-                    List.of(),
+                    requestFocus.activeFilePaths(),
                     List.of(),
                     List.of(),
                     getSystemPrompt(sessionId).length(),
                     ContextEstimator.estimateTokens(getSystemPrompt(sessionId)),
                     systemPromptBudget);
         }
-        String effectiveQuery = queryHint != null ? queryHint : "";
         var activePaths = inferActiveFilePaths(effectiveQuery, session.messages(), session.projectPath());
         var config = new CandidatePromptAssembler.Config(
                 candidateInjectionEnabled,
