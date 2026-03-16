@@ -128,6 +128,9 @@ class TerminalReplTest {
         assertThat(output).contains("Session Status");
         assertThat(output).contains("claude-sonnet-4-5-20250929");
         assertThat(output).contains("/tmp/project");
+        assertThat(output).contains("Pressure:");
+        assertThat(output).contains("Peak:");
+        assertThat(output).contains("trend=");
     }
 
     @Test
@@ -511,6 +514,20 @@ class TerminalReplTest {
             releasePendingPermissions(bridge);
             pool.shutdownNow();
         }
+    }
+
+    @Test
+    void buildStatusString_showsPressureAndCompactionBadges() throws Exception {
+        var monitor = (ContextMonitor) getPrivateField(repl, "contextMonitor");
+        monitor.recordStreamingUsage(175_000);
+        monitor.recordCompaction(175_000, 80_000, "SUMMARIZED");
+        monitor.recordStreamingUsage(180_000);
+
+        String status = (String) invokePrivate(repl, "buildStatusString", new Class<?>[]{});
+
+        assertThat(status).contains("ctx-compact");
+        assertThat(status).contains("cmp#1");
+        assertThat(status).contains("SUMMARIZED");
     }
 
     private static TerminalRepl newReplForProject(Path project) {

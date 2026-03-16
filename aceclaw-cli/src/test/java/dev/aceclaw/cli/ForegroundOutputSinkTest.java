@@ -1,6 +1,7 @@
 package dev.aceclaw.cli;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
 
 import java.io.PrintWriter;
@@ -68,5 +69,24 @@ class ForegroundOutputSinkTest {
         @SuppressWarnings("unchecked")
         Map<String, Object> entries = (Map<String, Object>) entriesField.get(renderer);
         assertThat(entries).isEmpty();
+    }
+
+    @Test
+    void compactionEvent_updatesContextMonitor() {
+        var buffer = new StringWriter();
+        var monitor = new ContextMonitor(200_000);
+        var sink = new ForegroundOutputSink(new PrintWriter(buffer), new TerminalMarkdownRenderer(),
+                null, monitor, null);
+
+        ObjectNode params = new ObjectMapper().createObjectNode();
+        params.put("originalTokens", 150_000);
+        params.put("compactedTokens", 55_000);
+        params.put("phase", "SUMMARIZED");
+
+        sink.onCompaction(params);
+
+        assertThat(monitor.currentContextTokens()).isEqualTo(55_000);
+        assertThat(monitor.compactionCount()).isEqualTo(1);
+        assertThat(monitor.lastCompactionPhase()).isEqualTo("SUMMARIZED");
     }
 }

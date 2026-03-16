@@ -3,6 +3,8 @@ package dev.aceclaw.cli;
 import com.fasterxml.jackson.databind.JsonNode;
 
 import org.jline.terminal.Terminal;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.PrintWriter;
 import java.util.LinkedHashMap;
@@ -20,6 +22,8 @@ import static dev.aceclaw.cli.TerminalTheme.*;
  * status area under the active streaming line for tools, sub-agents, and plan steps.
  */
 public final class ForegroundOutputSink implements OutputSink {
+    private static final Logger log = LoggerFactory.getLogger(ForegroundOutputSink.class);
+
     /**
      * Tool panel lines (⏳/✅) are noisy on some terminals because cursor restore behavior
      * differs across environments. Keep it opt-in; default to trace-only tool logs.
@@ -196,6 +200,7 @@ public final class ForegroundOutputSink implements OutputSink {
         synchronized (lock) {
             if (contextMonitor != null) {
                 contextMonitor.recordStreamingUsage(inputTokens);
+                contextMonitor.checkThresholds(log);
             }
         }
         // Trigger status bar refresh outside the lock to show updated context %
@@ -263,11 +268,20 @@ public final class ForegroundOutputSink implements OutputSink {
 
     @Override
     public void onCompaction(JsonNode params) {
+        if (contextMonitor != null && params != null) {
+            contextMonitor.recordCompaction(
+                    params.path("originalTokens").asLong(0),
+                    params.path("compactedTokens").asLong(0),
+                    params.path("phase").asText("UNKNOWN"));
+        }
         synchronized (lock) {
             statusRenderer.hide();
             out.println(MUTED + "[context compacted]" + RESET);
             out.flush();
             statusRenderer.refresh();
+        }
+        if (uiRenderCallback != null) {
+            uiRenderCallback.run();
         }
     }
 

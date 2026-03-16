@@ -1369,6 +1369,7 @@ public final class TerminalRepl {
                     int bgTurnOut = bgUsage.path("outputTokens").asInt(0);
                     long bgPerCall = handle.liveInputTokens();
                     contextMonitor.recordTurnComplete(bgTurnIn, bgTurnOut, bgPerCall);
+                    contextMonitor.checkThresholds(log);
                 }
             }
 
@@ -1542,6 +1543,16 @@ public final class TerminalRepl {
             long displayTokens = effectiveContextTokens();
             sb.append(MUTED).append(" | ").append(RESET);
             sb.append(buildContextBar(displayTokens, ctxWindow));
+            String pressureBadge = buildContextPressureBadge();
+            if (pressureBadge != null) {
+                sb.append(MUTED).append(" | ").append(RESET);
+                sb.append(pressureBadge);
+            }
+            String compactionBadge = buildCompactionBadge();
+            if (compactionBadge != null) {
+                sb.append(MUTED).append(" | ").append(RESET);
+                sb.append(compactionBadge);
+            }
         }
 
         // Show running task count if > 0
@@ -2427,6 +2438,24 @@ public final class TerminalRepl {
                 + " (" + pctStr + "%)";
     }
 
+    private String buildContextPressureBadge() {
+        return switch (contextMonitor.pressureLevel()) {
+            case NORMAL -> null;
+            case WATCH -> WARNING + "ctx-watch" + RESET;
+            case COMPACT -> WARNING + "ctx-compact" + RESET;
+            case CRITICAL -> ERROR + "ctx-critical" + RESET;
+        };
+    }
+
+    private String buildCompactionBadge() {
+        if (contextMonitor.compactionCount() <= 0) return null;
+        return INFO + "cmp#" + contextMonitor.compactionCount() + RESET
+                + MUTED + " " + contextMonitor.lastCompactionPhase()
+                + " " + formatTokenCount(contextMonitor.lastCompactionOriginalTokens())
+                + "->" + formatTokenCount(contextMonitor.lastCompactionCompactedTokens())
+                + RESET;
+    }
+
     // -- Slash commands -------------------------------------------------------
 
     /**
@@ -2493,6 +2522,19 @@ public final class TerminalRepl {
                         formatTokenCount(sessionInfo.contextWindowTokens()),
                         sessionInfo.contextWindowTokens() > 0
                                 ? ctxTokens * 100 / sessionInfo.contextWindowTokens() : 0);
+                out.printf("  %sPressure:%s    %s%n", MUTED, RESET,
+                        contextMonitor.pressureLevel().label());
+                out.printf("  %sPeak:%s        %s | trend=%s | samples=%d%n", MUTED, RESET,
+                        formatTokenCount(contextMonitor.peakContextTokens()),
+                        contextMonitor.recentTrend().label(),
+                        contextMonitor.sampleCount());
+                if (contextMonitor.compactionCount() > 0) {
+                    out.printf("  %sCompaction:%s  #%d %s %s -> %s%n", MUTED, RESET,
+                            contextMonitor.compactionCount(),
+                            contextMonitor.lastCompactionPhase(),
+                            formatTokenCount(contextMonitor.lastCompactionOriginalTokens()),
+                            formatTokenCount(contextMonitor.lastCompactionCompactedTokens()));
+                }
                 out.printf("  %sTotal usage:%s %s in / %s out%n", MUTED, RESET,
                         formatTokenCount(contextMonitor.totalInput()),
                         formatTokenCount(contextMonitor.totalOutput()));

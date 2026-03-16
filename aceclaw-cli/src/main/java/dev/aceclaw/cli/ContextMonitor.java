@@ -3,6 +3,9 @@ package dev.aceclaw.cli;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Instant;
+import java.util.ArrayDeque;
+
 /**
  * Single source of truth for context window usage tracking.
  *
@@ -19,17 +22,31 @@ import org.slf4j.LoggerFactory;
 public final class ContextMonitor {
 
     private static final Logger log = LoggerFactory.getLogger(ContextMonitor.class);
+    private static final int MAX_HISTORY_SAMPLES = 32;
 
     private final int contextWindowTokens;
+    private final ArrayDeque<Long> recentSamples = new ArrayDeque<>(MAX_HISTORY_SAMPLES);
 
     /** Per-call input tokens from the most recent LLM call (context occupation). */
     private long lastRealInputTokens;
+    /** Highest observed per-call input tokens in the session. */
+    private long peakContextTokens;
 
     /** Cumulative input tokens across all turns in the session. */
     private long totalInputTokens;
 
     /** Cumulative output tokens across all turns in the session. */
     private long totalOutputTokens;
+    /** Number of compaction events observed in the session. */
+    private int compactionCount;
+    /** Most recent compaction pre-compaction token estimate. */
+    private long lastCompactionOriginalTokens;
+    /** Most recent compaction post-compaction token estimate. */
+    private long lastCompactionCompactedTokens;
+    /** Most recent compaction phase. */
+    private String lastCompactionPhase;
+    /** When the most recent compaction occurred. */
+    private Instant lastCompactionAt;
 
     /** Threshold warning flags to avoid repeated log spam. */
     private boolean warned70;
@@ -49,6 +66,8 @@ public final class ContextMonitor {
                 perCallInputTokens, lastRealInputTokens, contextWindowTokens,
                 contextWindowTokens > 0 ? String.format("%.1f", (double) perCallInputTokens / contextWindowTokens * 100.0) : "0.0");
         this.lastRealInputTokens = perCallInputTokens;
+        this.peakContextTokens = Math.max(peakContextTokens, perCallInputTokens);
+        appendSample(perCallInputTokens);
     }
 
     /**
@@ -67,6 +86,8 @@ public final class ContextMonitor {
         if (lastPerCallInputTokens > 0) {
             this.lastRealInputTokens = lastPerCallInputTokens;
         }
+        this.peakContextTokens = Math.max(peakContextTokens, lastRealInputTokens);
+        appendSample(lastRealInputTokens);
         log.trace("recordTurnComplete: turnIn={}, turnOut={}, perCall={}, totalIn={}, totalOut={}, ctxPct={}%",
                 turnCumulativeIn, turnCumulativeOut, lastPerCallInputTokens,
                 totalInputTokens, totalOutputTokens,
@@ -111,6 +132,84 @@ public final class ContextMonitor {
     }
 
     /**
+     * Records a context compaction event and updates the visible context estimate.
+     */
+    public synchronized void recordCompaction(long originalTokens, long compactedTokens, String phase) {
+        long normalizedOriginal = Math.max(0L, originalTokens);
+        long normalizedCompacted = Math.max(0L, compactedTokens);
+        this.compactionCount++;
+        this.lastCompactionOriginalTokens = normalizedOriginal;
+        this.lastCompactionCompactedTokens = normalizedCompacted;
+        this.lastCompactionPhase = phase == null || phase.isBlank() ? "UNKNOWN" : phase;
+        this.lastCompactionAt = Instant.now();
+        this.lastRealInputTokens = normalizedCompacted;
+        this.peakContextTokens = Math.max(peakContextTokens, Math.max(normalizedOriginal, normalizedCompacted));
+        appendSample(normalizedCompacted);
+    }
+
+    /**
+     * Returns the highest observed context occupation in the session.
+     */
+    public synchronized long peakContextTokens() {
+        return peakContextTokens;
+    }
+
+    /**
+     * Returns the number of retained usage samples.
+     */
+    public synchronized int sampleCount() {
+        return recentSamples.size();
+    }
+
+    /**
+     * Returns the recent direction of context growth across retained samples.
+     */
+    public synchronized Trend recentTrend() {
+        if (recentSamples.size() < 2) return Trend.UNKNOWN;
+        long last = recentSamples.removeLast();
+        long previous = recentSamples.peekLast();
+        recentSamples.addLast(last);
+        if (previous == 0 && last == 0) return Trend.STABLE;
+        long tolerance = contextWindowTokens > 0
+                ? Math.max(256L, Math.round(contextWindowTokens * 0.02))
+                : 256L;
+        long delta = last - previous;
+        if (Math.abs(delta) <= tolerance) return Trend.STABLE;
+        return delta > 0 ? Trend.RISING : Trend.FALLING;
+    }
+
+    /**
+     * Returns the current context pressure band.
+     */
+    public synchronized PressureLevel pressureLevel() {
+        double pct = usagePercent();
+        if (pct >= 95.0) return PressureLevel.CRITICAL;
+        if (pct >= 85.0) return PressureLevel.COMPACT;
+        if (pct >= 70.0) return PressureLevel.WATCH;
+        return PressureLevel.NORMAL;
+    }
+
+    public synchronized int compactionCount() {
+        return compactionCount;
+    }
+
+    public synchronized long lastCompactionOriginalTokens() {
+        return lastCompactionOriginalTokens;
+    }
+
+    public synchronized long lastCompactionCompactedTokens() {
+        return lastCompactionCompactedTokens;
+    }
+
+    public synchronized String lastCompactionPhase() {
+        return lastCompactionPhase;
+    }
+
+    public synchronized Instant lastCompactionAt() {
+        return lastCompactionAt;
+    }
+
+    /**
      * Checks context usage thresholds and logs warnings at 70%, 85%, and 95%.
      * Each threshold is warned about only once per session.
      */
@@ -133,6 +232,51 @@ public final class ContextMonitor {
             log.info("Context usage at {}% ({}/{})",
                     String.format("%.0f", pct), lastRealInputTokens, contextWindowTokens);
             warned70 = true;
+        }
+    }
+
+    private void appendSample(long tokens) {
+        long normalized = Math.max(0L, tokens);
+        if (!recentSamples.isEmpty() && recentSamples.peekLast() == normalized) {
+            return;
+        }
+        if (recentSamples.size() == MAX_HISTORY_SAMPLES) {
+            recentSamples.removeFirst();
+        }
+        recentSamples.addLast(normalized);
+    }
+
+    public enum Trend {
+        UNKNOWN("unknown"),
+        STABLE("stable"),
+        RISING("rising"),
+        FALLING("falling");
+
+        private final String label;
+
+        Trend(String label) {
+            this.label = label;
+        }
+
+        public String label() {
+            return label;
+        }
+    }
+
+    public enum PressureLevel {
+        NORMAL("normal"),
+        WATCH("watch"),
+        COMPACT("compact"),
+        CRITICAL("critical");
+
+        private final String label;
+
+        PressureLevel(String label) {
+            this.label = label;
+        }
+
+        public String label() {
+            return label;
         }
     }
 }
