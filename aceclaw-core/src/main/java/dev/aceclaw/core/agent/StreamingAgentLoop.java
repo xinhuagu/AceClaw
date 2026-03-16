@@ -226,10 +226,26 @@ public final class StreamingAgentLoop {
                     return turn;
                 }
 
-                // Check if context compaction is needed before this LLM call
+                // Apply lightweight request-time pruning to a transient copy, then decide
+                // whether full compaction is needed based on the post-prune estimate.
+                // allMessages is only mutated by compaction (persists to session history).
+                List<Message> requestMessages = allMessages;
                 if (compactor != null) {
+                    var pruneResult = applyRequestTimePruning(allMessages);
+                    if (pruneResult != null) {
+                        requestMessages = pruneResult.messages();
+                        // Feed the post-prune estimate to compaction so it only fires
+                        // when pruning alone is insufficient.
+                        lastInputTokens = pruneResult.prunedTokenEstimate();
+                    }
+                    var prevCompactionResult = compactionResult;
                     compactionResult = checkAndCompact(
                             allMessages, lastInputTokens, compactionResult, eventHandler);
+                    if (compactionResult != prevCompactionResult) {
+                        // Compaction ran this iteration and mutated allMessages;
+                        // use compacted version for the request.
+                        requestMessages = allMessages;
+                    }
                 }
 
                 // Progress stall detection: inject pivot prompt if no progress in recent iterations
@@ -241,11 +257,12 @@ public final class StreamingAgentLoop {
                     log.warn("Progress stall detected ({} iterations), injecting pivot prompt",
                             progressDetector.noProgressCount());
                     progressDetector.reset();
+                    requestMessages = allMessages;
                 }
 
                 log.debug("Streaming ReAct iteration {} (messages: {})", iteration + 1, allMessages.size());
 
-                var request = buildRequest(allMessages);
+                var request = buildRequest(requestMessages);
 
                 // Stream the response, accumulating content blocks
                 var accumulator = new StreamAccumulator(eventHandler);
@@ -491,6 +508,23 @@ public final class StreamingAgentLoop {
                 String.format("%.1f", result.reductionPercent()));
 
         return result;
+    }
+
+    /**
+     * Returns a pruned copy of messages for the immediate LLM request, or {@code null}
+     * if no pruning was applied.  The caller's {@code allMessages} list is never mutated.
+     */
+    private MessageCompactor.RequestPruneResult applyRequestTimePruning(List<Message> allMessages) {
+        if (allMessages.isEmpty()) {
+            return null;
+        }
+        var pruneResult = compactor.pruneForRequest(allMessages, systemPrompt, toolRegistry.toDefinitions());
+        if (!pruneResult.applied()) {
+            return null;
+        }
+        log.info("Request-time pruning applied: {} -> {} estimated tokens",
+                pruneResult.originalTokenEstimate(), pruneResult.prunedTokenEstimate());
+        return pruneResult;
     }
 
     private LlmRequest buildRequest(List<Message> messages) {
