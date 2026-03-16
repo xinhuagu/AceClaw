@@ -16,9 +16,11 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * Loads and assembles the system prompt for the agent.
@@ -43,6 +45,9 @@ public final class SystemPromptLoader {
             System.getProperty("user.home"), ".aceclaw");
     private static final String DYNAMIC_TOOL_GUIDANCE_PLACEHOLDER =
             "<!-- Dynamic tool guidance (priority, tool-specific guidelines, fallback chain) injected by ToolGuidanceGenerator -->";
+    private static final Pattern CAMEL_OR_PASCAL_SYMBOL = Pattern.compile(
+            "\\b(?:[A-Z][A-Za-z0-9_]{2,}|[a-z]+[A-Z][A-Za-z0-9_]*)\\b(?:\\(\\))?");
+    private static final Pattern BACKTICK_CODE = Pattern.compile("`([^`]+)`");
 
     /**
      * Loads the full system prompt for the given project directory.
@@ -248,6 +253,7 @@ public final class SystemPromptLoader {
         Path markdownMemoryDir = markdownStore != null ? markdownStore.memoryDir() : null;
         var tierSections = MemoryTierLoader.formatTierSections(
                 tierResult, memoryStore, projectPath, 50, markdownMemoryDir, queryHint);
+        var requestFocus = analyzeRequestFocus(queryHint, activeFilePaths);
 
         var plan = new ContextAssemblyPlan();
         for (var section : tierSections) {
@@ -259,6 +265,7 @@ public final class SystemPromptLoader {
         }
 
         plan.addSection("base", basePrompt().replace(DYNAMIC_TOOL_GUIDANCE_PLACEHOLDER, ""), 95, true);
+        plan.addSection("task-focus", formatTaskFocusSection(requestFocus), 89, false);
 
         String rulesSection = RuleEngine.loadRules(projectPath).formatForPrompt(
                 activeFilePaths != null ? activeFilePaths : List.of());
@@ -300,6 +307,9 @@ public final class SystemPromptLoader {
                 .map(section -> new ContextSection(
                         section.key(),
                         classifySectionSource(section.key()),
+                        classifySectionScope(section.key()),
+                        describeInclusionReason(section.key(), requestFocus),
+                        collectSectionEvidence(section.key(), requestFocus),
                         section.priority(),
                         section.protectedSection(),
                         section.originalChars(),
@@ -311,6 +321,7 @@ public final class SystemPromptLoader {
                 .toList();
         return new ContextInspection(
                 result.prompt(),
+                requestFocus,
                 injectedCandidateIds,
                 activeFilePaths != null ? List.copyOf(activeFilePaths) : List.of(),
                 result.truncatedSectionKeys(),
@@ -421,6 +432,7 @@ public final class SystemPromptLoader {
 
     public record ContextInspection(
             String prompt,
+            RequestFocus requestFocus,
             List<String> injectedCandidateIds,
             List<String> activeFilePaths,
             List<String> truncatedSectionKeys,
@@ -431,6 +443,7 @@ public final class SystemPromptLoader {
     ) {
         public ContextInspection {
             prompt = prompt != null ? prompt : "";
+            requestFocus = requestFocus != null ? requestFocus : RequestFocus.empty();
             injectedCandidateIds = injectedCandidateIds != null ? List.copyOf(injectedCandidateIds) : List.of();
             activeFilePaths = activeFilePaths != null ? List.copyOf(activeFilePaths) : List.of();
             truncatedSectionKeys = truncatedSectionKeys != null ? List.copyOf(truncatedSectionKeys) : List.of();
@@ -446,6 +459,9 @@ public final class SystemPromptLoader {
     public record ContextSection(
             String key,
             String sourceType,
+            String scopeType,
+            String inclusionReason,
+            List<String> evidence,
             int priority,
             boolean protectedSection,
             int originalChars,
@@ -458,7 +474,28 @@ public final class SystemPromptLoader {
         public ContextSection {
             key = key != null ? key : "unknown";
             sourceType = sourceType != null ? sourceType : "unknown";
+            scopeType = scopeType != null ? scopeType : "always-on";
+            inclusionReason = inclusionReason != null ? inclusionReason : "";
+            evidence = evidence != null ? List.copyOf(evidence) : List.of();
             content = content != null ? content : "";
+        }
+    }
+
+    public record RequestFocus(
+            String querySummary,
+            List<String> activeFilePaths,
+            List<String> activeSymbols,
+            List<String> planSignals
+    ) {
+        public RequestFocus {
+            querySummary = querySummary != null ? querySummary : "";
+            activeFilePaths = activeFilePaths != null ? List.copyOf(activeFilePaths) : List.of();
+            activeSymbols = activeSymbols != null ? List.copyOf(activeSymbols) : List.of();
+            planSignals = planSignals != null ? List.copyOf(planSignals) : List.of();
+        }
+
+        public static RequestFocus empty() {
+            return new RequestFocus("", List.of(), List.of(), List.of());
         }
     }
 
@@ -471,6 +508,7 @@ public final class SystemPromptLoader {
         }
         return switch (key) {
             case "base" -> "base";
+            case "task-focus" -> "task-focus";
             case "rules" -> "rules";
             case "tool-guidance" -> "tool-guidance";
             case "environment" -> "environment";
@@ -479,6 +517,169 @@ public final class SystemPromptLoader {
             case "candidates" -> "candidates";
             default -> "other";
         };
+    }
+
+    private static String classifySectionScope(String key) {
+        if (key == null || key.isBlank()) {
+            return "always-on";
+        }
+        if (key.startsWith("memory:")) {
+            return "always-on";
+        }
+        return switch (key) {
+            case "task-focus", "rules", "candidates", "git" -> "task-local";
+            default -> "always-on";
+        };
+    }
+
+    private static String describeInclusionReason(String key, RequestFocus focus) {
+        if (key == null || key.isBlank()) {
+            return "";
+        }
+        if (key.startsWith("memory:")) {
+            if ("memory:Auto-Memory".equals(key) && !focus.querySummary().isBlank()) {
+                return "Learned signals were ranked against the current request hint.";
+            }
+            return "Persistent memory tier kept in the system prompt hierarchy.";
+        }
+        return switch (key) {
+            case "base" -> "Core operating policy is always included.";
+            case "task-focus" -> "Current request focus was derived from the query, active files, and symbols.";
+            case "rules" -> focus.activeFilePaths().isEmpty()
+                    ? "Path-based rules are available for the current workspace."
+                    : "Path-based rules matched the files currently in focus.";
+            case "tool-guidance" -> "Tool guidance is included because tools are registered for this session.";
+            case "environment" -> "Runtime environment grounding is always included.";
+            case "git" -> "Repository state is included as task-local working context.";
+            case "skills" -> "Available skills are exposed so the agent can choose reusable workflows.";
+            case "candidates" -> "Promoted candidates were injected because they matched the current request.";
+            default -> "Included by the request-aware system prompt assembly.";
+        };
+    }
+
+    private static List<String> collectSectionEvidence(String key, RequestFocus focus) {
+        var evidence = new ArrayList<String>();
+        if (!focus.activeFilePaths().isEmpty()
+                && ("task-focus".equals(key) || "rules".equals(key) || "candidates".equals(key))) {
+            evidence.add("files=" + String.join(", ", focus.activeFilePaths().stream().limit(3).toList()));
+        }
+        if (!focus.activeSymbols().isEmpty()
+                && ("task-focus".equals(key) || "skills".equals(key) || "candidates".equals(key))) {
+            evidence.add("symbols=" + String.join(", ", focus.activeSymbols().stream().limit(4).toList()));
+        }
+        if (!focus.planSignals().isEmpty()
+                && ("task-focus".equals(key) || "git".equals(key) || "candidates".equals(key))) {
+            evidence.add("plan=" + String.join(", ", focus.planSignals()));
+        }
+        if (!focus.querySummary().isBlank()
+                && ("task-focus".equals(key) || "candidates".equals(key) || "memory:Auto-Memory".equals(key))) {
+            evidence.add("query=" + focus.querySummary());
+        }
+        return List.copyOf(evidence);
+    }
+
+    private static RequestFocus analyzeRequestFocus(String queryHint, List<String> activeFilePaths) {
+        String normalizedQuery = queryHint != null ? normalizeQuerySummary(queryHint) : "";
+        return new RequestFocus(
+                normalizedQuery,
+                activeFilePaths != null ? List.copyOf(activeFilePaths.stream().limit(6).toList()) : List.of(),
+                extractActiveSymbols(queryHint),
+                inferPlanSignals(queryHint));
+    }
+
+    private static String formatTaskFocusSection(RequestFocus focus) {
+        if (focus == null) {
+            return "";
+        }
+        var lines = new ArrayList<String>();
+        if (!focus.querySummary().isBlank()) {
+            lines.add("- Query intent: " + focus.querySummary());
+        }
+        if (!focus.activeFilePaths().isEmpty()) {
+            lines.add("- Active files: " + String.join(", ", focus.activeFilePaths()));
+        }
+        if (!focus.activeSymbols().isEmpty()) {
+            lines.add("- Active symbols: " + String.join(", ", focus.activeSymbols()));
+        }
+        if (!focus.planSignals().isEmpty()) {
+            lines.add("- Plan signals: " + String.join(", ", focus.planSignals()));
+        }
+        if (lines.isEmpty()) {
+            return "";
+        }
+        return "\n\n# Task Focus\n\n"
+                + "Treat the following request-local signals as the primary focus for this task:\n\n"
+                + String.join("\n", lines)
+                + "\n";
+    }
+
+    private static String normalizeQuerySummary(String queryHint) {
+        if (queryHint == null || queryHint.isBlank()) {
+            return "";
+        }
+        String normalized = queryHint.replaceAll("\\s+", " ").trim();
+        if (normalized.length() <= 160) {
+            return normalized;
+        }
+        return normalized.substring(0, 157).trim() + "...";
+    }
+
+    private static List<String> extractActiveSymbols(String queryHint) {
+        if (queryHint == null || queryHint.isBlank()) {
+            return List.of();
+        }
+        var symbols = new java.util.LinkedHashSet<String>();
+        var backtickMatcher = BACKTICK_CODE.matcher(queryHint);
+        while (backtickMatcher.find() && symbols.size() < 8) {
+            String candidate = backtickMatcher.group(1).trim();
+            if (looksLikeSymbol(candidate)) {
+                symbols.add(candidate);
+            }
+        }
+        var matcher = CAMEL_OR_PASCAL_SYMBOL.matcher(queryHint);
+        while (matcher.find() && symbols.size() < 8) {
+            String candidate = matcher.group().replace("()", "");
+            if (looksLikeSymbol(candidate)) {
+                symbols.add(candidate);
+            }
+        }
+        return List.copyOf(symbols);
+    }
+
+    private static boolean looksLikeSymbol(String candidate) {
+        if (candidate == null || candidate.isBlank()) {
+            return false;
+        }
+        if (candidate.contains("/") || candidate.contains("\\")) {
+            return false;
+        }
+        if (candidate.contains(".")) {
+            return candidate.contains("::") || candidate.endsWith("()");
+        }
+        return candidate.matches("[A-Z][A-Za-z0-9_]{2,}")
+                || candidate.matches("[a-z]+[A-Z][A-Za-z0-9_]*");
+    }
+
+    private static List<String> inferPlanSignals(String queryHint) {
+        if (queryHint == null || queryHint.isBlank()) {
+            return List.of();
+        }
+        String lower = queryHint.toLowerCase();
+        var signals = new ArrayList<String>();
+        if (lower.contains("continue") || lower.contains("resume") || lower.contains("next step")) {
+            signals.add("continue current execution");
+        }
+        if (lower.contains("plan") || lower.contains("steps")) {
+            signals.add("planning context");
+        }
+        if (lower.contains("fix") || lower.contains("implement") || lower.contains("edit")
+                || lower.contains("update") || lower.contains("refactor")) {
+            signals.add("code change requested");
+        }
+        if (lower.contains("test") || lower.contains("verify") || lower.contains("review")) {
+            signals.add("verification requested");
+        }
+        return List.copyOf(signals.stream().distinct().toList());
     }
 
     /**

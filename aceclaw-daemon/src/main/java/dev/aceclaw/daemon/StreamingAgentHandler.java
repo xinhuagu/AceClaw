@@ -1739,6 +1739,7 @@ public final class StreamingAgentHandler {
         if (session.projectPath() == null) {
             return new SystemPromptLoader.ContextInspection(
                     getSystemPrompt(sessionId),
+                    SystemPromptLoader.RequestFocus.empty(),
                     List.of(),
                     List.of(),
                     List.of(),

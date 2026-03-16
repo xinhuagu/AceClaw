@@ -197,6 +197,19 @@ class TerminalReplTest {
         root.put("totalChars", 24000);
         root.put("estimatedTokens", 6000);
         root.put("systemPromptSharePct", 12.0);
+        var focus = mapper.createObjectNode();
+        focus.put("querySummary", "Update src/main/App.java and verify AppService behavior");
+        var focusFiles = mapper.createArrayNode();
+        focusFiles.add("src/main/App.java");
+        focus.set("activeFilePaths", focusFiles);
+        var focusSymbols = mapper.createArrayNode();
+        focusSymbols.add("AppService");
+        focus.set("activeSymbols", focusSymbols);
+        var focusPlan = mapper.createArrayNode();
+        focusPlan.add("code change requested");
+        focusPlan.add("verification requested");
+        focus.set("planSignals", focusPlan);
+        root.set("requestFocus", focus);
         var budget = mapper.createObjectNode();
         budget.put("maxTotalChars", 28000);
         budget.put("maxPerTierChars", 8000);
@@ -209,36 +222,67 @@ class TerminalReplTest {
         truncated.add("skills\u001B]2;pwnd\u0007");
         root.set("truncatedSectionKeys", truncated);
         var sections = mapper.createArrayNode();
-        sections.add(mapper.createObjectNode()
-                .put("key", "\u001B[31mbase\u001B[0m")
-                .put("sourceType", "base")
-                .put("priority", 95)
-                .put("protected", true)
-                .put("originalChars", 12000)
-                .put("finalChars", 12000)
-                .put("estimatedTokens", 3000)
-                .put("included", true)
-                .put("truncated", false));
-        sections.add(mapper.createObjectNode()
-                .put("key", "skills")
-                .put("sourceType", "skills")
-                .put("priority", 58)
-                .put("protected", false)
-                .put("originalChars", 10000)
-                .put("finalChars", 4000)
-                .put("estimatedTokens", 1000)
-                .put("included", true)
-                .put("truncated", true));
-        sections.add(mapper.createObjectNode()
-                .put("key", "memory:Auto-Memory")
-                .put("sourceType", "learned-signals")
-                .put("priority", 60)
-                .put("protected", false)
-                .put("originalChars", 2000)
-                .put("finalChars", 1500)
-                .put("estimatedTokens", 375)
-                .put("included", true)
-                .put("truncated", true));
+        var baseSection = mapper.createObjectNode();
+        baseSection.put("key", "\u001B[31mbase\u001B[0m");
+        baseSection.put("sourceType", "base");
+        baseSection.put("scopeType", "always-on");
+        baseSection.put("inclusionReason", "Core operating policy is always included.");
+        baseSection.put("priority", 95);
+        baseSection.put("protected", true);
+        baseSection.put("originalChars", 12000);
+        baseSection.put("finalChars", 12000);
+        baseSection.put("estimatedTokens", 3000);
+        baseSection.put("included", true);
+        baseSection.put("truncated", false);
+        baseSection.set("evidence", mapper.createArrayNode());
+        sections.add(baseSection);
+
+        var taskFocusSection = mapper.createObjectNode();
+        taskFocusSection.put("key", "task-focus");
+        taskFocusSection.put("sourceType", "task-focus");
+        taskFocusSection.put("scopeType", "task-local");
+        taskFocusSection.put("inclusionReason", "Current request focus was derived from the query, active files, and symbols.");
+        taskFocusSection.put("priority", 89);
+        taskFocusSection.put("protected", false);
+        taskFocusSection.put("originalChars", 800);
+        taskFocusSection.put("finalChars", 800);
+        taskFocusSection.put("estimatedTokens", 200);
+        taskFocusSection.put("included", true);
+        taskFocusSection.put("truncated", false);
+        taskFocusSection.set("evidence", mapper.createArrayNode()
+                .add("files=src/main/App.java")
+                .add("symbols=AppService"));
+        sections.add(taskFocusSection);
+
+        var skillsSection = mapper.createObjectNode();
+        skillsSection.put("key", "skills");
+        skillsSection.put("sourceType", "skills");
+        skillsSection.put("scopeType", "always-on");
+        skillsSection.put("inclusionReason", "Available skills are exposed so the agent can choose reusable workflows.");
+        skillsSection.put("priority", 58);
+        skillsSection.put("protected", false);
+        skillsSection.put("originalChars", 10000);
+        skillsSection.put("finalChars", 4000);
+        skillsSection.put("estimatedTokens", 1000);
+        skillsSection.put("included", true);
+        skillsSection.put("truncated", true);
+        skillsSection.set("evidence", mapper.createArrayNode().add("symbols=AppService"));
+        sections.add(skillsSection);
+
+        var learnedSection = mapper.createObjectNode();
+        learnedSection.put("key", "memory:Auto-Memory");
+        learnedSection.put("sourceType", "learned-signals");
+        learnedSection.put("scopeType", "always-on");
+        learnedSection.put("inclusionReason", "Learned signals were ranked against the current request hint.");
+        learnedSection.put("priority", 60);
+        learnedSection.put("protected", false);
+        learnedSection.put("originalChars", 2000);
+        learnedSection.put("finalChars", 1500);
+        learnedSection.put("estimatedTokens", 375);
+        learnedSection.put("included", true);
+        learnedSection.put("truncated", true);
+        learnedSection.set("evidence", mapper.createArrayNode().add("query=Update src/main/App.java"));
+        sections.add(learnedSection);
         root.set("sections", sections);
 
         var monitor = (ContextMonitor) getPrivateField(repl, "contextMonitor");
@@ -258,6 +302,10 @@ class TerminalReplTest {
         assertThat(plain).contains("Window share:");
         assertThat(plain).contains("Active paths:");
         assertThat(plain).contains("Truncated:");
+        assertThat(plain).contains("Request Focus");
+        assertThat(plain).contains("Query:");
+        assertThat(plain).contains("Symbols:");
+        assertThat(plain).contains("Plan:");
         assertThat(plain).contains("Last compact:");
         assertThat(plain).contains("Saved:");
         assertThat(plain).contains("Injection Cost");
@@ -266,6 +314,7 @@ class TerminalReplTest {
         assertThat(plain).contains("Learned fit:");
         assertThat(plain).contains("src/main/App.java");
         assertThat(plain).contains("base");
+        assertThat(plain).contains("task-local / task-focus");
         assertThat(plain).contains("skills");
         assertThat(plain).contains("learned-signals");
         assertThat(plain).contains("truncated");
@@ -281,6 +330,8 @@ class TerminalReplTest {
         var detail = mapper.createObjectNode();
         detail.put("key", "rules\u001B]2;pwnd\u0007");
         detail.put("sourceType", "rules");
+        detail.put("scopeType", "task-local");
+        detail.put("inclusionReason", "Path-based rules matched the files currently in focus.");
         detail.put("priority", 88);
         detail.put("protected", false);
         detail.put("originalChars", 1200);
@@ -288,6 +339,9 @@ class TerminalReplTest {
         detail.put("estimatedTokens", 225);
         detail.put("truncated", true);
         detail.put("content", ("Prefer AssertJ assertions.\u001B]2;pwnd\u0007\n" + "line\n").repeat(2_000));
+        detail.set("evidence", mapper.createArrayNode()
+                .add("files=src/main/App.java")
+                .add("query=update AppService tests"));
         root.set("detail", detail);
 
         invokePrivate(repl, "renderContextDetail",
@@ -301,6 +355,9 @@ class TerminalReplTest {
         assertThat(plain).contains("Context Detail");
         assertThat(plain).contains("rules");
         assertThat(plain).contains("Source:");
+        assertThat(plain).contains("Scope:");
+        assertThat(plain).contains("Why:");
+        assertThat(plain).contains("Evidence:");
         assertThat(plain).contains("Prefer AssertJ assertions.");
         assertThat(plain).contains("true");
         assertThat(plain).contains("...[truncated]");

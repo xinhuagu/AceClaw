@@ -2713,6 +2713,9 @@ public final class TerminalRepl {
         }
 
         out.println();
+        renderRequestFocus(out, root.path("requestFocus"));
+
+        out.println();
         out.println(BOLD + "Injection Cost" + RESET);
         renderContextBucket(out, "Rules", summary.rules());
         renderContextBucket(out, "Candidates", summary.candidates());
@@ -2754,7 +2757,8 @@ public final class TerminalRepl {
                     formatTokenCount(finalChars),
                     section.path("priority").asInt(0),
                     (flags.isEmpty() ? "" : MUTED + " [" + flags + "]" + RESET)
-                            + MUTED + " {" + sanitizeContextField(section.path("sourceType").asText("other"))
+                            + MUTED + " {" + sanitizeContextField(section.path("scopeType").asText("always-on"))
+                            + " / " + sanitizeContextField(section.path("sourceType").asText("other"))
                             + ", ~" + formatTokenCount(section.path("estimatedTokens").asLong(0))
                             + " tok}" + RESET);
         }
@@ -2780,8 +2784,18 @@ public final class TerminalRepl {
         out.printf("  %sSource:%s       %s (~%s tokens)%n", MUTED, RESET,
                 sanitizeContextField(detail.path("sourceType").asText("other")),
                 formatTokenCount(detail.path("estimatedTokens").asLong(0)));
+        out.printf("  %sScope:%s        %s%n", MUTED, RESET,
+                sanitizeContextField(detail.path("scopeType").asText("always-on")));
         out.printf("  %sProtected:%s    %s%n", MUTED, RESET, detail.path("protected").asBoolean(false));
         out.printf("  %sTruncated:%s    %s%n", MUTED, RESET, detail.path("truncated").asBoolean(false));
+        String inclusionReason = sanitizeContextField(detail.path("inclusionReason").asText(""));
+        if (!inclusionReason.isBlank()) {
+            out.printf("  %sWhy:%s          %s%n", MUTED, RESET, inclusionReason);
+        }
+        JsonNode evidence = detail.path("evidence");
+        if (evidence.isArray() && !evidence.isEmpty()) {
+            out.printf("  %sEvidence:%s     %s%n", MUTED, RESET, joinArrayValues(evidence, 6));
+        }
         out.println();
         out.println(sanitizeContextContent(detail.path("content").asText("")));
     }
@@ -2795,6 +2809,32 @@ public final class TerminalRepl {
             rendered.add("+" + (values.size() - limit) + " more");
         }
         return String.join(", ", rendered);
+    }
+
+    private void renderRequestFocus(PrintWriter out, JsonNode focus) {
+        out.println(BOLD + "Request Focus" + RESET);
+        String querySummary = sanitizeContextField(focus.path("querySummary").asText(""));
+        if (!querySummary.isBlank()) {
+            out.printf("  %sQuery:%s        %s%n", MUTED, RESET, querySummary);
+        }
+        JsonNode focusFiles = focus.path("activeFilePaths");
+        if (focusFiles.isArray() && !focusFiles.isEmpty()) {
+            out.printf("  %sFiles:%s        %s%n", MUTED, RESET, joinArrayValues(focusFiles, 6));
+        }
+        JsonNode symbols = focus.path("activeSymbols");
+        if (symbols.isArray() && !symbols.isEmpty()) {
+            out.printf("  %sSymbols:%s      %s%n", MUTED, RESET, joinArrayValues(symbols, 6));
+        }
+        JsonNode planSignals = focus.path("planSignals");
+        if (planSignals.isArray() && !planSignals.isEmpty()) {
+            out.printf("  %sPlan:%s         %s%n", MUTED, RESET, joinArrayValues(planSignals, 4));
+        }
+        if (querySummary.isBlank()
+                && (focusFiles == null || focusFiles.isEmpty())
+                && (symbols == null || symbols.isEmpty())
+                && (planSignals == null || planSignals.isEmpty())) {
+            out.println("  " + MUTED + "No request-local focus signals detected." + RESET);
+        }
     }
 
     private void renderContextBucket(PrintWriter out, String label, ContextBucketCost bucket) {

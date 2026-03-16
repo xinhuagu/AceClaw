@@ -309,14 +309,28 @@ class SystemPromptLoaderTest {
 
         assertThat(inspection.prompt().length()).isEqualTo(inspection.totalChars());
         assertThat(inspection.estimatedTokens()).isPositive();
+        assertThat(inspection.requestFocus().querySummary()).contains("update src/main/App.java tests");
         assertThat(inspection.activeFilePaths()).containsExactly("src/main/App.java");
+        assertThat(inspection.requestFocus().activeFilePaths()).containsExactly("src/main/App.java");
+        assertThat(inspection.requestFocus().planSignals()).contains("code change requested", "verification requested");
         assertThat(inspection.sections()).extracting(SystemPromptLoader.ContextSection::key)
-                .contains("base", "rules", "skills");
+                .contains("base", "task-focus", "rules", "skills");
+        assertThat(inspection.sections())
+                .filteredOn(section -> section.key().equals("task-focus"))
+                .singleElement()
+                .satisfies(section -> {
+                    assertThat(section.scopeType()).isEqualTo("task-local");
+                    assertThat(section.inclusionReason()).contains("Current request focus");
+                    assertThat(section.evidence()).anyMatch(item -> item.contains("files="));
+                    assertThat(section.content()).contains("Task Focus");
+                });
         assertThat(inspection.sections())
                 .filteredOn(section -> section.key().equals("rules"))
                 .singleElement()
                 .satisfies(section -> {
                     assertThat(section.sourceType()).isEqualTo("rules");
+                    assertThat(section.scopeType()).isEqualTo("task-local");
+                    assertThat(section.inclusionReason()).contains("matched the files");
                     assertThat(section.included()).isTrue();
                     assertThat(section.content()).contains("Prefer AssertJ assertions");
                     assertThat(section.finalChars()).isLessThanOrEqualTo(section.originalChars());
@@ -327,6 +341,7 @@ class SystemPromptLoaderTest {
                 .singleElement()
                 .satisfies(section -> {
                     assertThat(section.sourceType()).isEqualTo("skills");
+                    assertThat(section.scopeType()).isEqualTo("always-on");
                     assertThat(section.originalChars()).isGreaterThan(8_000);
                     assertThat(section.truncated()).isTrue();
                     assertThat(section.finalChars()).isLessThan(section.originalChars());
