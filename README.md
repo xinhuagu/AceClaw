@@ -137,6 +137,8 @@ Candidates    → CandidateStore (DRAFT → PROMOTED → IN_USE → ARCHIVED)
 
 **Observability** — The `/context` CLI command calls `context.inspect` over JSON-RPC and displays: system prompt share percentage, per-section char/token counts, inclusion reasons, active file paths, and injected candidate IDs.
 
+See [Context Engineering](docs/context-engineering.md) for the full architecture.
+
 ## Quick Start
 
 ```bash
