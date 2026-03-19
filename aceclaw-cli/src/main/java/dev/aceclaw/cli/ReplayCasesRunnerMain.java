@@ -13,8 +13,10 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Random;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -74,16 +76,23 @@ public final class ReplayCasesRunnerMain {
                                          CliArgs cli) throws Exception {
         var array = mapper.createArrayNode();
 
-        setCandidateInjection(client, false);
-        for (var c : cases) {
-            c.off = runOne(mapper, client, c, c.timeoutMs, cli.autoApprovePermissions);
-        }
+        // Query active learned skills for tracking (best-effort)
+        List<String> learnedSkillsActive = queryActiveLearnedSkills(client);
 
-        setCandidateInjection(client, true);
-        for (var c : cases) {
+        // Interleave off/on execution per case to avoid order bias.
+        // Randomize case order so sequential effects don't correlate with category.
+        var shuffled = new ArrayList<>(cases);
+        Collections.shuffle(shuffled, new Random(42)); // deterministic seed for reproducibility
+
+        for (var c : shuffled) {
+            setCandidateInjection(client, false);
+            c.off = runOne(mapper, client, c, c.timeoutMs, cli.autoApprovePermissions);
+
+            setCandidateInjection(client, true);
             c.on = runOne(mapper, client, c, c.timeoutMs, cli.autoApprovePermissions);
         }
 
+        // Output in original order (stable for diffing)
         for (var c : cases) {
             var node = mapper.createObjectNode();
             node.put("id", c.id);
@@ -95,11 +104,37 @@ public final class ReplayCasesRunnerMain {
             var labels = mapper.createArrayNode();
             c.labels.forEach(labels::add);
             node.set("labels", labels);
+            var skillsArray = mapper.createArrayNode();
+            learnedSkillsActive.forEach(skillsArray::add);
+            node.set("learned_skills_active", skillsArray);
             node.set("off", c.off.toJson(mapper));
             node.set("on", c.on.toJson(mapper));
             array.add(node);
         }
         return array;
+    }
+
+    /**
+     * Queries the daemon for currently promoted/active learned skills.
+     * Returns empty list if query fails (best-effort tracking).
+     */
+    private static List<String> queryActiveLearnedSkills(DaemonClient client) {
+        try {
+            var result = client.sendRequest("candidate.injection.status",
+                    client.objectMapper().createObjectNode());
+            var skills = new ArrayList<String>();
+            var candidates = result.path("activeCandidates");
+            if (candidates.isArray()) {
+                for (var c : candidates) {
+                    String id = c.path("id").asText("");
+                    if (!id.isBlank()) skills.add(id);
+                }
+            }
+            return skills;
+        } catch (Exception e) {
+            // Best-effort: return empty if daemon doesn't support this method yet
+            return List.of();
+        }
     }
 
     private static ObjectNode buildMetadata(ObjectMapper mapper, Path inputPath, CliArgs cli, int totalCases)
