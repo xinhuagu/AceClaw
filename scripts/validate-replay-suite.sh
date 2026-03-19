@@ -16,7 +16,7 @@ Options:
 Required case fields:
 - id
 - prompt
-- category: one of [core, tools, permissions, timeouts, regression]
+- category: one of [error_recovery, user_correction, workflow_reuse, adversarial]
 - owner
 - risk_level: one of [low, medium, high]
 - labels: non-empty array
@@ -72,7 +72,7 @@ schema_expr='
   and all(.cases[];
     (.id | type == "string") and (.id | length > 0)
     and (.prompt | type == "string") and (.prompt | length > 0)
-    and (((.category // "") as $c | (["core","tools","permissions","timeouts","regression"] | index($c))) != null)
+    and (((.category // "") as $c | (["error_recovery","user_correction","workflow_reuse","adversarial"] | index($c))) != null)
     and (.owner | type == "string") and (.owner | length > 0)
     and (((.risk_level // "") as $r | (["low","medium","high"] | index($r))) != null)
     and (.labels | type == "array") and (.labels | length > 0)
@@ -85,7 +85,7 @@ if ! jq -e "$schema_expr" "$INPUT" >/dev/null; then
   exit 1
 fi
 
-categories=(core tools permissions timeouts regression)
+categories=(error_recovery user_correction workflow_reuse adversarial)
 for cat in "${categories[@]}"; do
   count="$(jq -r --arg c "$cat" '[.cases[] | select(.category == $c)] | length' "$INPUT")"
   if (( count < MIN_PER_CATEGORY )); then

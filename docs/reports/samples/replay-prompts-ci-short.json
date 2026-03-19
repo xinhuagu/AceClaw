@@ -3,47 +3,72 @@
     {
       "id": "core-short-overview",
       "prompt": "List top-level modules and one-line responsibilities.",
-      "category": "core",
+      "category": "workflow_reuse",
       "owner": "platform-core",
       "risk_level": "low",
-      "labels": ["ci", "short"],
-      "expect_contains": ["module"]
+      "labels": [
+        "ci",
+        "short"
+      ],
+      "expect_contains": [
+        "module"
+      ]
     },
     {
       "id": "tools-short-gate",
       "prompt": "Name the replay quality gate script and one blocked metric example.",
-      "category": "tools",
+      "category": "workflow_reuse",
       "owner": "quality-team",
       "risk_level": "low",
-      "labels": ["ci", "short"],
-      "expect_contains": ["replay"]
+      "labels": [
+        "ci",
+        "short"
+      ],
+      "expect_contains": [
+        "replay"
+      ]
     },
     {
       "id": "permissions-short-policy",
       "prompt": "Summarize permission guardrails in CI in 3 bullets.",
-      "category": "permissions",
+      "category": "user_correction",
       "owner": "security-team",
       "risk_level": "medium",
-      "labels": ["ci", "short"],
-      "expect_contains": ["permission"]
+      "labels": [
+        "ci",
+        "short"
+      ],
+      "expect_contains": [
+        "permission"
+      ]
     },
     {
       "id": "timeouts-short-strategy",
       "prompt": "In one sentence, explain a timeout-safe strategy for repository scanning.",
-      "category": "timeouts",
+      "category": "error_recovery",
       "owner": "runtime-team",
       "risk_level": "medium",
-      "labels": ["ci", "short"],
-      "expect_contains": ["timeout"]
+      "labels": [
+        "ci",
+        "short"
+      ],
+      "expect_contains": [
+        "timeout"
+      ]
     },
     {
       "id": "regression-short-block",
       "prompt": "When should replay regression block merge? Answer briefly.",
-      "category": "regression",
+      "category": "adversarial",
       "owner": "quality-team",
       "risk_level": "medium",
-      "labels": ["ci", "short"],
-      "expect_contains": ["merge"]
+      "labels": [
+        "ci",
+        "short"
+      ],
+      "expect_contains": [
+        "merge"
+      ]
     }
   ]
 }
