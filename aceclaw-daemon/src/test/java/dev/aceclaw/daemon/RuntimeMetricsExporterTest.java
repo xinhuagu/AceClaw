@@ -8,6 +8,10 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -113,5 +117,49 @@ class RuntimeMetricsExporterTest {
         assertThat(snap.permissionBlocks()).isEqualTo(1);
         assertThat(snap.turnTotal()).isEqualTo(1);
         assertThat(snap.timeoutCount()).isEqualTo(1);
+    }
+
+    @Test
+    void concurrentRecording_producesConsistentSnapshot() throws Exception {
+        var exporter = new RuntimeMetricsExporter();
+        int threads = 8;
+        int iterations = 1000;
+        var latch = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(threads);
+
+        for (int t = 0; t < threads; t++) {
+            executor.submit(() -> {
+                try {
+                    latch.await();
+                    for (int i = 0; i < iterations; i++) {
+                        exporter.recordTaskOutcome(true, true, 1);
+                        exporter.recordPermissionDecision(false);
+                        exporter.recordTurn();
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+        }
+        latch.countDown();
+        executor.shutdown();
+        assertThat(executor.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+
+        var snap = exporter.snapshot();
+        int expected = threads * iterations;
+        // With lock-based synchronization, success must never exceed total
+        assertThat(snap.taskTotal()).isEqualTo(expected);
+        assertThat(snap.taskSuccess()).isEqualTo(expected);
+        assertThat(snap.taskFirstTrySuccess()).isEqualTo(expected);
+        assertThat(snap.taskSuccess()).isLessThanOrEqualTo(snap.taskTotal());
+        assertThat(snap.permissionRequests()).isEqualTo(expected);
+        assertThat(snap.turnTotal()).isEqualTo(expected);
+    }
+
+    @Test
+    void export_nullProjectRoot_throwsNPE() {
+        var exporter = new RuntimeMetricsExporter();
+        org.junit.jupiter.api.Assertions.assertThrows(NullPointerException.class,
+                () -> exporter.export(null, null));
     }
 }
