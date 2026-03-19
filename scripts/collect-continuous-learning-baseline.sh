@@ -134,20 +134,44 @@ as_json_value() {
   fi
 }
 
+RUNTIME_METRICS_PATH="$PROJECT_ROOT/.aceclaw/metrics/continuous-learning/runtime-latest.json"
+INJECTION_AUDIT_PATH="$PROJECT_ROOT/.aceclaw/memory/injection-audit.jsonl"
+
+read_runtime_metric() {
+  local key="$1"
+  if [[ -f "$RUNTIME_METRICS_PATH" ]] && command -v jq >/dev/null 2>&1; then
+    local status
+    status="$(jq -r ".metrics.\"$key\".status // \"\"" "$RUNTIME_METRICS_PATH" 2>/dev/null)"
+    if [[ "$status" == "measured" ]]; then
+      jq -r ".metrics.\"$key\".value // \"null\"" "$RUNTIME_METRICS_PATH" 2>/dev/null
+      return 0
+    fi
+  fi
+  return 1
+}
+
 metric_json() {
   local key="$1"
   local target
   local val="null"
   local status="pending_instrumentation"
+  local source=""
 
   target="$(target_for_key "$key")"
+
+  # Priority: 1) manual override, 2) runtime-latest.json, 3) pending
   if override="$(find_override "$key")"; then
     val="$override"
     status="measured"
+    source="manual_override"
+  elif runtime_val="$(read_runtime_metric "$key")"; then
+    val="$runtime_val"
+    status="measured"
+    source="runtime-latest.json"
   fi
 
-  printf '    "%s": {"value": %s, "target": %s, "status": "%s"}' \
-    "$key" "$(as_json_value "$val")" "$target" "$status"
+  printf '    "%s": {"value": %s, "target": %s, "status": "%s", "source": "%s"}' \
+    "$key" "$(as_json_value "$val")" "$target" "$status" "$source"
 }
 
 TESTS_STATUS="not_run"
@@ -233,8 +257,9 @@ metric_keys=(
 
   echo "  },"
   echo "  \"notes\": ["
-  echo "    \"Use --metric key=value overrides to inject measured values from replay/log exports.\"," 
-  echo "    \"Metrics without instrumentation are emitted as pending_instrumentation.\""
+  echo "    \"Core metrics are auto-read from runtime-latest.json when available.\","
+  echo "    \"Use --metric key=value overrides only for debugging or missing data.\","
+  echo "    \"Metrics without runtime data are emitted as pending_instrumentation.\""
   echo "  ]"
   echo "}"
 } > "$OUTPUT"
