@@ -22,8 +22,15 @@ public final class AnthropicBetaResolver {
 
     /** Betas always included for both API key and OAuth modes. */
     private static final List<String> BASE_BETAS = List.of(
-            "fine-grained-tool-streaming-2025-05-14",
-            "interleaved-thinking-2025-05-14"
+            "fine-grained-tool-streaming-2025-05-14"
+    );
+
+    /** Interleaved thinking beta — only needed for pre-4.6 models. */
+    private static final String INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
+
+    /** Model prefixes that support adaptive thinking (no interleaved-thinking beta needed). */
+    private static final List<String> ADAPTIVE_THINKING_MODEL_PREFIXES = List.of(
+            "claude-opus-4-6", "claude-sonnet-4-6"
     );
 
     /** Additional betas required for OAuth token authentication. */
@@ -62,7 +69,12 @@ public final class AnthropicBetaResolver {
         // 2. Base betas (always included)
         betas.addAll(BASE_BETAS);
 
-        // 3. Context-1M beta (conditional)
+        // 3. Interleaved thinking beta — skip for adaptive thinking models (Opus 4.6, Sonnet 4.6)
+        if (!isAdaptiveThinkingModel(modelId)) {
+            betas.add(INTERLEAVED_THINKING_BETA);
+        }
+
+        // 4. Context-1M beta (conditional)
         if (context1m) {
             if (isOAuth) {
                 log.warn("Ignoring context-1m beta for OAuth token auth on model {}; "
@@ -74,7 +86,7 @@ public final class AnthropicBetaResolver {
             }
         }
 
-        // 4. User-configured extra betas (with OAuth filtering)
+        // 5. User-configured extra betas (with OAuth filtering)
         if (extraBetas != null) {
             for (String beta : extraBetas) {
                 if (beta == null || beta.isBlank()) {
@@ -98,6 +110,19 @@ public final class AnthropicBetaResolver {
      */
     public static String resolve(boolean isOAuth) {
         return resolve(isOAuth, null, false, null);
+    }
+
+    /**
+     * Checks whether a model uses adaptive thinking (Opus 4.6, Sonnet 4.6).
+     * These models use {@code {"type":"adaptive"}} instead of budget-based thinking,
+     * and do not need the interleaved-thinking beta.
+     */
+    public static boolean isAdaptiveThinkingModel(String modelId) {
+        if (modelId == null || modelId.isBlank()) {
+            return false;
+        }
+        String normalized = modelId.trim().toLowerCase();
+        return ADAPTIVE_THINKING_MODEL_PREFIXES.stream().anyMatch(normalized::startsWith);
     }
 
     /**

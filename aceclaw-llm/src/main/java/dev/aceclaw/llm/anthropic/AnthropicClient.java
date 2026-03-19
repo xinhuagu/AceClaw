@@ -132,7 +132,7 @@ public final class AnthropicClient implements LlmClient {
 
         this.jsonMapper = new ObjectMapper()
                 .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-        this.mapper = new AnthropicMapper(jsonMapper);
+        this.mapper = new AnthropicMapper(jsonMapper, isOAuth);
 
         if (isOAuth) {
             log.info("Using OAuth authentication (token refresh {})",

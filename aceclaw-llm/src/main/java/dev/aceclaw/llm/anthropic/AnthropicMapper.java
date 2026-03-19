@@ -21,9 +21,15 @@ import java.util.List;
 final class AnthropicMapper {
 
     private final ObjectMapper objectMapper;
+    private final boolean oauthMode;
 
     AnthropicMapper(ObjectMapper objectMapper) {
+        this(objectMapper, false);
+    }
+
+    AnthropicMapper(ObjectMapper objectMapper, boolean oauthMode) {
         this.objectMapper = objectMapper;
+        this.oauthMode = oauthMode;
     }
 
     // -- Request mapping --
@@ -40,8 +46,14 @@ final class AnthropicMapper {
         root.put("model", request.model());
         root.put("max_tokens", request.maxTokens());
 
-        // Extended thinking: when enabled, temperature must be 1.0 or omitted
-        if (request.thinkingBudget() > 0) {
+        // Extended thinking: adaptive for Opus/Sonnet 4.6, budget-based for older models
+        boolean isAdaptive = AnthropicBetaResolver.isAdaptiveThinkingModel(request.model());
+        if (isAdaptive) {
+            // Adaptive thinking: Claude decides when and how much to think
+            ObjectNode thinking = objectMapper.createObjectNode();
+            thinking.put("type", "adaptive");
+            root.set("thinking", thinking);
+        } else if (request.thinkingBudget() > 0) {
             ObjectNode thinking = objectMapper.createObjectNode();
             thinking.put("type", "enabled");
             thinking.put("budget_tokens", request.thinkingBudget());
@@ -52,13 +64,25 @@ final class AnthropicMapper {
         }
 
         // System prompt as array with cache_control on last block
+        // OAuth tokens MUST include Claude Code identity as first system block
+        ArrayNode systemArray = root.putArray("system");
+        if (oauthMode) {
+            ObjectNode identityBlock = objectMapper.createObjectNode();
+            identityBlock.put("type", "text");
+            identityBlock.put("text", "You are Claude Code, Anthropic's official CLI for Claude.");
+            identityBlock.set("cache_control", cacheControlEphemeral());
+            systemArray.add(identityBlock);
+        }
         if (request.systemPrompt() != null && !request.systemPrompt().isBlank()) {
-            ArrayNode systemArray = root.putArray("system");
             ObjectNode systemBlock = objectMapper.createObjectNode();
             systemBlock.put("type", "text");
             systemBlock.put("text", request.systemPrompt());
             systemBlock.set("cache_control", cacheControlEphemeral());
             systemArray.add(systemBlock);
+        }
+        // Remove empty system array if no blocks were added
+        if (systemArray.isEmpty()) {
+            root.remove("system");
         }
 
         if (stream) {
