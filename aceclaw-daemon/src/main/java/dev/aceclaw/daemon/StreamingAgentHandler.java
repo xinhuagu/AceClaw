@@ -521,8 +521,10 @@ public final class StreamingAgentHandler {
                 syntheticTurn(planResult, plannedStopReason),
                 cancellationToken,
                 null);
-        recordRuntimeMetrics(sessionId, planResult.success(), !cancellationToken.isCancelled(),
-                plannedStopReason, metricsCollector, session.projectPath());
+        int failedSteps = (int) planResult.stepResults().stream().filter(s -> !s.success()).count();
+        boolean planFirstTry = planResult.success() && failedSteps == 0;
+        recordRuntimeMetrics(sessionId, planResult.success(), planFirstTry,
+                failedSteps, plannedStopReason, metricsCollector, session.projectPath());
 
         // 6. Build result
         var result = objectMapper.createObjectNode();
@@ -592,8 +594,11 @@ public final class StreamingAgentHandler {
                 sessionId, turnSuccess, cancellationToken.isCancelled(),
                 turn.finalStopReason());
         recordSkillOutcomes(sessionId, session.projectPath(), turn, cancellationToken, adaptive);
-        recordRuntimeMetrics(sessionId, turnSuccess, !cancellationToken.isCancelled(),
-                turn.finalStopReason(), metricsCollector, session.projectPath());
+        // Direct turn: firstTry = success without adaptive continuation segments
+        boolean directFirstTry = turnSuccess && (adaptive == null || adaptive.continuationCount() == 0);
+        int directRetryCount = adaptive != null ? adaptive.continuationCount() : 0;
+        recordRuntimeMetrics(sessionId, turnSuccess, directFirstTry,
+                directRetryCount, turn.finalStopReason(), metricsCollector, session.projectPath());
 
         // Build result
         var result = objectMapper.createObjectNode();
@@ -1237,7 +1242,8 @@ public final class StreamingAgentHandler {
                     hookExecutor, sessionId, cwd, antiPatternGate,
                     () -> getAntiPatternGateOverride(sessionId, effectiveTool.name()),
                     antiPatternGateFeedbackStore,
-                    candidateStore));
+                    candidateStore,
+                    runtimeMetricsExporter));
         }
         return registry;
     }
@@ -1929,13 +1935,22 @@ public final class StreamingAgentHandler {
     /**
      * Records runtime metrics for a completed turn and exports to runtime-latest.json.
      */
+    /**
+     * Records runtime metrics for a completed turn.
+     *
+     * @param success         whether the task succeeded
+     * @param firstTry        true only if succeeded without any replan/retry/fallback
+     * @param retryCount      number of retries or replan attempts (0 for first-try success)
+     * @param stopReason      the stop reason for timeout detection
+     * @param metricsCollector tool metrics for this session (may be null)
+     * @param projectPath     project root for exporting runtime-latest.json
+     */
     private void recordRuntimeMetrics(String sessionId, boolean success, boolean firstTry,
-                                       StopReason stopReason, ToolMetricsCollector metricsCollector,
-                                       Path projectPath) {
+                                       int retryCount, StopReason stopReason,
+                                       ToolMetricsCollector metricsCollector, Path projectPath) {
         var exporter = this.runtimeMetricsExporter;
         if (exporter == null) return;
         try {
-            int retryCount = 0; // TODO: wire actual replan count when available
             exporter.recordTaskOutcome(success, firstTry, retryCount);
             exporter.recordTurn();
             if (stopReason == StopReason.MAX_TOKENS) {
@@ -2494,6 +2509,10 @@ public final class StreamingAgentHandler {
                 syntheticTurn(planResult, plannedStopReason),
                 cancellationToken,
                 null);
+        int resumeFailedSteps = (int) planResult.stepResults().stream().filter(s -> !s.success()).count();
+        boolean resumeFirstTry = planResult.success() && resumeFailedSteps == 0;
+        recordRuntimeMetrics(sessionId, planResult.success(), resumeFirstTry,
+                resumeFailedSteps, plannedStopReason, metricsCollector, session.projectPath());
 
         var result = objectMapper.createObjectNode();
         result.put("sessionId", sessionId);
@@ -3184,6 +3203,7 @@ public final class StreamingAgentHandler {
         private final java.util.function.Supplier<AntiPatternGateOverrideStatus> antiPatternOverrideSupplier;
         private final AntiPatternGateFeedbackStore antiPatternGateFeedbackStore;
         private final CandidateStore candidateStore;
+        private final RuntimeMetricsExporter metricsExporter;
 
         PermissionAwareTool(Tool delegate, PermissionManager permissionManager,
                             CancelAwareStreamContext context, ObjectMapper objectMapper,
@@ -3191,7 +3211,8 @@ public final class StreamingAgentHandler {
                             AntiPatternPreExecutionGate antiPatternGate,
                             java.util.function.Supplier<AntiPatternGateOverrideStatus> antiPatternOverrideSupplier,
                             AntiPatternGateFeedbackStore antiPatternGateFeedbackStore,
-                            CandidateStore candidateStore) {
+                            CandidateStore candidateStore,
+                            RuntimeMetricsExporter metricsExporter) {
             this.delegate = delegate;
             this.permissionManager = permissionManager;
             this.context = context;
@@ -3203,6 +3224,7 @@ public final class StreamingAgentHandler {
             this.antiPatternOverrideSupplier = antiPatternOverrideSupplier;
             this.antiPatternGateFeedbackStore = antiPatternGateFeedbackStore;
             this.candidateStore = candidateStore;
+            this.metricsExporter = metricsExporter;
         }
 
         @Override
@@ -3307,12 +3329,14 @@ public final class StreamingAgentHandler {
 
             switch (decision) {
                 case PermissionDecision.Approved ignored -> {
+                    if (metricsExporter != null) metricsExporter.recordPermissionDecision(false);
                     var result = executeWithPostHooks(finalInputJson);
                     maybeRecordFalsePositiveAndRollback(overrideStatus, evaluatedGateDecision, result);
                     return result;
                 }
 
                 case PermissionDecision.Denied denied -> {
+                    if (metricsExporter != null) metricsExporter.recordPermissionDecision(true);
                     log.info("Tool {} denied: {}", delegate.name(), denied.reason());
                     return new ToolResult("Permission denied: " + denied.reason(), true);
                 }
@@ -3348,9 +3372,11 @@ public final class StreamingAgentHandler {
                                 && responseParams.get("remember").asBoolean(false);
 
                         if (!approved) {
+                            if (metricsExporter != null) metricsExporter.recordPermissionDecision(true);
                             log.info("Tool {} denied by user (requestId={})", delegate.name(), requestId);
                             return new ToolResult("Permission denied by user", true);
                         }
+                        if (metricsExporter != null) metricsExporter.recordPermissionDecision(false);
 
                         // If user chose "remember", grant session-level approval
                         if (remember) {
@@ -3365,10 +3391,12 @@ public final class StreamingAgentHandler {
 
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
+                        if (metricsExporter != null) metricsExporter.recordPermissionDecision(true);
                         log.info("Tool {} permission request interrupted (requestId={})",
                                 delegate.name(), requestId);
                         return new ToolResult("Permission denied: request interrupted", true);
                     } catch (TimeoutException e) {
+                        if (metricsExporter != null) metricsExporter.recordPermissionDecision(true);
                         log.info("Tool {} permission response timed out (requestId={})",
                                 delegate.name(), requestId);
                         long timeoutSeconds = TimeUnit.MILLISECONDS.toSeconds(timeoutMs);
