@@ -45,6 +45,7 @@ import java.util.Map;
  *   <li>{@code ACECLAW_MAX_AGENT_HARD_TURNS} → maxAgentHardTurns (hard turn ceiling, default 0 = 3x soft)</li>
  *   <li>{@code ACECLAW_MAX_AGENT_HARD_WALL_TIME_SEC} → maxAgentHardWallTimeSec (hard wall ceiling, default 0 = 3x soft)</li>
  *   <li>{@code ACECLAW_LOG_LEVEL} → logLevel</li>
+ *   <li>{@code ACECLAW_SKILL_AUTO_RELEASE_CANARY_DWELL_HOURS} → skillAutoReleaseCanaryDwellHours (minimum hours at CANARY before ACTIVE, default 24)</li>
  *   <li>{@code BRAVE_SEARCH_API_KEY} → braveSearchApiKey</li>
  * </ul>
  */
@@ -596,6 +597,16 @@ public final class AceClawConfig {
             } catch (NumberFormatException e) {
                 log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS: {}",
                         envSkillAutoReleaseLookbackHours);
+            }
+        }
+        var envSkillAutoReleaseCanaryDwellHours = System.getenv("ACECLAW_SKILL_AUTO_RELEASE_CANARY_DWELL_HOURS");
+        if (envSkillAutoReleaseCanaryDwellHours != null && !envSkillAutoReleaseCanaryDwellHours.isBlank()) {
+            try {
+                config.skillAutoReleaseCanaryDwellHours =
+                        Math.max(0, Integer.parseInt(envSkillAutoReleaseCanaryDwellHours));
+            } catch (NumberFormatException e) {
+                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_CANARY_DWELL_HOURS: {}",
+                        envSkillAutoReleaseCanaryDwellHours);
             }
         }
 
