@@ -94,6 +94,7 @@ public final class KeychainCredentialReader {
      * @return true if write succeeded
      */
     public static boolean writeToKeychain(String newAccessToken, String newRefreshToken, long newExpiresAt) {
+        Objects.requireNonNull(newAccessToken, "newAccessToken");
         if (!isMacOS()) {
             return false;
         }
@@ -121,7 +122,8 @@ public final class KeychainCredentialReader {
 
             String updatedJson = mapper.writeValueAsString(rootObj);
 
-            // Write back using execFileSync equivalent to avoid shell injection
+            // ProcessBuilder passes arguments directly to execve (no shell interpolation),
+            // preventing command injection via token values containing $() or backticks.
             ProcessBuilder pb = new ProcessBuilder(
                     "security", "add-generic-password", "-U",
                     "-s", KEYCHAIN_SERVICE,
@@ -151,6 +153,7 @@ public final class KeychainCredentialReader {
      * @return true if write succeeded
      */
     public static boolean writeToFile(String newAccessToken, String newRefreshToken, long newExpiresAt) {
+        Objects.requireNonNull(newAccessToken, "newAccessToken");
         if (!Files.isRegularFile(CREDENTIALS_FILE)) {
             return false;
         }
@@ -201,7 +204,7 @@ public final class KeychainCredentialReader {
             String json = Files.readString(path);
             return parseClaudeOauthJson(json);
         } catch (Exception e) {
-            log.debug("Could not read credentials from {}: {}", path, e.getMessage());
+            log.warn("Could not read credentials from {}: {}", path, e.getMessage());
             return null;
         }
     }
@@ -252,7 +255,7 @@ public final class KeychainCredentialReader {
                     (refreshToken != null && !refreshToken.isBlank()) ? refreshToken : null,
                     expiresAt);
         } catch (Exception e) {
-            log.debug("Failed to parse Claude OAuth JSON: {}", e.getMessage());
+            log.warn("Failed to parse Claude OAuth JSON: {}", e.getMessage());
             return null;
         }
     }
