@@ -1158,12 +1158,18 @@ public final class AceClawConfig {
     private void loadClaudeCliCredentialsWithKeychain() {
         var cred = dev.aceclaw.llm.anthropic.KeychainCredentialReader.read();
         if (cred != null) {
-            // Only override apiKey if not already set, or if the Keychain token is fresher
-            if (this.apiKey == null || this.apiKey.isBlank()) {
-                this.apiKey = cred.accessToken();
-                log.info("Loaded OAuth access token from Claude CLI credentials");
+            // For OAuth tokens: always prefer Keychain's fresher token over config.json's
+            // stale one. Config.json tokens expire but Keychain is kept fresh by Claude CLI.
+            boolean configHasOAuth = this.apiKey != null && this.apiKey.startsWith("sk-ant-oat");
+            if (this.apiKey == null || this.apiKey.isBlank() || configHasOAuth) {
+                if (!cred.isExpired()) {
+                    this.apiKey = cred.accessToken();
+                    log.info("Loaded OAuth access token from Claude CLI credentials (Keychain)");
+                } else {
+                    log.info("Keychain OAuth token is expired, will rely on refresh");
+                }
             }
-            if (this.refreshToken == null && cred.refreshToken() != null) {
+            if (cred.refreshToken() != null) {
                 this.refreshToken = cred.refreshToken();
                 log.info("Loaded OAuth refresh token from Claude CLI credentials");
             }
