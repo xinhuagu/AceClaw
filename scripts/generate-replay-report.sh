@@ -460,6 +460,16 @@ jq \
     target: 0.35,
     status: "measured"
   }
+  | .metrics.promotion_precision = {
+    value: null,
+    target: 0.80,
+    status: "pending_instrumentation"
+  }
+  | .metrics.false_learning_rate = {
+    value: null,
+    target: 0.10,
+    status: "pending_instrumentation"
+  }
   | .metrics.rollback_rate = {
     value: $rollback_rate,
     target: 0.20,

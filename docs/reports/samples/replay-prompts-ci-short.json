@@ -17,7 +17,7 @@
     {
       "id": "tools-short-gate",
       "prompt": "Name the replay quality gate script and one blocked metric example.",
-      "category": "workflow_reuse",
+      "category": "adversarial",
       "owner": "quality-team",
       "risk_level": "low",
       "labels": [
