@@ -37,7 +37,7 @@ class AutoReleaseControllerTest {
                 Path.of(".aceclaw/metrics/continuous-learning/replay-latest.json"), 0.65);
         var controller = new AutoReleaseController(
                 Clock.fixed(t0.plusSeconds(10), ZoneOffset.UTC),
-                new AutoReleaseController.Config(0.2, 1, 1, 0.5, 0.5, 0.5, 0.6, 0.6, 0.6, Duration.ofDays(7)),
+                new AutoReleaseController.Config(0.2, 1, 1, 0.5, 0.5, 0.5, 0.6, 0.6, 0.6, Duration.ofDays(7), 0),
                 validation);
 
         var first = controller.evaluateAll(tempDir, store, "test-1");
@@ -62,7 +62,7 @@ class AutoReleaseControllerTest {
                 Path.of(".aceclaw/metrics/continuous-learning/replay-latest.json"), 0.65);
         var controller = new AutoReleaseController(
                 Clock.fixed(t0.plusSeconds(10), ZoneOffset.UTC),
-                new AutoReleaseController.Config(0.2, 1, 1, 0.8, 0.8, 0.8, 0.2, 0.8, 0.8, Duration.ofDays(7)),
+                new AutoReleaseController.Config(0.2, 1, 1, 0.8, 0.8, 0.8, 0.2, 0.8, 0.8, Duration.ofDays(7), 0),
                 validation);
 
         controller.evaluateAll(tempDir, store, "bootstrap");
@@ -79,6 +79,52 @@ class AutoReleaseControllerTest {
                 .contains("AUTO_ROLLBACK_GUARDRAIL_BREACH");
         assertThat(rollback.releases()).anySatisfy(r ->
                 assertThat(r.stage()).isEqualTo(AutoReleaseController.Stage.SHADOW));
+    }
+
+    @Test
+    void canaryDwellTimePreventsEarlyPromotion() throws Exception {
+        var t0 = Instant.parse("2026-02-24T00:00:00Z");
+        var store = newStore(tempDir);
+        var candidate = promoteCandidate(store, t0);
+        writeDraft(tempDir, "dwell-skill", candidate.id());
+        writeReplayReport(tempDir, 0.10);
+
+        // 24h dwell time, with enough attempts and good metrics
+        var validation = new ValidationGateEngine(
+                Clock.fixed(t0, ZoneOffset.UTC), false, true,
+                Path.of(".aceclaw/metrics/continuous-learning/replay-latest.json"), 0.65);
+        // Use new 12-arg Config with 24h dwell
+        var config = new AutoReleaseController.Config(
+                0.2, 1, 1, 0.5, 0.5, 0.5, 0.6, 0.6, 0.6, Duration.ofDays(7), 24);
+
+        // Clock is only 10 seconds after t0 — dwell time not met
+        var controller = new AutoReleaseController(
+                Clock.fixed(t0.plusSeconds(10), ZoneOffset.UTC), config, validation);
+
+        // First eval: SHADOW → CANARY
+        var first = controller.evaluateAll(tempDir, store, "test-1");
+        assertThat(first.events()).extracting(AutoReleaseController.ReleaseEvent::toStage)
+                .containsExactly(AutoReleaseController.Stage.CANARY);
+
+        // Second eval: should NOT promote to ACTIVE (only 10s in canary, need 24h)
+        var second = controller.evaluateAll(tempDir, store, "test-2");
+        assertThat(second.events()).isEmpty();
+
+        // Third eval with clock 25h later: should promote to ACTIVE
+        var controller25h = new AutoReleaseController(
+                Clock.fixed(t0.plusSeconds(25 * 3600), ZoneOffset.UTC), config, validation);
+        var third = controller25h.evaluateAll(tempDir, store, "test-3");
+        assertThat(third.events()).extracting(AutoReleaseController.ReleaseEvent::toStage)
+                .contains(AutoReleaseController.Stage.ACTIVE);
+    }
+
+    @Test
+    void hardenedDefaultsAreStricter() {
+        var defaults = AutoReleaseController.Config.defaults();
+        assertThat(defaults.canaryMinAttempts()).isGreaterThanOrEqualTo(20);
+        assertThat(defaults.canaryMaxFailureRate()).isLessThanOrEqualTo(0.10);
+        assertThat(defaults.rollbackMaxFailureRate()).isLessThanOrEqualTo(0.20);
+        assertThat(defaults.canaryDwellHours()).isGreaterThanOrEqualTo(24);
     }
 
     private static CandidateStore newStore(Path projectRoot) throws Exception {
