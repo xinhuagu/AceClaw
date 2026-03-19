@@ -176,7 +176,7 @@ tasks.register<Exec>("validateReplaySuite") {
     val replayPromptsInput = providers.gradleProperty("replayPromptsInput")
             .orElse(providers.gradleProperty("replayInput"))
             .orElse("${rootDir}/docs/reports/samples/replay-prompts-sample.json")
-    val replaySuiteMinPerCategory = providers.gradleProperty("replaySuiteMinPerCategory").orElse("1")
+    val replaySuiteMinPerCategory = providers.gradleProperty("replaySuiteMinPerCategory").orElse("3")
 
     commandLine(
             "bash",

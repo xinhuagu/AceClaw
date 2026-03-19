@@ -135,7 +135,6 @@ as_json_value() {
 }
 
 RUNTIME_METRICS_PATH="$PROJECT_ROOT/.aceclaw/metrics/continuous-learning/runtime-latest.json"
-INJECTION_AUDIT_PATH="$PROJECT_ROOT/.aceclaw/memory/injection-audit.jsonl"
 
 read_runtime_metric() {
   local key="$1"
@@ -145,10 +144,10 @@ read_runtime_metric() {
       return 1
     fi
     local status
-    status="$(jq -r ".metrics.\"$key\".status // \"\"" "$RUNTIME_METRICS_PATH" 2>/dev/null)"
+    status="$(jq -r --arg k "$key" '.metrics[$k].status // ""' "$RUNTIME_METRICS_PATH" 2>/dev/null)"
     if [[ "$status" == "measured" ]]; then
       local val
-      val="$(jq -r ".metrics.\"$key\".value" "$RUNTIME_METRICS_PATH" 2>/dev/null)"
+      val="$(jq -r --arg k "$key" '.metrics[$k].value' "$RUNTIME_METRICS_PATH" 2>/dev/null)"
       if [[ "$val" != "null" && -n "$val" ]]; then
         printf '%s' "$val"
         return 0
@@ -164,6 +163,8 @@ metric_json() {
   local val="null"
   local status="pending_instrumentation"
   local source="none"
+  local override
+  local runtime_val
 
   target="$(target_for_key "$key")"
 

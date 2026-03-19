@@ -73,7 +73,7 @@
     {
       "id": "tools-find-candidate-config",
       "prompt": "Find where candidate injection is configured and show the key config names.",
-      "category": "workflow_reuse",
+      "category": "error_recovery",
       "owner": "platform-core",
       "risk_level": "medium",
       "labels": [
@@ -87,7 +87,7 @@
     {
       "id": "tools-locate-gate-script",
       "prompt": "Find the replay quality gate script and summarize all enforced metrics.",
-      "category": "workflow_reuse",
+      "category": "adversarial",
       "owner": "quality-team",
       "risk_level": "medium",
       "labels": [
@@ -101,7 +101,7 @@
     {
       "id": "tools-manifest-verification",
       "prompt": "Locate where replay manifest checksum is verified and explain failure behavior.",
-      "category": "workflow_reuse",
+      "category": "adversarial",
       "owner": "quality-team",
       "risk_level": "high",
       "labels": [
@@ -115,7 +115,7 @@
     {
       "id": "tools-suite-validation",
       "prompt": "Find the replay suite validation script and list required category names.",
-      "category": "workflow_reuse",
+      "category": "user_correction",
       "owner": "quality-team",
       "risk_level": "low",
       "labels": [
@@ -129,7 +129,7 @@
     {
       "id": "tools-token-metric-path",
       "prompt": "Trace how token estimation error metric is produced from replay cases to report JSON.",
-      "category": "workflow_reuse",
+      "category": "error_recovery",
       "owner": "quality-team",
       "risk_level": "high",
       "labels": [

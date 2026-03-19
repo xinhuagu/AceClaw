@@ -54,9 +54,9 @@ public final class BenchmarkScorecardCli {
                 extractMetric(metrics, "replay_latency_delta_ms", replayDeltas, sampleSizes);
                 extractMetric(metrics, "replay_failure_distribution_delta", replayDeltas, sampleSizes);
 
-                // Lifecycle metrics from the report
-                extractMetric(metrics, "promotion_rate", lifecycleRates, sampleSizes);
-                extractMetric(metrics, "demotion_rate", lifecycleRates, sampleSizes);
+                // Lifecycle metrics — extract keys that match BenchmarkScorecard expectations
+                extractMetric(metrics, "promotion_precision", lifecycleRates, sampleSizes);
+                extractMetric(metrics, "false_learning_rate", lifecycleRates, sampleSizes);
                 extractMetric(metrics, "rollback_rate", lifecycleRates, sampleSizes);
             } catch (Exception e) {
                 System.err.println("Failed to parse replay report: " + e.getMessage());
@@ -75,10 +75,11 @@ public final class BenchmarkScorecardCli {
                     extractMetric(metrics, "first_try_success_rate", replayDeltas, sampleSizes);
                     // Map to delta name expected by scorecard
                     Double ftsr = replayDeltas.remove("first_try_success_rate");
+                    Integer ftsrSize = sampleSizes.remove("first_try_success_rate");
                     if (ftsr != null) {
                         replayDeltas.put("first_try_success_rate_delta", ftsr);
                         sampleSizes.put("first_try_success_rate_delta",
-                                sampleSizes.getOrDefault("first_try_success_rate", 0));
+                                ftsrSize != null ? ftsrSize : 0);
                     }
                 } catch (Exception e) {
                     System.err.println("Warning: failed to parse runtime metrics: " + e.getMessage());
@@ -103,7 +104,11 @@ public final class BenchmarkScorecardCli {
             for (var m : scorecard.metrics()) {
                 var node = mapper.createObjectNode();
                 node.put("name", m.name());
-                node.put("value", Double.isNaN(m.value()) ? null : mapper.getNodeFactory().numberNode(m.value()));
+                if (Double.isNaN(m.value())) {
+                    node.putNull("value");
+                } else {
+                    node.put("value", m.value());
+                }
                 node.put("threshold", m.threshold());
                 node.put("direction", m.direction());
                 node.put("category", m.category().name());
