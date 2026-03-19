@@ -171,18 +171,24 @@ public final class LlmClientFactory {
         return new OpenAIRoutingClient(chatClient, responsesClient, resolvedModel, "openai-codex");
     }
 
+    /**
+     * Creates an Anthropic client for the given provider with beta configuration.
+     *
+     * @param apiKey       the API key or OAuth access token
+     * @param refreshToken OAuth refresh token (may be null)
+     * @param baseUrl      custom base URL override (null = default)
+     * @param context1m    whether to enable 1M context window beta
+     * @param extraBetas   additional beta flags from config (may be null)
+     * @return configured AnthropicClient
+     */
+    public static LlmClient createAnthropicClient(String apiKey, String refreshToken, String baseUrl,
+                                                    boolean context1m, java.util.List<String> extraBetas) {
+        String resolvedBaseUrl = baseUrl != null ? baseUrl : "https://api.anthropic.com";
+        return new AnthropicClient(apiKey, refreshToken, resolvedBaseUrl,
+                java.time.Duration.ofSeconds(120), context1m, extraBetas);
+    }
+
     private static LlmClient createAnthropicClient(String apiKey, String refreshToken, String baseUrl) {
-        if (apiKey != null && apiKey.startsWith("sk-ant-oat") && refreshToken != null) {
-            if (baseUrl != null) {
-                return new AnthropicClient(apiKey, refreshToken, baseUrl,
-                        java.time.Duration.ofSeconds(120));
-            }
-            return new AnthropicClient(apiKey, refreshToken);
-        }
-        if (baseUrl != null) {
-            return new AnthropicClient(apiKey, null, baseUrl,
-                    java.time.Duration.ofSeconds(120));
-        }
-        return new AnthropicClient(apiKey);
+        return createAnthropicClient(apiKey, refreshToken, baseUrl, false, null);
     }
 }

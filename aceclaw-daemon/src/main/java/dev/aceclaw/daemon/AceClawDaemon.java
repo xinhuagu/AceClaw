@@ -212,8 +212,15 @@ public final class AceClawDaemon {
             apiKey = "not-configured";
         }
         String model = config.resolvedModel();
-        LlmClient rawLlmClient = LlmClientFactory.create(
-                config.provider(), apiKey, config.refreshToken(), config.baseUrl(), model);
+        LlmClient rawLlmClient;
+        if ("anthropic".equals(config.provider())) {
+            rawLlmClient = LlmClientFactory.createAnthropicClient(
+                    apiKey, config.refreshToken(), config.baseUrl(),
+                    config.context1m(), config.extraAnthropicBetas());
+        } else {
+            rawLlmClient = LlmClientFactory.create(
+                    config.provider(), apiKey, config.refreshToken(), config.baseUrl(), model);
+        }
 
         // Wrap LLM client with circuit breaker for fault isolation
         var cbConfig = CircuitBreakerConfig.defaultForLlm();

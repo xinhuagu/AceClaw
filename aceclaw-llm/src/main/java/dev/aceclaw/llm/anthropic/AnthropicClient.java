@@ -18,6 +18,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Stream;
 
@@ -33,6 +34,9 @@ import java.util.stream.Stream;
  *   <li>OAuth token ({@code sk-ant-oat01-*}): sent via {@code Authorization: Bearer} header,
  *       with automatic token refresh when expired</li>
  * </ul>
+ *
+ * <p>Beta header construction is delegated to {@link AnthropicBetaResolver} which
+ * dynamically composes betas based on auth mode, model, and configuration.
  */
 public final class AnthropicClient implements LlmClient {
 
@@ -59,13 +63,18 @@ public final class AnthropicClient implements LlmClient {
     private final ObjectMapper jsonMapper;
     private final Duration requestTimeout;
 
+    // Dynamic beta configuration
+    private final boolean context1m;
+    private final List<String> extraBetas;
+    private volatile String modelId;
+
     /**
      * Creates a client with a standard API key using default settings.
      *
      * @param apiKey the Anthropic API key
      */
     public AnthropicClient(String apiKey) {
-        this(apiKey, null, DEFAULT_BASE_URL, DEFAULT_TIMEOUT);
+        this(apiKey, null, DEFAULT_BASE_URL, DEFAULT_TIMEOUT, false, null);
     }
 
     /**
@@ -75,11 +84,11 @@ public final class AnthropicClient implements LlmClient {
      * @param refreshToken the OAuth refresh token (null for standard API keys)
      */
     public AnthropicClient(String accessToken, String refreshToken) {
-        this(accessToken, refreshToken, DEFAULT_BASE_URL, DEFAULT_TIMEOUT);
+        this(accessToken, refreshToken, DEFAULT_BASE_URL, DEFAULT_TIMEOUT, false, null);
     }
 
     /**
-     * Creates a client with full configuration.
+     * Creates a client with full configuration (backward compatible).
      *
      * @param accessToken    the access token (API key or OAuth token)
      * @param refreshToken   the OAuth refresh token (null for standard API keys)
@@ -87,6 +96,21 @@ public final class AnthropicClient implements LlmClient {
      * @param requestTimeout HTTP request timeout
      */
     public AnthropicClient(String accessToken, String refreshToken, String baseUrl, Duration requestTimeout) {
+        this(accessToken, refreshToken, baseUrl, requestTimeout, false, null);
+    }
+
+    /**
+     * Creates a client with full configuration including beta options.
+     *
+     * @param accessToken    the access token (API key or OAuth token)
+     * @param refreshToken   the OAuth refresh token (null for standard API keys)
+     * @param baseUrl        API base URL (without trailing slash)
+     * @param requestTimeout HTTP request timeout
+     * @param context1m      whether to enable 1M context window beta
+     * @param extraBetas     additional beta flags from config (may be null)
+     */
+    public AnthropicClient(String accessToken, String refreshToken, String baseUrl,
+                           Duration requestTimeout, boolean context1m, List<String> extraBetas) {
         if (accessToken == null || accessToken.isBlank()) {
             throw new IllegalArgumentException("API key / access token must not be null or blank");
         }
@@ -95,6 +119,8 @@ public final class AnthropicClient implements LlmClient {
         this.isOAuth = accessToken.startsWith("sk-ant-oat");
         this.baseUrl = baseUrl;
         this.requestTimeout = requestTimeout;
+        this.context1m = context1m;
+        this.extraBetas = extraBetas != null ? List.copyOf(extraBetas) : List.of();
 
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(30))
@@ -118,6 +144,7 @@ public final class AnthropicClient implements LlmClient {
 
     @Override
     public LlmResponse sendMessage(LlmRequest request) throws LlmException {
+        this.modelId = request.model();
         String requestBody = mapper.toRequestJson(request, false);
         log.debug("Sending non-streaming request to Anthropic: model={}", request.model());
 
@@ -167,6 +194,7 @@ public final class AnthropicClient implements LlmClient {
 
     @Override
     public StreamSession streamMessage(LlmRequest request) throws LlmException {
+        this.modelId = request.model();
         String requestBody = mapper.toRequestJson(request, true);
         log.debug("Sending streaming request to Anthropic: model={}", request.model());
 
@@ -285,22 +313,21 @@ public final class AnthropicClient implements LlmClient {
     }
 
     private HttpRequest buildRequest(String body) {
+        String betaHeader = AnthropicBetaResolver.resolve(isOAuth, modelId, context1m, extraBetas);
+
         var builder = HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl + MESSAGES_PATH))
                 .timeout(requestTimeout)
                 .header("Content-Type", "application/json")
-                .header("anthropic-version", ANTHROPIC_VERSION);
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .header("anthropic-beta", betaHeader);
 
         if (isOAuth) {
-            // OAuth tokens require Bearer auth + beta flags to be accepted
             builder.header("Authorization", "Bearer " + accessToken)
-                    .header("anthropic-beta",
-                            "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14,interleaved-thinking-2025-05-14")
                     .header("user-agent", "claude-cli/2.1.50 (external, cli)")
                     .header("x-app", "cli");
         } else {
-            builder.header("x-api-key", accessToken)
-                    .header("anthropic-beta", "interleaved-thinking-2025-05-14");
+            builder.header("x-api-key", accessToken);
         }
 
         return builder
@@ -310,6 +337,7 @@ public final class AnthropicClient implements LlmClient {
 
     /**
      * Refreshes the OAuth access token using the refresh token.
+     * On success, writes the new token back to the credential source (Keychain or file).
      *
      * @return true if refresh succeeded
      */
@@ -336,6 +364,15 @@ public final class AnthropicClient implements LlmClient {
                 if (newToken != null && !newToken.isBlank()) {
                     this.accessToken = newToken;
                     log.info("OAuth token refreshed successfully");
+
+                    // Write back to credential source so daemon restart picks up the fresh token
+                    long newExpiresAt = System.currentTimeMillis() + 3600_000L; // 1 hour default
+                    JsonNode expiresIn = tokenResponse.path("expires_in");
+                    if (!expiresIn.isMissingNode() && expiresIn.isNumber()) {
+                        newExpiresAt = System.currentTimeMillis() + expiresIn.asLong() * 1000L;
+                    }
+                    writeBackCredentials(newToken, refreshToken, newExpiresAt);
+
                     return true;
                 }
             }
@@ -346,6 +383,22 @@ public final class AnthropicClient implements LlmClient {
         } catch (Exception e) {
             log.error("OAuth token refresh error: {}", e.getMessage());
             return false;
+        }
+    }
+
+    /**
+     * Writes refreshed credentials back to the original source (Keychain or file).
+     */
+    private void writeBackCredentials(String newAccessToken, String newRefreshToken, long newExpiresAt) {
+        try {
+            boolean written = KeychainCredentialReader.writeToKeychain(
+                    newAccessToken, newRefreshToken, newExpiresAt);
+            if (!written) {
+                KeychainCredentialReader.writeToFile(
+                        newAccessToken, newRefreshToken, newExpiresAt);
+            }
+        } catch (Exception e) {
+            log.debug("Could not write back refreshed credentials: {}", e.getMessage());
         }
     }
 }

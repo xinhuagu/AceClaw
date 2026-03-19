@@ -116,6 +116,7 @@ public final class AceClawConfig {
     private static final Path CLAUDE_CLI_DIR = Path.of(System.getProperty("user.home"), ".claude");
     /** Codex CLI credentials file for OpenAI Codex OAuth. */
     private static final Path CODEX_AUTH_FILE = Path.of(System.getProperty("user.home"), ".codex", "auth.json");
+    private static final boolean DEFAULT_CONTEXT_1M = false;
 
     private String provider;
     private String baseUrl;
@@ -182,6 +183,8 @@ public final class AceClawConfig {
     private int deferredActionTickSeconds;
     private List<String> subAgentAutoApproveTools;
     private Map<String, List<HookMatcherFormat>> hooks;
+    private boolean context1m;
+    private List<String> extraAnthropicBetas;
 
     private AceClawConfig() {
         this.provider = "anthropic";
@@ -243,6 +246,8 @@ public final class AceClawConfig {
         this.deferredActionTickSeconds = DEFAULT_DEFERRED_ACTION_TICK_SECONDS;
         this.subAgentAutoApproveTools = List.of();
         this.providerModels = new java.util.HashMap<>();
+        this.context1m = DEFAULT_CONTEXT_1M;
+        this.extraAnthropicBetas = List.of();
     }
 
     /**
@@ -597,10 +602,13 @@ public final class AceClawConfig {
             config.loadCodexAuthToken();
         }
 
-        // 6. If apiKey is an OAuth token and no refresh token configured,
-        //    try to load the refresh token from Claude CLI credentials
-        if (config.apiKey != null && config.apiKey.startsWith("sk-ant-oat")
+        // 6. For Anthropic provider: try Keychain/credential file discovery
+        //    if no API key is set, or if we have an OAuth token but no refresh token.
+        if ("anthropic".equals(config.provider)) {
+            config.loadClaudeCliCredentialsWithKeychain();
+        } else if (config.apiKey != null && config.apiKey.startsWith("sk-ant-oat")
                 && config.refreshToken == null) {
+            // Non-Anthropic provider with OAuth token still needs refresh token
             config.loadClaudeCliCredentials();
         }
 
@@ -1130,6 +1138,44 @@ public final class AceClawConfig {
     }
 
     /**
+     * Returns whether 1M context window beta is enabled.
+     */
+    public boolean context1m() {
+        return context1m;
+    }
+
+    /**
+     * Returns extra Anthropic beta flags from config.
+     */
+    public List<String> extraAnthropicBetas() {
+        return extraAnthropicBetas;
+    }
+
+    /**
+     * Loads Claude CLI credentials with Keychain priority (macOS).
+     * Falls back to credential files if Keychain is unavailable.
+     */
+    private void loadClaudeCliCredentialsWithKeychain() {
+        var cred = dev.aceclaw.llm.anthropic.KeychainCredentialReader.read();
+        if (cred != null) {
+            // Only override apiKey if not already set, or if the Keychain token is fresher
+            if (this.apiKey == null || this.apiKey.isBlank()) {
+                this.apiKey = cred.accessToken();
+                log.info("Loaded OAuth access token from Claude CLI credentials");
+            }
+            if (this.refreshToken == null && cred.refreshToken() != null) {
+                this.refreshToken = cred.refreshToken();
+                log.info("Loaded OAuth refresh token from Claude CLI credentials");
+            }
+            return;
+        }
+        // Fall back to legacy file-based loading
+        if (this.apiKey != null && this.apiKey.startsWith("sk-ant-oat") && this.refreshToken == null) {
+            loadClaudeCliCredentials();
+        }
+    }
+
+    /**
      * Attempts to load OAuth credentials from Claude CLI's credential storage.
      * Looks for refresh tokens in known Claude CLI locations.
      */
@@ -1457,6 +1503,14 @@ public final class AceClawConfig {
         if (fileConfig.deferredActionTickSeconds > 0) {
             this.deferredActionTickSeconds = fileConfig.deferredActionTickSeconds;
         }
+        if (fileConfig.context1m != null) {
+            this.context1m = fileConfig.context1m;
+        }
+        if (fileConfig.extraAnthropicBetas != null && !fileConfig.extraAnthropicBetas.isEmpty()) {
+            this.extraAnthropicBetas = fileConfig.extraAnthropicBetas.stream()
+                    .filter(b -> b != null && !b.isBlank())
+                    .toList();
+        }
         if (fileConfig.subAgentAutoApproveTools != null && !fileConfig.subAgentAutoApproveTools.isEmpty()) {
             // Project config appends to global config (not replaces)
             var merged = new ArrayList<>(this.subAgentAutoApproveTools);
@@ -1540,6 +1594,8 @@ public final class AceClawConfig {
         public Map<String, ConfigFileFormat> profiles;
         public Map<String, String> providerModels;
         public Map<String, List<HookMatcherFormat>> hooks;
+        public Boolean context1m;
+        public List<String> extraAnthropicBetas;
     }
 
     /**
