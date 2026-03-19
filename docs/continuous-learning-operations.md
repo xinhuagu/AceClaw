@@ -420,18 +420,40 @@ CI guardrail job:
 - Executes `./gradlew preMergeCheck`, which includes:
   - full `build`
   - `continuousLearningSmoke` focused tests (daemon/memory/core)
-  - `replayQualityGate` thresholds check (`scripts/replay-quality-gate.sh`)
+  - `replayQualityGate` → `generateReplayReport` → `generateReplayCases` (chained)
+
+Task dependency chain (enforced by Gradle):
+```
+preMergeCheck
+├── build
+├── continuousLearningSmoke
+└── replayQualityGate
+    └── generateReplayReport
+        └── generateReplayCases
+            ├── validateReplaySuite
+            └── :aceclaw-cli:runReplayCases
+```
+
+This ensures CI always evaluates freshly generated replay artifacts — never stale or sample data.
 
 Replay gate configuration:
 
 - Default report path: `.aceclaw/metrics/continuous-learning/replay-latest.json`
+- Default replay cases input: `.aceclaw/metrics/continuous-learning/replay-cases.json` (generated, not sample)
 - Default baseline thresholds file: `docs/reports/samples/learning-quality-gate-baseline.json`
 - Strict mode is the default for `preMergeCheck` (missing report fails the build).
-- Local override (only for exploratory runs): `./gradlew preMergeCheck -PreplayGateStrict=false`
-- Custom report path: `./gradlew preMergeCheck -PreplayReport=/path/to/replay.json`
-- Baseline override: `./gradlew preMergeCheck -PreplayBaseline=/path/to/baseline.json`
-- CI uses strict mode and can override report path with `ACECLAW_REPLAY_REPORT_PATH`.
-- CI first runs `generateReplayCases`, then `generateReplayReport`.
+
+Local exploratory runs (bypasses artifact generation):
+```bash
+# Skip fresh generation, use existing/sample artifacts:
+./gradlew replayQualityGate -PreplayCasesInput=docs/reports/samples/replay-cases-sample.json -PreplayGateStrict=false
+```
+
+Canonical CI runs (enforces fresh generation):
+```bash
+# Full pipeline — generates cases, report, then gates:
+./gradlew preMergeCheck -PreplayGateStrict=true
+```
 - CI default enforces anti-pattern false-positive gate:
   - `ACECLAW_REPLAY_ENFORCE_ANTI_PATTERN_FP_RATE=true`
   - threshold `ACECLAW_REPLAY_MAX_ANTI_PATTERN_FP_RATE=0.50`

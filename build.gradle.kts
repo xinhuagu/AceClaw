@@ -97,6 +97,7 @@ tasks.register("continuousLearningSmoke") {
 tasks.register<Exec>("replayQualityGate") {
     group = "verification"
     description = "Validates replay quality report against hard thresholds."
+    dependsOn("generateReplayReport")
 
     val replayReport = providers.gradleProperty("replayReport")
             .orElse("${rootDir}/.aceclaw/metrics/continuous-learning/replay-latest.json")
@@ -143,10 +144,11 @@ tasks.register<Exec>("replayQualityGate") {
 tasks.register<Exec>("generateReplayReport") {
     group = "verification"
     description = "Generates replay quality report from learning=off/on case results."
+    dependsOn("generateReplayCases")
 
     val replayCasesInput = providers.gradleProperty("replayCasesInput")
             .orElse(providers.gradleProperty("replayInput"))
-            .orElse("${rootDir}/docs/reports/samples/replay-cases-sample.json")
+            .orElse("${rootDir}/.aceclaw/metrics/continuous-learning/replay-cases.json")
     val replayCasesManifestInput = providers.gradleProperty("replayCasesManifestInput")
             .orElse("${rootDir}/.aceclaw/metrics/continuous-learning/replay-cases.manifest.json")
     val replayReport = providers.gradleProperty("replayReport")
