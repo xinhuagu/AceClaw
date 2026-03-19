@@ -282,6 +282,79 @@ Force promote:
 }
 ```
 
+## Benchmark-Driven Rollout Policy
+
+### Stage Definitions
+
+| Stage | Behavior | Entry Criteria | Exit Criteria |
+|-------|----------|---------------|---------------|
+| **SHADOW** | Candidates scored but not injected broadly | Automatic on first observation | Validation gate PASS + candidate score ≥ 0.80 + evidence ≥ 3 |
+| **CANARY** | Injected with `disable-model-invocation: true` | Promoted from SHADOW | ≥ 20 attempts + ≤ 10% failure + ≤ 20% timeout + 24h dwell time |
+| **ACTIVE** | Full injection, model invocation enabled | Promoted from CANARY | Auto-rollback if rollback guardrails breached |
+
+### Benchmark Scorecard Gates
+
+Before any CANARY → ACTIVE promotion, the benchmark scorecard (`BenchmarkScorecard`) must show:
+
+**Effectiveness (must pass):**
+- `replay_success_rate_delta` ≥ 0.00 (learning must not regress success)
+- `first_try_success_rate_delta` ≥ 0.00
+- `retry_count_per_task_delta` ≤ 0.00 (fewer retries = better)
+
+**Efficiency (informational, warning only):**
+- `replay_token_delta` ≤ 10% increase
+- `replay_latency_delta_ms` ≤ 500ms increase
+
+**Safety (must pass):**
+- `promotion_precision` ≥ 0.80 (promoted candidates that stay healthy)
+- `false_learning_rate` ≤ 0.10 (candidates later demoted/rejected)
+- `rollback_rate` ≤ 0.20
+
+All metrics require minimum sample size n ≥ 10. Metrics with insufficient data show `INSUFFICIENT_DATA` status and do not block promotion.
+
+### Auto-Rollback Triggers
+
+A skill is automatically rolled back to SHADOW when:
+- Failure rate > 20% (over 7-day lookback window)
+- Timeout rate > 20%
+- Permission block rate > 20%
+- Validation gate verdict changes to HOLD or BLOCK
+
+### Emergency Procedures
+
+| Situation | Action | Command |
+|-----------|--------|---------|
+| Single bad skill | Rollback specific skill | `skill.release.forceRollback` |
+| Broad regression | Pause all promotions | `candidate.injection.set(enabled=false)` |
+| 3+ rollbacks in 7 days | Manual investigation required | Review `skill-release-audit.jsonl` |
+
+### Baseline Refresh Process
+
+1. Run full replay suite monthly (or after significant code changes)
+2. Compare new results against current baseline
+3. If metrics improved: update baseline thresholds in `learning-quality-gate-baseline.json`
+4. If metrics regressed: investigate before updating — regression may indicate a real problem
+5. Document rationale for any threshold changes in PR description
+
+### Threshold Tuning
+
+Thresholds can be tuned via config (no recompile needed):
+
+```json
+{
+  "skillAutoReleaseCanaryMinAttempts": 20,
+  "skillAutoReleaseCanaryMaxFailureRate": 0.10,
+  "skillAutoReleaseCanaryDwellHours": 24,
+  "skillAutoReleaseRollbackMaxFailureRate": 0.20
+}
+```
+
+Or via environment variables for CI/deployment overrides:
+```bash
+ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_FAILURE_RATE=0.05  # stricter for production
+ACECLAW_SKILL_AUTO_RELEASE_CANARY_DWELL_HOURS=48         # longer observation
+```
+
 ## Observability Panel (`#64`)
 
 The interactive CLI prompt status panel includes a continuous-learning summary line
