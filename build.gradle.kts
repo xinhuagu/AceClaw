@@ -192,8 +192,28 @@ tasks.register("generateReplayCases") {
     dependsOn("validateReplaySuite", ":aceclaw-cli:runReplayCases")
 }
 
+tasks.register<JavaExec>("benchmarkScorecard") {
+    group = "verification"
+    description = "Evaluates self-learning benchmark scorecard from replay and runtime metrics."
+    dependsOn("generateReplayReport")
+    mainClass.set("dev.aceclaw.daemon.BenchmarkScorecardCli")
+    classpath = project(":aceclaw-daemon").sourceSets["main"].runtimeClasspath
+
+    val replayReport = providers.gradleProperty("replayReport")
+            .orElse("${rootDir}/.aceclaw/metrics/continuous-learning/replay-latest.json")
+    val runtimeMetrics = providers.gradleProperty("runtimeMetrics")
+            .orElse("${rootDir}/.aceclaw/metrics/continuous-learning/runtime-latest.json")
+    val scorecardOutput = providers.gradleProperty("scorecardOutput")
+            .orElse("${rootDir}/.aceclaw/metrics/continuous-learning/benchmark-scorecard.json")
+
+    jvmArgs("--enable-preview")
+    args("--replay-report", replayReport.get(),
+         "--runtime-metrics", runtimeMetrics.get(),
+         "--output", scorecardOutput.get())
+}
+
 tasks.register("preMergeCheck") {
     group = "verification"
-    description = "Single pre-merge quality gate: build, smoke, and replay quality thresholds."
-    dependsOn("build", "continuousLearningSmoke", "replayQualityGate")
+    description = "Single pre-merge quality gate: build, smoke, replay, and benchmark scorecard."
+    dependsOn("build", "continuousLearningSmoke", "replayQualityGate", "benchmarkScorecard")
 }
