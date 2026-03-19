@@ -46,32 +46,43 @@ public final class BenchmarkScorecardCli {
         // Parse replay report metrics
         Path replayPath = Path.of(replayReportPath);
         if (Files.isRegularFile(replayPath)) {
-            JsonNode report = mapper.readTree(replayPath.toFile());
-            JsonNode metrics = report.path("metrics");
-            extractMetric(metrics, "replay_success_rate_delta", replayDeltas, sampleSizes);
-            extractMetric(metrics, "replay_token_delta", replayDeltas, sampleSizes);
-            extractMetric(metrics, "replay_latency_delta_ms", replayDeltas, sampleSizes);
-            extractMetric(metrics, "replay_failure_distribution_delta", replayDeltas, sampleSizes);
+            try {
+                JsonNode report = mapper.readTree(replayPath.toFile());
+                JsonNode metrics = report.path("metrics");
+                extractMetric(metrics, "replay_success_rate_delta", replayDeltas, sampleSizes);
+                extractMetric(metrics, "replay_token_delta", replayDeltas, sampleSizes);
+                extractMetric(metrics, "replay_latency_delta_ms", replayDeltas, sampleSizes);
+                extractMetric(metrics, "replay_failure_distribution_delta", replayDeltas, sampleSizes);
 
-            // Lifecycle metrics from the report
-            extractMetric(metrics, "promotion_rate", lifecycleRates, sampleSizes);
-            extractMetric(metrics, "demotion_rate", lifecycleRates, sampleSizes);
-            extractMetric(metrics, "rollback_rate", lifecycleRates, sampleSizes);
+                // Lifecycle metrics from the report
+                extractMetric(metrics, "promotion_rate", lifecycleRates, sampleSizes);
+                extractMetric(metrics, "demotion_rate", lifecycleRates, sampleSizes);
+                extractMetric(metrics, "rollback_rate", lifecycleRates, sampleSizes);
+            } catch (Exception e) {
+                System.err.println("Failed to parse replay report: " + e.getMessage());
+                System.exit(2);
+                return;
+            }
         }
 
         // Parse runtime metrics if available
         if (runtimeMetricsPath != null) {
             Path runtimePath = Path.of(runtimeMetricsPath);
             if (Files.isRegularFile(runtimePath)) {
-                JsonNode runtime = mapper.readTree(runtimePath.toFile());
-                JsonNode metrics = runtime.path("metrics");
-                extractMetric(metrics, "first_try_success_rate", replayDeltas, sampleSizes);
-                // Map to delta name expected by scorecard
-                Double ftsr = replayDeltas.remove("first_try_success_rate");
-                if (ftsr != null) {
-                    replayDeltas.put("first_try_success_rate_delta", ftsr);
-                    sampleSizes.put("first_try_success_rate_delta",
-                            sampleSizes.getOrDefault("first_try_success_rate", 0));
+                try {
+                    JsonNode runtime = mapper.readTree(runtimePath.toFile());
+                    JsonNode metrics = runtime.path("metrics");
+                    extractMetric(metrics, "first_try_success_rate", replayDeltas, sampleSizes);
+                    // Map to delta name expected by scorecard
+                    Double ftsr = replayDeltas.remove("first_try_success_rate");
+                    if (ftsr != null) {
+                        replayDeltas.put("first_try_success_rate_delta", ftsr);
+                        sampleSizes.put("first_try_success_rate_delta",
+                                sampleSizes.getOrDefault("first_try_success_rate", 0));
+                    }
+                } catch (Exception e) {
+                    System.err.println("Warning: failed to parse runtime metrics: " + e.getMessage());
+                    // Non-fatal — scorecard can evaluate without runtime metrics
                 }
             }
         }

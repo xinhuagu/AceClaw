@@ -140,11 +140,19 @@ INJECTION_AUDIT_PATH="$PROJECT_ROOT/.aceclaw/memory/injection-audit.jsonl"
 read_runtime_metric() {
   local key="$1"
   if [[ -f "$RUNTIME_METRICS_PATH" ]] && command -v jq >/dev/null 2>&1; then
+    if ! jq empty "$RUNTIME_METRICS_PATH" 2>/dev/null; then
+      echo "WARNING: runtime-latest.json exists but contains invalid JSON" >&2
+      return 1
+    fi
     local status
     status="$(jq -r ".metrics.\"$key\".status // \"\"" "$RUNTIME_METRICS_PATH" 2>/dev/null)"
     if [[ "$status" == "measured" ]]; then
-      jq -r ".metrics.\"$key\".value // \"null\"" "$RUNTIME_METRICS_PATH" 2>/dev/null
-      return 0
+      local val
+      val="$(jq -r ".metrics.\"$key\".value" "$RUNTIME_METRICS_PATH" 2>/dev/null)"
+      if [[ "$val" != "null" && -n "$val" ]]; then
+        printf '%s' "$val"
+        return 0
+      fi
     fi
   fi
   return 1
@@ -155,7 +163,7 @@ metric_json() {
   local target
   local val="null"
   local status="pending_instrumentation"
-  local source=""
+  local source="none"
 
   target="$(target_for_key "$key")"
 

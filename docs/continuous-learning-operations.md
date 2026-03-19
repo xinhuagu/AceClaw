@@ -421,17 +421,20 @@ CI guardrail job:
   - full `build`
   - `continuousLearningSmoke` focused tests (daemon/memory/core)
   - `replayQualityGate` → `generateReplayReport` → `generateReplayCases` (chained)
+  - `benchmarkScorecard` — compact 8-metric verdict (effectiveness/efficiency/safety)
 
 Task dependency chain (enforced by Gradle):
 ```
 preMergeCheck
 ├── build
 ├── continuousLearningSmoke
-└── replayQualityGate
-    └── generateReplayReport
-        └── generateReplayCases
-            ├── validateReplaySuite
-            └── :aceclaw-cli:runReplayCases
+├── replayQualityGate
+│   └── generateReplayReport
+│       └── generateReplayCases
+│           ├── validateReplaySuite
+│           └── :aceclaw-cli:runReplayCases
+└── benchmarkScorecard
+    └── generateReplayReport (shared, runs once)
 ```
 
 This ensures CI always evaluates freshly generated replay artifacts — never stale or sample data.
