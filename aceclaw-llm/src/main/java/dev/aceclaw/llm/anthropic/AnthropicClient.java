@@ -48,14 +48,18 @@ public final class AnthropicClient implements LlmClient {
     private static final String DEFAULT_MODEL = "claude-sonnet-4-5-20250929";
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(120);
 
-    /** OAuth token refresh endpoint. */
-    private static final String TOKEN_REFRESH_URL = "https://console.anthropic.com/api/oauth/token";
+    /** OAuth token refresh endpoint (platform.claude.com, same as Claude CLI / OpenClaw). */
+    private static final String TOKEN_REFRESH_URL = "https://platform.claude.com/v1/oauth/token";
 
     /** Claude Code's OAuth client ID. */
     private static final String OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 
+    /** OAuth scopes required for token refresh. */
+    private static final String OAUTH_SCOPES =
+            "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
+
     private volatile String accessToken;
-    private final String refreshToken;
+    private volatile String refreshToken;
     private final boolean isOAuth;
     private final String baseUrl;
     private final HttpClient httpClient;
@@ -345,13 +349,15 @@ public final class AnthropicClient implements LlmClient {
         try {
             var bodyNode = jsonMapper.createObjectNode();
             bodyNode.put("grant_type", "refresh_token");
-            bodyNode.put("refresh_token", refreshToken);
             bodyNode.put("client_id", OAUTH_CLIENT_ID);
+            bodyNode.put("refresh_token", refreshToken);
+            bodyNode.put("scope", OAUTH_SCOPES);
 
             HttpRequest refreshRequest = HttpRequest.newBuilder()
                     .uri(URI.create(TOKEN_REFRESH_URL))
                     .timeout(Duration.ofSeconds(30))
                     .header("Content-Type", "application/json")
+                    .header("Accept", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(jsonMapper.writeValueAsString(bodyNode)))
                     .build();
 
@@ -360,18 +366,28 @@ public final class AnthropicClient implements LlmClient {
 
             if (response.statusCode() == 200) {
                 JsonNode tokenResponse = jsonMapper.readTree(response.body());
-                String newToken = tokenResponse.path("access_token").asText(null);
-                if (newToken != null && !newToken.isBlank()) {
-                    this.accessToken = newToken;
+                String newAccessToken = tokenResponse.path("access_token").asText(null);
+                if (newAccessToken != null && !newAccessToken.isBlank()) {
+                    this.accessToken = newAccessToken;
+
+                    // Capture new refresh_token if provided (Anthropic may rotate it)
+                    String newRefreshToken = tokenResponse.path("refresh_token").asText(null);
+                    if (newRefreshToken != null && !newRefreshToken.isBlank()) {
+                        this.refreshToken = newRefreshToken;
+                    }
+
+                    // Calculate expiry: expires_in seconds minus 5 minute grace period
+                    long expiresInMs = 3600_000L; // 1 hour default
+                    JsonNode expiresIn = tokenResponse.path("expires_in");
+                    if (!expiresIn.isMissingNode() && expiresIn.isNumber()) {
+                        expiresInMs = expiresIn.asLong() * 1000L;
+                    }
+                    long newExpiresAt = System.currentTimeMillis() + expiresInMs - 300_000L; // 5min grace
+
                     log.info("OAuth token refreshed successfully");
 
                     // Write back to credential source so daemon restart picks up the fresh token
-                    long newExpiresAt = System.currentTimeMillis() + 3600_000L; // 1 hour default
-                    JsonNode expiresIn = tokenResponse.path("expires_in");
-                    if (!expiresIn.isMissingNode() && expiresIn.isNumber()) {
-                        newExpiresAt = System.currentTimeMillis() + expiresIn.asLong() * 1000L;
-                    }
-                    writeBackCredentials(newToken, refreshToken, newExpiresAt);
+                    writeBackCredentials(this.accessToken, this.refreshToken, newExpiresAt);
 
                     return true;
                 }
