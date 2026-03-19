@@ -12,6 +12,7 @@ import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Append-only audit log for candidate injection events.
@@ -29,6 +30,7 @@ public final class InjectionAuditLog {
 
     private final Path auditFile;
     private final ObjectMapper mapper;
+    private final ReentrantLock writeLock = new ReentrantLock();
 
     public InjectionAuditLog(Path memoryDir) {
         Objects.requireNonNull(memoryDir, "memoryDir");
@@ -175,6 +177,7 @@ public final class InjectionAuditLog {
     ) {}
 
     private void appendRecord(String type, Object data) {
+        writeLock.lock();
         try {
             Files.createDirectories(auditFile.getParent());
             var node = mapper.createObjectNode();
@@ -184,6 +187,8 @@ public final class InjectionAuditLog {
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         } catch (IOException e) {
             log.warn("Failed to write injection audit record: {}", e.getMessage());
+        } finally {
+            writeLock.unlock();
         }
     }
 }

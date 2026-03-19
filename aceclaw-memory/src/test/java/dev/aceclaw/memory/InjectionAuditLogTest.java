@@ -3,10 +3,15 @@ package dev.aceclaw.memory;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
@@ -112,5 +117,48 @@ class InjectionAuditLogTest {
         var summary = auditLog.summarize();
         assertThat(summary.totalInjections()).isEqualTo(0);
         assertThat(summary.hitRate()).isNaN();
+    }
+
+    @Test
+    void concurrentWrites_produceValidJsonl() throws Exception {
+        var auditLog = new InjectionAuditLog(tempDir);
+        int threads = 8;
+        int iterations = 50;
+        var latch = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(threads);
+
+        for (int t = 0; t < threads; t++) {
+            final int threadId = t;
+            executor.submit(() -> {
+                try {
+                    latch.await();
+                    for (int i = 0; i < iterations; i++) {
+                        auditLog.recordOutcome(new InjectionAuditLog.InjectionOutcome(
+                                Instant.now(), "s-" + threadId,
+                                List.of("c-" + threadId + "-" + i),
+                                i % 2 == 0, false, "test"));
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+        }
+        latch.countDown();
+        executor.shutdown();
+        assertThat(executor.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
+
+        // Every line must be valid JSON
+        Path auditFile = tempDir.resolve("injection-audit.jsonl");
+        var lines = Files.readAllLines(auditFile);
+        assertThat(lines).hasSize(threads * iterations);
+
+        var mapper = new ObjectMapper();
+        for (String line : lines) {
+            assertThat(line).isNotBlank();
+            // This will throw if the line is corrupted/partial JSON
+            var node = mapper.readTree(line);
+            assertThat(node.has("type")).isTrue();
+            assertThat(node.has("data")).isTrue();
+        }
     }
 }
