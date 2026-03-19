@@ -157,13 +157,19 @@ public final class KeychainCredentialReader {
      * @return true if write succeeded
      */
     public static boolean writeToFile(String newAccessToken, String newRefreshToken, long newExpiresAt) {
+        return writeToFile(CREDENTIALS_FILE, newAccessToken, newRefreshToken, newExpiresAt);
+    }
+
+    static boolean writeToFile(Path credentialsFile, String newAccessToken,
+                               String newRefreshToken, long newExpiresAt) {
         Objects.requireNonNull(newAccessToken, "newAccessToken");
-        if (!Files.isRegularFile(CREDENTIALS_FILE)) {
+        Objects.requireNonNull(credentialsFile, "credentialsFile");
+        if (!Files.isRegularFile(credentialsFile)) {
             return false;
         }
         try {
             var mapper = new ObjectMapper();
-            JsonNode root = mapper.readTree(CREDENTIALS_FILE.toFile());
+            JsonNode root = mapper.readTree(credentialsFile.toFile());
             if (!root.has("claudeAiOauth") || !(root instanceof com.fasterxml.jackson.databind.node.ObjectNode rootObj)) {
                 return false;
             }
@@ -176,19 +182,14 @@ public final class KeychainCredentialReader {
             oauthObj.put("expiresAt", newExpiresAt);
 
             // Atomic write via temp file with restrictive permissions
-            Path tmp = CREDENTIALS_FILE.resolveSibling(CREDENTIALS_FILE.getFileName() + ".tmp");
+            Path tmp = credentialsFile.resolveSibling(credentialsFile.getFileName() + ".tmp");
             Files.writeString(tmp, mapper.writerWithDefaultPrettyPrinter().writeValueAsString(rootObj));
-            try {
-                Files.setPosixFilePermissions(tmp,
-                        java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"));
-            } catch (UnsupportedOperationException ignored) {
-                // Non-POSIX filesystem (e.g., Windows)
-            }
-            Files.move(tmp, CREDENTIALS_FILE,
+            setRestrictivePermissions(tmp);
+            Files.move(tmp, credentialsFile,
                     java.nio.file.StandardCopyOption.REPLACE_EXISTING,
                     java.nio.file.StandardCopyOption.ATOMIC_MOVE);
 
-            log.info("Wrote refreshed credentials to file: {}", CREDENTIALS_FILE);
+            log.info("Wrote refreshed credentials to file: {}", credentialsFile);
             return true;
         } catch (Exception e) {
             log.warn("Failed to write credentials to file: {}", e.getMessage());
@@ -270,6 +271,17 @@ public final class KeychainCredentialReader {
         } catch (Exception e) {
             log.warn("Failed to parse Claude OAuth JSON: {}", e.getMessage());
             return null;
+        }
+    }
+
+    private static void setRestrictivePermissions(Path path) {
+        try {
+            Files.setPosixFilePermissions(path,
+                    java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"));
+        } catch (UnsupportedOperationException ignored) {
+            // Non-POSIX filesystem (e.g., Windows)
+        } catch (java.io.IOException e) {
+            log.debug("Could not tighten file permissions for {}: {}", path, e.getMessage());
         }
     }
 

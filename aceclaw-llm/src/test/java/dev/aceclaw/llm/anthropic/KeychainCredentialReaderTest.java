@@ -3,8 +3,11 @@ package dev.aceclaw.llm.anthropic;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -157,6 +160,99 @@ class KeychainCredentialReaderTest {
         assertThatThrownBy(() ->
                 KeychainCredentialReader.writeToFile(null, "rt", 123))
                 .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void writeToFile_validJson_updatesTokensAndExpiry() throws Exception {
+        Path credFile = tempDir.resolve("creds.json");
+        Files.writeString(credFile, """
+                {
+                  "claudeAiOauth": {
+                    "accessToken": "old-access",
+                    "refreshToken": "old-refresh",
+                    "expiresAt": 1
+                  }
+                }
+                """);
+
+        boolean written = KeychainCredentialReader.writeToFile(
+                credFile, "new-access", "new-refresh", 999L);
+
+        assertThat(written).isTrue();
+        var cred = KeychainCredentialReader.readFromFile(credFile);
+        assertThat(cred).isNotNull();
+        assertThat(cred.accessToken()).isEqualTo("new-access");
+        assertThat(cred.refreshToken()).isEqualTo("new-refresh");
+        assertThat(cred.expiresAt()).isEqualTo(999L);
+        assertThat(Files.exists(credFile.resolveSibling("creds.json.tmp"))).isFalse();
+    }
+
+    @Test
+    void writeToFile_nullRefreshToken_preservesExistingRefreshToken() throws Exception {
+        Path credFile = tempDir.resolve("creds.json");
+        Files.writeString(credFile, """
+                {
+                  "claudeAiOauth": {
+                    "accessToken": "old-access",
+                    "refreshToken": "keep-me",
+                    "expiresAt": 1
+                  }
+                }
+                """);
+
+        boolean written = KeychainCredentialReader.writeToFile(
+                credFile, "new-access", null, 777L);
+
+        assertThat(written).isTrue();
+        var cred = KeychainCredentialReader.readFromFile(credFile);
+        assertThat(cred).isNotNull();
+        assertThat(cred.accessToken()).isEqualTo("new-access");
+        assertThat(cred.refreshToken()).isEqualTo("keep-me");
+        assertThat(cred.expiresAt()).isEqualTo(777L);
+    }
+
+    @Test
+    void writeToFile_missingOauthField_returnsFalseWithoutModifyingFile() throws Exception {
+        Path credFile = tempDir.resolve("creds.json");
+        String original = """
+                {
+                  "someOtherField": "value"
+                }
+                """;
+        Files.writeString(credFile, original);
+
+        boolean written = KeychainCredentialReader.writeToFile(
+                credFile, "new-access", "new-refresh", 999L);
+
+        assertThat(written).isFalse();
+        assertThat(Files.readString(credFile)).isEqualTo(original);
+    }
+
+    @Test
+    void writeToFile_setsRestrictivePermissionsOnPosixFilesystems() throws Exception {
+        if (!FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+            return;
+        }
+
+        Path credFile = tempDir.resolve("creds.json");
+        Files.writeString(credFile, """
+                {
+                  "claudeAiOauth": {
+                    "accessToken": "old-access",
+                    "refreshToken": "old-refresh",
+                    "expiresAt": 1
+                  }
+                }
+                """);
+
+        boolean written = KeychainCredentialReader.writeToFile(
+                credFile, "new-access", "new-refresh", 123L);
+
+        assertThat(written).isTrue();
+        Set<PosixFilePermission> perms = Files.getPosixFilePermissions(credFile);
+        assertThat(perms).containsExactlyInAnyOrder(
+                PosixFilePermission.OWNER_READ,
+                PosixFilePermission.OWNER_WRITE);
     }
 
     @Test
