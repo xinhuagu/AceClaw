@@ -60,6 +60,20 @@ class AnthropicBetaResolverTest {
     }
 
     @Test
+    void extraBetas_context1mFilteredForIneligibleModel() {
+        String betas = AnthropicBetaResolver.resolve(false, "claude-haiku-4-5-20251001", false,
+                List.of(AnthropicBetaResolver.CONTEXT_1M_BETA));
+        assertThat(betas).doesNotContain(AnthropicBetaResolver.CONTEXT_1M_BETA);
+    }
+
+    @Test
+    void extraBetas_context1mAllowedForEligibleApiKeyModel() {
+        String betas = AnthropicBetaResolver.resolve(false, "claude-opus-4-6", false,
+                List.of(AnthropicBetaResolver.CONTEXT_1M_BETA));
+        assertThat(betas).contains(AnthropicBetaResolver.CONTEXT_1M_BETA);
+    }
+
+    @Test
     void extraBetas_deduplication() {
         String betas = AnthropicBetaResolver.resolve(false, "test", false,
                 List.of("interleaved-thinking-2025-05-14", "new-beta"));

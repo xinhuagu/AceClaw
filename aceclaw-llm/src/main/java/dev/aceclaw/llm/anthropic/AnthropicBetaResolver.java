@@ -93,10 +93,16 @@ public final class AnthropicBetaResolver {
                     continue;
                 }
                 String trimmed = beta.trim();
-                // Filter out context-1m if OAuth (Anthropic returns 400)
-                if (isOAuth && CONTEXT_1M_BETA.equals(trimmed)) {
-                    log.warn("Filtering out context-1m from extra betas in OAuth mode");
-                    continue;
+                // Apply same eligibility checks as the dedicated context1m path
+                if (CONTEXT_1M_BETA.equals(trimmed)) {
+                    if (isOAuth) {
+                        log.warn("Filtering out context-1m from extra betas in OAuth mode");
+                        continue;
+                    }
+                    if (!isContext1mEligible(modelId)) {
+                        log.warn("Filtering out context-1m from extra betas for ineligible model: {}", modelId);
+                        continue;
+                    }
                 }
                 betas.add(trimmed);
             }
