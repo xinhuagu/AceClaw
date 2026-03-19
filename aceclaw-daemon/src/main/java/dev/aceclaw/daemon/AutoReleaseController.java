@@ -128,7 +128,7 @@ public final class AutoReleaseController {
                 continue;
             }
 
-            if (release.stage() == Stage.CANARY && !promotedToCanaryThisRun && canPromoteToActive(metrics)) {
+            if (release.stage() == Stage.CANARY && !promotedToCanaryThisRun && canPromoteToActive(metrics, release)) {
                 var active = transition(projectRoot, release, Stage.ACTIVE,
                         "AUTO_PROMOTE_ACTIVE", "canary guardrails pass", normalizedTrigger);
                 releasesByName.put(skillName, active.release());
@@ -298,11 +298,26 @@ public final class AutoReleaseController {
                 && candidate.evidenceCount() >= config.minEvidenceCount();
     }
 
-    private boolean canPromoteToActive(HealthMetrics metrics) {
-        return metrics.attempts() >= config.canaryMinAttempts()
+    private boolean canPromoteToActive(HealthMetrics metrics, SkillRelease release) {
+        // Minimum dwell time at CANARY stage before promotion
+        if (config.canaryDwellHours() > 0) {
+            Duration dwellTime = Duration.between(release.updatedAt(), Instant.now(clock));
+            if (dwellTime.toHours() < config.canaryDwellHours()) {
+                log.debug("Skill {} dwell time {}h < required {}h, deferring promotion",
+                        release.skillName(), dwellTime.toHours(), config.canaryDwellHours());
+                return false;
+            }
+        }
+        boolean passes = metrics.attempts() >= config.canaryMinAttempts()
                 && metrics.failureRate() <= config.canaryMaxFailureRate()
                 && metrics.timeoutRate() <= config.canaryMaxTimeoutRate()
                 && metrics.permissionRate() <= config.canaryMaxPermissionRate();
+
+        // Approach warning: log when metrics reach 80% of guardrail threshold
+        if (!passes) {
+            logApproachWarning(release.skillName(), metrics);
+        }
+        return passes;
     }
 
     private boolean shouldRollback(HealthMetrics metrics) {
@@ -311,6 +326,19 @@ public final class AutoReleaseController {
                         || metrics.timeoutRate() > config.rollbackMaxTimeoutRate()
                         || metrics.permissionRate() > config.rollbackMaxPermissionRate()
         );
+    }
+
+    private void logApproachWarning(String skillName, HealthMetrics metrics) {
+        if (config.canaryMaxFailureRate() > 0
+                && metrics.failureRate() >= config.canaryMaxFailureRate() * 0.8) {
+            log.warn("Skill {} failure rate {} approaching canary threshold {}",
+                    skillName, metrics.failureRate(), config.canaryMaxFailureRate());
+        }
+        if (config.canaryMaxTimeoutRate() > 0
+                && metrics.timeoutRate() >= config.canaryMaxTimeoutRate() * 0.8) {
+            log.warn("Skill {} timeout rate {} approaching canary threshold {}",
+                    skillName, metrics.timeoutRate(), config.canaryMaxTimeoutRate());
+        }
     }
 
     private String guardrailMessage(HealthMetrics metrics) {
@@ -455,14 +483,28 @@ public final class AutoReleaseController {
             double rollbackMaxFailureRate,
             double rollbackMaxTimeoutRate,
             double rollbackMaxPermissionRate,
-            Duration healthLookback
+            Duration healthLookback,
+            int canaryDwellHours
     ) {
         public Config {
             healthLookback = healthLookback != null ? healthLookback : Duration.ofDays(7);
+            if (canaryDwellHours < 0) canaryDwellHours = 0;
+        }
+
+        /** Backward-compatible constructor without canaryDwellHours. */
+        public Config(double minCandidateScore, int minEvidenceCount,
+                      int canaryMinAttempts, double canaryMaxFailureRate,
+                      double canaryMaxTimeoutRate, double canaryMaxPermissionRate,
+                      double rollbackMaxFailureRate, double rollbackMaxTimeoutRate,
+                      double rollbackMaxPermissionRate, Duration healthLookback) {
+            this(minCandidateScore, minEvidenceCount, canaryMinAttempts,
+                    canaryMaxFailureRate, canaryMaxTimeoutRate, canaryMaxPermissionRate,
+                    rollbackMaxFailureRate, rollbackMaxTimeoutRate, rollbackMaxPermissionRate,
+                    healthLookback, 24);
         }
 
         public static Config defaults() {
-            return new Config(0.80, 3, 5, 0.35, 0.20, 0.20, 0.45, 0.20, 0.20, Duration.ofDays(7));
+            return new Config(0.80, 3, 20, 0.10, 0.20, 0.20, 0.20, 0.20, 0.20, Duration.ofDays(7), 24);
         }
     }
 

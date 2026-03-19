@@ -93,12 +93,13 @@ public final class AceClawConfig {
     private static final boolean DEFAULT_SKILL_AUTO_RELEASE_ENABLED = true;
     private static final double DEFAULT_SKILL_AUTO_RELEASE_MIN_CANDIDATE_SCORE = 0.80;
     private static final int DEFAULT_SKILL_AUTO_RELEASE_MIN_EVIDENCE = 3;
-    private static final int DEFAULT_SKILL_AUTO_RELEASE_CANARY_MIN_ATTEMPTS = 5;
-    private static final double DEFAULT_SKILL_AUTO_RELEASE_CANARY_MAX_FAILURE_RATE = 0.35;
+    private static final int DEFAULT_SKILL_AUTO_RELEASE_CANARY_MIN_ATTEMPTS = 20;
+    private static final double DEFAULT_SKILL_AUTO_RELEASE_CANARY_MAX_FAILURE_RATE = 0.10;
     private static final double DEFAULT_SKILL_AUTO_RELEASE_CANARY_MAX_TIMEOUT_RATE = 0.20;
     private static final double DEFAULT_SKILL_AUTO_RELEASE_CANARY_MAX_PERMISSION_BLOCK_RATE = 0.20;
-    private static final double DEFAULT_SKILL_AUTO_RELEASE_ACTIVE_MAX_FAILURE_RATE = 0.45; // legacy alias
-    private static final double DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_FAILURE_RATE = 0.45;
+    private static final int DEFAULT_SKILL_AUTO_RELEASE_CANARY_DWELL_HOURS = 24;
+    private static final double DEFAULT_SKILL_AUTO_RELEASE_ACTIVE_MAX_FAILURE_RATE = 0.20; // legacy alias
+    private static final double DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_FAILURE_RATE = 0.20;
     private static final double DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_TIMEOUT_RATE = 0.20;
     private static final double DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_PERMISSION_BLOCK_RATE = 0.20;
     private static final int DEFAULT_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS = 168;
@@ -173,6 +174,7 @@ public final class AceClawConfig {
     private double skillAutoReleaseRollbackMaxTimeoutRate;
     private double skillAutoReleaseRollbackMaxPermissionBlockRate;
     private int skillAutoReleaseHealthLookbackHours;
+    private int skillAutoReleaseCanaryDwellHours;
     private int maxAgentTurns;
     private int maxAgentWallTimeSec;
     private int maxAgentHardTurns;
@@ -236,6 +238,7 @@ public final class AceClawConfig {
         this.skillAutoReleaseRollbackMaxPermissionBlockRate =
                 DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_PERMISSION_BLOCK_RATE;
         this.skillAutoReleaseHealthLookbackHours = DEFAULT_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS;
+        this.skillAutoReleaseCanaryDwellHours = DEFAULT_SKILL_AUTO_RELEASE_CANARY_DWELL_HOURS;
         this.maxAgentTurns = DEFAULT_MAX_AGENT_TURNS;
         this.maxAgentWallTimeSec = DEFAULT_MAX_AGENT_WALL_TIME_SEC;
         this.maxAgentHardTurns = DEFAULT_MAX_AGENT_HARD_TURNS;
@@ -1020,6 +1023,14 @@ public final class AceClawConfig {
     }
 
     /**
+     * Returns the minimum dwell time in hours at CANARY stage before promotion to ACTIVE.
+     * Defaults to 24.
+     */
+    public int skillAutoReleaseCanaryDwellHours() {
+        return skillAutoReleaseCanaryDwellHours;
+    }
+
+    /**
      * Returns whether the deferred action scheduler is enabled.
      * Defaults to true.
      */
@@ -1485,6 +1496,10 @@ public final class AceClawConfig {
                 && fileConfig.skillAutoReleaseHealthLookbackHours > 0) {
             this.skillAutoReleaseHealthLookbackHours = fileConfig.skillAutoReleaseHealthLookbackHours;
         }
+        if (fileConfig.skillAutoReleaseCanaryDwellHours != null
+                && fileConfig.skillAutoReleaseCanaryDwellHours >= 0) {
+            this.skillAutoReleaseCanaryDwellHours = fileConfig.skillAutoReleaseCanaryDwellHours;
+        }
         if (fileConfig.maxAgentTurns != null && fileConfig.maxAgentTurns >= 0) {
             this.maxAgentTurns = fileConfig.maxAgentTurns;
         }
@@ -1587,6 +1602,7 @@ public final class AceClawConfig {
         public Double skillAutoReleaseRollbackMaxTimeoutRate;
         public Double skillAutoReleaseRollbackMaxPermissionBlockRate;
         public Integer skillAutoReleaseHealthLookbackHours;
+        public Integer skillAutoReleaseCanaryDwellHours;
         public Integer maxAgentTurns;
         public Integer maxAgentWallTimeSec;
         public Integer maxAgentHardTurns;

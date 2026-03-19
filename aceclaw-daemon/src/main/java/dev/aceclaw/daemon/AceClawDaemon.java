@@ -533,7 +533,8 @@ public final class AceClawDaemon {
                                 config.skillAutoReleaseRollbackMaxFailureRate(),
                                 config.skillAutoReleaseRollbackMaxTimeoutRate(),
                                 config.skillAutoReleaseRollbackMaxPermissionBlockRate(),
-                                Duration.ofHours(Math.max(1, config.skillAutoReleaseHealthLookbackHours()))
+                                Duration.ofHours(Math.max(1, config.skillAutoReleaseHealthLookbackHours())),
+                                config.skillAutoReleaseCanaryDwellHours()
                         ),
                         validationGateForAuto
                 );
