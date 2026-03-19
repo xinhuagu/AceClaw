@@ -293,7 +293,7 @@ public final class RequestRouter {
 
         result.put("activeSessions", sessionManager.sessionCount());
         result.put("timestamp", Instant.now().toString());
-        result.put("version", "0.1.0-SNAPSHOT");
+        result.put("version", dev.aceclaw.core.BuildVersion.version());
         var m = modelName;
         if (m != null) {
             result.put("model", m);

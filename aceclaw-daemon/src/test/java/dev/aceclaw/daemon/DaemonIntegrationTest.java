@@ -302,7 +302,7 @@ class DaemonIntegrationTest {
             var result = response.get("result");
             assertThat(result.get("status").asText()).isEqualTo("healthy");
             assertThat(result.has("timestamp")).isTrue();
-            assertThat(result.get("version").asText()).isEqualTo("0.1.0-SNAPSHOT");
+            assertThat(result.get("version").asText()).isNotBlank();
         }
     }
 

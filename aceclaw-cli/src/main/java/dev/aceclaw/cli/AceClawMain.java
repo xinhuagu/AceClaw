@@ -31,13 +31,13 @@ import java.nio.file.Paths;
 @Command(
     name = "aceclaw",
     mixinStandardHelpOptions = true,
-    version = "aceclaw 0.1.0-SNAPSHOT",
+    version = "aceclaw (version loaded at runtime)",
     description = "AI coding agent — Device as Agent",
     subcommands = { AceClawMain.DaemonCommand.class, AceClawMain.ModelsCommand.class }
 )
 public final class AceClawMain implements Runnable {
 
-    static final String VERSION = "0.1.0-SNAPSHOT";
+    static final String VERSION = dev.aceclaw.core.BuildVersion.version();
     private static final Path CODEX_AUTH_FILE = Path.of(
             System.getProperty("user.home"), ".codex", "auth.json");
 
