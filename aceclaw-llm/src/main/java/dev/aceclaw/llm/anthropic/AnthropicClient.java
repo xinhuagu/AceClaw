@@ -70,7 +70,6 @@ public final class AnthropicClient implements LlmClient {
     // Dynamic beta configuration
     private final boolean context1m;
     private final List<String> extraBetas;
-    private volatile String modelId;
 
     /**
      * Creates a client with a standard API key using default settings.
@@ -148,13 +147,13 @@ public final class AnthropicClient implements LlmClient {
 
     @Override
     public LlmResponse sendMessage(LlmRequest request) throws LlmException {
-        this.modelId = request.model();
+        String model = request.model();
         String requestBody = mapper.toRequestJson(request, false);
-        log.debug("Sending non-streaming request to Anthropic: model={}", request.model());
+        log.debug("Sending non-streaming request to Anthropic: model={}", model);
 
         return executeWithRetry(() -> {
             try {
-                HttpRequest httpRequest = buildRequest(requestBody);
+                HttpRequest httpRequest = buildRequest(requestBody, model);
                 HttpResponse<String> httpResponse = httpClient.send(
                         httpRequest, HttpResponse.BodyHandlers.ofString());
 
@@ -165,7 +164,7 @@ public final class AnthropicClient implements LlmClient {
                 if (statusCode == 401 && isOAuth && refreshToken != null) {
                     log.info("OAuth token expired, attempting refresh...");
                     if (refreshAccessToken()) {
-                        httpRequest = buildRequest(requestBody);
+                        httpRequest = buildRequest(requestBody, model);
                         httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
                         statusCode = httpResponse.statusCode();
                         responseBody = httpResponse.body();
@@ -198,13 +197,13 @@ public final class AnthropicClient implements LlmClient {
 
     @Override
     public StreamSession streamMessage(LlmRequest request) throws LlmException {
-        this.modelId = request.model();
+        String model = request.model();
         String requestBody = mapper.toRequestJson(request, true);
-        log.debug("Sending streaming request to Anthropic: model={}", request.model());
+        log.debug("Sending streaming request to Anthropic: model={}", model);
 
         return executeWithRetry(() -> {
             try {
-                HttpRequest httpRequest = buildRequest(requestBody);
+                HttpRequest httpRequest = buildRequest(requestBody, model);
                 HttpResponse<Stream<String>> httpResponse = httpClient.send(
                         httpRequest, HttpResponse.BodyHandlers.ofLines());
 
@@ -214,7 +213,7 @@ public final class AnthropicClient implements LlmClient {
                 if (statusCode == 401 && isOAuth && refreshToken != null) {
                     log.info("OAuth token expired, attempting refresh...");
                     if (refreshAccessToken()) {
-                        httpRequest = buildRequest(requestBody);
+                        httpRequest = buildRequest(requestBody, model);
                         httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofLines());
                         statusCode = httpResponse.statusCode();
                     }
@@ -316,7 +315,7 @@ public final class AnthropicClient implements LlmClient {
         return ProviderCapabilities.ANTHROPIC;
     }
 
-    private HttpRequest buildRequest(String body) {
+    private HttpRequest buildRequest(String body, String modelId) {
         String betaHeader = AnthropicBetaResolver.resolve(isOAuth, modelId, context1m, extraBetas);
 
         var builder = HttpRequest.newBuilder()
