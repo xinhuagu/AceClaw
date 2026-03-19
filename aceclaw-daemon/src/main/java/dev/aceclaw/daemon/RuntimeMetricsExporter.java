@@ -14,8 +14,8 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.Objects;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Exports structured runtime outcome counters to a persistent JSON file
@@ -25,6 +25,9 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <p>Counters are accumulated across daemon lifetime (reset on restart).
  * Each metric includes {@code value}, {@code sample_size}, and {@code status}.
+ *
+ * <p>Thread-safety: all counter mutations and snapshot reads are protected
+ * by a single lock to ensure consistent ratios (e.g., success &lt;= total).
  */
 public final class RuntimeMetricsExporter {
 
@@ -33,20 +36,21 @@ public final class RuntimeMetricsExporter {
     private static final String RUNTIME_FILE = "runtime-latest.json";
 
     private final ObjectMapper mapper;
+    private final ReentrantLock lock = new ReentrantLock();
 
-    // Task-level counters
-    private final AtomicInteger taskTotal = new AtomicInteger();
-    private final AtomicInteger taskSuccess = new AtomicInteger();
-    private final AtomicInteger taskFirstTrySuccess = new AtomicInteger();
-    private final AtomicLong retryCountTotal = new AtomicLong();
+    // Task-level counters — guarded by lock
+    private int taskTotal;
+    private int taskSuccess;
+    private int taskFirstTrySuccess;
+    private long retryCountTotal;
 
-    // Permission counters
-    private final AtomicInteger permissionRequests = new AtomicInteger();
-    private final AtomicInteger permissionBlocks = new AtomicInteger();
+    // Permission counters — guarded by lock
+    private int permissionRequests;
+    private int permissionBlocks;
 
-    // Timeout counters
-    private final AtomicInteger turnTotal = new AtomicInteger();
-    private final AtomicInteger timeoutCount = new AtomicInteger();
+    // Timeout counters — guarded by lock
+    private int turnTotal;
+    private int timeoutCount;
 
     public RuntimeMetricsExporter() {
         this.mapper = new ObjectMapper();
@@ -60,14 +64,19 @@ public final class RuntimeMetricsExporter {
      * @param retryCount    number of retries or replan attempts during this task
      */
     public void recordTaskOutcome(boolean success, boolean firstTry, int retryCount) {
-        taskTotal.incrementAndGet();
-        if (success) {
-            taskSuccess.incrementAndGet();
-            if (firstTry) {
-                taskFirstTrySuccess.incrementAndGet();
+        lock.lock();
+        try {
+            taskTotal++;
+            if (success) {
+                taskSuccess++;
+                if (firstTry) {
+                    taskFirstTrySuccess++;
+                }
             }
+            retryCountTotal += Math.max(0, retryCount);
+        } finally {
+            lock.unlock();
         }
-        retryCountTotal.addAndGet(Math.max(0, retryCount));
     }
 
     /**
@@ -76,9 +85,14 @@ public final class RuntimeMetricsExporter {
      * @param blocked true if the permission was denied/blocked
      */
     public void recordPermissionDecision(boolean blocked) {
-        permissionRequests.incrementAndGet();
-        if (blocked) {
-            permissionBlocks.incrementAndGet();
+        lock.lock();
+        try {
+            permissionRequests++;
+            if (blocked) {
+                permissionBlocks++;
+            }
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -86,42 +100,57 @@ public final class RuntimeMetricsExporter {
      * Records a timeout/budget exhaustion event.
      */
     public void recordTimeout() {
-        timeoutCount.incrementAndGet();
+        lock.lock();
+        try {
+            timeoutCount++;
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
      * Records that a turn was executed.
      */
     public void recordTurn() {
-        turnTotal.incrementAndGet();
+        lock.lock();
+        try {
+            turnTotal++;
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
      * Exports all accumulated metrics to the runtime-latest.json file.
      *
-     * @param projectRoot the project root directory
+     * @param projectRoot the project root directory (must not be null)
      * @param toolMetrics the session tool metrics collector (may be null)
      */
     public void export(Path projectRoot, ToolMetricsCollector toolMetrics) {
+        Objects.requireNonNull(projectRoot, "projectRoot");
         try {
+            // Take a consistent snapshot under lock
+            Snapshot snap = snapshot();
+
             ObjectNode root = mapper.createObjectNode();
             root.put("exported_at", Instant.now().toString());
 
             ObjectNode metrics = root.putObject("metrics");
 
             // Task success rate
-            int tasks = taskTotal.get();
-            int successes = taskSuccess.get();
             addMetric(metrics, "task_success_rate",
-                    tasks > 0 ? (double) successes / tasks : Double.NaN, tasks);
+                    snap.taskTotal > 0 ? (double) snap.taskSuccess / snap.taskTotal : Double.NaN,
+                    snap.taskTotal);
 
             // First try success rate
             addMetric(metrics, "first_try_success_rate",
-                    tasks > 0 ? (double) taskFirstTrySuccess.get() / tasks : Double.NaN, tasks);
+                    snap.taskTotal > 0 ? (double) snap.taskFirstTrySuccess / snap.taskTotal : Double.NaN,
+                    snap.taskTotal);
 
             // Retry count per task (average)
             addMetric(metrics, "retry_count_per_task",
-                    tasks > 0 ? (double) retryCountTotal.get() / tasks : Double.NaN, tasks);
+                    snap.taskTotal > 0 ? (double) snap.retryCountTotal / snap.taskTotal : Double.NaN,
+                    snap.taskTotal);
 
             // Tool execution metrics (from ToolMetricsCollector)
             if (toolMetrics != null) {
@@ -146,14 +175,15 @@ public final class RuntimeMetricsExporter {
             }
 
             // Permission block rate
-            int permReqs = permissionRequests.get();
             addMetric(metrics, "permission_block_rate",
-                    permReqs > 0 ? (double) permissionBlocks.get() / permReqs : Double.NaN, permReqs);
+                    snap.permissionRequests > 0
+                            ? (double) snap.permissionBlocks / snap.permissionRequests : Double.NaN,
+                    snap.permissionRequests);
 
             // Timeout rate
-            int turns = turnTotal.get();
             addMetric(metrics, "timeout_rate",
-                    turns > 0 ? (double) timeoutCount.get() / turns : Double.NaN, turns);
+                    snap.turnTotal > 0 ? (double) snap.timeoutCount / snap.turnTotal : Double.NaN,
+                    snap.turnTotal);
 
             // Write atomically
             Path metricsDir = projectRoot.resolve(METRICS_DIR);
@@ -184,13 +214,18 @@ public final class RuntimeMetricsExporter {
     }
 
     /**
-     * Returns the current snapshot of counters for testing.
+     * Returns a consistent snapshot of all counters under lock.
      */
     public Snapshot snapshot() {
-        return new Snapshot(
-                taskTotal.get(), taskSuccess.get(), taskFirstTrySuccess.get(),
-                retryCountTotal.get(), permissionRequests.get(), permissionBlocks.get(),
-                turnTotal.get(), timeoutCount.get());
+        lock.lock();
+        try {
+            return new Snapshot(
+                    taskTotal, taskSuccess, taskFirstTrySuccess,
+                    retryCountTotal, permissionRequests, permissionBlocks,
+                    turnTotal, timeoutCount);
+        } finally {
+            lock.unlock();
+        }
     }
 
     public record Snapshot(

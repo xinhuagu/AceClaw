@@ -21,6 +21,9 @@ public final class StatisticalTest {
      */
     public static double[] wilsonInterval(int successes, int total, double z) {
         if (total <= 0) return new double[]{0.0, 0.0};
+        if (successes < 0) successes = 0;
+        if (successes > total) successes = total;
+        if (z < 0 || Double.isNaN(z)) z = 1.96;
         double p = (double) successes / total;
         double zz = z * z;
         double denom = 1.0 + zz / total;
@@ -51,6 +54,8 @@ public final class StatisticalTest {
      */
     public static double twoProportionZTest(int s1, int n1, int s2, int n2) {
         if (n1 <= 0 || n2 <= 0) return 1.0;
+        s1 = Math.max(0, Math.min(s1, n1));
+        s2 = Math.max(0, Math.min(s2, n2));
         double p1 = (double) s1 / n1;
         double p2 = (double) s2 / n2;
         double pooled = (double) (s1 + s2) / (n1 + n2);
