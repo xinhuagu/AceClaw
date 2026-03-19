@@ -157,6 +157,8 @@ public final class StreamingAgentHandler {
     private final ConcurrentHashMap<String, AntiPatternGateOverride> antiPatternGateOverrides =
             new ConcurrentHashMap<>();
     private final SkillMetricsStore skillMetricsStore = new SkillMetricsStore();
+    private volatile RuntimeMetricsExporter runtimeMetricsExporter;
+    private volatile dev.aceclaw.memory.InjectionAuditLog injectionAuditLog;
 
     /** Per-session turn locks for serializing main turns within a session. */
     private final ConcurrentHashMap<String, ReentrantLock> sessionTurnLocks =
@@ -519,6 +521,8 @@ public final class StreamingAgentHandler {
                 syntheticTurn(planResult, plannedStopReason),
                 cancellationToken,
                 null);
+        recordRuntimeMetrics(sessionId, planResult.success(), !cancellationToken.isCancelled(),
+                plannedStopReason, metricsCollector, session.projectPath());
 
         // 6. Build result
         var result = objectMapper.createObjectNode();
@@ -583,10 +587,13 @@ public final class StreamingAgentHandler {
                 metricsCollector != null ? metricsCollector.allMetrics() : Map.of(),
                 requestToolNames);
 
+        boolean turnSuccess = turn.finalStopReason() != StopReason.ERROR;
         recordInjectedCandidateOutcomes(
-                sessionId, turn.finalStopReason() != StopReason.ERROR, cancellationToken.isCancelled(),
+                sessionId, turnSuccess, cancellationToken.isCancelled(),
                 turn.finalStopReason());
         recordSkillOutcomes(sessionId, session.projectPath(), turn, cancellationToken, adaptive);
+        recordRuntimeMetrics(sessionId, turnSuccess, !cancellationToken.isCancelled(),
+                turn.finalStopReason(), metricsCollector, session.projectPath());
 
         // Build result
         var result = objectMapper.createObjectNode();
@@ -1445,6 +1452,14 @@ public final class StreamingAgentHandler {
         this.candidateStore = candidateStore;
     }
 
+    public void setRuntimeMetricsExporter(RuntimeMetricsExporter exporter) {
+        this.runtimeMetricsExporter = exporter;
+    }
+
+    public void setInjectionAuditLog(dev.aceclaw.memory.InjectionAuditLog auditLog) {
+        this.injectionAuditLog = auditLog;
+    }
+
     public void setAntiPatternGateFeedbackStore(AntiPatternGateFeedbackStore store) {
         this.antiPatternGateFeedbackStore = store;
     }
@@ -1723,6 +1738,8 @@ public final class StreamingAgentHandler {
             sessionInjectedCandidateIds.remove(sessionId);
         } else {
             sessionInjectedCandidateIds.put(sessionId, assembly.injectedCandidateIds());
+            // Record injection event for audit trail
+            recordInjectionAuditEvent(sessionId, assembly.injectedCandidateIds(), prompt);
         }
         return assembly;
     }
@@ -1851,6 +1868,20 @@ public final class StreamingAgentHandler {
             return;
         }
         boolean effectiveSuccess = success && !cancelled;
+
+        // Record injection outcome for audit trail
+        var audit = this.injectionAuditLog;
+        if (audit != null) {
+            try {
+                boolean severeFailure = !effectiveSuccess && stopReason == StopReason.ERROR;
+                audit.recordOutcome(new dev.aceclaw.memory.InjectionAuditLog.InjectionOutcome(
+                        java.time.Instant.now(), sessionId, candidateIds,
+                        effectiveSuccess, severeFailure,
+                        buildOutcomeNote(cancelled, stopReason)));
+            } catch (Exception e) {
+                log.debug("Injection outcome audit failed: {}", e.getMessage());
+            }
+        }
         boolean severeFailure = !effectiveSuccess && stopReason == StopReason.ERROR;
         var outcome = new CandidateStore.CandidateOutcome(
                 effectiveSuccess,
@@ -1893,6 +1924,58 @@ public final class StreamingAgentHandler {
             return "runtime-outcome:cancelled";
         }
         return "runtime-outcome:" + stopReason.name().toLowerCase(java.util.Locale.ROOT);
+    }
+
+    /**
+     * Records runtime metrics for a completed turn and exports to runtime-latest.json.
+     */
+    private void recordRuntimeMetrics(String sessionId, boolean success, boolean firstTry,
+                                       StopReason stopReason, ToolMetricsCollector metricsCollector,
+                                       Path projectPath) {
+        var exporter = this.runtimeMetricsExporter;
+        if (exporter == null) return;
+        try {
+            int retryCount = 0; // TODO: wire actual replan count when available
+            exporter.recordTaskOutcome(success, firstTry, retryCount);
+            exporter.recordTurn();
+            if (stopReason == StopReason.MAX_TOKENS) {
+                exporter.recordTimeout();
+            }
+            if (projectPath != null) {
+                exporter.export(projectPath, metricsCollector);
+            }
+        } catch (Exception e) {
+            log.debug("Runtime metrics recording failed: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Records injection audit event when candidates are injected into a turn.
+     */
+    private void recordInjectionAuditEvent(String sessionId, List<String> candidateIds, String queryHint) {
+        var audit = this.injectionAuditLog;
+        if (audit == null || candidateStore == null) return;
+        try {
+            var injected = new java.util.ArrayList<dev.aceclaw.memory.InjectionAuditLog.InjectedCandidate>();
+            int totalTokens = 0;
+            for (String id : candidateIds) {
+                var opt = candidateStore.byId(id);
+                if (opt.isEmpty()) continue;
+                var c = opt.get();
+                int est = dev.aceclaw.core.agent.ContextEstimator.estimateTokens(c.content());
+                injected.add(new dev.aceclaw.memory.InjectionAuditLog.InjectedCandidate(
+                        c.id(), c.content(), c.toolTag(), c.score(), c.evidenceCount(), c.score(), est));
+                totalTokens += est;
+            }
+            audit.recordInjection(new dev.aceclaw.memory.InjectionAuditLog.InjectionEvent(
+                    java.time.Instant.now(), sessionId,
+                    queryHint != null ? queryHint.substring(0, Math.min(queryHint.length(), 100)) : "",
+                    injected, totalTokens, candidateInjectionMaxTokens,
+                    candidateStore.byState(dev.aceclaw.memory.CandidateState.PROMOTED).size(),
+                    injected.size()));
+        } catch (Exception e) {
+            log.debug("Injection audit recording failed: {}", e.getMessage());
+        }
     }
 
     String getSystemPromptForTest(String sessionId) {
