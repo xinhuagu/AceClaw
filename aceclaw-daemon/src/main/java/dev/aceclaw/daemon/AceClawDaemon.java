@@ -585,7 +585,15 @@ public final class AceClawDaemon {
                 agentHandler.setCandidateInjectionEnabled(false);
             }
 
-            log.info("Self-improvement engine wired (with strategy refinement + candidate pipeline)");
+            // Wire runtime metrics exporter and injection audit log
+            var runtimeMetricsExporter = new RuntimeMetricsExporter();
+            agentHandler.setRuntimeMetricsExporter(runtimeMetricsExporter);
+            if (cs != null) {
+                var memoryDir = Path.of(System.getProperty("user.home"), ".aceclaw", "memory");
+                agentHandler.setInjectionAuditLog(new dev.aceclaw.memory.InjectionAuditLog(memoryDir));
+            }
+
+            log.info("Self-improvement engine wired (with strategy refinement + candidate pipeline + runtime metrics)");
 
             // Catch-up: generate drafts for any PROMOTED candidates that don't have drafts yet.
             // This handles candidates promoted before the auto-trigger existed (pre-#175).
