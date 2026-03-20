@@ -72,15 +72,11 @@ public final class BenchmarkScorecardCli {
                 try {
                     JsonNode runtime = mapper.readTree(runtimePath.toFile());
                     JsonNode metrics = runtime.path("metrics");
-                    extractMetric(metrics, "first_try_success_rate", replayDeltas, sampleSizes);
-                    // Map to delta name expected by scorecard
-                    Double ftsr = replayDeltas.remove("first_try_success_rate");
-                    Integer ftsrSize = sampleSizes.remove("first_try_success_rate");
-                    if (ftsr != null) {
-                        replayDeltas.put("first_try_success_rate_delta", ftsr);
-                        sampleSizes.put("first_try_success_rate_delta",
-                                ftsrSize != null ? ftsrSize : 0);
-                    }
+                    // Map runtime metrics to delta names expected by scorecard
+                    extractAndRename(metrics, "first_try_success_rate",
+                            "first_try_success_rate_delta", replayDeltas, sampleSizes);
+                    extractAndRename(metrics, "retry_count_per_task",
+                            "retry_count_per_task_delta", replayDeltas, sampleSizes);
                 } catch (Exception e) {
                     System.err.println("Warning: failed to parse runtime metrics: " + e.getMessage());
                     // Non-fatal — scorecard can evaluate without runtime metrics
@@ -135,5 +131,16 @@ public final class BenchmarkScorecardCli {
         if (valueNode == null || valueNode.isNull()) return;
         values.put(name, valueNode.asDouble());
         sizes.put(name, m.path("sample_size").asInt(0));
+    }
+
+    private static void extractAndRename(JsonNode metrics, String sourceName, String targetName,
+                                          Map<String, Double> values, Map<String, Integer> sizes) {
+        extractMetric(metrics, sourceName, values, sizes);
+        Double val = values.remove(sourceName);
+        Integer sz = sizes.remove(sourceName);
+        if (val != null) {
+            values.put(targetName, val);
+            sizes.put(targetName, sz != null ? sz : 0);
+        }
     }
 }

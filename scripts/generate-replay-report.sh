@@ -330,6 +330,16 @@ jq \
           target: 0.25,
           status: "measured"
         },
+        first_try_success_rate_delta: {
+          value: null,
+          target: 0.00,
+          status: "pending_instrumentation"
+        },
+        retry_count_per_task_delta: {
+          value: null,
+          target: 0.00,
+          status: "pending_instrumentation"
+        },
         anti_pattern_gate_false_positive_rate_weighted: {
           value: null,
           target: 0.50,
