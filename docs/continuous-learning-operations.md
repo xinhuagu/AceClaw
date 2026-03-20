@@ -476,9 +476,11 @@ Canonical CI runs (enforces fresh generation):
   - `ACECLAW_REPLAY_PROMPTS_PATH` default:
     - full mode (`true`): `docs/reports/samples/replay-prompts-sample.json`
     - default (`false`): `docs/reports/samples/replay-prompts-ci-short.json` (5 short cases)
-  - `ACECLAW_REPLAY_SUITE_MIN_PER_CATEGORY` default:
-    - full mode (`true`): `5`
-    - default (`false`): `1`
+  - `ACECLAW_REPLAY_SUITE_MIN_PER_CATEGORY` — minimum cases per benchmark category:
+    - CI short mode (`false`): `1` (fast smoke)
+    - CI full mode (`true`): `5` (coverage)
+    - Script/Gradle canonical default: `3` (structural validation)
+    - Java `ReplayBenchmarkValidator.MIN_CASES_PER_CATEGORY`: `10` (statistical significance, different purpose)
   - `ACECLAW_REPLAY_TIMEOUT_MS` (default: `180000`)
   - `ACECLAW_REPLAY_AUTO_APPROVE_PERMISSIONS` (default: `true`)
   - `ACECLAW_REPLAY_MAX_TOKEN_ESTIMATION_ERROR_RATIO` (default by event):

@@ -23,8 +23,19 @@ import java.util.Set;
  */
 public final class ReplayBenchmarkValidator {
 
-    /** Minimum cases per category for statistical significance. */
+    /**
+     * Minimum cases per category for statistical significance in benchmark results.
+     * Below this, metrics are reported as INSUFFICIENT_DATA.
+     */
     public static final int MIN_CASES_PER_CATEGORY = 10;
+
+    /**
+     * Minimum cases per category for suite schema validation (structural coverage).
+     * Matches the default in {@code validate-replay-suite.sh} and Gradle's
+     * {@code replaySuiteMinPerCategory}. Lower than {@link #MIN_CASES_PER_CATEGORY}
+     * because suite validation checks structure, not statistical power.
+     */
+    public static final int MIN_CASES_FOR_SUITE_VALIDATION = 3;
 
     /** Required benchmark categories. */
     public static final Set<String> REQUIRED_CATEGORIES = Set.of(

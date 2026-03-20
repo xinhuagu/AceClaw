@@ -2,7 +2,7 @@
 set -euo pipefail
 
 INPUT=""
-MIN_PER_CATEGORY=1
+MIN_PER_CATEGORY=3
 
 usage() {
   cat <<USAGE
@@ -10,7 +10,7 @@ Usage: ./scripts/validate-replay-suite.sh [options]
 
 Options:
   --input <path>             Replay prompts suite JSON path.
-  --min-per-category <n>     Minimum cases for each required category (default: 1).
+  --min-per-category <n>     Minimum cases for each required category (default: 3).
   --help                     Show this help.
 
 Required case fields:
