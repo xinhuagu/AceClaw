@@ -450,13 +450,25 @@ if [[ -f "$CANDIDATE_TRANSITIONS" ]]; then
   promotion_rate="$(jq -ner --argjson p "$promotion_count" --argjson t "$transition_total" 'if $t > 0 then ($p / $t) else 0.0 end')"
   demotion_rate="$(jq -ner --argjson d "$demotion_count" --argjson t "$transition_total" 'if $t > 0 then ($d / $t) else 0.0 end')"
   rollback_rate="$(jq -ner --argjson r "$rollback_count" --argjson p "$promotion_count" 'if $p > 0 then ($r / $p) else 0.0 end')"
+  # promotion_precision: promoted that stayed healthy / total promoted
+  promotion_precision="$(jq -ner --argjson p "$promotion_count" --argjson d "$demotion_count" --argjson r "$rollback_count" \
+    'if $p > 0 then (($p - $d - $r) / $p | if . < 0 then 0.0 else . end) else null end')"
+  # false_learning_rate: promoted later demoted or rolled back / total promoted
+  false_learning_rate="$(jq -ner --argjson d "$demotion_count" --argjson r "$rollback_count" --argjson p "$promotion_count" \
+    'if $p > 0 then (($d + $r) / $p) else null end')"
 fi
+
+promotion_precision="${promotion_precision:-null}"
+false_learning_rate="${false_learning_rate:-null}"
 
 tmp_report="${OUTPUT}.tmp-lifecycle"
 jq \
   --argjson promotion_rate "$promotion_rate" \
   --argjson demotion_rate "$demotion_rate" \
   --argjson rollback_rate "$rollback_rate" \
+  --argjson promotion_precision "$promotion_precision" \
+  --argjson false_learning_rate "$false_learning_rate" \
+  --argjson promotion_count_val "$promotion_count" \
   --argjson ap_rate "$ap_rate_weighted_metric" \
   --arg ap_status "$ap_metric_status" \
   --arg transition_source "$transition_source" \
@@ -476,14 +488,16 @@ jq \
     status: "measured"
   }
   | .metrics.promotion_precision = {
-    value: null,
+    value: $promotion_precision,
     target: 0.80,
-    status: "pending_instrumentation"
+    status: (if $promotion_precision == null then "pending_instrumentation" else "measured" end),
+    sample_size: $promotion_count_val
   }
   | .metrics.false_learning_rate = {
-    value: null,
+    value: $false_learning_rate,
     target: 0.10,
-    status: "pending_instrumentation"
+    status: (if $false_learning_rate == null then "pending_instrumentation" else "measured" end),
+    sample_size: $promotion_count_val
   }
   | .metrics.rollback_rate = {
     value: $rollback_rate,

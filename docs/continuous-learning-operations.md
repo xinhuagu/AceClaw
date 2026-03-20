@@ -420,24 +420,38 @@ CI guardrail job:
 - Executes `./gradlew preMergeCheck`, which includes:
   - full `build`
   - `continuousLearningSmoke` focused tests (daemon/memory/core)
-  - `replayQualityGate` → `generateReplayReport` → `generateReplayCases` (chained)
-  - `benchmarkScorecard` — compact 8-metric verdict (effectiveness/efficiency/safety)
+  - `benchmarkScorecard` — **canonical verdict** (8-metric scorecard across effectiveness/efficiency/safety)
 
 Task dependency chain (enforced by Gradle):
 ```
 preMergeCheck
 ├── build
 ├── continuousLearningSmoke
-├── replayQualityGate
-│   └── generateReplayReport
-│       └── generateReplayCases
-│           ├── validateReplaySuite
-│           └── :aceclaw-cli:runReplayCases
-└── benchmarkScorecard
-    └── generateReplayReport (shared, runs once)
+└── benchmarkScorecard (canonical verdict)
+    └── generateReplayReport
+        └── generateReplayCases
+            ├── validateReplaySuite
+            └── :aceclaw-cli:runReplayCases
 ```
 
+The `benchmarkScorecard` is the single canonical benchmark verdict. The legacy `replayQualityGate` task is retained for backward compatibility but is no longer in the `preMergeCheck` path.
+
 This ensures CI always evaluates freshly generated replay artifacts — never stale or sample data.
+
+Benchmark scorecard metric contract (`BenchmarkScorecard`):
+
+| Metric | Category | Direction | Source | Threshold |
+|--------|----------|-----------|--------|-----------|
+| `replay_success_rate_delta` | Effectiveness | higher=better | replay report | ≥ 0.00 |
+| `first_try_success_rate_delta` | Effectiveness | higher=better | pending (needs A/B per-case retry tracking) | ≥ 0.00 |
+| `retry_count_per_task_delta` | Effectiveness | lower=better | pending (needs A/B per-case retry tracking) | ≤ 0.00 |
+| `replay_token_delta` | Efficiency | lower=better | replay report | ≤ 0.10 |
+| `replay_latency_delta_ms` | Efficiency | lower=better | replay report | ≤ 500 |
+| `promotion_precision` | Safety | higher=better | candidate transitions | ≥ 0.80 |
+| `false_learning_rate` | Safety | lower=better | candidate transitions | ≤ 0.10 |
+| `rollback_rate` | Safety | lower=better | candidate transitions | ≤ 0.20 |
+
+Metrics with `sample_size < 10` are reported as `INSUFFICIENT_DATA` and do not block.
 
 Replay gate configuration:
 
