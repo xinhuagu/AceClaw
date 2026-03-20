@@ -439,6 +439,22 @@ preMergeCheck
 
 This ensures CI always evaluates freshly generated replay artifacts — never stale or sample data.
 
+Benchmark scorecard metric contract (`BenchmarkScorecard`):
+
+| Metric | Category | Direction | Source | Threshold |
+|--------|----------|-----------|--------|-----------|
+| `replay_success_rate_delta` | Effectiveness | higher=better | replay report | ≥ 0.00 |
+| `first_try_success_rate_delta` | Effectiveness | higher=better | pending (needs A/B) | ≥ 0.00 |
+| `retry_count_per_task_delta` | Effectiveness | lower=better | pending (needs A/B) | ≤ 0.00 |
+| `replay_token_delta` | Efficiency | lower=better | replay report | ≤ 0.10 |
+| `replay_latency_delta_ms` | Efficiency | lower=better | replay report | ≤ 500 |
+| `promotion_precision` | Safety | higher=better | pending (lifecycle) | ≥ 0.80 |
+| `false_learning_rate` | Safety | lower=better | pending (lifecycle) | ≤ 0.10 |
+| `rollback_rate` | Safety | lower=better | replay report | ≤ 0.20 |
+
+Metrics with `sample_size < 10` are reported as `INSUFFICIENT_DATA` and do not block.
+Metrics marked "pending" require future instrumentation and are explicitly shown as insufficient.
+
 Replay gate configuration:
 
 - Default report path: `.aceclaw/metrics/continuous-learning/replay-latest.json`
