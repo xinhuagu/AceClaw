@@ -445,17 +445,21 @@ if [[ -f "$CANDIDATE_TRANSITIONS" ]]; then
   transition_source="candidate-transitions"
   transition_total="$(read_json_number_or_default 'length' "$CANDIDATE_TRANSITIONS" 0)"
   promotion_count="$(read_json_number_or_default '[.[] | select((.toState // "") == "PROMOTED")] | length' "$CANDIDATE_TRANSITIONS" 0)"
-  demotion_count="$(read_json_number_or_default '[.[] | select((.toState // "") == "DEMOTED")] | length' "$CANDIDATE_TRANSITIONS" 0)"
-  rollback_count="$(read_json_number_or_default '[.[] | select(((.reasonCode // "") == "MANUAL_ROLLBACK") or ((.reasonCode // "") == "ANTI_PATTERN_FALSE_POSITIVE_ROLLBACK"))] | length' "$CANDIDATE_TRANSITIONS" 0)"
+  # rollback_count: DEMOTED transitions with rollback reason codes
+  rollback_count="$(read_json_number_or_default '[.[] | select(((.reasonCode // "") == "MANUAL_ROLLBACK") or ((.reasonCode // "") == "ANTI_PATTERN_FALSE_POSITIVE_ROLLBACK") or ((.reasonCode // "") == "AUTO_ROLLBACK_GUARDRAIL_BREACH") or ((.reasonCode // "") == "AUTO_ROLLBACK_VALIDATION_FAIL"))] | length' "$CANDIDATE_TRANSITIONS" 0)"
+  # demotion_count: DEMOTED transitions excluding rollbacks (to avoid double-counting)
+  demotion_count="$(read_json_number_or_default '[.[] | select((.toState // "") == "DEMOTED") | select(((.reasonCode // "") | test("ROLLBACK") | not))] | length' "$CANDIDATE_TRANSITIONS" 0)"
   promotion_rate="$(jq -ner --argjson p "$promotion_count" --argjson t "$transition_total" 'if $t > 0 then ($p / $t) else 0.0 end')"
   demotion_rate="$(jq -ner --argjson d "$demotion_count" --argjson t "$transition_total" 'if $t > 0 then ($d / $t) else 0.0 end')"
   rollback_rate="$(jq -ner --argjson r "$rollback_count" --argjson p "$promotion_count" 'if $p > 0 then ($r / $p) else 0.0 end')"
+  # Total failures = demotions + rollbacks (mutually exclusive after the fix above)
+  total_failures=$((demotion_count + rollback_count))
   # promotion_precision: promoted that stayed healthy / total promoted
-  promotion_precision="$(jq -ner --argjson p "$promotion_count" --argjson d "$demotion_count" --argjson r "$rollback_count" \
-    'if $p > 0 then (($p - $d - $r) / $p | if . < 0 then 0.0 else . end) else null end')"
+  promotion_precision="$(jq -ner --argjson p "$promotion_count" --argjson f "$total_failures" \
+    'if $p > 0 then (($p - $f) / $p | if . < 0 then 0.0 else . end) else null end')"
   # false_learning_rate: promoted later demoted or rolled back / total promoted
-  false_learning_rate="$(jq -ner --argjson d "$demotion_count" --argjson r "$rollback_count" --argjson p "$promotion_count" \
-    'if $p > 0 then (($d + $r) / $p) else null end')"
+  false_learning_rate="$(jq -ner --argjson f "$total_failures" --argjson p "$promotion_count" \
+    'if $p > 0 then ($f / $p) else null end')"
 fi
 
 promotion_precision="${promotion_precision:-null}"
@@ -502,7 +506,8 @@ jq \
   | .metrics.rollback_rate = {
     value: $rollback_rate,
     target: 0.20,
-    status: "measured"
+    status: "measured",
+    sample_size: $promotion_count_val
   }
   | .metrics.anti_pattern_false_positive_rate = {
     value: (if ($ap_rate == null) then 0.0 else $ap_rate end),

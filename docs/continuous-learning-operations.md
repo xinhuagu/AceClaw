@@ -420,21 +420,24 @@ CI guardrail job:
 - Executes `./gradlew preMergeCheck`, which includes:
   - full `build`
   - `continuousLearningSmoke` focused tests (daemon/memory/core)
-  - `benchmarkScorecard` — **canonical verdict** (8-metric scorecard across effectiveness/efficiency/safety)
+  - `replayQualityGate` — manifest verification, token calibration, anti-pattern FP thresholds
+  - `benchmarkScorecard` — 8-metric verdict (effectiveness/efficiency/safety)
 
 Task dependency chain (enforced by Gradle):
 ```
 preMergeCheck
 ├── build
 ├── continuousLearningSmoke
-└── benchmarkScorecard (canonical verdict)
-    └── generateReplayReport
-        └── generateReplayCases
-            ├── validateReplaySuite
-            └── :aceclaw-cli:runReplayCases
+├── replayQualityGate
+│   └── generateReplayReport
+│       └── generateReplayCases
+│           ├── validateReplaySuite
+│           └── :aceclaw-cli:runReplayCases
+└── benchmarkScorecard
+    └── generateReplayReport (shared, runs once)
 ```
 
-The `benchmarkScorecard` is the single canonical benchmark verdict. The legacy `replayQualityGate` task is retained for backward compatibility but is no longer in the `preMergeCheck` path.
+Both gates run in parallel: `replayQualityGate` covers checks that `benchmarkScorecard` does not yet validate (manifest provenance, token calibration, anti-pattern FP rate). When scorecard fully subsumes these, `replayQualityGate` can be removed.
 
 This ensures CI always evaluates freshly generated replay artifacts — never stale or sample data.
 

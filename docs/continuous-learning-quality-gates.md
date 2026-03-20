@@ -24,18 +24,21 @@ Metrics with `sample_size < 10` are reported as `INSUFFICIENT_DATA` and do not b
 
 ## Legacy Replay Quality Gate
 
-The `replayQualityGate` task is retained for backward compatibility and standalone use but is **no longer in the `preMergeCheck` path**. It checks a narrower set of metrics:
+The `replayQualityGate` task runs alongside `benchmarkScorecard` in `preMergeCheck`. It covers checks that the scorecard does not yet validate:
 
 - `promotion_rate` (`min`): promotions / total candidate transitions.
 - `demotion_rate` (`max`): demotions / total candidate transitions.
 - `anti_pattern_false_positive_rate` (`max`): weighted anti-pattern false-positive rate.
 - `rollback_rate` (`max`): rollback transitions / promotions.
 
-Standalone usage: `./gradlew replayQualityGate`
+Additional checks in `replayQualityGate` not yet in scorecard:
+- Manifest provenance verification (SHA-256 checksum linkage)
+- Token estimation calibration (`token_estimation_error_ratio_max`)
+- Anti-pattern false-positive rate thresholds
 
 ## Gate Behavior
 
-`./gradlew preMergeCheck` runs `benchmarkScorecard` and fails when the scorecard verdict is FAIL (exit code 1).
+`./gradlew preMergeCheck` runs both `replayQualityGate` and `benchmarkScorecard`. Either gate can fail the build independently.
 
 Default threshold source:
 - `docs/reports/samples/learning-quality-gate-baseline.json`

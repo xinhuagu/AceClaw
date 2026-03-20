@@ -214,9 +214,10 @@ tasks.register<JavaExec>("benchmarkScorecard") {
 
 tasks.register("preMergeCheck") {
     group = "verification"
-    description = "Single pre-merge quality gate: build, smoke, and benchmark scorecard (canonical verdict)."
-    dependsOn("build", "continuousLearningSmoke", "benchmarkScorecard")
-    // Note: replayQualityGate is retained as a standalone task for backward compatibility
-    // but is no longer in the preMergeCheck path. The benchmarkScorecard is the canonical
-    // verdict that subsumes replay quality checks with a broader metric contract.
+    description = "Single pre-merge quality gate: build, smoke, replay gate, and benchmark scorecard."
+    dependsOn("build", "continuousLearningSmoke", "replayQualityGate", "benchmarkScorecard")
+    // Both gates run: replayQualityGate covers manifest verification, token calibration,
+    // and anti-pattern FP thresholds that benchmarkScorecard does not yet check.
+    // benchmarkScorecard adds the broader 8-metric contract (effectiveness/efficiency/safety).
+    // When scorecard fully subsumes replay gate checks, replayQualityGate can be removed.
 }
