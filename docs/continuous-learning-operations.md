@@ -437,24 +437,24 @@ preMergeCheck
     └── generateReplayReport (shared, runs once)
 ```
 
-Both gates run in parallel: `replayQualityGate` covers checks that `benchmarkScorecard` does not yet validate (manifest provenance, token calibration, anti-pattern FP rate). When scorecard fully subsumes these, `replayQualityGate` can be removed.
+Both gates are enforced under `preMergeCheck`: `replayQualityGate` covers checks that `benchmarkScorecard` does not yet validate (manifest provenance, token calibration, anti-pattern FP rate). When scorecard fully subsumes these, `replayQualityGate` can be removed.
 
 This ensures CI always evaluates freshly generated replay artifacts — never stale or sample data.
 
 Benchmark scorecard metric contract (`BenchmarkScorecard`):
 
-| Metric | Category | Direction | Source | Threshold |
-|--------|----------|-----------|--------|-----------|
-| `replay_success_rate_delta` | Effectiveness | higher=better | replay report | ≥ 0.00 |
-| `first_try_success_rate_delta` | Effectiveness | higher=better | pending (needs A/B per-case retry tracking) | ≥ 0.00 |
-| `retry_count_per_task_delta` | Effectiveness | lower=better | pending (needs A/B per-case retry tracking) | ≤ 0.00 |
-| `replay_token_delta` | Efficiency | lower=better | replay report | ≤ 0.10 |
-| `replay_latency_delta_ms` | Efficiency | lower=better | replay report | ≤ 500 |
-| `promotion_precision` | Safety | higher=better | candidate transitions | ≥ 0.80 |
-| `false_learning_rate` | Safety | lower=better | candidate transitions | ≤ 0.10 |
-| `rollback_rate` | Safety | lower=better | candidate transitions | ≤ 0.20 |
+| Metric | Category | Direction | Source | Scorecard Status |
+|--------|----------|-----------|--------|------------------|
+| `replay_success_rate_delta` | Effectiveness | higher=better | replay report | measured |
+| `first_try_success_rate_delta` | Effectiveness | higher=better | not yet instrumented | `INSUFFICIENT_DATA` until A/B per-case retry tracking is available |
+| `retry_count_per_task_delta` | Effectiveness | lower=better | not yet instrumented | `INSUFFICIENT_DATA` until A/B per-case retry tracking is available |
+| `replay_token_delta` | Efficiency | lower=better | replay report | measured |
+| `replay_latency_delta_ms` | Efficiency | lower=better | replay report | measured |
+| `promotion_precision` | Safety | higher=better | candidate transitions | measured when promotions exist |
+| `false_learning_rate` | Safety | lower=better | candidate transitions | measured when promotions exist |
+| `rollback_rate` | Safety | lower=better | candidate transitions | measured when promotions exist |
 
-Metrics with `sample_size < 10` are reported as `INSUFFICIENT_DATA` and do not block.
+`BenchmarkScorecard` metrics with `sample_size < 10` are reported as `INSUFFICIENT_DATA` and do not block. This rule applies only to scorecard metrics; `replayQualityGate` metrics still require `measured` status to pass.
 
 Replay gate configuration:
 
