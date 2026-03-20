@@ -65,24 +65,11 @@ public final class BenchmarkScorecardCli {
             }
         }
 
-        // Parse runtime metrics if available
-        if (runtimeMetricsPath != null) {
-            Path runtimePath = Path.of(runtimeMetricsPath);
-            if (Files.isRegularFile(runtimePath)) {
-                try {
-                    JsonNode runtime = mapper.readTree(runtimePath.toFile());
-                    JsonNode metrics = runtime.path("metrics");
-                    // Map runtime metrics to delta names expected by scorecard
-                    extractAndRename(metrics, "first_try_success_rate",
-                            "first_try_success_rate_delta", replayDeltas, sampleSizes);
-                    extractAndRename(metrics, "retry_count_per_task",
-                            "retry_count_per_task_delta", replayDeltas, sampleSizes);
-                } catch (Exception e) {
-                    System.err.println("Warning: failed to parse runtime metrics: " + e.getMessage());
-                    // Non-fatal — scorecard can evaluate without runtime metrics
-                }
-            }
-        }
+        // Note: first_try_success_rate_delta and retry_count_per_task_delta require
+        // true A/B replay data (off vs on), not runtime absolute values. They stay
+        // pending_instrumentation until replay cases track per-case retry counts.
+        // Runtime metrics (runtime-latest.json) provide absolute rates which cannot
+        // be substituted for deltas without misrepresenting the scorecard contract.
 
         // Evaluate scorecard
         var scorecard = BenchmarkScorecard.evaluate(replayDeltas, sampleSizes, lifecycleRates);
@@ -133,14 +120,4 @@ public final class BenchmarkScorecardCli {
         sizes.put(name, m.path("sample_size").asInt(0));
     }
 
-    private static void extractAndRename(JsonNode metrics, String sourceName, String targetName,
-                                          Map<String, Double> values, Map<String, Integer> sizes) {
-        extractMetric(metrics, sourceName, values, sizes);
-        Double val = values.remove(sourceName);
-        Integer sz = sizes.remove(sourceName);
-        if (val != null) {
-            values.put(targetName, val);
-            sizes.put(targetName, sz != null ? sz : 0);
-        }
-    }
 }

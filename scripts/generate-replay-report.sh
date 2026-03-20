@@ -308,27 +308,32 @@ jq \
         replay_success_rate_delta: {
           value: ($success_on - $success_off),
           target: 0.00,
-          status: "measured"
+          status: "measured",
+          sample_size: $n
         },
         replay_token_delta: {
           value: ($tokens_on - $tokens_off),
           target: 200.00,
-          status: "measured"
+          status: "measured",
+          sample_size: $n
         },
         replay_latency_delta_ms: {
           value: ($latency_on - $latency_off),
           target: 500.00,
-          status: "measured"
+          status: "measured",
+          sample_size: $n
         },
         replay_failure_distribution_delta: {
           value: $l1,
           target: 0.15,
-          status: "measured"
+          status: "measured",
+          sample_size: $n
         },
         token_estimation_error_ratio_max: {
           value: $token_err_max,
           target: 0.25,
-          status: "measured"
+          status: "measured",
+          sample_size: $token_err_count
         },
         first_try_success_rate_delta: {
           value: null,
