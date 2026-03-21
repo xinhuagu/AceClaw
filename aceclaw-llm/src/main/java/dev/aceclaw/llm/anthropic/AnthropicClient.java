@@ -161,13 +161,18 @@ public final class AnthropicClient implements LlmClient {
                 String responseBody = httpResponse.body();
 
                 // Retry once with refreshed token on 401
-                if (statusCode == 401 && isOAuth && refreshToken != null) {
-                    log.info("OAuth token expired, attempting refresh...");
-                    if (refreshAccessToken()) {
-                        httpRequest = buildRequest(requestBody, model);
-                        httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
-                        statusCode = httpResponse.statusCode();
-                        responseBody = httpResponse.body();
+                if (statusCode == 401 && isOAuth) {
+                    if (ensureRefreshToken()) {
+                        log.info("OAuth token expired, attempting refresh...");
+                        if (refreshAccessToken()) {
+                            httpRequest = buildRequest(requestBody, model);
+                            httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
+                            statusCode = httpResponse.statusCode();
+                            responseBody = httpResponse.body();
+                        }
+                    } else {
+                        log.warn("OAuth token expired (401) but no refresh token available; "
+                                + "restart daemon or re-run /login to refresh credentials");
                     }
                 }
 
@@ -210,12 +215,17 @@ public final class AnthropicClient implements LlmClient {
                 int statusCode = httpResponse.statusCode();
 
                 // Retry once with refreshed token on 401
-                if (statusCode == 401 && isOAuth && refreshToken != null) {
-                    log.info("OAuth token expired, attempting refresh...");
-                    if (refreshAccessToken()) {
-                        httpRequest = buildRequest(requestBody, model);
-                        httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofLines());
-                        statusCode = httpResponse.statusCode();
+                if (statusCode == 401 && isOAuth) {
+                    if (ensureRefreshToken()) {
+                        log.info("OAuth token expired, attempting refresh...");
+                        if (refreshAccessToken()) {
+                            httpRequest = buildRequest(requestBody, model);
+                            httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofLines());
+                            statusCode = httpResponse.statusCode();
+                        }
+                    } else {
+                        log.warn("OAuth token expired (401) but no refresh token available; "
+                                + "restart daemon or re-run /login to refresh credentials");
                     }
                 }
 
@@ -399,6 +409,31 @@ public final class AnthropicClient implements LlmClient {
             log.error("OAuth token refresh error: {}", e.getMessage());
             return false;
         }
+    }
+
+    /**
+     * Ensures a refresh token is available, re-reading from Keychain/file if needed.
+     * This handles the case where the daemon started without a refresh token
+     * (e.g., config.json has apiKey but no refreshToken, and Keychain wasn't read).
+     *
+     * @return true if a refresh token is available
+     */
+    private boolean ensureRefreshToken() {
+        if (refreshToken != null) {
+            return true;
+        }
+        // Try to load from Keychain/credential file (Claude CLI may have updated it)
+        var cred = KeychainCredentialReader.read();
+        if (cred != null && cred.refreshToken() != null) {
+            this.refreshToken = cred.refreshToken();
+            // Also update access token if Keychain has a fresher one
+            if (!cred.isExpired()) {
+                this.accessToken = cred.accessToken();
+            }
+            log.info("Loaded refresh token from credential store on 401 recovery");
+            return true;
+        }
+        return false;
     }
 
     /**
