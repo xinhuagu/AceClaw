@@ -15,7 +15,14 @@ import java.util.Map;
  *
  * <p>Exit code: 0 = pass, 1 = fail, 2 = error.
  *
- * <p>Usage: {@code java BenchmarkScorecardCli --replay-report <path> [--runtime-metrics <path>]}
+ * <p>Usage: {@code java BenchmarkScorecardCli --replay-report <path>
+ *   [--runtime-metrics <path>] [--output <path>] [--min-cases-per-category <n>]}
+ *
+ * <p>When {@code --min-cases-per-category} is set, each metric's sample_size is
+ * capped at that value. This enforces the two-layer threshold model: a suite may
+ * pass structural validation (3 = can run) but still report {@code INSUFFICIENT_DATA}
+ * in the scorecard when per-category coverage is below statistical significance
+ * (10 = can trust).
  */
 public final class BenchmarkScorecardCli {
 
@@ -23,17 +30,19 @@ public final class BenchmarkScorecardCli {
         String replayReportPath = null;
         String runtimeMetricsPath = null;
         String outputPath = null;
+        int minCasesPerCategory = 0; // 0 = no cap
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
                 case "--replay-report" -> replayReportPath = args[++i];
                 case "--runtime-metrics" -> runtimeMetricsPath = args[++i];
                 case "--output" -> outputPath = args[++i];
+                case "--min-cases-per-category" -> minCasesPerCategory = Integer.parseInt(args[++i]);
             }
         }
 
         if (replayReportPath == null) {
-            System.err.println("Usage: BenchmarkScorecardCli --replay-report <path> [--runtime-metrics <path>] [--output <path>]");
+            System.err.println("Usage: BenchmarkScorecardCli --replay-report <path> [--runtime-metrics <path>] [--output <path>] [--min-cases-per-category <n>]");
             System.exit(2);
             return;
         }
@@ -70,6 +79,15 @@ public final class BenchmarkScorecardCli {
         // pending_instrumentation until replay cases track per-case retry counts.
         // Runtime metrics (runtime-latest.json) provide absolute rates which cannot
         // be substituted for deltas without misrepresenting the scorecard contract.
+
+        // Cap sample sizes at per-category minimum so that suites with many total
+        // cases but few per category correctly report INSUFFICIENT_DATA.
+        if (minCasesPerCategory > 0) {
+            int cap = minCasesPerCategory;
+            for (var key : sampleSizes.keySet()) {
+                sampleSizes.computeIfPresent(key, (_, v) -> Math.min(v, cap));
+            }
+        }
 
         // Evaluate scorecard
         var scorecard = BenchmarkScorecard.evaluate(replayDeltas, sampleSizes, lifecycleRates);
