@@ -13,7 +13,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Tests for OAuth token refresh logic in AnthropicClient.
+ * Tests for OAuth token refresh and 401 recovery logic in AnthropicClient.
  * Uses the package-private constructor with pluggable credential supplier.
  */
 class AnthropicClientTokenRefreshTest {
@@ -27,12 +27,6 @@ class AnthropicClientTokenRefreshTest {
     // -- Constructor tests --
 
     @Test
-    void constructor_oauthToken_detectsOAuthMode() {
-        var client = createClient(OAUTH_TOKEN, REFRESH_TOKEN, () -> null);
-        assertThat(client.provider()).isEqualTo("anthropic");
-    }
-
-    @Test
     void constructor_blankAccessToken_throws() {
         assertThatThrownBy(() -> new AnthropicClient(""))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -44,114 +38,125 @@ class AnthropicClientTokenRefreshTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
-    // -- ensureRefreshToken: with existing refresh token --
+    // -- recoverCredentials: ACCESS_TOKEN_UPDATED --
 
     @Test
-    void ensureRefreshToken_withExistingRefreshToken_stillChecksKeychain() {
-        var callCount = new AtomicInteger();
-        var client = createClient(OAUTH_TOKEN, REFRESH_TOKEN, () -> {
-            callCount.incrementAndGet();
-            return null; // Keychain returns nothing
-        });
-
-        boolean result = client.ensureRefreshToken();
-
-        assertThat(result).isTrue();
-        assertThat(callCount.get()).isEqualTo(1); // Keychain WAS consulted (no early return)
-    }
-
-    @Test
-    void ensureRefreshToken_keychainHasFresherTokens_updatesInMemory() {
+    void recoverCredentials_keychainHasFreshAccessToken_returnsAccessTokenUpdated() {
         var freshCred = new KeychainCredentialReader.Credential(
-                "sk-ant-oat01-fresh-access", "sk-ant-ort01-fresh-refresh",
-                System.currentTimeMillis() + 3600_000L); // 1h from now
+                "sk-ant-oat01-fresh", null,
+                System.currentTimeMillis() + 3600_000L);
 
-        var client = createClient(OAUTH_TOKEN, REFRESH_TOKEN, () -> freshCred);
+        var client = createClient(OAUTH_TOKEN, null, () -> freshCred);
+        var result = client.recoverCredentials();
 
-        boolean result = client.ensureRefreshToken();
-
-        assertThat(result).isTrue();
-        assertThat(client.accessTokenForTest()).isEqualTo("sk-ant-oat01-fresh-access");
-        assertThat(client.refreshTokenForTest()).isEqualTo("sk-ant-ort01-fresh-refresh");
+        assertThat(result).isEqualTo(AnthropicClient.CredentialRecovery.ACCESS_TOKEN_UPDATED);
+        assertThat(client.accessTokenForTest()).isEqualTo("sk-ant-oat01-fresh");
     }
 
-    // -- ensureRefreshToken: without refresh token (null) --
+    @Test
+    void recoverCredentials_keychainHasFreshAccessAndRefresh_returnsAccessTokenUpdated() {
+        // Access token changed = ACCESS_TOKEN_UPDATED takes priority
+        var cred = new KeychainCredentialReader.Credential(
+                "sk-ant-oat01-new", "sk-ant-ort01-new",
+                System.currentTimeMillis() + 3600_000L);
+
+        var client = createClient(OAUTH_TOKEN, REFRESH_TOKEN, () -> cred);
+        var result = client.recoverCredentials();
+
+        assertThat(result).isEqualTo(AnthropicClient.CredentialRecovery.ACCESS_TOKEN_UPDATED);
+        assertThat(client.accessTokenForTest()).isEqualTo("sk-ant-oat01-new");
+        assertThat(client.refreshTokenForTest()).isEqualTo("sk-ant-ort01-new");
+    }
+
+    // -- recoverCredentials: REFRESH_AVAILABLE --
 
     @Test
-    void ensureRefreshToken_nullRefreshToken_keychainHasBoth_loadsTokens() {
+    void recoverCredentials_sameAccessToken_hasRefreshToken_returnsRefreshAvailable() {
+        // Keychain returns same access token but has refresh token
         var cred = new KeychainCredentialReader.Credential(
-                "sk-ant-oat01-keychain-access", "sk-ant-ort01-keychain-refresh",
+                OAUTH_TOKEN, "sk-ant-ort01-loaded",
                 System.currentTimeMillis() + 3600_000L);
 
         var client = createClient(OAUTH_TOKEN, null, () -> cred);
+        var result = client.recoverCredentials();
 
-        boolean result = client.ensureRefreshToken();
-
-        assertThat(result).isTrue();
-        assertThat(client.accessTokenForTest()).isEqualTo("sk-ant-oat01-keychain-access");
-        assertThat(client.refreshTokenForTest()).isEqualTo("sk-ant-ort01-keychain-refresh");
+        assertThat(result).isEqualTo(AnthropicClient.CredentialRecovery.REFRESH_AVAILABLE);
+        assertThat(client.refreshTokenForTest()).isEqualTo("sk-ant-ort01-loaded");
     }
 
     @Test
-    void ensureRefreshToken_nullRefreshToken_keychainReturnsNull_returnsFalse() {
+    void recoverCredentials_existingRefreshToken_keychainReturnsNull_returnsRefreshAvailable() {
+        var client = createClient(OAUTH_TOKEN, REFRESH_TOKEN, () -> null);
+        var result = client.recoverCredentials();
+
+        assertThat(result).isEqualTo(AnthropicClient.CredentialRecovery.REFRESH_AVAILABLE);
+    }
+
+    // -- recoverCredentials: NO_RECOVERY --
+
+    @Test
+    void recoverCredentials_noRefreshToken_keychainReturnsNull_returnsNoRecovery() {
         var client = createClient(OAUTH_TOKEN, null, () -> null);
+        var result = client.recoverCredentials();
 
-        boolean result = client.ensureRefreshToken();
-
-        assertThat(result).isFalse();
-        assertThat(client.refreshTokenForTest()).isNull();
-    }
-
-    // -- Partial token updates --
-
-    @Test
-    void ensureRefreshToken_keychainHasAccessOnly_noRefreshToken_updatesAccessOnly() {
-        var cred = new KeychainCredentialReader.Credential(
-                "sk-ant-oat01-new-access", null,
-                System.currentTimeMillis() + 3600_000L);
-
-        var client = createClient(OAUTH_TOKEN, null, () -> cred);
-
-        boolean result = client.ensureRefreshToken();
-
-        assertThat(result).isFalse(); // No refresh token available
-        assertThat(client.accessTokenForTest()).isEqualTo("sk-ant-oat01-new-access"); // But access was updated
-        assertThat(client.refreshTokenForTest()).isNull();
+        assertThat(result).isEqualTo(AnthropicClient.CredentialRecovery.NO_RECOVERY);
     }
 
     @Test
-    void ensureRefreshToken_keychainHasRefreshOnly_expiredAccess_updatesRefreshOnly() {
-        var cred = new KeychainCredentialReader.Credential(
-                "sk-ant-oat01-expired", "sk-ant-ort01-good-refresh",
-                1000L); // expired
+    void recoverCredentials_keychainHasExpiredAccessOnly_returnsNoRecovery() {
+        var expiredCred = new KeychainCredentialReader.Credential(
+                "sk-ant-oat01-expired", null, 1000L); // expired
 
-        var client = createClient(OAUTH_TOKEN, null, () -> cred);
+        var client = createClient(OAUTH_TOKEN, null, () -> expiredCred);
+        var result = client.recoverCredentials();
 
-        boolean result = client.ensureRefreshToken();
-
-        assertThat(result).isTrue(); // Refresh token available
-        assertThat(client.accessTokenForTest()).isEqualTo(OAUTH_TOKEN); // NOT updated (expired)
-        assertThat(client.refreshTokenForTest()).isEqualTo("sk-ant-ort01-good-refresh");
+        assertThat(result).isEqualTo(AnthropicClient.CredentialRecovery.NO_RECOVERY);
+        assertThat(client.accessTokenForTest()).isEqualTo(OAUTH_TOKEN); // NOT updated
     }
 
     // -- Keychain failure --
 
     @Test
-    void ensureRefreshToken_keychainThrows_returnsFalseGracefully() {
+    void recoverCredentials_keychainThrows_returnsNoRecoveryGracefully() {
         var client = createClient(OAUTH_TOKEN, null, () -> {
             throw new RuntimeException("Keychain locked");
         });
+        var result = client.recoverCredentials();
 
-        boolean result = client.ensureRefreshToken();
-
-        assertThat(result).isFalse(); // No refresh token, exception caught gracefully
+        assertThat(result).isEqualTo(AnthropicClient.CredentialRecovery.NO_RECOVERY);
         assertThat(client.accessTokenForTest()).isEqualTo(OAUTH_TOKEN); // Unchanged
+    }
+
+    @Test
+    void recoverCredentials_keychainThrows_withExistingRefreshToken_returnsRefreshAvailable() {
+        var client = createClient(OAUTH_TOKEN, REFRESH_TOKEN, () -> {
+            throw new RuntimeException("Keychain locked");
+        });
+        var result = client.recoverCredentials();
+
+        assertThat(result).isEqualTo(AnthropicClient.CredentialRecovery.REFRESH_AVAILABLE);
+    }
+
+    // -- Partial updates --
+
+    @Test
+    void recoverCredentials_keychainHasRefreshOnly_expiredAccess_loadsRefreshKeepsAccess() {
+        var cred = new KeychainCredentialReader.Credential(
+                "sk-ant-oat01-expired", "sk-ant-ort01-good",
+                1000L); // expired
+
+        var client = createClient(OAUTH_TOKEN, null, () -> cred);
+        var result = client.recoverCredentials();
+
+        assertThat(result).isEqualTo(AnthropicClient.CredentialRecovery.REFRESH_AVAILABLE);
+        assertThat(client.accessTokenForTest()).isEqualTo(OAUTH_TOKEN); // NOT updated (expired)
+        assertThat(client.refreshTokenForTest()).isEqualTo("sk-ant-ort01-good");
     }
 
     // -- Concurrent calls --
 
     @Test
-    void ensureRefreshToken_concurrentCalls_noRaceCondition() throws Exception {
+    void recoverCredentials_concurrentCalls_consistentState() throws Exception {
         var callCount = new AtomicInteger();
         var cred = new KeychainCredentialReader.Credential(
                 "sk-ant-oat01-concurrent", "sk-ant-ort01-concurrent",
@@ -170,7 +175,7 @@ class AnthropicClientTokenRefreshTest {
             executor.submit(() -> {
                 try {
                     latch.await();
-                    client.ensureRefreshToken();
+                    client.recoverCredentials();
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
@@ -180,27 +185,25 @@ class AnthropicClientTokenRefreshTest {
         executor.shutdown();
         assertThat(executor.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
 
-        // All threads should have called the supplier
         assertThat(callCount.get()).isEqualTo(threads);
-        // Final state should be consistent (last write wins for volatile fields)
         assertThat(client.accessTokenForTest()).isEqualTo("sk-ant-oat01-concurrent");
         assertThat(client.refreshTokenForTest()).isEqualTo("sk-ant-ort01-concurrent");
     }
 
-    // -- Called twice (no caching) --
+    // -- No caching --
 
     @Test
-    void ensureRefreshToken_calledTwice_checksKeychainBothTimes() {
+    void recoverCredentials_calledTwice_checksKeychainBothTimes() {
         var callCount = new AtomicInteger();
         var client = createClient(OAUTH_TOKEN, REFRESH_TOKEN, () -> {
             callCount.incrementAndGet();
             return null;
         });
 
-        client.ensureRefreshToken();
-        client.ensureRefreshToken();
+        client.recoverCredentials();
+        client.recoverCredentials();
 
-        assertThat(callCount.get()).isEqualTo(2); // No caching — both calls checked Keychain
+        assertThat(callCount.get()).isEqualTo(2);
     }
 
     // -- Helper --

@@ -176,16 +176,26 @@ public final class AnthropicClient implements LlmClient {
 
                 // Retry once with refreshed token on 401
                 if (statusCode == 401 && isOAuth) {
-                    if (ensureRefreshToken()) {
-                        log.info("OAuth token expired, attempting refresh...");
-                        if (refreshAccessToken()) {
+                    var recovery = recoverCredentials();
+                    switch (recovery) {
+                        case ACCESS_TOKEN_UPDATED -> {
+                            // Keychain had a fresh token — retry with it directly
+                            log.info("Access token updated from credential store, retrying...");
                             httpRequest = buildRequest(requestBody, model);
                             httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
                             statusCode = httpResponse.statusCode();
                             responseBody = httpResponse.body();
                         }
-                    } else {
-                        log.warn("OAuth token expired (401) but no refresh token available; "
+                        case REFRESH_AVAILABLE -> {
+                            log.info("OAuth token expired, attempting refresh...");
+                            if (refreshAccessToken()) {
+                                httpRequest = buildRequest(requestBody, model);
+                                httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
+                                statusCode = httpResponse.statusCode();
+                                responseBody = httpResponse.body();
+                            }
+                        }
+                        case NO_RECOVERY -> log.warn("OAuth token expired (401) but no recovery available; "
                                 + "restart daemon or re-run /login to refresh credentials");
                     }
                 }
@@ -230,15 +240,23 @@ public final class AnthropicClient implements LlmClient {
 
                 // Retry once with refreshed token on 401
                 if (statusCode == 401 && isOAuth) {
-                    if (ensureRefreshToken()) {
-                        log.info("OAuth token expired, attempting refresh...");
-                        if (refreshAccessToken()) {
+                    var recovery = recoverCredentials();
+                    switch (recovery) {
+                        case ACCESS_TOKEN_UPDATED -> {
+                            log.info("Access token updated from credential store, retrying...");
                             httpRequest = buildRequest(requestBody, model);
                             httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofLines());
                             statusCode = httpResponse.statusCode();
                         }
-                    } else {
-                        log.warn("OAuth token expired (401) but no refresh token available; "
+                        case REFRESH_AVAILABLE -> {
+                            log.info("OAuth token expired, attempting refresh...");
+                            if (refreshAccessToken()) {
+                                httpRequest = buildRequest(requestBody, model);
+                                httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofLines());
+                                statusCode = httpResponse.statusCode();
+                            }
+                        }
+                        case NO_RECOVERY -> log.warn("OAuth token expired (401) but no recovery available; "
                                 + "restart daemon or re-run /login to refresh credentials");
                     }
                 }
@@ -432,9 +450,24 @@ public final class AnthropicClient implements LlmClient {
      *
      * @return true if a refresh token is available
      */
-    boolean ensureRefreshToken() {
-        // Always consult Keychain — it may have fresher tokens than what's in memory,
-        // even if we already have a refresh token (e.g., Claude CLI refreshed externally).
+    /**
+     * Result of credential recovery attempt on 401.
+     */
+    enum CredentialRecovery {
+        /** New access token loaded — retry request immediately without full refresh. */
+        ACCESS_TOKEN_UPDATED,
+        /** Refresh token available — proceed with OAuth token refresh flow. */
+        REFRESH_AVAILABLE,
+        /** No recovery possible — no fresh credentials found. */
+        NO_RECOVERY
+    }
+
+    /**
+     * Attempts to recover credentials from Keychain/file after a 401.
+     * Always checks the credential store for fresher tokens.
+     */
+    CredentialRecovery recoverCredentials() {
+        String previousAccessToken = this.accessToken;
         try {
             var cred = credentialSupplier.get();
             if (cred != null) {
@@ -452,7 +485,16 @@ public final class AnthropicClient implements LlmClient {
         } catch (Exception e) {
             log.warn("Failed to read credentials on 401 recovery: {}", e.getMessage());
         }
-        return this.refreshToken != null;
+
+        // If access token changed, we can retry immediately without full refresh
+        if (!previousAccessToken.equals(this.accessToken)) {
+            return CredentialRecovery.ACCESS_TOKEN_UPDATED;
+        }
+        // Otherwise, if we have a refresh token, we can do a full OAuth refresh
+        if (this.refreshToken != null) {
+            return CredentialRecovery.REFRESH_AVAILABLE;
+        }
+        return CredentialRecovery.NO_RECOVERY;
     }
 
     /** Package-private: current access token for testing. */
