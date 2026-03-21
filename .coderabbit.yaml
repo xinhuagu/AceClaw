@@ -2,13 +2,47 @@
 # Docs: https://docs.coderabbit.ai/reference/configuration
 
 language: en
+
+# --- Review Settings ---
 reviews:
   profile: chill
   request_changes_workflow: true
   high_level_summary: true
   poem: false
   review_status: true
+  commit_status: true
+  fail_commit_status: true
+  auto_apply_labels: true
+
+  # Auto-labeling rules
+  labeling_instructions:
+    - label: "security"
+      instructions: "Apply when the PR touches auth, permissions, crypto, or secrets."
+    - label: "breaking-change"
+      instructions: "Apply when the PR changes public API signatures."
+    - label: "needs-tests"
+      instructions: "Apply when the PR adds logic in src/main but has no matching test changes in src/test."
+
+  # Skip non-essential files to reduce rate-limit pressure
+  path_filters:
+    - "!**/*.md"
+    - "!**/*.json"
+    - "!**/*.png"
+    - "!**/*.gif"
+    - "!**/*.svg"
+    - "!docs/**"
+    - "!.github/**"
+    - "!gradle/wrapper/**"
+    - "!**/test-fixtures/**"
+    - "!scripts/**/*.sh"
+
+  # Pre-merge quality gate
   pre_merge_checks:
+    issue_assessment:
+      mode: error
+    docstrings:
+      mode: warning
+      threshold: 80
     custom_checks:
       - name: "Block major correctness and security risks"
         mode: error
@@ -21,24 +55,70 @@ reviews:
           - unsafe error handling that can hide failures
           - missing tests for high-risk behavioral changes
           If no such issues exist, pass this check.
+
+      - name: "Require test coverage for new logic"
+        mode: error
+        instructions: |
+          Fail if the PR adds or modifies business logic in src/main
+          but does not include corresponding test changes in src/test.
+          Pure refactors with no behavioral change may pass.
+
+      - name: "No API breaking changes without version bump"
+        mode: error
+        instructions: |
+          Fail if the PR changes a public API signature (method rename,
+          parameter change, removal) without updating the version number
+          or adding a migration note.
+
+  # Auto-review configuration
   auto_review:
     enabled: true
     drafts: false
+
+  # Per-module review instructions
   path_instructions:
     - path: "aceclaw-security/**"
-      instructions: "Review security module changes with extra scrutiny. Check for permission bypasses, HMAC integrity issues, and unsafe defaults."
-    - path: "aceclaw-memory/**"
-      instructions: "Verify HMAC signing is maintained, check for memory tier ordering issues, and ensure workspace isolation."
-    - path: "aceclaw-core/**"
-      instructions: "Focus on agent loop correctness, tool execution safety, and LLM client error handling."
-    - path: "aceclaw-tools/**"
-      instructions: "Check cross-platform compatibility (Windows/macOS/Linux). Verify ProcessBuilder commands work on all platforms."
-    - path: "aceclaw-daemon/**"
-      instructions: "Check UDS listener lifecycle, shutdown ordering, and thread safety with virtual threads."
+      instructions: >
+        Review security module changes with extra scrutiny.
+        Check for permission bypasses, HMAC integrity issues, and unsafe defaults.
 
+    - path: "aceclaw-memory/**"
+      instructions: >
+        Verify HMAC signing is maintained, check for memory tier ordering issues,
+        and ensure workspace isolation.
+
+    - path: "aceclaw-core/**"
+      instructions: >
+        Focus on agent loop correctness, tool execution safety,
+        and LLM client error handling.
+
+    - path: "aceclaw-tools/**"
+      instructions: >
+        Check cross-platform compatibility (Windows/macOS/Linux).
+        Verify ProcessBuilder commands work on all platforms.
+
+    - path: "aceclaw-daemon/**"
+      instructions: >
+        Check UDS listener lifecycle, shutdown ordering,
+        and thread safety with virtual threads.
+
+# --- Chat Settings ---
 chat:
   auto_reply: true
 
+# --- Tools ---
+tools:
+  pmd:
+    enabled: true
+
+# --- Finishing Touches ---
+finishing_touches:
+  docstrings:
+    enabled: true
+  unit_tests:
+    enabled: true
+
+# --- Knowledge Base ---
 knowledge_base:
   learnings:
     scope: auto
