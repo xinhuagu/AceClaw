@@ -205,13 +205,15 @@ tasks.register<JavaExec>("benchmarkScorecard") {
             .orElse("${rootDir}/.aceclaw/metrics/continuous-learning/runtime-latest.json")
     val scorecardOutput = providers.gradleProperty("scorecardOutput")
             .orElse("${rootDir}/.aceclaw/metrics/continuous-learning/benchmark-scorecard.json")
-    val minCasesPerCategory = providers.gradleProperty("replaySuiteMinPerCategory").orElse("3")
+    val replayPrompts = providers.gradleProperty("replayPromptsInput")
+            .orElse(providers.gradleProperty("replayInput"))
+            .orElse("${rootDir}/docs/reports/samples/replay-prompts-sample.json")
 
     jvmArgs("--enable-preview")
     args("--replay-report", replayReport.get(),
          "--runtime-metrics", runtimeMetrics.get(),
          "--output", scorecardOutput.get(),
-         "--min-cases-per-category", minCasesPerCategory.get())
+         "--replay-prompts", replayPrompts.get())
 }
 
 tasks.register("preMergeCheck") {

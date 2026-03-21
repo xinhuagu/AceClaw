@@ -497,6 +497,7 @@ Canonical CI runs (enforces fresh generation):
     - Two-layer threshold model:
       - **3 = can run** (structural minimum): suite has enough cases per category to be valid. Enforced by `validate-replay-suite.sh`, Gradle, CI, and `ReplayBenchmarkValidator`.
       - **10 = can trust** (statistical significance): suite has enough cases for benchmark verdicts to be meaningful. Enforced by `BenchmarkScorecard.MIN_SAMPLE_SIZE`. Below this, metrics report `INSUFFICIENT_DATA` but the suite still passes validation.
+    - `BenchmarkScorecardCli` reads the prompts file (`--replay-prompts`) and computes the actual minimum per-category case count. This count — not the total case count from the replay report — is used as each metric's effective `sample_size` for significance evaluation.
   - `ACECLAW_REPLAY_TIMEOUT_MS` (default: `180000`)
   - `ACECLAW_REPLAY_AUTO_APPROVE_PERMISSIONS` (default: `true`)
   - `ACECLAW_REPLAY_MAX_TOKEN_ESTIMATION_ERROR_RATIO` (default by event):

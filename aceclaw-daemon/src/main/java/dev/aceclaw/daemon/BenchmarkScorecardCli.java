@@ -3,6 +3,7 @@ package dev.aceclaw.daemon;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.stats.BenchmarkScorecard;
+import dev.aceclaw.core.stats.ReplayBenchmarkValidator;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -16,10 +17,12 @@ import java.util.Map;
  * <p>Exit code: 0 = pass, 1 = fail, 2 = error.
  *
  * <p>Usage: {@code java BenchmarkScorecardCli --replay-report <path>
- *   [--runtime-metrics <path>] [--output <path>] [--min-cases-per-category <n>]}
+ *   [--runtime-metrics <path>] [--output <path>] [--replay-prompts <path>]}
  *
- * <p>When {@code --min-cases-per-category} is set, each metric's sample_size is
- * capped at that value. This enforces the two-layer threshold model: a suite may
+ * <p>When {@code --replay-prompts} is provided, the CLI reads the prompts file,
+ * computes the actual minimum per-category case count, and uses that as each
+ * metric's effective sample_size (instead of the total case count from the
+ * replay report). This enforces the two-layer threshold model: a suite may
  * pass structural validation (3 = can run) but still report {@code INSUFFICIENT_DATA}
  * in the scorecard when per-category coverage is below statistical significance
  * (10 = can trust).
@@ -30,19 +33,19 @@ public final class BenchmarkScorecardCli {
         String replayReportPath = null;
         String runtimeMetricsPath = null;
         String outputPath = null;
-        int minCasesPerCategory = 0; // 0 = no cap
+        String replayPromptsPath = null;
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
                 case "--replay-report" -> replayReportPath = args[++i];
                 case "--runtime-metrics" -> runtimeMetricsPath = args[++i];
                 case "--output" -> outputPath = args[++i];
-                case "--min-cases-per-category" -> minCasesPerCategory = Integer.parseInt(args[++i]);
+                case "--replay-prompts" -> replayPromptsPath = args[++i];
             }
         }
 
         if (replayReportPath == null) {
-            System.err.println("Usage: BenchmarkScorecardCli --replay-report <path> [--runtime-metrics <path>] [--output <path>] [--min-cases-per-category <n>]");
+            System.err.println("Usage: BenchmarkScorecardCli --replay-report <path> [--runtime-metrics <path>] [--output <path>] [--replay-prompts <path>]");
             System.exit(2);
             return;
         }
@@ -80,12 +83,20 @@ public final class BenchmarkScorecardCli {
         // Runtime metrics (runtime-latest.json) provide absolute rates which cannot
         // be substituted for deltas without misrepresenting the scorecard contract.
 
-        // Cap sample sizes at per-category minimum so that suites with many total
-        // cases but few per category correctly report INSUFFICIENT_DATA.
-        if (minCasesPerCategory > 0) {
-            int cap = minCasesPerCategory;
-            for (var key : sampleSizes.keySet()) {
-                sampleSizes.computeIfPresent(key, (_, v) -> Math.min(v, cap));
+        // When prompts file is available, compute actual min per-category count
+        // and use it as effective sample_size. This ensures scorecard reports
+        // INSUFFICIENT_DATA when per-category coverage is below significance (10),
+        // even when total case count is above 10.
+        if (replayPromptsPath != null) {
+            Path promptsPath = Path.of(replayPromptsPath);
+            if (Files.isRegularFile(promptsPath)) {
+                int effectiveSampleSize = computeMinPerCategory(mapper, promptsPath);
+                if (effectiveSampleSize > 0) {
+                    int cap = effectiveSampleSize;
+                    for (var key : sampleSizes.keySet()) {
+                        sampleSizes.computeIfPresent(key, (_, v) -> Math.min(v, cap));
+                    }
+                }
             }
         }
 
@@ -124,6 +135,36 @@ public final class BenchmarkScorecardCli {
         }
 
         System.exit(scorecard.pass() ? 0 : 1);
+    }
+
+    /**
+     * Reads the replay prompts file and returns the minimum case count
+     * across all required benchmark categories.
+     */
+    private static int computeMinPerCategory(ObjectMapper mapper, Path promptsPath) {
+        try {
+            JsonNode root = mapper.readTree(promptsPath.toFile());
+            JsonNode cases = root.path("cases");
+            if (!cases.isArray() || cases.isEmpty()) return 0;
+
+            var counts = new LinkedHashMap<String, Integer>();
+            for (JsonNode c : cases) {
+                String cat = c.path("category").asText("").trim().toLowerCase();
+                if (!cat.isEmpty()) {
+                    counts.merge(cat, 1, Integer::sum);
+                }
+            }
+
+            int min = Integer.MAX_VALUE;
+            for (String required : ReplayBenchmarkValidator.REQUIRED_CATEGORIES) {
+                int count = counts.getOrDefault(required, 0);
+                if (count < min) min = count;
+            }
+            return min == Integer.MAX_VALUE ? 0 : min;
+        } catch (Exception e) {
+            System.err.println("WARNING: Failed to read replay prompts for per-category count: " + e.getMessage());
+            return 0;
+        }
     }
 
     private static void extractMetric(JsonNode metrics, String name,
