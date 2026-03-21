@@ -20,8 +20,8 @@ jobs:
     env:
       REPLAY_FULL_MODE: ${{ vars.ACECLAW_REPLAY_FULL_MODE || 'false' }}
       REPLAY_PROMPTS_PATH: ${{ vars.ACECLAW_REPLAY_PROMPTS_PATH || (vars.ACECLAW_REPLAY_FULL_MODE == 'true' && 'docs/reports/samples/replay-prompts-sample.json' || 'docs/reports/samples/replay-prompts-ci-short.json') }}
-      # CI-short uses 1 (fast smoke); full mode uses 5 (coverage); canonical default is 3
-      REPLAY_SUITE_MIN_PER_CATEGORY: ${{ vars.ACECLAW_REPLAY_SUITE_MIN_PER_CATEGORY || (vars.ACECLAW_REPLAY_FULL_MODE == 'true' && '5' || '1') }}
+      # Structural minimum: 3 = can run. Statistical significance (10) is enforced by BenchmarkScorecard.
+      REPLAY_SUITE_MIN_PER_CATEGORY: ${{ vars.ACECLAW_REPLAY_SUITE_MIN_PER_CATEGORY || '3' }}
       REPLAY_MAX_TOKEN_ESTIMATION_ERROR_RATIO: ${{ vars.ACECLAW_REPLAY_MAX_TOKEN_ESTIMATION_ERROR_RATIO || (vars.ACECLAW_REPLAY_FULL_MODE == 'true' && '0.25' || '0.65') }}
       REPLAY_FAIL_ON_LATENCY: ${{ vars.ACECLAW_REPLAY_FAIL_ON_LATENCY || 'false' }}
       # Rollout default: collect metric first; enforce only when explicitly enabled.
