@@ -456,9 +456,9 @@ promotion_count=0
 demotion_count=0
 rollback_count=0
 transition_total=0
-promotion_rate=0.0
-demotion_rate=0.0
-rollback_rate=0.0
+promotion_rate="null"
+demotion_rate="null"
+rollback_rate="null"
 
 read_json_number_or_default() {
   local jq_expr="$1"
@@ -480,9 +480,13 @@ if [[ -f "$CANDIDATE_TRANSITIONS" ]]; then
   rollback_count="$(read_json_number_or_default '[.[] | select(((.reasonCode // "") == "MANUAL_ROLLBACK") or ((.reasonCode // "") == "ANTI_PATTERN_FALSE_POSITIVE_ROLLBACK") or ((.reasonCode // "") == "AUTO_ROLLBACK_GUARDRAIL_BREACH") or ((.reasonCode // "") == "AUTO_ROLLBACK_VALIDATION_FAIL"))] | length' "$CANDIDATE_TRANSITIONS" 0)"
   # demotion_count: DEMOTED transitions excluding rollbacks (to avoid double-counting)
   demotion_count="$(read_json_number_or_default '[.[] | select((.toState // "") == "DEMOTED") | select(((.reasonCode // "") | test("ROLLBACK") | not))] | length' "$CANDIDATE_TRANSITIONS" 0)"
-  promotion_rate="$(jq -ner --argjson p "$promotion_count" --argjson t "$transition_total" 'if $t > 0 then ($p / $t) else 0.0 end')"
-  demotion_rate="$(jq -ner --argjson d "$demotion_count" --argjson t "$transition_total" 'if $t > 0 then ($d / $t) else 0.0 end')"
-  rollback_rate="$(jq -ner --argjson r "$rollback_count" --argjson p "$promotion_count" 'if $p > 0 then ($r / $p) else 0.0 end')"
+  if [[ "$transition_total" -gt 0 ]]; then
+    promotion_rate="$(jq -ner --argjson p "$promotion_count" --argjson t "$transition_total" '$p / $t')"
+    demotion_rate="$(jq -ner --argjson d "$demotion_count" --argjson t "$transition_total" '$d / $t')"
+  fi
+  if [[ "$promotion_count" -gt 0 ]]; then
+    rollback_rate="$(jq -ner --argjson r "$rollback_count" --argjson p "$promotion_count" '$r / $p')"
+  fi
   # Total failures = demotions + rollbacks (mutually exclusive after the fix above)
   total_failures=$((demotion_count + rollback_count))
   # promotion_precision: promoted that stayed healthy / total promoted
@@ -515,29 +519,29 @@ jq \
   .metrics.promotion_rate = {
     value: $promotion_rate,
     target: 0.00,
-    status: "measured"
+    status: (if $transition_total > 0 then "measured" else "no_data" end)
   }
   | .metrics.demotion_rate = {
     value: $demotion_rate,
     target: 0.35,
-    status: "measured"
+    status: (if $transition_total > 0 then "measured" else "no_data" end)
   }
   | .metrics.promotion_precision = {
     value: $promotion_precision,
     target: 0.80,
-    status: (if $promotion_precision == null then "pending_instrumentation" else "measured" end),
+    status: (if $promotion_count_val > 0 then "measured" else "no_data" end),
     sample_size: $promotion_count_val
   }
   | .metrics.false_learning_rate = {
     value: $false_learning_rate,
     target: 0.10,
-    status: (if $false_learning_rate == null then "pending_instrumentation" else "measured" end),
+    status: (if $promotion_count_val > 0 then "measured" else "no_data" end),
     sample_size: $promotion_count_val
   }
   | .metrics.rollback_rate = {
     value: $rollback_rate,
     target: 0.20,
-    status: "measured",
+    status: (if $promotion_count_val > 0 then "measured" else "no_data" end),
     sample_size: $promotion_count_val
   }
   | .metrics.anti_pattern_false_positive_rate = {
