@@ -71,6 +71,9 @@ public final class AnthropicClient implements LlmClient {
     private final boolean context1m;
     private final List<String> extraBetas;
 
+    /** Pluggable credential reader for testability. */
+    private final java.util.function.Supplier<KeychainCredentialReader.Credential> credentialSupplier;
+
     /**
      * Creates a client with a standard API key using default settings.
      *
@@ -114,6 +117,16 @@ public final class AnthropicClient implements LlmClient {
      */
     public AnthropicClient(String accessToken, String refreshToken, String baseUrl,
                            Duration requestTimeout, boolean context1m, List<String> extraBetas) {
+        this(accessToken, refreshToken, baseUrl, requestTimeout, context1m, extraBetas,
+                KeychainCredentialReader::read);
+    }
+
+    /**
+     * Package-private constructor for testing with a pluggable credential supplier.
+     */
+    AnthropicClient(String accessToken, String refreshToken, String baseUrl,
+                    Duration requestTimeout, boolean context1m, List<String> extraBetas,
+                    java.util.function.Supplier<KeychainCredentialReader.Credential> credentialSupplier) {
         if (accessToken == null || accessToken.isBlank()) {
             throw new IllegalArgumentException("API key / access token must not be null or blank");
         }
@@ -124,6 +137,7 @@ public final class AnthropicClient implements LlmClient {
         this.requestTimeout = requestTimeout;
         this.context1m = context1m;
         this.extraBetas = extraBetas != null ? List.copyOf(extraBetas) : List.of();
+        this.credentialSupplier = credentialSupplier != null ? credentialSupplier : KeychainCredentialReader::read;
 
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(30))
@@ -418,24 +432,34 @@ public final class AnthropicClient implements LlmClient {
      *
      * @return true if a refresh token is available
      */
-    private boolean ensureRefreshToken() {
+    boolean ensureRefreshToken() {
         // Always consult Keychain — it may have fresher tokens than what's in memory,
         // even if we already have a refresh token (e.g., Claude CLI refreshed externally).
-        var cred = KeychainCredentialReader.read();
-        if (cred != null) {
-            // Pick up fresher access token independently of refresh token availability
-            if (cred.accessToken() != null && !cred.isExpired()) {
-                this.accessToken = cred.accessToken();
-                log.debug("Updated access token from credential store");
+        try {
+            var cred = credentialSupplier.get();
+            if (cred != null) {
+                // Pick up fresher access token independently of refresh token availability
+                if (cred.accessToken() != null && !cred.isExpired()) {
+                    this.accessToken = cred.accessToken();
+                    log.debug("Updated access token from credential store");
+                }
+                // Pick up refresh token if available
+                if (cred.refreshToken() != null) {
+                    this.refreshToken = cred.refreshToken();
+                    log.info("Loaded refresh token from credential store on 401 recovery");
+                }
             }
-            // Pick up refresh token if available
-            if (cred.refreshToken() != null) {
-                this.refreshToken = cred.refreshToken();
-                log.info("Loaded refresh token from credential store on 401 recovery");
-            }
+        } catch (Exception e) {
+            log.warn("Failed to read credentials on 401 recovery: {}", e.getMessage());
         }
         return this.refreshToken != null;
     }
+
+    /** Package-private: current access token for testing. */
+    String accessTokenForTest() { return accessToken; }
+
+    /** Package-private: current refresh token for testing. */
+    String refreshTokenForTest() { return refreshToken; }
 
     /**
      * Writes refreshed credentials back to the original source (Keychain or file).
