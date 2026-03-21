@@ -23,7 +23,7 @@
 | tool_error_rate | null | 0.05 max | pending_instrumentation | data source exists, export pending |
 | permission_block_rate | null | 0.05 max | pending_instrumentation | needs unified permission block counters |
 | timeout_rate | null | 0.03 max | pending_instrumentation | needs timeout event normalization |
-| learning_hit_rate | null | 0.40 | pending_instrumentation | depends on promoted-candidate injection logs |
+| learning_hit_rate | null | 0.40 | pending_instrumentation | turn success rate on injected turns; read from injection-audit-summary.json |
 | promotion_precision | null | 0.80 | pending_instrumentation | depends on auto-promotion pipeline |
 | false_learning_rate | null | 0.10 max | pending_instrumentation | depends on demotion/rejection pipeline |
 | time_to_promote_p50_hours | null | 72h max | pending_instrumentation | depends on candidate lifecycle timestamps |

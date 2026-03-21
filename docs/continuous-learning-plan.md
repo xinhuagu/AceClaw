@@ -49,7 +49,7 @@ The table below defines the canonical baseline metrics.
 | `tool_error_rate` | Tool-call error ratio | `tool_error_count / total_tool_invocations` | `ToolMetricsCollector` | 7 days | `<= 0.05` |
 | `permission_block_rate` | Permission-related blocked actions ratio | `permission_blocks / action_attempts` | Permission manager events | 7 days | `<= 0.05` |
 | `timeout_rate` | Timeout ratio across tools/subagents/tasks | `timeouts / action_attempts` | Runtime failure events | 7 days | `<= 0.03` |
-| `learning_hit_rate` | Promoted learning entries that are relevant to turns | `relevant_learning_hits / learning_injections` | Prompt injection logs | 7 days | `>= 0.40` |
+| `learning_hit_rate` | Turn success rate when injected candidates are present | `successful_injection_outcomes / total_injection_outcomes` | Injection audit log | 7 days | `>= 0.40` |
 | `promotion_precision` | Promoted candidates that stay healthy post-release | `healthy_promotions / total_promotions` | Candidate lifecycle + outcome feedback | 14 days | `>= 0.80` |
 | `false_learning_rate` | Promoted candidates later demoted/rejected as harmful | `harmful_promotions / total_promotions` | Candidate lifecycle engine | 14 days | `<= 0.10` |
 | `time_to_promote_p50_hours` | Median time from first seen to promoted | `p50(promoted_at - first_seen_at)` | Candidate store timestamps | 14 days | `<= 72h` |
