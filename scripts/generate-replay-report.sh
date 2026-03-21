@@ -6,10 +6,11 @@ OUTPUT=""
 MANIFEST=""
 ANTI_PATTERN_FEEDBACK=""
 CANDIDATE_TRANSITIONS=""
+REPLAY_PROMPTS=""
 
 usage() {
   cat <<USAGE
-Usage: ./scripts/generate-replay-report.sh --input <cases.json> [--output <report.json>] [--manifest <manifest.json>] [--anti-pattern-feedback <feedback.json>] [--candidate-transitions <transitions.jsonl>]
+Usage: ./scripts/generate-replay-report.sh --input <cases.json> [--output <report.json>] [--manifest <manifest.json>] [--anti-pattern-feedback <feedback.json>] [--candidate-transitions <transitions.jsonl>] [--replay-prompts <prompts.json>]
 
 Input schema:
 {
@@ -53,6 +54,7 @@ Options:
                    (default: .aceclaw/metrics/continuous-learning/anti-pattern-gate-feedback.json)
   --candidate-transitions <path> Candidate transitions JSONL
                    (default: .aceclaw/memory/candidate-transitions.jsonl)
+  --replay-prompts <path> Replay prompts suite JSON (for per-category sample_size)
   --help           Show this help.
 USAGE
 }
@@ -77,6 +79,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --candidate-transitions)
       CANDIDATE_TRANSITIONS="$2"
+      shift 2
+      ;;
+    --replay-prompts)
+      REPLAY_PROMPTS="$2"
       shift 2
       ;;
     --help)
@@ -193,6 +199,25 @@ fi
 
 mkdir -p "$(dirname "$OUTPUT")"
 
+# Compute effective sample_size from prompts file (min per required category).
+# Falls back to total case count when prompts file is not provided.
+EFFECTIVE_SAMPLE_SIZE=0
+MIN_PER_CATEGORY_COMPUTED="null"
+if [[ -n "$REPLAY_PROMPTS" && -f "$REPLAY_PROMPTS" ]]; then
+  required_cats=(error_recovery user_correction workflow_reuse adversarial)
+  min_cat=999999
+  for cat in "${required_cats[@]}"; do
+    count="$(jq -r --arg c "$cat" '[.cases[] | select(.category == $c)] | length' "$REPLAY_PROMPTS" 2>/dev/null || echo "0")"
+    if [[ "$count" -lt "$min_cat" ]]; then
+      min_cat="$count"
+    fi
+  done
+  if [[ "$min_cat" -lt 999999 && "$min_cat" -gt 0 ]]; then
+    EFFECTIVE_SAMPLE_SIZE="$min_cat"
+    MIN_PER_CATEGORY_COMPUTED="$min_cat"
+  fi
+fi
+
 if ! branch_name="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"; then
   branch_name="unknown"
 fi
@@ -210,6 +235,8 @@ jq \
   --arg manifest_expected_sha "$manifest_expected_sha" \
   --arg manifest_actual_sha "$manifest_actual_sha" \
   --arg manifest_verified "$manifest_verified" \
+  --argjson effective_sample_size "$EFFECTIVE_SAMPLE_SIZE" \
+  --argjson min_per_category_computed "$MIN_PER_CATEGORY_COMPUTED" \
   '
   def bucket(ft):
     if ft == "permission" then "permission"
@@ -250,6 +277,7 @@ jq \
     ];
 
   (.cases | length) as $n
+  | (if $effective_sample_size > 0 then $effective_sample_size else $n end) as $ss
   | (([.cases[] | .off.success | if . then 1 else 0 end] | add) / $n) as $success_off
   | (([.cases[] | .on.success | if . then 1 else 0 end] | add) / $n) as $success_on
   | (([.cases[] | .off.tokens] | add) / $n) as $tokens_off
@@ -309,25 +337,25 @@ jq \
           value: ($success_on - $success_off),
           target: 0.00,
           status: "measured",
-          sample_size: $n
+          sample_size: $ss
         },
         replay_token_delta: {
           value: ($tokens_on - $tokens_off),
           target: 200.00,
           status: "measured",
-          sample_size: $n
+          sample_size: $ss
         },
         replay_latency_delta_ms: {
           value: ($latency_on - $latency_off),
           target: 500.00,
           status: "measured",
-          sample_size: $n
+          sample_size: $ss
         },
         replay_failure_distribution_delta: {
           value: $l1,
           target: 0.15,
           status: "measured",
-          sample_size: $n
+          sample_size: $ss
         },
         token_estimation_error_ratio_max: {
           value: $token_err_max,
@@ -357,6 +385,9 @@ jq \
         }
       },
       diagnostics: {
+        total_cases: $n,
+        min_cases_per_required_category: $min_per_category_computed,
+        effective_sample_size: $ss,
         success_rate_off: $success_off,
         success_rate_on: $success_on,
         avg_tokens_off: $tokens_off,

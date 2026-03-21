@@ -157,6 +157,9 @@ tasks.register<Exec>("generateReplayReport") {
             .orElse("${rootDir}/.aceclaw/metrics/continuous-learning/anti-pattern-gate-feedback.json")
     val replayCandidateTransitionsPath = providers.gradleProperty("replayCandidateTransitionsPath")
             .orElse("${rootDir}/.aceclaw/memory/candidate-transitions.jsonl")
+    val replayPromptsInput = providers.gradleProperty("replayPromptsInput")
+            .orElse(providers.gradleProperty("replayInput"))
+            .orElse("${rootDir}/docs/reports/samples/replay-prompts-sample.json")
 
     commandLine(
             "bash",
@@ -165,6 +168,7 @@ tasks.register<Exec>("generateReplayReport") {
             "--manifest", replayCasesManifestInput.get(),
             "--anti-pattern-feedback", replayAntiPatternFeedbackPath.get(),
             "--candidate-transitions", replayCandidateTransitionsPath.get(),
+            "--replay-prompts", replayPromptsInput.get(),
             "--output", replayReport.get()
     )
 }
@@ -205,15 +209,11 @@ tasks.register<JavaExec>("benchmarkScorecard") {
             .orElse("${rootDir}/.aceclaw/metrics/continuous-learning/runtime-latest.json")
     val scorecardOutput = providers.gradleProperty("scorecardOutput")
             .orElse("${rootDir}/.aceclaw/metrics/continuous-learning/benchmark-scorecard.json")
-    val replayPrompts = providers.gradleProperty("replayPromptsInput")
-            .orElse(providers.gradleProperty("replayInput"))
-            .orElse("${rootDir}/docs/reports/samples/replay-prompts-sample.json")
 
     jvmArgs("--enable-preview")
     args("--replay-report", replayReport.get(),
          "--runtime-metrics", runtimeMetrics.get(),
-         "--output", scorecardOutput.get(),
-         "--replay-prompts", replayPrompts.get())
+         "--output", scorecardOutput.get())
 }
 
 tasks.register("preMergeCheck") {
