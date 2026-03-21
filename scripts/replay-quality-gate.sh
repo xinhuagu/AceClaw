@@ -211,14 +211,25 @@ latency_delta_ms="$(ensure_measured_metric "replay_latency_delta_ms")"
 failure_dist_delta="$(ensure_measured_metric "replay_failure_distribution_delta")"
 token_estimation_error_ratio_max="$(ensure_measured_metric "token_estimation_error_ratio_max")"
 # Lifecycle metrics may be no_data when no candidate transitions exist (e.g. CI replay).
-# Use jq -r (not -er) so JSON null → string "null" without error exit.
-# Gate checks below skip when value is "null".
-read_metric_value_nullable() {
-  jq -r --arg key "$1" '.metrics[$key].value // "null"' "$REPORT"
+# Only skip gate checks when the report explicitly says status=no_data.
+# Missing metrics or malformed reports still fail the gate.
+read_lifecycle_metric() {
+  local key="$1"
+  local value status
+  value="$(jq -r --arg key "$key" '.metrics[$key].value // "null"' "$REPORT")"
+  status="$(jq -r --arg key "$key" '.metrics[$key].status // "missing"' "$REPORT")"
+  if [[ "$status" == "no_data" ]]; then
+    echo "null"
+  elif [[ "$status" == "measured" && "$value" != "null" ]]; then
+    echo "$value"
+  else
+    echo "Replay quality gate failed: metric '$key' has status='$status', value='$value' (expected measured or no_data)." >&2
+    exit 1
+  fi
 }
-promotion_rate="$(read_metric_value_nullable "promotion_rate")"
-demotion_rate="$(read_metric_value_nullable "demotion_rate")"
-rollback_rate="$(read_metric_value_nullable "rollback_rate")"
+promotion_rate="$(read_lifecycle_metric "promotion_rate")"
+demotion_rate="$(read_lifecycle_metric "demotion_rate")"
+rollback_rate="$(read_lifecycle_metric "rollback_rate")"
 anti_pattern_fp_rate_weighted="$(read_metric_field "anti_pattern_gate_false_positive_rate_weighted" "value" 2>/dev/null || echo "null")"
 anti_pattern_fp_rate_weighted_status="$(read_metric_field "anti_pattern_gate_false_positive_rate_weighted" "status" 2>/dev/null || echo "pending")"
 anti_pattern_fp_rate_max="$(read_metric_field "anti_pattern_gate_false_positive_rate_max" "value" 2>/dev/null || echo "null")"

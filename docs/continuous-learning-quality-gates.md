@@ -55,5 +55,5 @@ Default threshold source:
 
 ## Notes
 
-- If candidate transition artifacts are missing, report generation uses conservative zero-value lifecycle defaults and marks source diagnostics.
-- `promotion_precision` and `false_learning_rate` are computed from candidate transition data when available; otherwise marked `pending_instrumentation`.
+- If candidate transition artifacts are missing or empty, lifecycle metrics (`promotion_rate`, `demotion_rate`, `rollback_rate`, `promotion_precision`, `false_learning_rate`) are emitted with `status: "no_data"` and `value: null`. The quality gate skips these checks when status is explicitly `no_data`; missing or malformed metrics still fail the gate.
+- `promotion_precision` and `false_learning_rate` are computed from candidate transition data when promotions exist; otherwise `no_data`. Transitions are produced by the daemon's `SelfImprovementEngine` during real sessions, not by CI replay runs.
