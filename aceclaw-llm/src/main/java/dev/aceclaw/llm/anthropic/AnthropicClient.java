@@ -466,7 +466,7 @@ public final class AnthropicClient implements LlmClient {
      * Attempts to recover credentials from Keychain/file after a 401.
      * Always checks the credential store for fresher tokens.
      */
-    CredentialRecovery recoverCredentials() {
+    synchronized CredentialRecovery recoverCredentials() {
         String previousAccessToken = this.accessToken;
         try {
             var cred = credentialSupplier.get();
