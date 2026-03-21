@@ -106,18 +106,6 @@ reviews:
 chat:
   auto_reply: true
 
-# --- Tools ---
-tools:
-  pmd:
-    enabled: true
-
-# --- Finishing Touches ---
-finishing_touches:
-  docstrings:
-    enabled: true
-  unit_tests:
-    enabled: true
-
 # --- Knowledge Base ---
 knowledge_base:
   learnings:
