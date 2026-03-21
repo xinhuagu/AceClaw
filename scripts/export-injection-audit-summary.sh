@@ -66,6 +66,10 @@ fi
 
 if [[ ! -f "$AUDIT_PATH" ]]; then
   echo "Injection audit log not found: $AUDIT_PATH" >&2
+  if [[ -f "$OUTPUT" ]]; then
+    rm -f "$OUTPUT"
+    echo "Removed stale summary: $OUTPUT" >&2
+  fi
   echo "No summary to export." >&2
   exit 0
 fi
