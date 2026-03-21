@@ -100,18 +100,21 @@ Useful flags:
 ./scripts/collect-continuous-learning-baseline.sh \
   --output /tmp/aceclaw-baseline.json
 
-# Add measured values as overrides (repeatable)
+# Override a metric manually (escape hatch for missing or incorrect data)
 ./scripts/collect-continuous-learning-baseline.sh \
-  --metric task_success_rate=0.88 \
-  --metric tool_execution_success_rate=0.97
+  --metric task_success_rate=0.88
 ```
 
 ## Baseline Workflow
 1. Ensure clean workspace and stable test environment.
-2. Run the baseline collection script with `--run-tests`.
-3. If measured values are available from logs/replay, pass them through `--metric` overrides.
-4. Fill `docs/reports/continuous-learning-baseline-template.md` with generated output.
-5. Attach the report to the relevant issue/PR.
+2. Generate artifacts that the collector reads automatically:
+   - Run replay: `./scripts/generate-replay-report.sh --input <cases.json>` → `replay-latest.json`
+   - Export injection audit: `./scripts/export-injection-audit-summary.sh` → `injection-audit-summary.json`
+   - Runtime metrics are exported by the daemon during normal operation → `runtime-latest.json`
+3. Run the baseline collection script with `--run-tests`.
+4. The collector auto-reads metrics from the above artifacts. Use `--metric` overrides only as an escape hatch.
+5. Fill `docs/reports/continuous-learning-baseline-template.md` with generated output.
+6. Attach the report to the relevant issue/PR.
 
 ## CI Gate Workflow
 1. Generate replay report from A/B replay cases:

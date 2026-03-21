@@ -135,19 +135,24 @@ as_json_value() {
 }
 
 RUNTIME_METRICS_PATH="$PROJECT_ROOT/.aceclaw/metrics/continuous-learning/runtime-latest.json"
+REPLAY_METRICS_PATH="$PROJECT_ROOT/.aceclaw/metrics/continuous-learning/replay-latest.json"
+INJECTION_SUMMARY_PATH="$PROJECT_ROOT/.aceclaw/metrics/continuous-learning/injection-audit-summary.json"
 
-read_runtime_metric() {
-  local key="$1"
-  if [[ -f "$RUNTIME_METRICS_PATH" ]] && command -v jq >/dev/null 2>&1; then
-    if ! jq empty "$RUNTIME_METRICS_PATH" 2>/dev/null; then
-      echo "WARNING: runtime-latest.json exists but contains invalid JSON" >&2
+# Generic reader: extract a measured metric value from a JSON file with .metrics[$key].{value,status}.
+read_metric_from_file() {
+  local file="$1"
+  local key="$2"
+  local label="$3"
+  if [[ -f "$file" ]] && command -v jq >/dev/null 2>&1; then
+    if ! jq empty "$file" 2>/dev/null; then
+      echo "WARNING: $label exists but contains invalid JSON" >&2
       return 1
     fi
     local status
-    status="$(jq -r --arg k "$key" '.metrics[$k].status // ""' "$RUNTIME_METRICS_PATH" 2>/dev/null)"
+    status="$(jq -r --arg k "$key" '.metrics[$k].status // ""' "$file" 2>/dev/null)"
     if [[ "$status" == "measured" ]]; then
       local val
-      val="$(jq -r --arg k "$key" '.metrics[$k].value' "$RUNTIME_METRICS_PATH" 2>/dev/null)"
+      val="$(jq -r --arg k "$key" '.metrics[$k].value' "$file" 2>/dev/null)"
       if [[ "$val" != "null" && -n "$val" ]]; then
         printf '%s' "$val"
         return 0
@@ -155,6 +160,18 @@ read_runtime_metric() {
     fi
   fi
   return 1
+}
+
+read_runtime_metric() {
+  read_metric_from_file "$RUNTIME_METRICS_PATH" "$1" "runtime-latest.json"
+}
+
+read_replay_metric() {
+  read_metric_from_file "$REPLAY_METRICS_PATH" "$1" "replay-latest.json"
+}
+
+read_injection_summary_metric() {
+  read_metric_from_file "$INJECTION_SUMMARY_PATH" "$1" "injection-audit-summary.json"
 }
 
 metric_json() {
@@ -168,7 +185,7 @@ metric_json() {
 
   target="$(target_for_key "$key")"
 
-  # Priority: 1) manual override, 2) runtime-latest.json, 3) pending
+  # Priority: 1) manual override, 2) runtime, 3) replay report, 4) injection summary, 5) pending
   if override="$(find_override "$key")"; then
     val="$override"
     status="measured"
@@ -177,6 +194,14 @@ metric_json() {
     val="$runtime_val"
     status="measured"
     source="runtime-latest.json"
+  elif replay_val="$(read_replay_metric "$key")"; then
+    val="$replay_val"
+    status="measured"
+    source="replay-latest.json"
+  elif injection_val="$(read_injection_summary_metric "$key")"; then
+    val="$injection_val"
+    status="measured"
+    source="injection-audit-summary.json"
   fi
 
   printf '    "%s": {"value": %s, "target": %s, "status": "%s", "source": "%s"}' \
@@ -243,7 +268,7 @@ metric_keys=(
   echo "    \"repo\": \"AceClaw\"," 
   echo "    \"branch\": \"$(json_escape "$branch_name")\"," 
   echo "    \"commit\": \"$(json_escape "$commit_sha")\"," 
-  echo "    \"collector_version\": \"v1\""
+  echo "    \"collector_version\": \"v2\""
   echo "  },"
   echo "  \"collection\": {"
   echo "    \"run_tests\": $([[ "$RUN_TESTS" -eq 1 ]] && echo true || echo false),"
@@ -266,9 +291,12 @@ metric_keys=(
 
   echo "  },"
   echo "  \"notes\": ["
-  echo "    \"Core metrics are auto-read from runtime-latest.json when available.\","
-  echo "    \"Use --metric key=value overrides only for debugging or missing data.\","
-  echo "    \"Metrics without runtime data are emitted as pending_instrumentation.\""
+  echo "    \"Core runtime metrics auto-read from runtime-latest.json.\","
+  echo "    \"Replay metrics (success_rate_delta, token_delta, latency_delta, failure_distribution_delta) auto-read from replay-latest.json.\","
+  echo "    \"Lifecycle metrics (promotion_precision, false_learning_rate, rollback_rate, promotion_rate, demotion_rate) auto-read from replay-latest.json.\","
+  echo "    \"learning_hit_rate auto-read from injection-audit-summary.json.\","
+  echo "    \"Use --metric key=value overrides only as an escape hatch for missing or incorrect data.\","
+  echo "    \"Metrics without any artifact source are emitted as pending_instrumentation.\""
   echo "  ]"
   echo "}"
 } > "$OUTPUT"
