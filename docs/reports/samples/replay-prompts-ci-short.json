@@ -6,13 +6,26 @@
       "category": "workflow_reuse",
       "owner": "platform-core",
       "risk_level": "low",
-      "labels": [
-        "ci",
-        "short"
-      ],
-      "expect_contains": [
-        "module"
-      ]
+      "labels": ["ci", "short"],
+      "expect_contains": ["module"]
+    },
+    {
+      "id": "workflow-short-daemon-lifecycle",
+      "prompt": "Describe the daemon startup and shutdown sequence in 3 bullets.",
+      "category": "workflow_reuse",
+      "owner": "platform-core",
+      "risk_level": "low",
+      "labels": ["ci", "short"],
+      "expect_contains": ["daemon"]
+    },
+    {
+      "id": "workflow-short-streaming-protocol",
+      "prompt": "Summarize the agent.prompt streaming protocol in one paragraph.",
+      "category": "workflow_reuse",
+      "owner": "platform-core",
+      "risk_level": "low",
+      "labels": ["ci", "short"],
+      "expect_contains": ["stream"]
     },
     {
       "id": "tools-short-gate",
@@ -20,41 +33,8 @@
       "category": "adversarial",
       "owner": "quality-team",
       "risk_level": "low",
-      "labels": [
-        "ci",
-        "short"
-      ],
-      "expect_contains": [
-        "replay"
-      ]
-    },
-    {
-      "id": "permissions-short-policy",
-      "prompt": "Summarize permission guardrails in CI in 3 bullets.",
-      "category": "user_correction",
-      "owner": "security-team",
-      "risk_level": "medium",
-      "labels": [
-        "ci",
-        "short"
-      ],
-      "expect_contains": [
-        "permission"
-      ]
-    },
-    {
-      "id": "timeouts-short-strategy",
-      "prompt": "In one sentence, explain a timeout-safe strategy for repository scanning.",
-      "category": "error_recovery",
-      "owner": "runtime-team",
-      "risk_level": "medium",
-      "labels": [
-        "ci",
-        "short"
-      ],
-      "expect_contains": [
-        "timeout"
-      ]
+      "labels": ["ci", "short"],
+      "expect_contains": ["replay"]
     },
     {
       "id": "regression-short-block",
@@ -62,13 +42,71 @@
       "category": "adversarial",
       "owner": "quality-team",
       "risk_level": "medium",
-      "labels": [
-        "ci",
-        "short"
-      ],
-      "expect_contains": [
-        "merge"
-      ]
+      "labels": ["ci", "short"],
+      "expect_contains": ["merge"]
+    },
+    {
+      "id": "adversarial-short-noisy-signal",
+      "prompt": "How should the system handle a learning candidate with conflicting evidence?",
+      "category": "adversarial",
+      "owner": "quality-team",
+      "risk_level": "medium",
+      "labels": ["ci", "short"],
+      "expect_contains": ["candidate"]
+    },
+    {
+      "id": "permissions-short-policy",
+      "prompt": "Summarize permission guardrails in CI in 3 bullets.",
+      "category": "user_correction",
+      "owner": "security-team",
+      "risk_level": "medium",
+      "labels": ["ci", "short"],
+      "expect_contains": ["permission"]
+    },
+    {
+      "id": "correction-short-rejected-skill",
+      "prompt": "What happens when a user rejects a promoted skill suggestion?",
+      "category": "user_correction",
+      "owner": "platform-core",
+      "risk_level": "medium",
+      "labels": ["ci", "short"],
+      "expect_contains": ["skill"]
+    },
+    {
+      "id": "correction-short-override-preference",
+      "prompt": "How does the system handle repeated user overrides of a learned preference?",
+      "category": "user_correction",
+      "owner": "platform-core",
+      "risk_level": "medium",
+      "labels": ["ci", "short"],
+      "expect_contains": ["preference"]
+    },
+    {
+      "id": "timeouts-short-strategy",
+      "prompt": "In one sentence, explain a timeout-safe strategy for repository scanning.",
+      "category": "error_recovery",
+      "owner": "runtime-team",
+      "risk_level": "medium",
+      "labels": ["ci", "short"],
+      "expect_contains": ["timeout"]
+    },
+    {
+      "id": "recovery-short-tool-failure",
+      "prompt": "What does the agent do when a tool call fails mid-loop?",
+      "category": "error_recovery",
+      "owner": "runtime-team",
+      "risk_level": "medium",
+      "labels": ["ci", "short"],
+      "expect_contains": ["tool"]
+    },
+    {
+      "id": "recovery-short-api-error",
+      "prompt": "Describe the retry behavior when the LLM API returns a transient error.",
+      "category": "error_recovery",
+      "owner": "runtime-team",
+      "risk_level": "medium",
+      "labels": ["ci", "short"],
+      "expect_contains": ["retry"]
     }
   ]
 }

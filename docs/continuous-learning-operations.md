@@ -492,12 +492,11 @@ Canonical CI runs (enforces fresh generation):
   - `ACECLAW_REPLAY_FULL_MODE` (default: `false`)
   - `ACECLAW_REPLAY_PROMPTS_PATH` default:
     - full mode (`true`): `docs/reports/samples/replay-prompts-sample.json`
-    - default (`false`): `docs/reports/samples/replay-prompts-ci-short.json` (5 short cases)
-  - `ACECLAW_REPLAY_SUITE_MIN_PER_CATEGORY` — minimum cases per benchmark category:
-    - CI short mode (`false`): `1` (fast smoke)
-    - CI full mode (`true`): `5` (coverage)
-    - Script/Gradle canonical default: `3` (structural validation)
-    - Java `ReplayBenchmarkValidator.MIN_CASES_PER_CATEGORY`: `10` (statistical significance, different purpose)
+    - default (`false`): `docs/reports/samples/replay-prompts-ci-short.json` (12 cases, 3 per category)
+  - `ACECLAW_REPLAY_SUITE_MIN_PER_CATEGORY` — minimum cases per benchmark category (default: `3`)
+    - Two-layer threshold model:
+      - **3 = can run** (structural minimum): suite has enough cases per category to be valid. Enforced by `validate-replay-suite.sh`, Gradle, CI, and `ReplayBenchmarkValidator`.
+      - **10 = can trust** (statistical significance): suite has enough cases for benchmark verdicts to be meaningful. Enforced by `BenchmarkScorecard.MIN_SAMPLE_SIZE`. Below this, metrics report `INSUFFICIENT_DATA` but the suite still passes validation.
   - `ACECLAW_REPLAY_TIMEOUT_MS` (default: `180000`)
   - `ACECLAW_REPLAY_AUTO_APPROVE_PERMISSIONS` (default: `true`)
   - `ACECLAW_REPLAY_MAX_TOKEN_ESTIMATION_ERROR_RATIO` (default by event):

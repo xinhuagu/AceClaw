@@ -10,32 +10,35 @@ import java.util.Set;
  * Validates that a replay benchmark suite has sufficient category coverage
  * for meaningful A/B comparison.
  *
- * <p>Required benchmark categories (minimum 1 case each):
+ * <p>Two-layer threshold model:
  * <ul>
- *   <li>{@code error_recovery} — repeated error recovery scenarios</li>
- *   <li>{@code user_correction} — repeated user preference corrections</li>
- *   <li>{@code workflow_reuse} — repeated workflow patterns</li>
- *   <li>{@code adversarial} — noisy/misleading learning signals</li>
+ *   <li><b>Structural minimum ({@link #MIN_CASES_FOR_SUITE_VALIDATION} = 3)</b>:
+ *       "can run" — the suite has enough cases per category to be structurally valid.
+ *       This is the pass/fail gate for suite validation.</li>
+ *   <li><b>Statistical significance ({@link #MIN_CASES_PER_CATEGORY} = 10)</b>:
+ *       "can trust" — the suite has enough cases for benchmark verdicts to be meaningful.
+ *       Below this, {@link BenchmarkScorecard} reports {@code INSUFFICIENT_DATA}
+ *       but the suite still passes structural validation.</li>
  * </ul>
  *
- * <p>For statistical significance, each category should have at least
- * {@link #MIN_CASES_PER_CATEGORY} cases (default 10).
+ * <p>Required benchmark categories:
+ * {@code error_recovery}, {@code user_correction}, {@code workflow_reuse}, {@code adversarial}.
  */
 public final class ReplayBenchmarkValidator {
 
     /**
-     * Minimum cases per category for statistical significance in benchmark results.
-     * Below this, metrics are reported as INSUFFICIENT_DATA.
-     */
-    public static final int MIN_CASES_PER_CATEGORY = 10;
-
-    /**
-     * Minimum cases per category for suite schema validation (structural coverage).
-     * Matches the default in {@code validate-replay-suite.sh} and Gradle's
-     * {@code replaySuiteMinPerCategory}. Lower than {@link #MIN_CASES_PER_CATEGORY}
-     * because suite validation checks structure, not statistical power.
+     * Structural minimum: cases per category for suite validation ("can run").
+     * Matches {@code validate-replay-suite.sh}, Gradle {@code replaySuiteMinPerCategory},
+     * and CI default. Below this, the suite fails validation.
      */
     public static final int MIN_CASES_FOR_SUITE_VALIDATION = 3;
+
+    /**
+     * Statistical significance: cases per category for trustworthy verdicts ("can trust").
+     * Below this, {@link BenchmarkScorecard} reports {@code INSUFFICIENT_DATA}.
+     * This is an interpretation rule, not a suite pass/fail gate.
+     */
+    public static final int MIN_CASES_PER_CATEGORY = 10;
 
     /** Required benchmark categories. */
     public static final Set<String> REQUIRED_CATEGORIES = Set.of(
@@ -83,25 +86,24 @@ public final class ReplayBenchmarkValidator {
             }
         }
 
-        // Check required categories exist
+        // Check required categories against structural minimum (pass/fail gate)
         for (String required : REQUIRED_CATEGORIES) {
             int count = counts.getOrDefault(required, 0);
             if (count == 0) {
                 findings.add("Missing required category: " + required);
+            } else if (count < MIN_CASES_FOR_SUITE_VALIDATION) {
+                findings.add("Category '%s' has %d cases (structural minimum %d)"
+                        .formatted(required, count, MIN_CASES_FOR_SUITE_VALIDATION));
             } else if (count < MIN_CASES_PER_CATEGORY) {
-                findings.add("Category '%s' has %d cases (minimum %d for significance)"
+                // Informational: suite is valid but verdicts will be INSUFFICIENT_DATA
+                findings.add("Category '%s' has %d cases (significance minimum %d — verdicts will be INSUFFICIENT_DATA)"
                         .formatted(required, count, MIN_CASES_PER_CATEGORY));
             }
         }
 
-        // Warn about unknown categories
-        for (String cat : counts.keySet()) {
-            if (!REQUIRED_CATEGORIES.contains(cat)) {
-                // Not an error, just informational — custom categories are fine
-            }
-        }
-
-        boolean valid = findings.stream().noneMatch(f -> f.startsWith("Missing"));
+        // Suite passes if all categories meet the structural minimum
+        boolean valid = findings.stream()
+                .noneMatch(f -> f.startsWith("Missing") || f.contains("structural minimum"));
         return new ValidationResult(valid, findings, counts);
     }
 
