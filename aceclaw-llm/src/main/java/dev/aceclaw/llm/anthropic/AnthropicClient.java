@@ -419,21 +419,22 @@ public final class AnthropicClient implements LlmClient {
      * @return true if a refresh token is available
      */
     private boolean ensureRefreshToken() {
-        if (refreshToken != null) {
-            return true;
-        }
-        // Try to load from Keychain/credential file (Claude CLI may have updated it)
+        // Always consult Keychain — it may have fresher tokens than what's in memory,
+        // even if we already have a refresh token (e.g., Claude CLI refreshed externally).
         var cred = KeychainCredentialReader.read();
-        if (cred != null && cred.refreshToken() != null) {
-            this.refreshToken = cred.refreshToken();
-            // Also update access token if Keychain has a fresher one
-            if (!cred.isExpired()) {
+        if (cred != null) {
+            // Pick up fresher access token independently of refresh token availability
+            if (cred.accessToken() != null && !cred.isExpired()) {
                 this.accessToken = cred.accessToken();
+                log.debug("Updated access token from credential store");
             }
-            log.info("Loaded refresh token from credential store on 401 recovery");
-            return true;
+            // Pick up refresh token if available
+            if (cred.refreshToken() != null) {
+                this.refreshToken = cred.refreshToken();
+                log.info("Loaded refresh token from credential store on 401 recovery");
+            }
         }
-        return false;
+        return this.refreshToken != null;
     }
 
     /**
