@@ -403,12 +403,12 @@ public final class AnthropicClient implements LlmClient {
      * request with a stale token. Falls back silently if no refresh token is
      * available — the 401 reactive path will handle it.
      */
-    private void refreshProactivelyIfNeeded() {
+    private synchronized void refreshProactivelyIfNeeded() {
         if (!isOAuth) return;
         if (tokenExpiresAt <= 0) return; // unknown expiry — rely on 401 path
         if (System.currentTimeMillis() < tokenExpiresAt) return; // still valid
 
-        log.info("OAuth access token expired or about to expire, refreshing proactively...");
+        log.info("OAuth access token expired, refreshing proactively...");
         // Try to get refresh token from Keychain if we don't have one
         if (refreshToken == null) {
             var recovery = recoverCredentials();
