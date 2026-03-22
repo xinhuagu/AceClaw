@@ -185,7 +185,8 @@ class AnthropicClientTokenRefreshTest {
         executor.shutdown();
         assertThat(executor.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
 
-        assertThat(callCount.get()).isEqualTo(threads);
+        // +1 for the constructor reading initial expiry from credential store
+        assertThat(callCount.get()).isEqualTo(threads + 1);
         assertThat(client.accessTokenForTest()).isEqualTo("sk-ant-oat01-concurrent");
         assertThat(client.refreshTokenForTest()).isEqualTo("sk-ant-ort01-concurrent");
     }
@@ -203,7 +204,8 @@ class AnthropicClientTokenRefreshTest {
         client.recoverCredentials();
         client.recoverCredentials();
 
-        assertThat(callCount.get()).isEqualTo(2);
+        // +1 for the constructor reading initial expiry from credential store
+        assertThat(callCount.get()).isEqualTo(3);
     }
 
     // -- Helper --

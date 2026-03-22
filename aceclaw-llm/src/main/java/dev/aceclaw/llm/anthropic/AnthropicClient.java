@@ -60,6 +60,7 @@ public final class AnthropicClient implements LlmClient {
 
     private volatile String accessToken;
     private volatile String refreshToken;
+    private volatile long tokenExpiresAt; // epoch millis; 0 = unknown
     private final boolean isOAuth;
     private final String baseUrl;
     private final HttpClient httpClient;
@@ -148,8 +149,22 @@ public final class AnthropicClient implements LlmClient {
         this.mapper = new AnthropicMapper(jsonMapper, isOAuth);
 
         if (isOAuth) {
-            log.info("Using OAuth authentication (token refresh {})",
-                    refreshToken != null ? "enabled" : "disabled");
+            // Load initial token expiry from credential store
+            try {
+                var cred = this.credentialSupplier.get();
+                if (cred != null && cred.expiresAt() > 0) {
+                    this.tokenExpiresAt = cred.expiresAt();
+                    log.info("Using OAuth authentication (token refresh {}, expires at {})",
+                            refreshToken != null ? "enabled" : "disabled",
+                            java.time.Instant.ofEpochMilli(cred.expiresAt()));
+                } else {
+                    log.info("Using OAuth authentication (token refresh {}, expiry unknown)",
+                            refreshToken != null ? "enabled" : "disabled");
+                }
+            } catch (Exception e) {
+                log.info("Using OAuth authentication (token refresh {}, could not read expiry: {})",
+                        refreshToken != null ? "enabled" : "disabled", e.getMessage());
+            }
         }
     }
 
@@ -167,6 +182,7 @@ public final class AnthropicClient implements LlmClient {
 
         return executeWithRetry(() -> {
             try {
+                refreshProactivelyIfNeeded();
                 HttpRequest httpRequest = buildRequest(requestBody, model);
                 HttpResponse<String> httpResponse = httpClient.send(
                         httpRequest, HttpResponse.BodyHandlers.ofString());
@@ -232,6 +248,7 @@ public final class AnthropicClient implements LlmClient {
 
         return executeWithRetry(() -> {
             try {
+                refreshProactivelyIfNeeded();
                 HttpRequest httpRequest = buildRequest(requestBody, model);
                 HttpResponse<Stream<String>> httpResponse = httpClient.send(
                         httpRequest, HttpResponse.BodyHandlers.ofLines());
@@ -381,6 +398,35 @@ public final class AnthropicClient implements LlmClient {
     }
 
     /**
+     * Proactively refreshes the OAuth access token if it is known to be expired or
+     * about to expire. Called before each API request so the daemon never sends a
+     * request with a stale token. Falls back silently if no refresh token is
+     * available — the 401 reactive path will handle it.
+     */
+    private void refreshProactivelyIfNeeded() {
+        if (!isOAuth) return;
+        if (tokenExpiresAt <= 0) return; // unknown expiry — rely on 401 path
+        if (System.currentTimeMillis() < tokenExpiresAt) return; // still valid
+
+        log.info("OAuth access token expired or about to expire, refreshing proactively...");
+        // Try to get refresh token from Keychain if we don't have one
+        if (refreshToken == null) {
+            var recovery = recoverCredentials();
+            if (recovery == CredentialRecovery.ACCESS_TOKEN_UPDATED) {
+                log.info("Proactive refresh: got fresh access token from credential store");
+                return;
+            }
+            if (recovery == CredentialRecovery.NO_RECOVERY) {
+                log.warn("Proactive refresh: no refresh token available, will rely on 401 path");
+                return;
+            }
+        }
+        if (refreshToken != null) {
+            refreshAccessToken();
+        }
+    }
+
+    /**
      * Refreshes the OAuth access token using the refresh token.
      * On success, writes the new token back to the credential source (Keychain or file).
      *
@@ -424,8 +470,10 @@ public final class AnthropicClient implements LlmClient {
                         expiresInMs = expiresIn.asLong() * 1000L;
                     }
                     long newExpiresAt = System.currentTimeMillis() + expiresInMs - 300_000L; // 5min grace
+                    this.tokenExpiresAt = newExpiresAt;
 
-                    log.info("OAuth token refreshed successfully");
+                    log.info("OAuth token refreshed successfully, expires at {}",
+                            java.time.Instant.ofEpochMilli(newExpiresAt));
 
                     // Write back to credential source so daemon restart picks up the fresh token
                     writeBackCredentials(this.accessToken, this.refreshToken, newExpiresAt);
@@ -480,6 +528,10 @@ public final class AnthropicClient implements LlmClient {
                 if (cred.refreshToken() != null) {
                     this.refreshToken = cred.refreshToken();
                     log.info("Loaded refresh token from credential store on 401 recovery");
+                }
+                // Pick up expiry if available
+                if (cred.expiresAt() > 0) {
+                    this.tokenExpiresAt = cred.expiresAt();
                 }
             }
         } catch (Exception e) {
