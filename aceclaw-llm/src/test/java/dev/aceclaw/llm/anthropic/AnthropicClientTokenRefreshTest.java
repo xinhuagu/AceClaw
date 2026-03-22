@@ -208,6 +208,188 @@ class AnthropicClientTokenRefreshTest {
         assertThat(callCount.get()).isEqualTo(3);
     }
 
+    // -- Proactive refresh: tokenExpiresAt initialization --
+
+    @Test
+    void constructor_oauthWithKeychain_loadsExpiresAt() {
+        long futureExpiry = System.currentTimeMillis() + 3600_000L;
+        var cred = new KeychainCredentialReader.Credential(
+                OAUTH_TOKEN, REFRESH_TOKEN, futureExpiry);
+
+        var client = createClient(OAUTH_TOKEN, REFRESH_TOKEN, () -> cred);
+
+        assertThat(client.tokenExpiresAtForTest()).isEqualTo(futureExpiry);
+    }
+
+    @Test
+    void constructor_oauthWithKeychainNoExpiry_expiresAtZero() {
+        var cred = new KeychainCredentialReader.Credential(OAUTH_TOKEN, REFRESH_TOKEN, 0);
+        var client = createClient(OAUTH_TOKEN, REFRESH_TOKEN, () -> cred);
+
+        assertThat(client.tokenExpiresAtForTest()).isEqualTo(0);
+    }
+
+    @Test
+    void constructor_oauthKeychainThrows_expiresAtZero() {
+        var client = createClient(OAUTH_TOKEN, REFRESH_TOKEN, () -> {
+            throw new RuntimeException("Keychain locked");
+        });
+
+        assertThat(client.tokenExpiresAtForTest()).isEqualTo(0);
+    }
+
+    @Test
+    void constructor_apiKey_doesNotReadKeychain() {
+        var callCount = new AtomicInteger();
+        var client = createClient(API_KEY, null, () -> {
+            callCount.incrementAndGet();
+            return null;
+        });
+
+        // API key mode should not read credential store for expiry
+        assertThat(callCount.get()).isEqualTo(0);
+        assertThat(client.tokenExpiresAtForTest()).isEqualTo(0);
+    }
+
+    // -- Proactive refresh: refreshProactivelyIfNeeded --
+
+    @Test
+    void proactiveRefresh_tokenNotExpired_doesNothing() {
+        var callCount = new AtomicInteger();
+        long futureExpiry = System.currentTimeMillis() + 3600_000L;
+        var cred = new KeychainCredentialReader.Credential(
+                OAUTH_TOKEN, REFRESH_TOKEN, futureExpiry);
+
+        var client = createClient(OAUTH_TOKEN, REFRESH_TOKEN, () -> {
+            callCount.incrementAndGet();
+            return cred;
+        });
+        int constructorCalls = callCount.get();
+
+        client.refreshProactivelyIfNeededForTest();
+
+        // No additional credential reads — token is still valid
+        assertThat(callCount.get()).isEqualTo(constructorCalls);
+        assertThat(client.accessTokenForTest()).isEqualTo(OAUTH_TOKEN);
+    }
+
+    @Test
+    void proactiveRefresh_unknownExpiry_doesNothing() {
+        var callCount = new AtomicInteger();
+        var client = createClient(OAUTH_TOKEN, REFRESH_TOKEN, () -> {
+            callCount.incrementAndGet();
+            return new KeychainCredentialReader.Credential(OAUTH_TOKEN, REFRESH_TOKEN, 0);
+        });
+        int constructorCalls = callCount.get();
+
+        client.refreshProactivelyIfNeededForTest();
+
+        // tokenExpiresAt == 0 means unknown — rely on 401 path
+        assertThat(callCount.get()).isEqualTo(constructorCalls);
+    }
+
+    @Test
+    void proactiveRefresh_apiKey_doesNothing() {
+        var client = createClient(API_KEY, null, () -> null);
+        // Should not throw or attempt any refresh
+        client.refreshProactivelyIfNeededForTest();
+        assertThat(client.accessTokenForTest()).isEqualTo(API_KEY);
+    }
+
+    @Test
+    void proactiveRefresh_expired_noRefreshToken_triesKeychainRecovery() {
+        var callCount = new AtomicInteger();
+        var freshCred = new KeychainCredentialReader.Credential(
+                "sk-ant-oat01-recovered", null,
+                System.currentTimeMillis() + 3600_000L);
+
+        var client = createClient(OAUTH_TOKEN, null, () -> {
+            callCount.incrementAndGet();
+            return freshCred;
+        });
+
+        // Simulate expired token
+        client.setTokenExpiresAtForTest(System.currentTimeMillis() - 1000L);
+        int callsBefore = callCount.get();
+
+        client.refreshProactivelyIfNeededForTest();
+
+        // Should have tried Keychain recovery (recoverCredentials calls supplier)
+        assertThat(callCount.get()).isGreaterThan(callsBefore);
+        // Should have picked up fresh access token from Keychain
+        assertThat(client.accessTokenForTest()).isEqualTo("sk-ant-oat01-recovered");
+    }
+
+    @Test
+    void proactiveRefresh_expired_noRefreshToken_keychainEmpty_fallsThrough() {
+        var client = createClient(OAUTH_TOKEN, null, () -> null);
+
+        // Simulate expired token
+        client.setTokenExpiresAtForTest(System.currentTimeMillis() - 1000L);
+
+        // Should not throw — falls back silently to 401 path
+        client.refreshProactivelyIfNeededForTest();
+        assertThat(client.accessTokenForTest()).isEqualTo(OAUTH_TOKEN);
+    }
+
+    @Test
+    void proactiveRefresh_concurrentCalls_onlyOneRefreshAttempt() throws Exception {
+        var recoveryCallCount = new AtomicInteger();
+        var cred = new KeychainCredentialReader.Credential(
+                "sk-ant-oat01-concurrent-refresh", null,
+                System.currentTimeMillis() + 3600_000L);
+
+        var client = createClient(OAUTH_TOKEN, null, () -> {
+            recoveryCallCount.incrementAndGet();
+            return cred;
+        });
+
+        // Simulate expired token
+        client.setTokenExpiresAtForTest(System.currentTimeMillis() - 1000L);
+        int callsBefore = recoveryCallCount.get();
+
+        int threads = 8;
+        var latch = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(threads);
+
+        for (int i = 0; i < threads; i++) {
+            executor.submit(() -> {
+                try {
+                    latch.await();
+                    client.refreshProactivelyIfNeededForTest();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+        }
+        latch.countDown();
+        executor.shutdown();
+        assertThat(executor.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+
+        // synchronized means threads serialize; first one recovers and updates tokenExpiresAt,
+        // subsequent threads see valid token and skip. Recovery should happen exactly once
+        // (recoverCredentials is called once by the first thread that enters).
+        int recoveryCalls = recoveryCallCount.get() - callsBefore;
+        assertThat(recoveryCalls).isEqualTo(1);
+        assertThat(client.accessTokenForTest()).isEqualTo("sk-ant-oat01-concurrent-refresh");
+    }
+
+    // -- recoverCredentials picks up expiresAt --
+
+    @Test
+    void recoverCredentials_updatesTokenExpiresAt() {
+        long futureExpiry = System.currentTimeMillis() + 7200_000L;
+        var cred = new KeychainCredentialReader.Credential(
+                "sk-ant-oat01-fresh", REFRESH_TOKEN, futureExpiry);
+
+        var client = createClient(OAUTH_TOKEN, null, () -> cred);
+        client.setTokenExpiresAtForTest(0); // reset
+
+        client.recoverCredentials();
+
+        assertThat(client.tokenExpiresAtForTest()).isEqualTo(futureExpiry);
+    }
+
     // -- Helper --
 
     private static AnthropicClient createClient(

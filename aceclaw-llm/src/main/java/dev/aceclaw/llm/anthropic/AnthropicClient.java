@@ -555,6 +555,15 @@ public final class AnthropicClient implements LlmClient {
     /** Package-private: current refresh token for testing. */
     String refreshTokenForTest() { return refreshToken; }
 
+    /** Package-private: current token expiry for testing. */
+    long tokenExpiresAtForTest() { return tokenExpiresAt; }
+
+    /** Package-private: set token expiry for testing. */
+    void setTokenExpiresAtForTest(long expiresAt) { this.tokenExpiresAt = expiresAt; }
+
+    /** Package-private: expose proactive refresh for direct testing. */
+    void refreshProactivelyIfNeededForTest() { refreshProactivelyIfNeeded(); }
+
     /**
      * Writes refreshed credentials back to the original source (Keychain or file).
      */
