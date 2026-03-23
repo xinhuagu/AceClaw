@@ -135,14 +135,20 @@ aceclaw models auth login --provider openai-codex
 
 Use Claude models directly via the Anthropic API. Supports extended thinking, prompt caching, and image input.
 
-### Setup
+### Authentication
+
+AceClaw supports two authentication modes for Anthropic:
+
+#### Option 1: API Key (`sk-ant-api03-*`)
+
+Standard API key — simple, does not expire, no token refresh needed.
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-api03-..."
-./dev.sh              # defaults to anthropic provider
+./dev.sh
 ```
 
-Or configure in `~/.aceclaw/config.json`:
+Or in `~/.aceclaw/config.json`:
 
 ```json
 {
@@ -159,12 +165,39 @@ Or configure in `~/.aceclaw/config.json`:
 }
 ```
 
+#### Option 2: OAuth Token (`sk-ant-oat01-*`)
+
+Uses Claude CLI's OAuth credentials. Supports automatic token refresh so long-running daemon sessions never disconnect.
+
+**Setup:** Log in with Claude CLI once — AceClaw auto-discovers the credentials:
+
+```bash
+# One-time: authenticate with Claude CLI
+claude /login
+
+# AceClaw automatically reads from:
+#   macOS Keychain: "anthropic.com" → claudeAiOauth.accessToken
+#   Fallback file: ~/.claude/.credentials
+```
+
+No manual configuration needed. AceClaw reads the OAuth token, refresh token, and expiry from Claude CLI's credential store.
+
+**Token refresh behavior:**
+- **Proactive refresh:** Before each API request, the daemon checks if the token is expired or about to expire. If so, it refreshes automatically using the OAuth refresh endpoint — no failed requests, no user intervention.
+- **Reactive fallback (401):** If the proactive check misses (e.g., unknown expiry), a 401 response triggers credential recovery: first from Keychain, then via OAuth refresh flow.
+- **Credential writeback:** After a successful refresh, the new token is written back to the credential store so daemon restarts pick it up.
+
+**Resolution order** (first match wins):
+1. `apiKey` in profile config
+2. `ANTHROPIC_API_KEY` environment variable
+3. Claude CLI OAuth credentials (Keychain or `~/.claude/.credentials`)
+
 ### Features
 
 - Extended thinking (`thinkingBudget > 0`)
 - Prompt caching (automatic, reduces latency and cost)
 - Image input support
-- OAuth token auth (auto-discovered from Claude CLI credentials)
+- Proactive OAuth token refresh (sessions run indefinitely)
 
 ---
 
