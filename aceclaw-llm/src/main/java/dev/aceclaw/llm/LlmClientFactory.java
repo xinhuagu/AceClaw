@@ -120,10 +120,26 @@ public final class LlmClientFactory {
             "x-github-api-version", "2025-04-01"
     );
 
+    /** Models known to work on GitHub Copilot. If the configured model is not in this set, fall back to default. */
+    private static final java.util.Set<String> COPILOT_KNOWN_MODELS = java.util.Set.of(
+            "claude-sonnet-4.5", "claude-sonnet-4", "claude-opus-4", "claude-haiku-3.5",
+            "gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano",
+            "gpt-5.2-codex", "o4-mini", "o3-mini"
+    );
+
     private static LlmClient createCopilotClient(String githubToken, String baseUrl, String model) {
         var tokenProvider = new CopilotTokenProvider(githubToken);
         String resolvedBaseUrl = baseUrl != null ? baseUrl : DEFAULT_BASE_URLS.get("copilot");
-        String resolvedModel = model != null ? model : DEFAULT_MODELS.getOrDefault("copilot", "claude-sonnet-4.5");
+        String defaultModel = DEFAULT_MODELS.getOrDefault("copilot", "claude-sonnet-4.5");
+        String resolvedModel;
+        if (model != null && COPILOT_KNOWN_MODELS.contains(model)) {
+            resolvedModel = model;
+        } else {
+            resolvedModel = defaultModel;
+            if (model != null) {
+                log.warn("Model '{}' is not supported on Copilot, using default '{}'", model, defaultModel);
+            }
+        }
 
         // Always create both clients so runtime model switching works.
         // The routing client dispatches to the correct endpoint based on model name:
