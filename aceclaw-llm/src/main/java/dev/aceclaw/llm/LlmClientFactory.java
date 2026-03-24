@@ -42,7 +42,7 @@ public final class LlmClientFactory {
             "groq", "llama-3.3-70b-versatile",
             "together", "meta-llama/Llama-3.3-70B-Instruct-Turbo",
             "mistral", "mistral-large-latest",
-            "copilot", "gpt-5.2-codex",
+            "copilot", "claude-sonnet-4.5",
             "ollama", "qwen3:4b"
     );
 
