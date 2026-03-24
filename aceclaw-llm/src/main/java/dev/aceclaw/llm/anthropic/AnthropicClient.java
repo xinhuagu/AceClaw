@@ -62,6 +62,7 @@ public final class AnthropicClient implements LlmClient {
     private volatile String refreshToken;
     private volatile long tokenExpiresAt; // epoch millis; 0 = unknown
     private final boolean isOAuth;
+    private volatile String configuredModel; // model from config (may be null → use DEFAULT_MODEL)
     private final String baseUrl;
     private final HttpClient httpClient;
     private final AnthropicMapper mapper;
@@ -137,6 +138,7 @@ public final class AnthropicClient implements LlmClient {
         this.baseUrl = baseUrl;
         this.requestTimeout = requestTimeout;
         this.context1m = context1m;
+        this.configuredModel = null; // set via setConfiguredModel() after construction
         this.extraBetas = extraBetas != null ? List.copyOf(extraBetas) : List.of();
         this.credentialSupplier = credentialSupplier != null ? credentialSupplier : KeychainCredentialReader::read;
 
@@ -366,11 +368,21 @@ public final class AnthropicClient implements LlmClient {
 
     @Override
     public String defaultModel() {
-        return DEFAULT_MODEL;
+        return configuredModel != null ? configuredModel : DEFAULT_MODEL;
     }
 
     @Override
     public ProviderCapabilities capabilities() {
+        String model = defaultModel();
+        // 4.6 models natively support 1M context (no beta needed, works with OAuth)
+        if (AnthropicBetaResolver.isAdaptiveThinkingModel(model)) {
+            return ProviderCapabilities.ANTHROPIC_1M;
+        }
+        // Older models need context-1m beta, which is rejected in OAuth mode.
+        // Only report 1M when the beta will actually be sent.
+        if (context1m && !isOAuth && AnthropicBetaResolver.isContext1mEligible(model)) {
+            return ProviderCapabilities.ANTHROPIC_1M;
+        }
         return ProviderCapabilities.ANTHROPIC;
     }
 
@@ -547,6 +559,14 @@ public final class AnthropicClient implements LlmClient {
             return CredentialRecovery.REFRESH_AVAILABLE;
         }
         return CredentialRecovery.NO_RECOVERY;
+    }
+
+    /**
+     * Sets the configured model name (from daemon config).
+     * This allows capabilities() to detect 4.6 models and return 1M context.
+     */
+    public void setConfiguredModel(String model) {
+        this.configuredModel = model;
     }
 
     /** Package-private: current access token for testing. */

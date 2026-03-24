@@ -24,6 +24,10 @@ public record ProviderCapabilities(
     public static final ProviderCapabilities ANTHROPIC =
             new ProviderCapabilities(true, true, true, 0, 200_000);
 
+    /** Anthropic Claude with 1M context window beta enabled. */
+    public static final ProviderCapabilities ANTHROPIC_1M =
+            new ProviderCapabilities(true, true, true, 0, 1_000_000);
+
     /** OpenAI (GPT-4o, o1, etc.): image support, no extended thinking or prompt caching, 128K context. */
     public static final ProviderCapabilities OPENAI =
             new ProviderCapabilities(false, false, true, 0, 128_000);
