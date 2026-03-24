@@ -371,7 +371,11 @@ public final class AnthropicClient implements LlmClient {
 
     @Override
     public ProviderCapabilities capabilities() {
-        return ProviderCapabilities.ANTHROPIC;
+        // 4.6 models natively support 1M context (no beta needed)
+        if (AnthropicBetaResolver.isAdaptiveThinkingModel(defaultModel())) {
+            return ProviderCapabilities.ANTHROPIC_1M;
+        }
+        return context1m ? ProviderCapabilities.ANTHROPIC_1M : ProviderCapabilities.ANTHROPIC;
     }
 
     private HttpRequest buildRequest(String body, String modelId) {
