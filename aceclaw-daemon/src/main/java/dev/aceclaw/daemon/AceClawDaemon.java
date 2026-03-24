@@ -217,6 +217,10 @@ public final class AceClawDaemon {
             rawLlmClient = LlmClientFactory.createAnthropicClient(
                     apiKey, config.refreshToken(), config.baseUrl(),
                     config.context1m(), config.extraAnthropicBetas());
+            // Tell the client which model is configured so capabilities() can detect 4.6 → 1M
+            if (rawLlmClient instanceof dev.aceclaw.llm.anthropic.AnthropicClient ac) {
+                ac.setConfiguredModel(model);
+            }
         } else {
             rawLlmClient = LlmClientFactory.create(
                     config.provider(), apiKey, config.refreshToken(), config.baseUrl(), model);
