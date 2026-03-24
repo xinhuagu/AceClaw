@@ -802,7 +802,8 @@ public final class AceClawDaemon {
         });
 
         // Expose model name, provider info, and health monitor to status endpoint
-        router.setModelName(model);
+        // Use the actual model from the client (factory may have fallen back to a default)
+        router.setModelName(llmClient.defaultModel());
         router.setProviderInfo(config.provider(), contextWindow);
         router.setHealthMonitor(healthMonitor);
 
