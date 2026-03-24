@@ -1116,8 +1116,7 @@ public final class TerminalRepl {
         beginPermissionModal(req);
 
         try {
-            // Truncate description to fit inside the box (null-safe, CJK-aware)
-            String desc = fitWidth(req.description(), innerWidth);
+            List<String> descLines = wrapPermissionModalText(req.description(), innerWidth);
 
             String title = " Permission Required ";
             // Top border inner fill: 1 (leading ─) + title + topFill = innerWidth + 1
@@ -1129,8 +1128,10 @@ public final class TerminalRepl {
             out.println(P + BOX_LIGHT_TOP_LEFT + BOX_LIGHT_HORIZONTAL
                     + title + hlineLight(topFill) + BOX_LIGHT_TOP_RIGHT + RESET);
             // │ <description>                                      │
-            out.println(P + BOX_LIGHT_VERTICAL + RESET
-                    + " " + padRight(desc, innerWidth) + P + BOX_LIGHT_VERTICAL + RESET);
+            for (String descLine : descLines) {
+                out.println(P + BOX_LIGHT_VERTICAL + RESET
+                        + " " + padRight(descLine, innerWidth) + P + BOX_LIGHT_VERTICAL + RESET);
+            }
             int queued = permissionBridge.pendingCount();
             if (queued > 0) {
                 out.println(P + BOX_LIGHT_VERTICAL + RESET
@@ -2330,6 +2331,64 @@ public final class TerminalRepl {
 
     private static String sanitizeTerminalText(String raw) {
         return sanitizeCronSummary(raw);
+    }
+
+    private static List<String> wrapPermissionModalText(String raw, int width) {
+        String normalized = sanitizeTerminalText(raw).replace('\r', '\n');
+        List<String> lines = new ArrayList<>();
+        for (String logicalLine : normalized.split("\n", -1)) {
+            if (logicalLine.isBlank()) {
+                lines.add("");
+                continue;
+            }
+            String remaining = logicalLine.replace('\t', ' ').strip();
+            while (!remaining.isEmpty()) {
+                int breakIndex = findPermissionWrapBreak(remaining, width);
+                String segment = remaining.substring(0, breakIndex).stripTrailing();
+                if (segment.isEmpty()) {
+                    break;
+                }
+                lines.add(segment);
+                if (breakIndex >= remaining.length()) {
+                    remaining = "";
+                } else {
+                    remaining = remaining.substring(breakIndex).stripLeading();
+                }
+            }
+        }
+        if (lines.isEmpty()) {
+            lines.add("");
+        }
+        return lines;
+    }
+
+    private static int findPermissionWrapBreak(String text, int width) {
+        if (text == null || text.isEmpty() || width <= 0) {
+            return Math.min(text == null ? 0 : text.length(), 1);
+        }
+        int displayCols = 0;
+        int index = 0;
+        int lastWhitespace = -1;
+        while (index < text.length()) {
+            int cp = text.codePointAt(index);
+            int next = index + Character.charCount(cp);
+            int cpWidth = isWideChar(cp) ? 2 : 1;
+            if (displayCols + cpWidth > width) {
+                break;
+            }
+            displayCols += cpWidth;
+            if (Character.isWhitespace(cp)) {
+                lastWhitespace = index;
+            }
+            index = next;
+        }
+        if (index >= text.length()) {
+            return text.length();
+        }
+        if (lastWhitespace > 0) {
+            return lastWhitespace;
+        }
+        return index > 0 ? index : Math.min(text.length(), Character.charCount(text.codePointAt(0)));
     }
 
     private static String sanitizeContextField(String raw) {

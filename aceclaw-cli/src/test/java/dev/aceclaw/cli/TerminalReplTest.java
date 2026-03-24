@@ -701,6 +701,25 @@ class TerminalReplTest {
     }
 
     @Test
+    void wrapPermissionModalText_wrapsLongDescriptionsWithoutTruncating() throws Exception {
+        String description = "Allow running a very long maintenance command with detailed flags "
+                + "and target directories.\n"
+                + "Second line contains extra context 包含中文说明 and more audit details.";
+
+        @SuppressWarnings("unchecked")
+        List<String> lines = (List<String>) invokePrivate(repl, "wrapPermissionModalText",
+                new Class<?>[]{String.class, int.class}, description, 24);
+
+        assertThat(lines).hasSizeGreaterThan(2);
+        assertThat(lines)
+                .allSatisfy(line -> assertThat(TerminalTheme.displayWidth(line)).isLessThanOrEqualTo(24));
+        assertThat(String.join("\n", lines)).contains("target");
+        assertThat(String.join("\n", lines)).contains("directories.");
+        assertThat(String.join("\n", lines)).contains("包含中文说明");
+        assertThat(lines.get(lines.size() - 1)).contains("details.");
+    }
+
+    @Test
     void buildStatusString_showsPressureAndCompactionBadges() throws Exception {
         var monitor = (ContextMonitor) getPrivateField(repl, "contextMonitor");
         monitor.recordStreamingUsage(175_000);
