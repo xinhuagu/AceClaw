@@ -139,13 +139,16 @@ public final class LlmClientFactory {
         String resolvedBaseUrl = baseUrl != null ? baseUrl : DEFAULT_BASE_URLS.get("copilot");
         String defaultModel = DEFAULT_MODELS.getOrDefault("copilot", "claude-sonnet-4.5");
 
-        // Translate Anthropic model names to Copilot format
+        // If model is an Anthropic-native name (from global config), ignore it — use copilot default.
+        // Users can still explicitly set a copilot model via profile config or /model command.
         String resolvedModel;
-        if (model != null && ANTHROPIC_TO_COPILOT_MODEL.containsKey(model)) {
-            resolvedModel = ANTHROPIC_TO_COPILOT_MODEL.get(model);
-            log.info("Translated Anthropic model '{}' to Copilot model '{}'", model, resolvedModel);
+        if (model == null || ANTHROPIC_TO_COPILOT_MODEL.containsKey(model)) {
+            resolvedModel = defaultModel;
+            if (model != null) {
+                log.info("Ignoring Anthropic model '{}' for Copilot, using default '{}'", model, defaultModel);
+            }
         } else {
-            resolvedModel = model != null ? model : defaultModel;
+            resolvedModel = model;
         }
 
         // Always create both clients so runtime model switching works.
