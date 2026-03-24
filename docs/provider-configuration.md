@@ -41,7 +41,7 @@ Or configure a PAT in `~/.aceclaw/config.json`:
         "copilot": {
             "provider": "copilot",
             "apiKey": "ghp_your_personal_access_token",
-            "model": "gpt-5.2-codex",
+            "model": "claude-sonnet-4.5",
             "maxTokens": 16384,
             "thinkingBudget": 0,
             "contextWindowTokens": 200000
@@ -56,12 +56,26 @@ Copilot exposes models from multiple providers. Use `/model <name>` at runtime t
 
 | Model | API Endpoint | Notes |
 |-------|-------------|-------|
-| `claude-sonnet-4.5` | Chat Completions | Anthropic Claude via Copilot |
+| `claude-opus-4.6` | Chat Completions | Anthropic Claude Opus (latest) |
+| `claude-sonnet-4.6` | Chat Completions | Anthropic Claude Sonnet (latest) |
+| `claude-sonnet-4.5` | Chat Completions | Anthropic Claude Sonnet |
+| `claude-haiku-4.5` | Chat Completions | Anthropic Claude Haiku |
 | `gpt-4o` | Chat Completions | OpenAI GPT-4o |
 | `gpt-5.2-codex` | Responses API | Codex model, optimized for coding |
 | `o4-mini` | Chat Completions | OpenAI reasoning model |
 
 AceClaw automatically routes requests to the correct API endpoint — Codex models use the Responses API (`/responses`), all others use Chat Completions (`/chat/completions`).
+
+> **Model name format:** Copilot uses dot-notation for versions (`claude-opus-4.6`), while Anthropic direct API uses hyphen-notation (`claude-opus-4-6`). When switching between providers, use the format for the active provider. If the global config has an Anthropic-format model name (e.g. `claude-opus-4-6`), the Copilot provider ignores it and uses its own default (`claude-sonnet-4.5`).
+
+### Default Model Behavior
+
+When using `./dev.sh copilot`, the model is resolved as follows:
+- If a **copilot profile** exists in config with a `model` field → use that model
+- If only a **global model** exists and it is an Anthropic-native name → ignore it, use `claude-sonnet-4.5`
+- If no model is configured → use `claude-sonnet-4.5`
+
+This means you can keep `"model": "claude-opus-4-6"` in your global config for Anthropic direct API, and `./dev.sh copilot` will still use `claude-sonnet-4.5` without conflict.
 
 ### Running
 
@@ -74,7 +88,7 @@ export ACECLAW_PROVIDER=copilot
 ./aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli
 
 # Switch models at runtime
-aceclaw> /model claude-sonnet-4.5
+aceclaw> /model claude-opus-4.6
 aceclaw> /model gpt-5.2-codex
 ```
 
@@ -321,7 +335,7 @@ Environment variables take highest precedence and override config file values:
         },
         "copilot": {
             "provider": "copilot",
-            "model": "gpt-5.2-codex",
+            "model": "claude-sonnet-4.5",
             "maxTokens": 16384,
             "thinkingBudget": 0,
             "contextWindowTokens": 200000
