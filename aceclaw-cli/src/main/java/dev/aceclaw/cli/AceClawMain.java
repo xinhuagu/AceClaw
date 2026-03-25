@@ -75,9 +75,12 @@ public final class AceClawMain implements Runnable {
             // Detect git branch for status bar
             String gitBranch = detectGitBranch(effectiveProject);
 
+            // Read bench mode from dev.sh (ACECLAW_BENCH_MODE env var)
+            String benchMode = System.getenv("ACECLAW_BENCH_MODE");
+
             // Enter REPL with session info
             var sessionInfo = new TerminalRepl.SessionInfo(
-                    VERSION, model, effectiveProject, contextWindowTokens, gitBranch);
+                    VERSION, model, effectiveProject, contextWindowTokens, gitBranch, benchMode);
             var repl = new TerminalRepl(client, sessionId, sessionInfo);
             repl.run();
 

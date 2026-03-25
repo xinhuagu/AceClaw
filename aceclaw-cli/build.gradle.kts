@@ -66,6 +66,7 @@ tasks.register<JavaExec>("runReplayCases") {
             .orElse(rootProject.projectDir.toString())
     val replayTimeoutMs = providers.gradleProperty("replayTimeoutMs").orElse("180000")
     val replayAutoApprovePermissions = providers.gradleProperty("replayAutoApprovePermissions").orElse("true")
+    val replayDelayMs = providers.gradleProperty("replayDelayMs").orElse("2000")
 
     args(
             "--input", replayPromptsInput.get(),
@@ -73,6 +74,7 @@ tasks.register<JavaExec>("runReplayCases") {
             "--manifest-output", replayCasesManifestOutput.get(),
             "--project", replayProject.get(),
             "--timeout-ms", replayTimeoutMs.get(),
+            "--delay-ms", replayDelayMs.get(),
             "--auto-approve-permissions", replayAutoApprovePermissions.get()
     )
 }

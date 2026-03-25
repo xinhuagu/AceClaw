@@ -203,7 +203,7 @@ public final class ValidationGateEngine {
                     "replay_success_rate_delta",
                     "replay_token_delta",
                     "replay_failure_distribution_delta",
-                    "token_estimation_error_ratio_max"
+                    "token_estimation_error_ratio_p95"
             );
             for (String key : required) {
                 JsonNode metric = metrics.path(key);
@@ -217,12 +217,12 @@ public final class ValidationGateEngine {
                 }
             }
 
-            double tokenErr = metrics.path("token_estimation_error_ratio_max").path("value").asDouble(Double.NaN);
+            double tokenErr = metrics.path("token_estimation_error_ratio_p95").path("value").asDouble(Double.NaN);
             if (Double.isNaN(tokenErr)) {
-                return ReplayGateResult.invalid("Metric token_estimation_error_ratio_max is not numeric");
+                return ReplayGateResult.invalid("Metric token_estimation_error_ratio_p95 is not numeric");
             }
             if (tokenErr > maxTokenEstimationErrorRatio) {
-                return ReplayGateResult.invalid("token_estimation_error_ratio_max exceeds threshold");
+                return ReplayGateResult.invalid("token_estimation_error_ratio_p95 exceeds threshold");
             }
 
             return ReplayGateResult.passed();

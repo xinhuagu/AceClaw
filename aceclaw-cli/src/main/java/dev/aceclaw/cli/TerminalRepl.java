@@ -280,10 +280,16 @@ public final class TerminalRepl {
      * Session metadata displayed in the startup banner and status line.
      */
     public record SessionInfo(String version, String model, String project,
-                              int contextWindowTokens, String gitBranch) {
+                              int contextWindowTokens, String gitBranch,
+                              String benchMode) {
+        public SessionInfo(String version, String model, String project,
+                           int contextWindowTokens, String gitBranch) {
+            this(version, model, project, contextWindowTokens, gitBranch, null);
+        }
+
         public SessionInfo(String version, String model, String project,
                            int contextWindowTokens) {
-            this(version, model, project, contextWindowTokens, null);
+            this(version, model, project, contextWindowTokens, null, null);
         }
     }
 
@@ -1541,6 +1547,12 @@ public final class TerminalRepl {
                     .append(RESET);
         }
 
+        String bench = sessionInfo.benchMode();
+        if (bench != null && !bench.isBlank() && !"none".equals(bench)) {
+            sb.append(MUTED).append(" | ").append(RESET);
+            sb.append(WARNING).append("bench=").append(bench).append(RESET);
+        }
+
         int ctxWindow = sessionInfo.contextWindowTokens();
         if (ctxWindow > 0) {
             long displayTokens = effectiveContextTokens();
@@ -2012,7 +2024,7 @@ public final class TerminalRepl {
                         antiPatternFpRate.path("value").asDouble(),
                         rollbackRate.path("value").asDouble());
             }
-            JsonNode tokenErr = metrics.path("token_estimation_error_ratio_max");
+            JsonNode tokenErr = metrics.path("token_estimation_error_ratio_p95");
             String status = tokenErr.path("status").asText("");
             JsonNode valueNode = tokenErr.path("value");
             if (status.isBlank() || valueNode.isMissingNode() || valueNode.isNull() || !valueNode.isNumber()) {

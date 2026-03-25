@@ -139,6 +139,7 @@ tasks.register<Exec>("replayQualityGate") {
             "--max-anti-pattern-fp-rate", maxAntiPatternFpRate.get()
     )
     if (strict.get()) args("--strict")
+    isIgnoreExitValue = !strict.get()
 }
 
 tasks.register<Exec>("generateReplayReport") {

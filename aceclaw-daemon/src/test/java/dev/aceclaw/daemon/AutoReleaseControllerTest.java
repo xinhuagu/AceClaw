@@ -192,7 +192,7 @@ class AutoReleaseControllerTest {
                     "replay_success_rate_delta": {"value": 0.03, "status": "measured"},
                     "replay_token_delta": {"value": 20, "status": "measured"},
                     "replay_failure_distribution_delta": {"value": 0.02, "status": "measured"},
-                    "token_estimation_error_ratio_max": {"value": %s, "status": "measured"}
+                    "token_estimation_error_ratio_p95": {"value": %s, "status": "measured"}
                   }
                 }
                 """.formatted(tokenError));

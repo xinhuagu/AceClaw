@@ -18,8 +18,12 @@ import java.util.List;
  */
 public final class ContextEstimator {
 
-    /** Average characters per token for English text/code. */
-    private static final double CHARS_PER_TOKEN = 4.0;
+    /**
+     * Average characters per token for Claude's BPE tokenizer.
+     * Empirical calibration from replay data shows ~2.2 chars/token
+     * for mixed content (English text, JSON, code, tool schemas).
+     */
+    private static final double CHARS_PER_TOKEN = 2.1;
 
     /** Overhead tokens per message (role markers, structural JSON). */
     private static final int MESSAGE_OVERHEAD = 4;

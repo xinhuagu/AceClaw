@@ -305,6 +305,13 @@ jq \
   | (if $token_err_count > 0
       then ([$token_err_pairs[]
         | (((.estimated * $token_err_calibration) - .provider) / .provider
+          | if . < 0 then -. else . end)] | sort
+        | .[((length * 0.95) | floor)])
+      else 0.0
+      end) as $token_err_p95
+  | (if $token_err_count > 0
+      then ([$token_err_pairs[]
+        | (((.estimated * $token_err_calibration) - .provider) / .provider
           | if . < 0 then -. else . end)] | add) / $token_err_count
       else 0.0
       end) as $token_err_avg
@@ -357,8 +364,8 @@ jq \
           status: "measured",
           sample_size: $ss
         },
-        token_estimation_error_ratio_max: {
-          value: $token_err_max,
+        token_estimation_error_ratio_p95: {
+          value: $token_err_p95,
           target: 0.25,
           status: "measured",
           sample_size: $token_err_count

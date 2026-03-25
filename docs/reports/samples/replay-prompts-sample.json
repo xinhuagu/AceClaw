@@ -257,11 +257,11 @@
     },
     {
       "id": "timeouts-replay-stability",
-      "prompt": "Explain how replay cases can reduce flaky timeout outcomes across repeated runs.",
+      "prompt": "In 3 bullets, explain how deterministic replay reduces flaky timeout outcomes.",
       "category": "error_recovery",
       "owner": "runtime-team",
       "risk_level": "high",
-      "timeout_ms": 300000,
+      "timeout_ms": 120000,
       "labels": [
         "flakiness",
         "stability"

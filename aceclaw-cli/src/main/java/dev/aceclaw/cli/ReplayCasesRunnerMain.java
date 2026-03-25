@@ -84,12 +84,18 @@ public final class ReplayCasesRunnerMain {
         var shuffled = new ArrayList<>(cases);
         Collections.shuffle(shuffled, new Random(42)); // deterministic seed for reproducibility
 
-        for (var c : shuffled) {
+        for (int i = 0; i < shuffled.size(); i++) {
+            var c = shuffled.get(i);
+
             setCandidateInjection(client, false);
             c.off = runOne(mapper, client, c, c.timeoutMs, cli.autoApprovePermissions);
 
+            if (cli.delayMs > 0) Thread.sleep(cli.delayMs);
+
             setCandidateInjection(client, true);
             c.on = runOne(mapper, client, c, c.timeoutMs, cli.autoApprovePermissions);
+
+            if (cli.delayMs > 0 && i < shuffled.size() - 1) Thread.sleep(cli.delayMs);
         }
 
         // Output in original order (stable for diffing)
@@ -451,6 +457,7 @@ public final class ReplayCasesRunnerMain {
         String manifestOutput = ".aceclaw/metrics/continuous-learning/replay-cases.manifest.json";
         Path defaultProject = Path.of(System.getProperty("user.dir"));
         long timeoutMs = 180_000L;
+        long delayMs = 2_000L;
         boolean autoApprovePermissions = true;
         boolean help;
 
@@ -465,6 +472,7 @@ public final class ReplayCasesRunnerMain {
                     case "--manifest-output" -> c.manifestOutput = next(args, ++i, a);
                     case "--project" -> c.defaultProject = Path.of(next(args, ++i, a));
                     case "--timeout-ms" -> c.timeoutMs = Long.parseLong(next(args, ++i, a));
+                    case "--delay-ms" -> c.delayMs = Long.parseLong(next(args, ++i, a));
                     case "--auto-approve-permissions" ->
                             c.autoApprovePermissions = Boolean.parseBoolean(next(args, ++i, a));
                     default -> throw new IllegalArgumentException("Unknown argument: " + a);
@@ -487,6 +495,7 @@ public final class ReplayCasesRunnerMain {
             System.out.println("  --manifest-output <path>           Default: .aceclaw/metrics/continuous-learning/replay-cases.manifest.json");
             System.out.println("  --project <path>                   Default project path when case.project is missing");
             System.out.println("  --timeout-ms <ms>                  Default: 180000");
+            System.out.println("  --delay-ms <ms>                    Delay between requests to avoid rate limiting. Default: 2000");
             System.out.println("  --auto-approve-permissions <bool>  Default: true");
             System.out.println("  --help");
             System.out.println("Input schema:");

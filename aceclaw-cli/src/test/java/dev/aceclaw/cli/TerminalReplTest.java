@@ -786,7 +786,7 @@ class TerminalReplTest {
                     "demotion_rate": {"value": 0.05, "status": "measured"},
                     "anti_pattern_false_positive_rate": {"value": 0.03, "status": "measured"},
                     "rollback_rate": {"value": 0.01, "status": "measured"},
-                    "token_estimation_error_ratio_max": {"value": 0.12, "status": "measured"}
+                    "token_estimation_error_ratio_p95": {"value": 0.12, "status": "measured"}
                   }
                 }
                 """);

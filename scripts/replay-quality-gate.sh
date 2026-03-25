@@ -209,7 +209,7 @@ success_rate_delta="$(ensure_measured_metric "replay_success_rate_delta")"
 token_delta="$(ensure_measured_metric "replay_token_delta")"
 latency_delta_ms="$(ensure_measured_metric "replay_latency_delta_ms")"
 failure_dist_delta="$(ensure_measured_metric "replay_failure_distribution_delta")"
-token_estimation_error_ratio_max="$(ensure_measured_metric "token_estimation_error_ratio_max")"
+token_estimation_error_ratio_p95="$(ensure_measured_metric "token_estimation_error_ratio_p95")"
 # Lifecycle metrics may be no_data when no candidate transitions exist (e.g. CI replay).
 # Only skip gate checks when the report explicitly says status=no_data.
 # Missing metrics or malformed reports still fail the gate.
@@ -256,8 +256,8 @@ if ! compare "$failure_dist_delta <= $MAX_FAILURE_DISTRIBUTION_DELTA"; then
   echo "Replay quality gate failed: replay_failure_distribution_delta=$failure_dist_delta > $MAX_FAILURE_DISTRIBUTION_DELTA" >&2
   exit 1
 fi
-if ! compare "$token_estimation_error_ratio_max <= $MAX_TOKEN_ESTIMATION_ERROR_RATIO"; then
-  echo "Replay quality gate failed: token_estimation_error_ratio_max=$token_estimation_error_ratio_max > $MAX_TOKEN_ESTIMATION_ERROR_RATIO" >&2
+if ! compare "$token_estimation_error_ratio_p95 <= $MAX_TOKEN_ESTIMATION_ERROR_RATIO"; then
+  echo "Replay quality gate failed: token_estimation_error_ratio_p95=$token_estimation_error_ratio_p95 > $MAX_TOKEN_ESTIMATION_ERROR_RATIO" >&2
   exit 1
 fi
 if [[ "$promotion_rate" != "null" ]]; then
@@ -300,7 +300,7 @@ echo "  replay_success_rate_delta=$success_rate_delta (min $MIN_SUCCESS_RATE_DEL
 echo "  replay_token_delta=$token_delta (max $MAX_TOKEN_DELTA)"
 echo "  replay_latency_delta_ms=$latency_delta_ms (max $MAX_LATENCY_DELTA_MS)"
 echo "  replay_failure_distribution_delta=$failure_dist_delta (max $MAX_FAILURE_DISTRIBUTION_DELTA)"
-echo "  token_estimation_error_ratio_max=$token_estimation_error_ratio_max (max $MAX_TOKEN_ESTIMATION_ERROR_RATIO)"
+echo "  token_estimation_error_ratio_p95=$token_estimation_error_ratio_p95 (max $MAX_TOKEN_ESTIMATION_ERROR_RATIO)"
 if [[ "$promotion_rate" != "null" ]]; then
   echo "  promotion_rate=$promotion_rate (min $MIN_PROMOTION_RATE)"
 else

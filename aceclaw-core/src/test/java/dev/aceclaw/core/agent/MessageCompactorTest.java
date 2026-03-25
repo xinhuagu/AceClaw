@@ -135,8 +135,8 @@ class MessageCompactorTest {
 
     @Test
     void estimateTokensForText() {
-        // "hello" = 5 chars -> ceil(5/4.0) = 2
-        assertThat(ContextEstimator.estimateTokens("hello")).isEqualTo(2);
+        // "hello" = 5 chars -> ceil(5/2.1) = 3
+        assertThat(ContextEstimator.estimateTokens("hello")).isEqualTo(3);
     }
 
     @Test
@@ -151,25 +151,25 @@ class MessageCompactorTest {
 
     @Test
     void estimateTokensForLongerText() {
-        // 12 chars -> ceil(12/4.0) = 3
-        assertThat(ContextEstimator.estimateTokens("hello world!")).isEqualTo(3);
+        // 12 chars -> ceil(12/2.1) = 6
+        assertThat(ContextEstimator.estimateTokens("hello world!")).isEqualTo(6);
     }
 
     @Test
     void estimateTokensRoundsUp() {
-        // 5 chars -> ceil(5/4.0) = ceil(1.25) = 2
-        assertThat(ContextEstimator.estimateTokens("abcde")).isEqualTo(2);
-        // 4 chars -> ceil(4/4.0) = 1
-        assertThat(ContextEstimator.estimateTokens("abcd")).isEqualTo(1);
-        // 1 char -> ceil(1/4.0) = 1
+        // 5 chars -> ceil(5/2.1) = ceil(2.38) = 3
+        assertThat(ContextEstimator.estimateTokens("abcde")).isEqualTo(3);
+        // 4 chars -> ceil(4/2.1) = ceil(1.90) = 2
+        assertThat(ContextEstimator.estimateTokens("abcd")).isEqualTo(2);
+        // 1 char -> ceil(1/2.1) = 1
         assertThat(ContextEstimator.estimateTokens("a")).isEqualTo(1);
     }
 
     @Test
     void estimateSingleMessageTokens() {
-        // Message.user("hello") -> MESSAGE_OVERHEAD(4) + estimateTokens("hello")(2) = 6
+        // Message.user("hello") -> MESSAGE_OVERHEAD(4) + estimateTokens("hello")(3) = 7
         Message msg = Message.user("hello");
-        assertThat(ContextEstimator.estimateSingleMessageTokens(msg)).isEqualTo(6);
+        assertThat(ContextEstimator.estimateSingleMessageTokens(msg)).isEqualTo(7);
     }
 
     @Test

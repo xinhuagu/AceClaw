@@ -147,7 +147,7 @@ class SkillDraftGeneratorTest {
                     "replay_success_rate_delta": {"value": 0.01, "status": "measured"},
                     "replay_token_delta": {"value": 50, "status": "measured"},
                     "replay_failure_distribution_delta": {"value": 0.02, "status": "measured"},
-                    "token_estimation_error_ratio_max": {"value": 0.12, "status": "measured"}
+                    "token_estimation_error_ratio_p95": {"value": 0.12, "status": "measured"}
                   }
                 }
                 """);
