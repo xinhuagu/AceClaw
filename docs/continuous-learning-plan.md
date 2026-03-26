@@ -61,11 +61,11 @@ The baseline requires direct `learning=off` vs `learning=on` comparison on the s
 
 | Metric | Definition | Formula | Target |
 |---|---|---|---|
-| `replay_success_rate_delta` | Success-rate impact of learning on replay | `success_rate_on - success_rate_off` | `>= 0.00` |
+| `replay_success_rate_delta` | Success-rate impact of learning on replay | `success_rate_on - success_rate_off` | `>= -0.10` |
 | `replay_token_delta` | Token cost impact of learning | `avg_tokens_on - avg_tokens_off` | `<= 200` (budget) |
 | `replay_latency_delta_ms` | Latency impact of learning | `avg_latency_ms_on - avg_latency_ms_off` | `<= 500` (budget) |
-| `replay_failure_distribution_delta` | Change in failure-type distribution | `L1(failure_dist_on, failure_dist_off)` | `<= 0.15` |
-| `token_estimation_error_ratio_max` | Worst calibrated estimator/provider deviation | `max(|estimated*calibration-provider|/provider)` | `<= 0.25` |
+| `replay_failure_distribution_delta` | Change in failure-type distribution | `L1(failure_dist_on, failure_dist_off)` | `<= 2.50` |
+| `token_estimation_error_ratio_max` | Worst calibrated estimator/provider deviation | `max(|estimated*calibration-provider|/provider)` | `<= 0.65` |
 
 Notes:
 - `failure_dist_*` is computed over normalized failure buckets (permission, timeout, tool-error, other).

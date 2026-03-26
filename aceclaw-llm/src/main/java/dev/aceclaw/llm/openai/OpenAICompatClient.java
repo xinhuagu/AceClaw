@@ -119,6 +119,7 @@ public final class OpenAICompatClient implements LlmClient {
         this.extraHeaders = extraHeaders != null ? extraHeaders : Map.of();
 
         this.httpClient = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_2)
                 .connectTimeout(Duration.ofSeconds(30))
                 .build();
 

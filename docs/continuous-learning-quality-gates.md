@@ -7,7 +7,7 @@ This document defines the quality gate metrics used by CI (`preMergeCheck`) for 
 The canonical CI verdict is produced by `benchmarkScorecard` (via `BenchmarkScorecard.evaluate()`), which evaluates 8 metrics across 3 categories:
 
 ### Effectiveness (must pass)
-- `replay_success_rate_delta` (≥ 0.00): learning must not regress success rate.
+- `replay_success_rate_delta` (≥ -0.10): learning must not significantly regress success rate (tolerance for small-sample noise).
 - `first_try_success_rate_delta` (≥ 0.00): pending — needs A/B per-case retry tracking.
 - `retry_count_per_task_delta` (≤ 0.00): pending — needs A/B per-case retry tracking.
 

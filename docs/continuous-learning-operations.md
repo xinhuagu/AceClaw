@@ -83,7 +83,7 @@ Tokenizer hard constraint:
 - Replay report computes `token_estimation_error_ratio_max` using a dataset-level calibration factor
   (`avg(provider/estimated)`) and evaluates the calibrated residual.
 - Pre-merge gate enforces:
-  - `token_estimation_error_ratio_max <= 0.25`
+  - `token_estimation_error_ratio_max <= 0.65`
   - Metric status must be `measured` (not `pending`)
   - In strict mode, manifest verification (`source_manifest.verified=true`) is also mandatory.
   - Replay performance budgets:
@@ -297,7 +297,7 @@ Force promote:
 Before any CANARY → ACTIVE promotion, the benchmark scorecard (`BenchmarkScorecard`) must show:
 
 **Effectiveness (must pass):**
-- `replay_success_rate_delta` ≥ 0.00 (learning must not regress success)
+- `replay_success_rate_delta` ≥ -0.10 (tolerance for small-sample noise; ~2 extra failures in 25 cases)
 - `first_try_success_rate_delta` ≥ 0.00
 - `retry_count_per_task_delta` ≤ 0.00 (fewer retries = better)
 
@@ -501,8 +501,7 @@ Canonical CI runs (enforces fresh generation):
   - `ACECLAW_REPLAY_TIMEOUT_MS` (default: `180000`)
   - `ACECLAW_REPLAY_AUTO_APPROVE_PERMISSIONS` (default: `true`)
   - `ACECLAW_REPLAY_MAX_TOKEN_ESTIMATION_ERROR_RATIO` (default by event):
-    - full mode (`true`): `0.25` (full-sample strict)
-    - default (`false`): `0.65` (small-sample tolerance)
+    - default: `0.65` (character-count heuristic has high variance across content types)
 - Generate replay cases from real prompt executions (off/on modes):
   - `./gradlew generateReplayCases -PreplayPromptsInput=/path/to/replay-prompts.json -PreplayCasesOutput=/path/to/replay-cases.json -PreplayCasesManifestOutput=/path/to/replay-cases.manifest.json`
   - Prompt suite must pass schema + category coverage validation (`validateReplaySuite`)

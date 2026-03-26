@@ -69,6 +69,7 @@ public final class CopilotTokenProvider implements Supplier<String> {
     public CopilotTokenProvider(String configuredToken) {
         this.configuredToken = configuredToken;
         this.httpClient = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_2)
                 .connectTimeout(Duration.ofSeconds(15))
                 .build();
         this.objectMapper = new ObjectMapper()
