@@ -53,15 +53,16 @@ fi
 if [ "$BENCH_MODE" = "none" ]; then
     BENCH_MODE=""
 elif [ "$BENCH_MODE" = "auto" ]; then
-    CHANGED_FILES="$(git diff --name-only origin/main...HEAD 2>/dev/null || true)"
-
-    if [ -z "$CHANGED_FILES" ]; then
+    if ! CHANGED_FILES="$(git diff --name-only origin/main...HEAD 2>/dev/null)"; then
+        echo ">> --auto: unable to diff against origin/main, falling back to check mode"
+        BENCH_MODE="check"
+    elif [ -z "$CHANGED_FILES" ]; then
         echo ">> --auto: no diff against origin/main, skipping benchmarks"
         BENCH_MODE=""
     else
         # Patterns that upgrade to baseline mode
         BASELINE_MATCH=""
-        for f in $CHANGED_FILES; do
+        while IFS= read -r f; do
             case "$f" in
                 aceclaw-memory/*)                                  BASELINE_MATCH=1 ;;
                 scripts/generate-replay-report.sh)                 BASELINE_MATCH=1 ;;
@@ -70,7 +71,7 @@ elif [ "$BENCH_MODE" = "auto" ]; then
                 scripts/export-injection-audit-summary.sh)         BASELINE_MATCH=1 ;;
                 *metrics*|*scorecard*|*rollout*|*candidate*|*replay*|*learning*) BASELINE_MATCH=1 ;;
             esac
-        done
+        done <<< "$CHANGED_FILES"
 
         if [ -n "$BASELINE_MATCH" ]; then
             BENCH_MODE="baseline"

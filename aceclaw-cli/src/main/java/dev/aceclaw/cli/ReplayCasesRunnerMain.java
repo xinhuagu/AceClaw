@@ -472,7 +472,13 @@ public final class ReplayCasesRunnerMain {
                     case "--manifest-output" -> c.manifestOutput = next(args, ++i, a);
                     case "--project" -> c.defaultProject = Path.of(next(args, ++i, a));
                     case "--timeout-ms" -> c.timeoutMs = Long.parseLong(next(args, ++i, a));
-                    case "--delay-ms" -> c.delayMs = Long.parseLong(next(args, ++i, a));
+                    case "--delay-ms" -> {
+                        long parsed = Long.parseLong(next(args, ++i, a));
+                        if (parsed < 0) {
+                            throw new IllegalArgumentException("--delay-ms must be >= 0");
+                        }
+                        c.delayMs = parsed;
+                    }
                     case "--auto-approve-permissions" ->
                             c.autoApprovePermissions = Boolean.parseBoolean(next(args, ++i, a));
                     default -> throw new IllegalArgumentException("Unknown argument: " + a);

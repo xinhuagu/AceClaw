@@ -9,9 +9,9 @@ import java.util.List;
 /**
  * Estimates token counts for conversation messages, system prompts, and tool definitions.
  *
- * <p>Uses the heuristic of ~4 characters per token, which is a well-established
- * approximation for English text and code. This provides a fast, no-API-call estimate
- * for deciding when context compaction is needed.
+ * <p>Uses the heuristic of ~2.1 characters per token, empirically calibrated from
+ * replay data for Claude's BPE tokenizer on mixed content. This provides a fast,
+ * no-API-call estimate for deciding when context compaction is needed.
  *
  * <p>When actual token counts are available from API responses ({@code usage.inputTokens}),
  * those should be preferred over estimation for accuracy.

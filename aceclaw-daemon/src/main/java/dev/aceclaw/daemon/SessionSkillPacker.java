@@ -48,7 +48,7 @@ public final class SessionSkillPacker {
     private static final String AUDIT_FILE = "session-skill-pack-audit.jsonl";
 
     /** Estimated chars per token (same as ContextEstimator). */
-    private static final double CHARS_PER_TOKEN = 4.0;
+    private static final double CHARS_PER_TOKEN = 2.1;
 
     /** Tokens reserved for the extraction output + thinking budget. */
     private static final int OUTPUT_TOKEN_RESERVE = 8_192 + 4_096;
