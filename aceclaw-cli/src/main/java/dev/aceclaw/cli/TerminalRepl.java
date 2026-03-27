@@ -506,6 +506,7 @@ public final class TerminalRepl {
         return Thread.ofVirtual()
                 .name("aceclaw-status-ticker")
                 .start(() -> {
+                    long tickCount = 0;
                     while (!stopFlag.get()) {
                         try {
                             Thread.sleep(1000);
@@ -518,8 +519,25 @@ public final class TerminalRepl {
                         pollAndRenderDeferredEvents(schedulerEventConn, reader);
                         pollAndRenderSkillDraftEvents(schedulerEventConn);
                         pollCronStatus(schedulerEventConn);
+
+                        // Send workspace heartbeat every 30 seconds
+                        tickCount++;
+                        if (tickCount % 30 == 0) {
+                            sendWorkspaceHeartbeat();
+                        }
                     }
                 });
+    }
+
+    private void sendWorkspaceHeartbeat() {
+        try {
+            var params = client.objectMapper().createObjectNode();
+            params.put("sessionId", sessionId);
+            params.put("workspace", sessionInfo.project());
+            client.sendRequest("workspace.heartbeat", params);
+        } catch (Exception e) {
+            log.debug("Workspace heartbeat failed: {}", e.getMessage());
+        }
     }
 
     private Thread startUiRenderer(AtomicBoolean stopFlag, LineReader reader) {
@@ -1484,15 +1502,18 @@ public final class TerminalRepl {
         String titleLine = "  AceClaw  v" + sessionInfo.version();
         String modelDisplay = sessionInfo.model();
         String projectDisplay = fitWidth(sessionInfo.project(), innerWidth - 14);
+        String sessionShort = sessionId.length() > 8 ? sessionId.substring(0, 8) : sessionId;
 
         String modelLine = "  Model: " + modelDisplay;
         String projectLine = "  Project: " + projectDisplay;
+        String sessionLine = "  Session: " + sessionShort;
 
         out.println();
         out.println(ACCENT + BOX_TOP_LEFT + hline(innerWidth) + BOX_TOP_RIGHT + RESET);
         out.println(ACCENT + BOX_VERTICAL + RESET + BOLD + padRight(titleLine, innerWidth) + ACCENT + BOX_VERTICAL + RESET);
         out.println(ACCENT + BOX_VERTICAL + RESET + MUTED + padRight(modelLine, innerWidth) + ACCENT + BOX_VERTICAL + RESET);
         out.println(ACCENT + BOX_VERTICAL + RESET + MUTED + padRight(projectLine, innerWidth) + ACCENT + BOX_VERTICAL + RESET);
+        out.println(ACCENT + BOX_VERTICAL + RESET + MUTED + padRight(sessionLine, innerWidth) + ACCENT + BOX_VERTICAL + RESET);
         out.println(ACCENT + BOX_BOTTOM_LEFT + hline(innerWidth) + BOX_BOTTOM_RIGHT + RESET);
         out.println();
         out.flush();

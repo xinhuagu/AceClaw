@@ -104,9 +104,15 @@ fi
 # ---------------------------------------------------------------------------
 ./gradlew :aceclaw-cli:installDist -q
 
-# Stop old daemon (best-effort)
+# Stop old daemon (best-effort) — warn about active sessions
+CLI_BIN=./aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli
 if [ -S ~/.aceclaw/aceclaw.sock ]; then
-    ./aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli daemon stop 2>/dev/null || true
+    ACTIVE_SESSIONS=$("$CLI_BIN" daemon status 2>/dev/null | grep "Active Sessions:" | awk '{print $NF}' || echo "0")
+    if [ "$ACTIVE_SESSIONS" != "0" ] && [ -n "$ACTIVE_SESSIONS" ]; then
+        echo ">> WARNING: Restarting daemon with $ACTIVE_SESSIONS active session(s)"
+        echo ">> Other connected TUI windows will be disconnected."
+    fi
+    "$CLI_BIN" daemon stop 2>/dev/null || true
     sleep 0.5
 fi
 # Kill by PID if still alive

@@ -23,6 +23,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Run the CLI (auto-starts daemon)
 ./aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli
 
+# Development: rebuild + restart daemon (may interrupt other sessions)
+./dev.sh [--check | --baseline | --auto | --no-bench] [provider]
+
+# Multi-session: open another TUI window (non-destructive, never restarts daemon)
+./tui.sh [provider]
+
 # Daemon management
 ./aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli daemon start   # foreground
 ./aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli daemon stop
@@ -35,13 +41,14 @@ Java 21 with `--enable-preview` required everywhere (compile, test, runtime). Th
 
 ## Architecture Overview
 
-AceClaw is a **daemon-first AI coding agent**. The CLI is a thin client that connects to a persistent JVM daemon via Unix Domain Socket.
+AceClaw is a **daemon-first AI coding agent**. The CLI is a thin client that connects to a persistent JVM daemon via Unix Domain Socket. Multiple CLI/TUI windows can connect to one daemon simultaneously, each with its own independent session. One active TUI per workspace is enforced by `WorkspaceAttachmentRegistry`. See `docs/multi-session.md` for details.
 
 ```
 CLI (Picocli + JLine3)
   ↕ JSON-RPC 2.0 over UDS (~/.aceclaw/aceclaw.sock)
 Daemon (persistent JVM)
   ├── RequestRouter → dispatches methods to handlers
+  ├── WorkspaceAttachmentRegistry → one live TUI per workspace
   ├── StreamingAgentHandler → runs ReAct loop with permission checks + task planner
   ├── StreamingAgentLoop → LLM call → tool execution cycle (max 25 iterations)
   ├── Task Planner → complexity estimation → LLM plan generation → sequential execution

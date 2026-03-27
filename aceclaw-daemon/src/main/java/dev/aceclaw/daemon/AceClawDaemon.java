@@ -1922,6 +1922,12 @@ public final class AceClawDaemon {
         });
 
         shutdownManager.register(new ShutdownManager.ShutdownParticipant() {
+            @Override public String name() { return "Workspace Attachments"; }
+            @Override public int priority() { return 89; }
+            @Override public void onShutdown() { router.attachmentRegistry().releaseAll(); }
+        });
+
+        shutdownManager.register(new ShutdownManager.ShutdownParticipant() {
             @Override public String name() { return "Session Manager"; }
             @Override public int priority() { return 90; }
             @Override public void onShutdown() { sessionManager.destroyAll(); }

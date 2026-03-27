@@ -63,6 +63,9 @@ public final class AceClawMain implements Runnable {
             var params = client.objectMapper().createObjectNode();
             String requestedProject = canonicalizeProject(Paths.get(System.getProperty("user.dir")));
             params.put("project", requestedProject);
+            params.put("interactive", true);
+            String clientInstanceId = resolveClientInstanceId();
+            params.put("clientInstanceId", clientInstanceId);
 
             JsonNode session = client.sendRequest("session.create", params);
             String sessionId = session.get("sessionId").asText();
@@ -94,7 +97,15 @@ public final class AceClawMain implements Runnable {
             }
 
         } catch (DaemonClient.DaemonClientException e) {
-            if (e.getMessage() != null && e.getMessage().contains("API key")) {
+            if (e.code() == -32001) {
+                // Workspace conflict: another TUI is already attached
+                System.err.println();
+                System.err.println("  Another TUI session is already active for this workspace.");
+                System.err.println("  " + e.getMessage());
+                System.err.println();
+                System.err.println("  To open a TUI for a different workspace, cd there first.");
+                System.err.println("  To force restart, use dev.sh (will interrupt the other session).");
+            } else if (e.getMessage() != null && e.getMessage().contains("API key")) {
                 System.err.println("Error: " + e.getMessage());
                 System.err.println("Set ANTHROPIC_API_KEY or add apiKey to ~/.aceclaw/config.json");
             } else {
@@ -157,6 +168,14 @@ public final class AceClawMain implements Runnable {
     public static void main(String[] args) {
         int exitCode = new CommandLine(new AceClawMain()).execute(args);
         System.exit(exitCode);
+    }
+
+    private static String resolveClientInstanceId() {
+        String fromEnv = System.getenv("ACECLAW_CLIENT_INSTANCE_ID");
+        if (fromEnv != null && !fromEnv.isBlank()) {
+            return fromEnv.trim();
+        }
+        return "cli-default";
     }
 
     private static String canonicalizeProject(Path path) {
