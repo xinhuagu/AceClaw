@@ -71,7 +71,9 @@ elif [ "$BENCH_MODE" = "auto" ]; then
                 scripts/export-injection-audit-summary.sh)         BASELINE_MATCH=1 ;;
                 *metrics*|*scorecard*|*rollout*|*candidate*|*replay*|*learning*) BASELINE_MATCH=1 ;;
             esac
-        done <<< "$CHANGED_FILES"
+        done <<EOF
+$CHANGED_FILES
+EOF
 
         if [ -n "$BASELINE_MATCH" ]; then
             BENCH_MODE="baseline"
