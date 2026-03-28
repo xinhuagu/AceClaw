@@ -649,7 +649,7 @@ public final class AutoMemoryStore {
         merged.addAll(global);
 
         if (limit > 0 && merged.size() > limit) {
-            return merged.subList(0, limit);
+            return List.copyOf(merged.subList(0, limit));
         }
         return merged;
     }

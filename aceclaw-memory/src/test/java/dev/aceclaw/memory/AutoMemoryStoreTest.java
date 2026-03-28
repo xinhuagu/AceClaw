@@ -570,7 +570,7 @@ class AutoMemoryStoreTest {
                 List.of("java"), "test", false, projectPath);
 
         var results = store.search("sealed interfaces", null, 10);
-        assertThat(results).hasSizeGreaterThanOrEqualTo(2);
+        assertThat(results).hasSize(2);
         // Workspace entry should come first
         assertThat(results.get(0).content()).contains("Workspace");
     }
