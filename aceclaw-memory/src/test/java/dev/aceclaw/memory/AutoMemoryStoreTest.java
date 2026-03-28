@@ -504,4 +504,87 @@ class AutoMemoryStoreTest {
         freshStore.load(projectPath);
         assertThat(freshStore.size()).isEqualTo(2);
     }
+
+    // =========================================================================
+    // Workspace-first retrieval priority
+    // =========================================================================
+
+    @Test
+    void queryReturnsWorkspaceEntriesBeforeGlobal() {
+        store.add(MemoryEntry.Category.PATTERN, "Global pattern",
+                List.of("design"), "test", true, null);
+        store.add(MemoryEntry.Category.PATTERN, "Workspace pattern",
+                List.of("design"), "test", false, projectPath);
+
+        var results = store.query(MemoryEntry.Category.PATTERN, null, 10);
+        assertThat(results).hasSize(2);
+        assertThat(results.get(0).content()).isEqualTo("Workspace pattern");
+        assertThat(results.get(1).content()).isEqualTo("Global pattern");
+    }
+
+    @Test
+    void queryLimitPrefersWorkspaceEntries() {
+        // Add 3 global, 3 workspace
+        for (int i = 0; i < 3; i++) {
+            store.add(MemoryEntry.Category.PATTERN, "Global " + i,
+                    List.of("g"), "test", true, null);
+            store.add(MemoryEntry.Category.PATTERN, "Workspace " + i,
+                    List.of("w"), "test", false, projectPath);
+        }
+
+        // Limit to 3 — should get all 3 workspace entries, no global
+        var results = store.query(MemoryEntry.Category.PATTERN, null, 3);
+        assertThat(results).hasSize(3);
+        assertThat(results).allSatisfy(e -> assertThat(e.content()).startsWith("Workspace"));
+    }
+
+    @Test
+    void queryFillsGlobalWhenWorkspaceInsufficient() {
+        store.add(MemoryEntry.Category.PATTERN, "Workspace only",
+                List.of("w"), "test", false, projectPath);
+        store.add(MemoryEntry.Category.PATTERN, "Global fallback",
+                List.of("g"), "test", true, null);
+
+        // Limit to 5 — workspace (1) + global (1) since both fit
+        var results = store.query(MemoryEntry.Category.PATTERN, null, 5);
+        assertThat(results).hasSize(2);
+        assertThat(results.get(0).content()).isEqualTo("Workspace only");
+        assertThat(results.get(1).content()).isEqualTo("Global fallback");
+    }
+
+    @Test
+    void queryWorksWithOnlyGlobalEntries() {
+        store.add(MemoryEntry.Category.MISTAKE, "Global mistake",
+                List.of("global"), "test", true, null);
+
+        var results = store.query(MemoryEntry.Category.MISTAKE, null, 10);
+        assertThat(results).hasSize(1);
+        assertThat(results.getFirst().content()).isEqualTo("Global mistake");
+    }
+
+    @Test
+    void searchReturnsWorkspaceEntriesBeforeGlobal() {
+        store.add(MemoryEntry.Category.PATTERN, "Global sealed interfaces",
+                List.of("java"), "test", true, null);
+        store.add(MemoryEntry.Category.PATTERN, "Workspace sealed interfaces",
+                List.of("java"), "test", false, projectPath);
+
+        var results = store.search("sealed interfaces", null, 10);
+        assertThat(results).hasSizeGreaterThanOrEqualTo(2);
+        // Workspace entry should come first
+        assertThat(results.get(0).content()).contains("Workspace");
+    }
+
+    @Test
+    void formatForPromptPrefersWorkspaceEntries() {
+        store.add(MemoryEntry.Category.PATTERN, "Global design pattern",
+                List.of("design"), "test", true, null);
+        store.add(MemoryEntry.Category.PATTERN, "Workspace design pattern",
+                List.of("design"), "test", false, projectPath);
+
+        String prompt = store.formatForPrompt(projectPath, 1);
+        // With limit 1, should only include workspace entry
+        assertThat(prompt).contains("Workspace design pattern");
+        assertThat(prompt).doesNotContain("Global design pattern");
+    }
 }

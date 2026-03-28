@@ -300,10 +300,15 @@ public final class AutoMemoryStore {
     /**
      * Retrieves memories matching the given category filter and/or tag filter.
      *
+     * <p>Results follow workspace-first ordering: workspace-scoped entries are
+     * returned first (sorted by recency), then global entries fill remaining
+     * slots. This ensures project-specific memories take priority over
+     * cross-project global memories.
+     *
      * @param category optional category filter (null = all categories)
      * @param tags     optional tag filter (null/empty = all tags; entry must contain at least one)
      * @param limit    maximum entries to return (0 = unlimited)
-     * @return matching entries, most recent first
+     * @return matching entries, workspace-first then global, most recent within each scope
      */
     public List<MemoryEntry> query(MemoryEntry.Category category, List<String> tags, int limit) {
         var stream = entries.stream();
@@ -317,13 +322,8 @@ public final class AutoMemoryStore {
             stream = stream.filter(e -> e.tags().stream().anyMatch(tagSet::contains));
         }
 
-        stream = stream.sorted(Comparator.comparing(MemoryEntry::createdAt).reversed());
-
-        if (limit > 0) {
-            stream = stream.limit(limit);
-        }
-
-        var results = stream.toList();
+        var filtered = stream.sorted(Comparator.comparing(MemoryEntry::createdAt).reversed()).toList();
+        var results = workspaceFirstMerge(filtered, limit);
         trackAccess(results);
         return results;
     }
@@ -434,13 +434,18 @@ public final class AutoMemoryStore {
     /**
      * Searches memories using hybrid ranking (TF-IDF + recency + frequency).
      *
+     * <p>Results follow workspace-first ordering: workspace entries are returned
+     * first (ranked by relevance), then global entries fill remaining slots.
+     *
      * @param query    search query in natural language
      * @param category optional category filter (null = all)
      * @param limit    maximum results (0 = unlimited)
-     * @return ranked entries, highest relevance first
+     * @return ranked entries, workspace-first then global, relevance-ranked within each scope
      */
     public List<MemoryEntry> search(String query, MemoryEntry.Category category, int limit) {
-        var results = MemorySearchEngine.search(List.copyOf(entries), query, category, limit);
+        // Search across all entries (no limit) to get full ranked list, then scope-merge
+        var allResults = MemorySearchEngine.search(List.copyOf(entries), query, category, 0);
+        var results = workspaceFirstMerge(allResults, limit);
         trackAccess(results);
         return results;
     }
@@ -458,6 +463,9 @@ public final class AutoMemoryStore {
 
     /**
      * Formats memories as a prompt section, optionally ranked by a query hint.
+     *
+     * <p>Workspace-scoped entries are prioritized over global entries. If workspace
+     * entries fill the budget, global entries are not included.
      *
      * @param projectPath the project directory for project-specific memories
      * @param maxEntries  maximum entries to include
@@ -607,6 +615,43 @@ public final class AutoMemoryStore {
         } finally {
             accessLock.unlock();
         }
+    }
+
+    /**
+     * Returns whether an entry belongs to the global scope (vs workspace-scoped).
+     */
+    boolean isGlobalEntry(MemoryEntry entry) {
+        String file = entryFiles.get(entry.id());
+        return GLOBAL_FILE.equals(file);
+    }
+
+    /**
+     * Merges entries with workspace-first priority: takes workspace entries first
+     * (preserving their relative order), then fills remaining slots with global entries.
+     *
+     * @param ranked entries already sorted/ranked within their scope
+     * @param limit  maximum results (0 = unlimited)
+     * @return merged list with workspace entries before global entries
+     */
+    private List<MemoryEntry> workspaceFirstMerge(List<MemoryEntry> ranked, int limit) {
+        var workspace = new ArrayList<MemoryEntry>();
+        var global = new ArrayList<MemoryEntry>();
+
+        for (var entry : ranked) {
+            if (isGlobalEntry(entry)) {
+                global.add(entry);
+            } else {
+                workspace.add(entry);
+            }
+        }
+
+        var merged = new ArrayList<MemoryEntry>(workspace);
+        merged.addAll(global);
+
+        if (limit > 0 && merged.size() > limit) {
+            return merged.subList(0, limit);
+        }
+        return merged;
     }
 
     private void loadFile(Path file) {
