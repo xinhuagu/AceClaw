@@ -137,8 +137,9 @@ install_unix_symlinks() {
     ln -sf "$INSTALL_DIR/tui.sh" "$BIN_DIR/aceclaw-tui"
     ln -sf "$INSTALL_DIR/restart.sh" "$BIN_DIR/aceclaw-restart"
     ln -sf "$INSTALL_DIR/dev.sh" "$BIN_DIR/aceclaw-dev"
+    ln -sf "$INSTALL_DIR/update.sh" "$BIN_DIR/aceclaw-update"
 
-    ok "Installed: aceclaw, aceclaw-tui, aceclaw-restart, aceclaw-dev"
+    ok "Installed: aceclaw, aceclaw-tui, aceclaw-restart, aceclaw-dev, aceclaw-update"
 }
 
 install_windows_cmd() {
@@ -176,7 +177,16 @@ call "$CLI_BAT" daemon stop 2>nul
 call "$CLI_BAT" %*
 CMDEOF
 
-    ok "Installed: aceclaw.cmd, aceclaw-tui.cmd, aceclaw-restart.cmd, aceclaw-dev.cmd"
+    # aceclaw-update.cmd
+    cat > "$BIN_DIR/aceclaw-update.cmd" <<CMDEOF
+@echo off
+cd /d "%USERPROFILE%\.aceclaw\src"
+git pull --ff-only || (echo git pull failed & exit /b 1)
+call gradlew.bat :aceclaw-cli:installDist -q
+echo Update complete.
+CMDEOF
+
+    ok "Installed: aceclaw.cmd, aceclaw-tui.cmd, aceclaw-restart.cmd, aceclaw-dev.cmd, aceclaw-update.cmd"
     warn "Windows support is experimental — see https://github.com/xinhuagu/AceClaw/issues/357"
 }
 
@@ -223,8 +233,7 @@ main() {
     echo "    aceclaw-tui      Open another TUI window (non-destructive)"
     echo "    aceclaw-restart  Rebuild + restart daemon (no benchmarks)"
     echo "    aceclaw-dev      Rebuild + restart + benchmark checks"
-    echo ""
-    echo "  To update later:  cd $INSTALL_DIR && git pull && ./gradlew :aceclaw-cli:installDist -q"
+    echo "    aceclaw-update   Pull latest + rebuild (safe: skips daemon restart if sessions active)"
     echo ""
 }
 

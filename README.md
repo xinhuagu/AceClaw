@@ -164,6 +164,7 @@ aceclaw                # Start AceClaw (auto-starts daemon)
 | `aceclaw-tui` | Open another TUI window (non-destructive, never restarts daemon) |
 | `aceclaw-restart` | Rebuild + restart daemon (no benchmarks, fastest restart) |
 | `aceclaw-dev` | Rebuild + restart + auto-benchmark on feature branches |
+| `aceclaw-update` | Pull latest code + rebuild (safe: skips restart if sessions active) |
 
 See [Multi-Session Model](docs/multi-session.md) for details on running multiple TUI windows.
 
