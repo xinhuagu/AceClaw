@@ -216,7 +216,7 @@ public final class CronTool implements Tool {
     }
 
     private ToolResult statusOne(String id) {
-        var maybe = jobStore.get(id);
+        var maybe = jobStore.get(currentWorkspace(), id);
         if (maybe.isEmpty()) {
             return new ToolResult("Job not found: " + id, true);
         }
@@ -270,7 +270,7 @@ public final class CronTool implements Tool {
             return new ToolResult("Invalid cron expression '" + expression + "': " + e.getMessage(), true);
         }
 
-        var existing = jobStore.get(id);
+        var existing = jobStore.get(currentWorkspace(), id);
         String name = text(input, "name");
         if (name == null || name.isBlank()) {
             name = existing.map(CronJob::name).orElse(id);
@@ -320,9 +320,9 @@ public final class CronTool implements Tool {
             return new ToolResult(
                     "Heartbeat jobs are managed by HEARTBEAT.md sync and cannot be removed via cron tool.", true);
         }
-        boolean removed = jobStore.remove(id);
+        boolean removed = jobStore.remove(currentWorkspace(), id);
         if (!removed) {
-            return new ToolResult("Job not found: " + id, true);
+            return new ToolResult("Job not found in this workspace: " + id, true);
         }
         try {
             jobStore.save();

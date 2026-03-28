@@ -121,4 +121,82 @@ class CronToolTest {
         assertThat(result.output()).contains("Total jobs: 2");
         assertThat(result.output()).contains("Enabled: 1");
     }
+
+    // =========================================================================
+    // Workspace isolation tests
+    // =========================================================================
+
+    @Test
+    void sameJobIdInDifferentWorkspacesAreIsolated() throws Exception {
+        // Add same id "deploy" in two different workspaces
+        jobStore.put(CronJob.create("deploy", "Deploy A", "/workspace/a", "0 0 * * *", "deploy A"));
+        jobStore.put(CronJob.create("deploy", "Deploy B", "/workspace/b", "0 0 * * *", "deploy B"));
+        jobStore.save();
+
+        assertThat(jobStore.size()).isEqualTo(2);
+        assertThat(jobStore.get("/workspace/a", "deploy")).isPresent()
+                .hasValueSatisfying(j -> assertThat(j.name()).isEqualTo("Deploy A"));
+        assertThat(jobStore.get("/workspace/b", "deploy")).isPresent()
+                .hasValueSatisfying(j -> assertThat(j.name()).isEqualTo("Deploy B"));
+    }
+
+    @Test
+    void removeOnlyAffectsTargetWorkspace() throws Exception {
+        jobStore.put(CronJob.create("task", "Task A", "/workspace/a", "0 0 * * *", "do A"));
+        jobStore.put(CronJob.create("task", "Task B", "/workspace/b", "0 0 * * *", "do B"));
+        jobStore.save();
+
+        boolean removed = jobStore.remove("/workspace/a", "task");
+        assertThat(removed).isTrue();
+        assertThat(jobStore.get("/workspace/a", "task")).isEmpty();
+        assertThat(jobStore.get("/workspace/b", "task")).isPresent();
+    }
+
+    @Test
+    void listShowsWorkspaceJobsPlusGlobalHeartbeats() throws Exception {
+        jobStore.put(CronJob.create("hb-check", "Heartbeat", "*/10 * * * *", "check")); // null workspace
+        jobStore.put(CronJob.create("my-job", "My Job", "/workspace/a", "0 8 * * *", "run"));
+        jobStore.put(CronJob.create("other-job", "Other", "/workspace/b", "0 9 * * *", "run"));
+        jobStore.save();
+
+        // Workspace A should see: hb-check (global) + my-job (workspace A), NOT other-job
+        var wsAJobs = jobStore.forWorkspace("/workspace/a");
+        assertThat(wsAJobs).extracting(CronJob::id).containsExactlyInAnyOrder("hb-check", "my-job");
+    }
+
+    @Test
+    void addJobViaToolSetsCurrentWorkspace() throws Exception {
+        CronTool.setWorkspaceContext("/projects/myapp");
+        try {
+            var result = tool.execute("""
+                {"action":"add","id":"nightly","expression":"0 2 * * *","prompt":"run nightly build"}
+                """);
+            assertThat(result.isError()).isFalse();
+
+            var job = jobStore.get("/projects/myapp", "nightly");
+            assertThat(job).isPresent();
+            assertThat(job.get().workspace()).isEqualTo("/projects/myapp");
+        } finally {
+            CronTool.clearWorkspaceContext();
+        }
+    }
+
+    @Test
+    void removeJobViaToolOnlyRemovesFromCurrentWorkspace() throws Exception {
+        jobStore.put(CronJob.create("shared", "Shared A", "/workspace/a", "0 0 * * *", "A"));
+        jobStore.put(CronJob.create("shared", "Shared B", "/workspace/b", "0 0 * * *", "B"));
+        jobStore.save();
+
+        CronTool.setWorkspaceContext("/workspace/a");
+        try {
+            var result = tool.execute("{\"action\":\"remove\",\"id\":\"shared\"}");
+            assertThat(result.isError()).isFalse();
+        } finally {
+            CronTool.clearWorkspaceContext();
+        }
+
+        // workspace/a's "shared" is gone, workspace/b's remains
+        assertThat(jobStore.get("/workspace/a", "shared")).isEmpty();
+        assertThat(jobStore.get("/workspace/b", "shared")).isPresent();
+    }
 }

@@ -36,7 +36,7 @@ public final class JobStore {
     private final ObjectMapper mapper;
     private final ReadWriteLock lock = new ReentrantReadWriteLock();
 
-    /** In-memory cache of jobs, keyed by job id. */
+    /** In-memory cache of jobs, keyed by composite key (workspace|id). */
     private final Map<String, CronJob> jobs = new LinkedHashMap<>();
 
     public JobStore(Path homeDir) {
@@ -63,7 +63,7 @@ public final class JobStore {
                     // Validate expression on load
                     try {
                         CronExpression.parse(job.expression());
-                        jobs.put(job.id(), job);
+                        jobs.put(compositeKey(job), job);
                     } catch (IllegalArgumentException e) {
                         log.warn("Skipping job '{}' with invalid cron expression '{}': {}",
                                 job.id(), job.expression(), e.getMessage());
@@ -125,17 +125,20 @@ public final class JobStore {
     }
 
     /**
-     * Returns jobs belonging to the specified workspace (snapshot).
+     * Returns jobs visible from the specified workspace (snapshot).
      *
-     * @param workspace canonical workspace path (null returns jobs with no workspace)
+     * <p>Includes both workspace-scoped jobs matching the given workspace AND
+     * global jobs (null workspace, e.g. heartbeat jobs). This ensures heartbeat
+     * and other daemon-global jobs remain visible in workspace-scoped views.
+     *
+     * @param workspace canonical workspace path (null returns only global jobs)
      */
     public List<CronJob> forWorkspace(String workspace) {
         lock.readLock().lock();
         try {
             return jobs.values().stream()
-                    .filter(j -> workspace == null
-                            ? j.workspace() == null
-                            : workspace.equals(j.workspace()))
+                    .filter(j -> j.workspace() == null
+                            || (workspace != null && workspace.equals(j.workspace())))
                     .toList();
         } finally {
             lock.readLock().unlock();
@@ -157,38 +160,71 @@ public final class JobStore {
     }
 
     /**
-     * Retrieves a job by id.
+     * Retrieves a job by workspace and id.
      */
-    public Optional<CronJob> get(String id) {
+    public Optional<CronJob> get(String workspace, String id) {
         lock.readLock().lock();
         try {
-            return Optional.ofNullable(jobs.get(id));
+            return Optional.ofNullable(jobs.get(compositeKey(workspace, id)));
         } finally {
             lock.readLock().unlock();
         }
     }
 
     /**
-     * Adds or updates a job. Does NOT auto-save to disk.
+     * Retrieves a job by id only (searches all workspaces). Use {@link #get(String, String)} for
+     * workspace-scoped lookup. This method is for backward compatibility and scheduler use.
+     */
+    public Optional<CronJob> get(String id) {
+        lock.readLock().lock();
+        try {
+            return jobs.values().stream()
+                    .filter(j -> j.id().equals(id))
+                    .findFirst();
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    /**
+     * Adds or updates a job. Uses composite key (workspace + id). Does NOT auto-save to disk.
      */
     public void put(CronJob job) {
         lock.writeLock().lock();
         try {
-            jobs.put(job.id(), job);
+            jobs.put(compositeKey(job), job);
         } finally {
             lock.writeLock().unlock();
         }
     }
 
     /**
-     * Removes a job by id. Does NOT auto-save to disk.
+     * Removes a job by workspace and id. Does NOT auto-save to disk.
      *
      * @return true if the job existed and was removed
+     */
+    public boolean remove(String workspace, String id) {
+        lock.writeLock().lock();
+        try {
+            return jobs.remove(compositeKey(workspace, id)) != null;
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    /**
+     * Removes a job by id only (searches all workspaces). Backward-compatible.
+     *
+     * @return true if a job with that id existed and was removed
      */
     public boolean remove(String id) {
         lock.writeLock().lock();
         try {
-            return jobs.remove(id) != null;
+            var key = jobs.entrySet().stream()
+                    .filter(e -> e.getValue().id().equals(id))
+                    .map(Map.Entry::getKey)
+                    .findFirst();
+            return key.map(k -> jobs.remove(k) != null).orElse(false);
         } finally {
             lock.writeLock().unlock();
         }
@@ -211,5 +247,18 @@ public final class JobStore {
      */
     public Path jobsFile() {
         return jobsFile;
+    }
+
+    /**
+     * Composite key for workspace-scoped job storage.
+     * Format: "workspace|id" for workspace-scoped jobs, "|id" for global jobs.
+     */
+    static String compositeKey(CronJob job) {
+        return compositeKey(job.workspace(), job.id());
+    }
+
+    static String compositeKey(String workspace, String id) {
+        String ws = workspace != null ? workspace : "";
+        return ws + "|" + id;
     }
 }
