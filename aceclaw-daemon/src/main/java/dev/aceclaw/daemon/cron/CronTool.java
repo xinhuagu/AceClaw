@@ -274,7 +274,15 @@ public final class CronTool implements Tool {
             return new ToolResult("Invalid cron expression '" + expression + "': " + e.getMessage(), true);
         }
 
+        // Look up in current workspace first, then fall back to global (legacy migration)
         var existing = jobStore.get(currentWorkspace(), id);
+        if (existing.isEmpty()) {
+            existing = jobStore.get(null, id);
+            // If found as global legacy job, remove it so the update migrates to workspace scope
+            if (existing.isPresent()) {
+                jobStore.remove(null, id);
+            }
+        }
         String name = text(input, "name");
         if (name == null || name.isBlank()) {
             name = existing.map(CronJob::name).orElse(id);
@@ -324,9 +332,13 @@ public final class CronTool implements Tool {
             return new ToolResult(
                     "Heartbeat jobs are managed by HEARTBEAT.md sync and cannot be removed via cron tool.", true);
         }
+        // Try workspace-scoped removal first, then fall back to global (legacy migration)
         boolean removed = jobStore.remove(currentWorkspace(), id);
         if (!removed) {
-            return new ToolResult("Job not found in this workspace: " + id, true);
+            removed = jobStore.remove(null, id);
+        }
+        if (!removed) {
+            return new ToolResult("Job not found: " + id, true);
         }
         try {
             jobStore.save();

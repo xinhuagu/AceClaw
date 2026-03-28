@@ -235,4 +235,73 @@ class CronToolTest {
         assertThat(bJob).isPresent();
         assertThat(bJob.get().lastOutput()).isNull(); // not overwritten
     }
+
+    // =========================================================================
+    // Legacy global job migration tests
+    // =========================================================================
+
+    @Test
+    void addMigratesLegacyGlobalJobToCurrentWorkspace() throws Exception {
+        // Pre-existing global job (workspace = null)
+        jobStore.put(CronJob.create("legacy-task", "Legacy", "0 3 * * *", "old prompt"));
+        jobStore.save();
+        assertThat(jobStore.get(null, "legacy-task")).isPresent();
+
+        // User updates it from a workspace context
+        CronTool.setWorkspaceContext("/workspace/a");
+        try {
+            var result = tool.execute("""
+                {"action":"add","id":"legacy-task","expression":"0 4 * * *","prompt":"new prompt"}
+                """);
+            assertThat(result.isError()).isFalse();
+        } finally {
+            CronTool.clearWorkspaceContext();
+        }
+
+        // Global copy removed, workspace copy created
+        assertThat(jobStore.get(null, "legacy-task")).isEmpty();
+        var migrated = jobStore.get("/workspace/a", "legacy-task");
+        assertThat(migrated).isPresent();
+        assertThat(migrated.get().workspace()).isEqualTo("/workspace/a");
+        assertThat(migrated.get().prompt()).isEqualTo("new prompt");
+    }
+
+    @Test
+    void removeLegacyGlobalJobFromWorkspaceContext() throws Exception {
+        jobStore.put(CronJob.create("old-job", "Old", "0 0 * * *", "cleanup"));
+        jobStore.save();
+
+        CronTool.setWorkspaceContext("/workspace/a");
+        try {
+            var result = tool.execute("{\"action\":\"remove\",\"id\":\"old-job\"}");
+            assertThat(result.isError()).isFalse();
+        } finally {
+            CronTool.clearWorkspaceContext();
+        }
+
+        assertThat(jobStore.get(null, "old-job")).isEmpty();
+    }
+
+    @Test
+    void addDoesNotDuplicateWhenLegacyAndWorkspaceCoexist() throws Exception {
+        // Simulate: legacy global + workspace-scoped with same id should not happen,
+        // but if it does, workspace-scoped takes priority (no fallback needed)
+        jobStore.put(CronJob.create("task", "Global", "0 0 * * *", "global"));
+        jobStore.put(CronJob.create("task", "WS", "/workspace/a", "0 0 * * *", "ws"));
+        jobStore.save();
+
+        CronTool.setWorkspaceContext("/workspace/a");
+        try {
+            var result = tool.execute("""
+                {"action":"add","id":"task","expression":"0 1 * * *","prompt":"updated"}
+                """);
+            assertThat(result.isError()).isFalse();
+        } finally {
+            CronTool.clearWorkspaceContext();
+        }
+
+        // Workspace version updated, global version untouched
+        assertThat(jobStore.get("/workspace/a", "task").get().prompt()).isEqualTo("updated");
+        assertThat(jobStore.get(null, "task").get().prompt()).isEqualTo("global");
+    }
 }
