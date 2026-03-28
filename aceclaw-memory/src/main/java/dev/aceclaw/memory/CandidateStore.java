@@ -68,6 +68,15 @@ public final class CandidateStore {
         this(aceclawHome, DEFAULT_RECENT_WINDOW, DEFAULT_MERGE_THRESHOLD, smConfig);
     }
 
+    /**
+     * Creates a store with a fixed clock for testing.
+     */
+    public CandidateStore(Path aceclawHome, CandidateStateMachine.Config smConfig, Clock clock) throws IOException {
+        this(aceclawHome, DEFAULT_RECENT_WINDOW, DEFAULT_MERGE_THRESHOLD, smConfig,
+                DEFAULT_RETENTION, DEFAULT_DECAY_HALF_LIFE, DEFAULT_DECAY_GRACE,
+                DEFAULT_MAINTENANCE_INTERVAL, clock);
+    }
+
     CandidateStore(Path aceclawHome, Duration recentWindow, double mergeThreshold) throws IOException {
         this(aceclawHome, recentWindow, mergeThreshold, CandidateStateMachine.Config.defaults());
     }

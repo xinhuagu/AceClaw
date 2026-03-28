@@ -128,9 +128,13 @@ class AutoReleaseControllerTest {
     }
 
     private static CandidateStore newStore(Path projectRoot) throws Exception {
+        return newStore(projectRoot, Instant.parse("2026-02-24T00:01:00Z"));
+    }
+
+    private static CandidateStore newStore(Path projectRoot, Instant clockAt) throws Exception {
         var cfg = new CandidateStateMachine.Config(1, 0.2, 0.9, 3, Duration.ofDays(30),
                 Duration.ofDays(7), 1, 0.9, 10, Duration.ZERO, Set.of());
-        var store = new CandidateStore(projectRoot, cfg);
+        var store = new CandidateStore(projectRoot, cfg, Clock.fixed(clockAt, ZoneOffset.UTC));
         store.load();
         return store;
     }
@@ -160,6 +164,7 @@ class AutoReleaseControllerTest {
                 "src:2",
                 at.plusSeconds(30)
         ));
+
         store.evaluateAll();
         return store.byState(CandidateState.PROMOTED).getFirst();
     }
