@@ -2,10 +2,15 @@
 # Attach to a running AceClaw daemon, or start one if none is running.
 # Unlike dev.sh, this never stops/restarts the daemon and never runs benchmarks.
 #
+# Can be run from any directory — paths resolve relative to the AceClaw repo.
+#
 # Usage: ./tui.sh [provider]
 #   provider: anthropic (default), openai, openai-codex, ollama, copilot, groq
 #   Example: ./tui.sh ollama
 set -e
+
+# Resolve the AceClaw repo root from the script's own location
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Parse optional provider
 PROVIDER=""
@@ -25,11 +30,11 @@ if [ -z "$JAVA_HOME" ]; then
     fi
 fi
 
-# Build CLI distribution if it doesn't exist yet
-CLI_BIN=./aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli
+# Build CLI distribution if it doesn't exist yet (paths relative to repo root)
+CLI_BIN="$SCRIPT_DIR/aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli"
 if [ ! -x "$CLI_BIN" ]; then
     echo ">> First run: building CLI..."
-    ./gradlew :aceclaw-cli:installDist -q
+    "$SCRIPT_DIR/gradlew" -p "$SCRIPT_DIR" :aceclaw-cli:installDist -q
 fi
 
 # Validate and set provider via env if specified

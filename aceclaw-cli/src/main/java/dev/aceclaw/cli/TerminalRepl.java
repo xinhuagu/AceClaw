@@ -1593,6 +1593,18 @@ public final class TerminalRepl {
         sb.append(PURPLE).append(ICON_PRIMARY).append(RESET).append(" ");
         sb.append(INFO).append(BOLD).append(effectiveModel).append(RESET);
 
+        // Session ID (short) and workspace directory name
+        String sessionShort = sessionId.length() > 8 ? sessionId.substring(0, 8) : sessionId;
+        sb.append(MUTED).append(" | ").append(RESET);
+        sb.append(ACCENT).append("sid=").append(sessionShort).append(RESET);
+
+        String project = sessionInfo.project();
+        if (project != null && !project.isBlank()) {
+            String workspaceName = Path.of(project).getFileName().toString();
+            sb.append(MUTED).append(" | ").append(RESET);
+            sb.append(INFO).append("ws=").append(fitWidth(workspaceName, 20)).append(RESET);
+        }
+
         String branch = currentGitBranch();
         if (branch != null && !branch.isBlank()) {
             sb.append(MUTED).append(" | ").append(RESET);

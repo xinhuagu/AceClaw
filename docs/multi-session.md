@@ -67,8 +67,8 @@ Some state is shared by all sessions targeting the same workspace:
 
 Each session is identified by:
 
-- **Session ID** (UUID): visible in the startup banner (first 8 characters)
-- **Workspace**: the canonical project directory path, visible in the banner and status line
+- **Session ID** (UUID): visible in the startup banner and status line as `sid=<first 8 chars>`
+- **Workspace**: the canonical project directory path, visible in the startup banner (full path) and status line as `ws=<directory name>`
 
 The `daemon status` command shows the count of active sessions and active TUI attachments.
 
