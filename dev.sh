@@ -107,8 +107,8 @@ fi
 # Stop old daemon (best-effort) — warn about active sessions
 CLI_BIN=./aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli
 if [ -S ~/.aceclaw/aceclaw.sock ]; then
-    ACTIVE_SESSIONS=$("$CLI_BIN" daemon status 2>/dev/null | grep "Active Sessions:" | awk '{print $NF}' || echo "0")
-    if [ "$ACTIVE_SESSIONS" != "0" ] && [ -n "$ACTIVE_SESSIONS" ]; then
+    ACTIVE_SESSIONS=$("$CLI_BIN" daemon status 2>/dev/null | sed -n 's/.*Active Sessions: *//p' || echo "0")
+    if [ "$ACTIVE_SESSIONS" -gt 0 ] 2>/dev/null; then
         echo ">> WARNING: Restarting daemon with $ACTIVE_SESSIONS active session(s)"
         echo ">> Other connected TUI windows will be disconnected."
     fi

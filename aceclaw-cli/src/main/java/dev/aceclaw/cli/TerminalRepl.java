@@ -336,8 +336,10 @@ public final class TerminalRepl {
     public void run() {
         var stopStatusTicker = new AtomicBoolean(false);
         var stopUiRenderer = new AtomicBoolean(false);
+        var stopHeartbeat = new AtomicBoolean(false);
         Thread statusTicker = null;
         Thread uiRenderer = null;
+        Thread heartbeatThread = null;
         DaemonConnection schedulerEventConnection = null;
         try (Terminal terminal = TerminalBuilder.builder()
                 .name("aceclaw")
@@ -373,6 +375,7 @@ public final class TerminalRepl {
             }
             statusTicker = startStatusTicker(stopStatusTicker, reader, schedulerEventConnection);
             uiRenderer = startUiRenderer(stopUiRenderer, reader);
+            heartbeatThread = startHeartbeatThread(stopHeartbeat);
 
             // Register callback to auto-push background task output above prompt
             taskManager.setOnTaskComplete(handle -> {
@@ -410,6 +413,15 @@ public final class TerminalRepl {
             });
 
             while (true) {
+                // 0. Check if workspace attachment was lost (heartbeat rejected)
+                if (stopHeartbeat.get()) {
+                    out.println();
+                    out.println(WARNING + "  Workspace attachment lost — another TUI may have taken over." + RESET);
+                    out.println(MUTED + "  Exiting this session. Use tui.sh to start a new one." + RESET);
+                    out.println();
+                    break;
+                }
+
                 // 1. Check pending permission requests from task threads
                 drainPermissions(out, reader);
 
@@ -483,11 +495,15 @@ public final class TerminalRepl {
         } finally {
             stopStatusTicker.set(true);
             stopUiRenderer.set(true);
+            stopHeartbeat.set(true);
             if (statusTicker != null) {
                 statusTicker.interrupt();
             }
             if (uiRenderer != null) {
                 uiRenderer.interrupt();
+            }
+            if (heartbeatThread != null) {
+                heartbeatThread.interrupt();
             }
             if (schedulerEventConnection != null) {
                 schedulerEventConnection.close();
@@ -506,7 +522,6 @@ public final class TerminalRepl {
         return Thread.ofVirtual()
                 .name("aceclaw-status-ticker")
                 .start(() -> {
-                    long tickCount = 0;
                     while (!stopFlag.get()) {
                         try {
                             Thread.sleep(1000);
@@ -519,25 +534,43 @@ public final class TerminalRepl {
                         pollAndRenderDeferredEvents(schedulerEventConn, reader);
                         pollAndRenderSkillDraftEvents(schedulerEventConn);
                         pollCronStatus(schedulerEventConn);
-
-                        // Send workspace heartbeat every 30 seconds
-                        tickCount++;
-                        if (tickCount % 30 == 0) {
-                            sendWorkspaceHeartbeat();
-                        }
                     }
                 });
     }
 
-    private void sendWorkspaceHeartbeat() {
-        try {
-            var params = client.objectMapper().createObjectNode();
-            params.put("sessionId", sessionId);
-            params.put("workspace", sessionInfo.project());
-            client.sendRequest("workspace.heartbeat", params);
-        } catch (Exception e) {
-            log.debug("Workspace heartbeat failed: {}", e.getMessage());
-        }
+    /**
+     * Starts an independent heartbeat thread that sends workspace heartbeats every 30 seconds.
+     * If the daemon rejects the heartbeat (attachment lost or replaced), the REPL is stopped
+     * to preserve the one-TUI-per-workspace guarantee.
+     */
+    private Thread startHeartbeatThread(AtomicBoolean stopFlag) {
+        return Thread.ofVirtual()
+                .name("aceclaw-workspace-heartbeat")
+                .start(() -> {
+                    while (!stopFlag.get()) {
+                        try {
+                            Thread.sleep(30_000);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            return;
+                        }
+                        if (stopFlag.get()) return;
+
+                        try {
+                            var params = client.objectMapper().createObjectNode();
+                            params.put("sessionId", sessionId);
+                            params.put("workspace", sessionInfo.project());
+                            var response = client.sendRequest("workspace.heartbeat", params);
+                            boolean accepted = response != null && response.path("accepted").asBoolean(false);
+                            if (!accepted) {
+                                log.warn("Workspace attachment lost — another TUI may have taken over. Exiting.");
+                                stopFlag.set(true);
+                            }
+                        } catch (Exception e) {
+                            log.debug("Workspace heartbeat failed: {}", e.getMessage());
+                        }
+                    }
+                });
     }
 
     private Thread startUiRenderer(AtomicBoolean stopFlag, LineReader reader) {

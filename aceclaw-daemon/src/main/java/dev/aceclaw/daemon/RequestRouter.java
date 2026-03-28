@@ -11,6 +11,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -65,9 +66,9 @@ public final class RequestRouter {
     public RequestRouter(SessionManager sessionManager,
                          WorkspaceAttachmentRegistry attachmentRegistry,
                          ObjectMapper objectMapper) {
-        this.sessionManager = sessionManager;
-        this.attachmentRegistry = attachmentRegistry;
-        this.objectMapper = objectMapper;
+        this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager");
+        this.attachmentRegistry = Objects.requireNonNull(attachmentRegistry, "attachmentRegistry");
+        this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
         registerBuiltinHandlers();
     }
 
