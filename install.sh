@@ -140,7 +140,7 @@ download_release() {
     mkdir -p "$INSTALL_DIR"
 
     # Remove old dist if exists (keep config, memory, workspaces)
-    rm -rf "$INSTALL_DIR/bin" "$INSTALL_DIR/lib"
+    rm -rf "${INSTALL_DIR:?}/bin" "${INSTALL_DIR:?}/lib"
 
     case "$ARCHIVE_NAME" in
         *.tar.gz) tar -xzf "$TMP_DIR/$ARCHIVE_NAME" -C "$INSTALL_DIR" --strip-components=1 ;;
@@ -182,7 +182,7 @@ install_unix_symlinks() {
 }
 
 install_windows_cmd() {
-    local CLI_BAT="%USERPROFILE%\.aceclaw\bin\aceclaw-cli.bat"
+    CLI_BAT="%USERPROFILE%\.aceclaw\bin\aceclaw-cli.bat"
 
     cat > "$BIN_DIR/aceclaw.cmd" <<CMDEOF
 @echo off
@@ -246,7 +246,7 @@ main() {
     echo "  Commands available:"
     echo "    aceclaw          Start AceClaw (auto-starts daemon)"
     echo "    aceclaw-tui      Open another TUI window (non-destructive)"
-    echo "    aceclaw-restart  Rebuild + restart daemon (no benchmarks)"
+    echo "    aceclaw-restart  Restart daemon (rebuilds in dev mode)"
     echo "    aceclaw-update   Update to latest release"
     echo ""
 }

@@ -153,7 +153,7 @@ fi
 
 # Extract (keep config, memory, workspaces — only replace bin/lib/scripts)
 info "Extracting..."
-rm -rf "$INSTALL_DIR/bin" "$INSTALL_DIR/lib"
+rm -rf "${INSTALL_DIR:?}/bin" "${INSTALL_DIR:?}/lib"
 
 case "$ARCHIVE_NAME" in
     *.tar.gz) tar -xzf "$TMP_DIR/$ARCHIVE_NAME" -C "$INSTALL_DIR" --strip-components=1 ;;
