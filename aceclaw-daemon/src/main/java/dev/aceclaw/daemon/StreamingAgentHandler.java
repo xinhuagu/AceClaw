@@ -3,6 +3,7 @@ package dev.aceclaw.daemon;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.AgentLoopConfig;
+import dev.aceclaw.daemon.cron.CronTool;
 import dev.aceclaw.core.agent.CancellationAware;
 import dev.aceclaw.core.agent.CancellationToken;
 import dev.aceclaw.core.agent.CompactionConfig;
@@ -206,6 +207,11 @@ public final class StreamingAgentHandler {
             throw new IllegalArgumentException("Session is not active: " + sessionId);
         }
 
+        // Set workspace context for tools (e.g. CronTool) that need to know the current workspace.
+        // Cleared in the finally block below to cover all exit paths (success, plan, resume, error).
+        CronTool.setWorkspaceContext(session.projectPath().toString());
+        try {
+
         log.info("Streaming agent prompt: sessionId={}, promptLength={}", sessionId, prompt.length());
 
         recordPromptSkillCorrections(sessionId, session.projectPath(), prompt);
@@ -327,6 +333,10 @@ public final class StreamingAgentHandler {
             cancelContext.stopMonitor();
             turnLock.unlock();
 
+        }
+
+        } finally {
+            CronTool.clearWorkspaceContext();
         }
     }
 
@@ -564,6 +574,7 @@ public final class StreamingAgentHandler {
                                     ToolMetricsCollector metricsCollector,
                                     AdaptiveTurnResult adaptive,
                                     Set<String> requestToolNames) {
+
         // Handle compaction
         if (turn.wasCompacted()) {
             handleCompactionResult(session, turn.compactionResult());

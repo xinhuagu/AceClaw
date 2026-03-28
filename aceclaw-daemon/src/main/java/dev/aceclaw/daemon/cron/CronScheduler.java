@@ -222,7 +222,7 @@ public final class CronScheduler {
 
             // Mark success only if the job still exists (avoid resurrecting one-shot jobs
             // that removed themselves via cron.remove during execution).
-            if (jobStore.get(job.id()).isPresent()) {
+            if (jobStore.get(job.workspace(), job.id()).isPresent()) {
                 jobStore.put(job.withSuccess(Instant.now(), truncateResult(result)));
             } else {
                 log.info("Cron job '{}' removed during execution; skipping success write-back", job.id());
@@ -238,7 +238,7 @@ public final class CronScheduler {
         } catch (Exception e) {
             // Mark failure only if the job still exists (same non-resurrection rule).
             CronJob failedJob = null;
-            if (jobStore.get(job.id()).isPresent()) {
+            if (jobStore.get(job.workspace(), job.id()).isPresent()) {
                 failedJob = job.withFailure(e.getMessage());
                 jobStore.put(failedJob);
             } else {

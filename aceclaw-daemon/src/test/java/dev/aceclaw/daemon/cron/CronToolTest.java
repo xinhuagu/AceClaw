@@ -121,4 +121,187 @@ class CronToolTest {
         assertThat(result.output()).contains("Total jobs: 2");
         assertThat(result.output()).contains("Enabled: 1");
     }
+
+    // =========================================================================
+    // Workspace isolation tests
+    // =========================================================================
+
+    @Test
+    void sameJobIdInDifferentWorkspacesAreIsolated() throws Exception {
+        // Add same id "deploy" in two different workspaces
+        jobStore.put(CronJob.create("deploy", "Deploy A", "/workspace/a", "0 0 * * *", "deploy A"));
+        jobStore.put(CronJob.create("deploy", "Deploy B", "/workspace/b", "0 0 * * *", "deploy B"));
+        jobStore.save();
+
+        assertThat(jobStore.size()).isEqualTo(2);
+        assertThat(jobStore.get("/workspace/a", "deploy")).isPresent()
+                .hasValueSatisfying(j -> assertThat(j.name()).isEqualTo("Deploy A"));
+        assertThat(jobStore.get("/workspace/b", "deploy")).isPresent()
+                .hasValueSatisfying(j -> assertThat(j.name()).isEqualTo("Deploy B"));
+    }
+
+    @Test
+    void removeOnlyAffectsTargetWorkspace() throws Exception {
+        jobStore.put(CronJob.create("task", "Task A", "/workspace/a", "0 0 * * *", "do A"));
+        jobStore.put(CronJob.create("task", "Task B", "/workspace/b", "0 0 * * *", "do B"));
+        jobStore.save();
+
+        boolean removed = jobStore.remove("/workspace/a", "task");
+        assertThat(removed).isTrue();
+        assertThat(jobStore.get("/workspace/a", "task")).isEmpty();
+        assertThat(jobStore.get("/workspace/b", "task")).isPresent();
+    }
+
+    @Test
+    void listShowsWorkspaceJobsPlusGlobalHeartbeats() throws Exception {
+        jobStore.put(CronJob.create("hb-check", "Heartbeat", "*/10 * * * *", "check")); // null workspace
+        jobStore.put(CronJob.create("my-job", "My Job", "/workspace/a", "0 8 * * *", "run"));
+        jobStore.put(CronJob.create("other-job", "Other", "/workspace/b", "0 9 * * *", "run"));
+        jobStore.save();
+
+        // Workspace A should see: hb-check (global) + my-job (workspace A), NOT other-job
+        var wsAJobs = jobStore.forWorkspace("/workspace/a");
+        assertThat(wsAJobs).extracting(CronJob::id).containsExactlyInAnyOrder("hb-check", "my-job");
+    }
+
+    @Test
+    void addJobViaToolSetsCurrentWorkspace() throws Exception {
+        CronTool.setWorkspaceContext("/projects/myapp");
+        try {
+            var result = tool.execute("""
+                {"action":"add","id":"nightly","expression":"0 2 * * *","prompt":"run nightly build"}
+                """);
+            assertThat(result.isError()).isFalse();
+
+            var job = jobStore.get("/projects/myapp", "nightly");
+            assertThat(job).isPresent();
+            assertThat(job.get().workspace()).isEqualTo("/projects/myapp");
+        } finally {
+            CronTool.clearWorkspaceContext();
+        }
+    }
+
+    @Test
+    void removeJobViaToolOnlyRemovesFromCurrentWorkspace() throws Exception {
+        jobStore.put(CronJob.create("shared", "Shared A", "/workspace/a", "0 0 * * *", "A"));
+        jobStore.put(CronJob.create("shared", "Shared B", "/workspace/b", "0 0 * * *", "B"));
+        jobStore.save();
+
+        CronTool.setWorkspaceContext("/workspace/a");
+        try {
+            var result = tool.execute("{\"action\":\"remove\",\"id\":\"shared\"}");
+            assertThat(result.isError()).isFalse();
+        } finally {
+            CronTool.clearWorkspaceContext();
+        }
+
+        // workspace/a's "shared" is gone, workspace/b's remains
+        assertThat(jobStore.get("/workspace/a", "shared")).isEmpty();
+        assertThat(jobStore.get("/workspace/b", "shared")).isPresent();
+    }
+
+    @Test
+    void statusOneCanResolveGlobalHeartbeatJob() throws Exception {
+        // Heartbeat job with null workspace (global)
+        jobStore.put(CronJob.create("hb-check", "Heartbeat Check", "*/5 * * * *", "check health"));
+        jobStore.save();
+
+        // Query from a workspace context — should still find the global heartbeat
+        CronTool.setWorkspaceContext("/workspace/a");
+        try {
+            var result = tool.execute("{\"action\":\"status\",\"id\":\"hb-check\"}");
+            assertThat(result.isError()).isFalse();
+            assertThat(result.output()).contains("hb-check");
+        } finally {
+            CronTool.clearWorkspaceContext();
+        }
+    }
+
+    @Test
+    void schedulerWriteBackUsesWorkspaceScopedKey() throws Exception {
+        // Two jobs with same id in different workspaces
+        var jobA = CronJob.create("deploy", "Deploy A", "/ws/a", "0 0 * * *", "deploy A");
+        var jobB = CronJob.create("deploy", "Deploy B", "/ws/b", "0 0 * * *", "deploy B");
+        jobStore.put(jobA);
+        jobStore.put(jobB);
+        jobStore.save();
+
+        // Simulate scheduler writing back success for workspace A's job
+        var updatedA = jobA.withSuccess(java.time.Instant.now(), "deployed ok");
+        jobStore.put(updatedA);
+
+        // Workspace B's job should be unchanged
+        var bJob = jobStore.get("/ws/b", "deploy");
+        assertThat(bJob).isPresent();
+        assertThat(bJob.get().lastOutput()).isNull(); // not overwritten
+    }
+
+    // =========================================================================
+    // Legacy global job migration tests
+    // =========================================================================
+
+    @Test
+    void addMigratesLegacyGlobalJobToCurrentWorkspace() throws Exception {
+        // Pre-existing global job (workspace = null)
+        jobStore.put(CronJob.create("legacy-task", "Legacy", "0 3 * * *", "old prompt"));
+        jobStore.save();
+        assertThat(jobStore.get(null, "legacy-task")).isPresent();
+
+        // User updates it from a workspace context
+        CronTool.setWorkspaceContext("/workspace/a");
+        try {
+            var result = tool.execute("""
+                {"action":"add","id":"legacy-task","expression":"0 4 * * *","prompt":"new prompt"}
+                """);
+            assertThat(result.isError()).isFalse();
+        } finally {
+            CronTool.clearWorkspaceContext();
+        }
+
+        // Global copy removed, workspace copy created
+        assertThat(jobStore.get(null, "legacy-task")).isEmpty();
+        var migrated = jobStore.get("/workspace/a", "legacy-task");
+        assertThat(migrated).isPresent();
+        assertThat(migrated.get().workspace()).isEqualTo("/workspace/a");
+        assertThat(migrated.get().prompt()).isEqualTo("new prompt");
+    }
+
+    @Test
+    void removeLegacyGlobalJobFromWorkspaceContext() throws Exception {
+        jobStore.put(CronJob.create("old-job", "Old", "0 0 * * *", "cleanup"));
+        jobStore.save();
+
+        CronTool.setWorkspaceContext("/workspace/a");
+        try {
+            var result = tool.execute("{\"action\":\"remove\",\"id\":\"old-job\"}");
+            assertThat(result.isError()).isFalse();
+        } finally {
+            CronTool.clearWorkspaceContext();
+        }
+
+        assertThat(jobStore.get(null, "old-job")).isEmpty();
+    }
+
+    @Test
+    void addDoesNotDuplicateWhenLegacyAndWorkspaceCoexist() throws Exception {
+        // Simulate: legacy global + workspace-scoped with same id should not happen,
+        // but if it does, workspace-scoped takes priority (no fallback needed)
+        jobStore.put(CronJob.create("task", "Global", "0 0 * * *", "global"));
+        jobStore.put(CronJob.create("task", "WS", "/workspace/a", "0 0 * * *", "ws"));
+        jobStore.save();
+
+        CronTool.setWorkspaceContext("/workspace/a");
+        try {
+            var result = tool.execute("""
+                {"action":"add","id":"task","expression":"0 1 * * *","prompt":"updated"}
+                """);
+            assertThat(result.isError()).isFalse();
+        } finally {
+            CronTool.clearWorkspaceContext();
+        }
+
+        // Workspace version updated, global version untouched
+        assertThat(jobStore.get("/workspace/a", "task").get().prompt()).isEqualTo("updated");
+        assertThat(jobStore.get(null, "task").get().prompt()).isEqualTo("global");
+    }
 }

@@ -17,17 +17,22 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 
 /**
  * Tool for managing scheduled cron jobs.
  *
  * <p>Supports listing jobs, adding/updating jobs, removing jobs, and viewing status.
+ * Jobs are workspace-scoped: list/add/remove operate on the current workspace by default.
  */
 public final class CronTool implements Tool {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final DateTimeFormatter TIME_FMT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault());
+
+    /** ThreadLocal workspace context, set by the agent handler before tool execution. */
+    private static final ThreadLocal<String> WORKSPACE_CONTEXT = new ThreadLocal<>();
 
     private final JobStore jobStore;
     private final BooleanSupplier schedulerRunning;
@@ -41,6 +46,29 @@ public final class CronTool implements Tool {
         this.jobStore = Objects.requireNonNull(jobStore, "jobStore cannot be null");
         this.schedulerRunning = Objects.requireNonNull(schedulerRunning, "schedulerRunning cannot be null");
         this.clock = Objects.requireNonNull(clock, "clock cannot be null");
+    }
+
+    /**
+     * Sets the workspace context for the current thread. Called by the agent handler
+     * before tool execution so CronTool knows which workspace to scope operations to.
+     */
+    public static void setWorkspaceContext(String workspace) {
+        if (workspace != null) {
+            WORKSPACE_CONTEXT.set(workspace);
+        } else {
+            WORKSPACE_CONTEXT.remove();
+        }
+    }
+
+    /**
+     * Clears the workspace context for the current thread.
+     */
+    public static void clearWorkspaceContext() {
+        WORKSPACE_CONTEXT.remove();
+    }
+
+    private String currentWorkspace() {
+        return WORKSPACE_CONTEXT.get();
     }
 
     @Override
@@ -127,7 +155,8 @@ public final class CronTool implements Tool {
     }
 
     private ToolResult listJobs() {
-        var allJobs = jobStore.all();
+        String ws = currentWorkspace();
+        var allJobs = ws != null ? jobStore.forWorkspace(ws) : jobStore.all();
         var jobs = (allJobs != null ? allJobs : List.<CronJob>of()).stream()
                 .sorted(Comparator.comparing(CronJob::id))
                 .toList();
@@ -163,7 +192,8 @@ public final class CronTool implements Tool {
         if (input.has("id") && !input.get("id").asText().isBlank()) {
             return statusOne(input.get("id").asText().trim());
         }
-        var allJobs = jobStore.all();
+        String ws = currentWorkspace();
+        var allJobs = ws != null ? jobStore.forWorkspace(ws) : jobStore.all();
         var jobs = allJobs != null ? allJobs : List.<CronJob>of();
         long enabled = jobs.stream().filter(CronJob::enabled).count();
         long heartbeat = jobs.stream()
@@ -186,7 +216,11 @@ public final class CronTool implements Tool {
     }
 
     private ToolResult statusOne(String id) {
-        var maybe = jobStore.get(id);
+        // Try workspace-scoped lookup first, then fall back to global (for heartbeat jobs)
+        var maybe = jobStore.get(currentWorkspace(), id);
+        if (maybe.isEmpty()) {
+            maybe = jobStore.get(null, id);
+        }
         if (maybe.isEmpty()) {
             return new ToolResult("Job not found: " + id, true);
         }
@@ -240,7 +274,15 @@ public final class CronTool implements Tool {
             return new ToolResult("Invalid cron expression '" + expression + "': " + e.getMessage(), true);
         }
 
-        var existing = jobStore.get(id);
+        // Look up in current workspace first, then fall back to global (legacy migration)
+        var existing = jobStore.get(currentWorkspace(), id);
+        if (existing.isEmpty()) {
+            existing = jobStore.get(null, id);
+            // If found as global legacy job, remove it so the update migrates to workspace scope
+            if (existing.isPresent()) {
+                jobStore.remove(null, id);
+            }
+        }
         String name = text(input, "name");
         if (name == null || name.isBlank()) {
             name = existing.map(CronJob::name).orElse(id);
@@ -260,8 +302,9 @@ public final class CronTool implements Tool {
             return new ToolResult("maxIterations must be > 0", true);
         }
 
+        String ws = currentWorkspace();
         CronJob job = new CronJob(
-                id, name, expression, prompt,
+                id, name, ws, expression, prompt,
                 allowedTools,
                 timeout,
                 maxIterations,
@@ -289,7 +332,11 @@ public final class CronTool implements Tool {
             return new ToolResult(
                     "Heartbeat jobs are managed by HEARTBEAT.md sync and cannot be removed via cron tool.", true);
         }
-        boolean removed = jobStore.remove(id);
+        // Try workspace-scoped removal first, then fall back to global (legacy migration)
+        boolean removed = jobStore.remove(currentWorkspace(), id);
+        if (!removed) {
+            removed = jobStore.remove(null, id);
+        }
         if (!removed) {
             return new ToolResult("Job not found: " + id, true);
         }

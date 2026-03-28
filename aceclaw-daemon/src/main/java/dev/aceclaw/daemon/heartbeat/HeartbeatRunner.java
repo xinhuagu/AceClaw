@@ -158,7 +158,8 @@ public final class HeartbeatRunner {
                 CronJob existingJob = existing.get();
                 if (hasChanged(existingJob, task)) {
                     var updated = new CronJob(
-                            jobId, task.name(), task.schedule(), task.prompt(),
+                            jobId, task.name(), existingJob.workspace(),
+                            task.schedule(), task.prompt(),
                             task.allowedTools(), task.timeoutSeconds(),
                             CronJob.DEFAULT_MAX_ITERATIONS, existingJob.enabled(),
                             CronJob.DEFAULT_RETRY_BACKOFF,
@@ -170,7 +171,8 @@ public final class HeartbeatRunner {
             } else {
                 // Create new
                 var job = new CronJob(
-                        jobId, task.name(), task.schedule(), task.prompt(),
+                        jobId, task.name(), null,
+                        task.schedule(), task.prompt(),
                         task.allowedTools(), task.timeoutSeconds(),
                         CronJob.DEFAULT_MAX_ITERATIONS, true,
                         CronJob.DEFAULT_RETRY_BACKOFF, null, null, null, 0);
