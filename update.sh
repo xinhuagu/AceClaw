@@ -2,6 +2,8 @@
 # Update AceClaw to the latest release.
 # Downloads the latest pre-built release — no git or build tools required.
 #
+# If run from a git checkout (developer), falls back to git pull + rebuild.
+#
 # Usage: aceclaw-update
 set -e
 
@@ -15,7 +17,6 @@ done
 SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 
 REPO="xinhuagu/AceClaw"
-INSTALL_DIR="$SCRIPT_DIR"
 
 info()  { printf '  \033[1;34m>\033[0m %s\n' "$1"; }
 ok()    { printf '  \033[1;32m✓\033[0m %s\n' "$1"; }
@@ -26,6 +27,65 @@ echo ""
 echo "  AceClaw Update"
 echo "  ──────────────"
 echo ""
+
+# ---------------------------------------------------------------------------
+# Detect mode: release install vs git checkout
+# ---------------------------------------------------------------------------
+if [ -d "$SCRIPT_DIR/.git" ]; then
+    # Developer mode: git pull + rebuild
+    info "Detected git checkout — updating from source"
+    cd "$SCRIPT_DIR"
+
+    # Auto-detect JAVA_HOME if not set
+    if [ -z "$JAVA_HOME" ]; then
+        DETECTED_JDK="$(/usr/libexec/java_home -v 21 2>/dev/null || true)"
+        if [ -n "$DETECTED_JDK" ] && [ -d "$DETECTED_JDK" ]; then
+            export JAVA_HOME="$DETECTED_JDK"
+        fi
+    fi
+
+    OLD_HEAD=$(git rev-parse HEAD)
+    git pull --ff-only || fail "git pull failed. Resolve conflicts manually."
+    NEW_HEAD=$(git rev-parse HEAD)
+
+    if [ "$OLD_HEAD" = "$NEW_HEAD" ]; then
+        ok "Already up to date"
+        echo ""
+        exit 0
+    fi
+
+    COMMIT_COUNT=$(git rev-list --count "$OLD_HEAD".."$NEW_HEAD")
+    ok "Updated: $COMMIT_COUNT new commit(s)"
+
+    info "Rebuilding CLI..."
+    "$SCRIPT_DIR/gradlew" -p "$SCRIPT_DIR" :aceclaw-cli:installDist -q
+    ok "Build complete"
+
+    # Restart daemon if idle
+    CLI_BIN="$SCRIPT_DIR/aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli"
+    if [ -S ~/.aceclaw/aceclaw.sock ] && [ -x "$CLI_BIN" ]; then
+        ACTIVE_SESSIONS=$("$CLI_BIN" daemon status 2>/dev/null | sed -n 's/.*Active Sessions: *//p' || echo "0")
+        if [ "$ACTIVE_SESSIONS" -gt 0 ] 2>/dev/null; then
+            warn "Daemon has $ACTIVE_SESSIONS active session(s) — not restarting"
+            echo "  Run 'aceclaw-restart' when ready."
+        else
+            info "Restarting daemon..."
+            "$CLI_BIN" daemon stop 2>/dev/null || true
+            sleep 0.5
+            ok "Daemon stopped. Will auto-start on next launch."
+        fi
+    fi
+
+    echo ""
+    ok "AceClaw updated from source!"
+    echo ""
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Release mode: download latest release archive
+# ---------------------------------------------------------------------------
+INSTALL_DIR="$SCRIPT_DIR"
 
 # Check current version
 CURRENT_VERSION=""
@@ -58,6 +118,19 @@ fi
 
 info "Updating: $CURRENT_VERSION -> $LATEST_VERSION"
 
+# Require daemon to be stopped before replacing binaries
+CLI_BIN="$INSTALL_DIR/bin/aceclaw-cli"
+if [ -S "$HOME/.aceclaw/aceclaw.sock" ] && [ -x "$CLI_BIN" ]; then
+    ACTIVE_SESSIONS=$("$CLI_BIN" daemon status 2>/dev/null | sed -n 's/.*Active Sessions: *//p' || echo "0")
+    if [ "$ACTIVE_SESSIONS" -gt 0 ] 2>/dev/null; then
+        fail "Daemon has $ACTIVE_SESSIONS active session(s). Stop all sessions first, then re-run aceclaw-update."
+    fi
+    info "Stopping daemon before update..."
+    "$CLI_BIN" daemon stop 2>/dev/null || true
+    sleep 0.5
+    ok "Daemon stopped"
+fi
+
 # Download
 ARCHIVE_NAME="aceclaw-cli-${LATEST_VERSION}.tar"
 DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/$ARCHIVE_NAME"
@@ -76,20 +149,6 @@ else
         DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/$ARCHIVE_NAME"
         wget -q -O "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || fail "Download failed"
     }
-fi
-
-# Handle running daemon
-CLI_BIN="$INSTALL_DIR/bin/aceclaw-cli"
-if [ -S "$HOME/.aceclaw/aceclaw.sock" ] && [ -x "$CLI_BIN" ]; then
-    ACTIVE_SESSIONS=$("$CLI_BIN" daemon status 2>/dev/null | sed -n 's/.*Active Sessions: *//p' || echo "0")
-    if [ "$ACTIVE_SESSIONS" -gt 0 ] 2>/dev/null; then
-        warn "Daemon has $ACTIVE_SESSIONS active session(s) — not restarting automatically"
-        echo "  Run 'aceclaw-restart' to restart the daemon when ready."
-    else
-        info "Stopping idle daemon..."
-        "$CLI_BIN" daemon stop 2>/dev/null || true
-        sleep 0.5
-    fi
 fi
 
 # Extract (keep config, memory, workspaces — only replace bin/lib/scripts)
