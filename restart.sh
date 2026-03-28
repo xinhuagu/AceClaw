@@ -33,11 +33,18 @@ if [ -z "$JAVA_HOME" ]; then
     fi
 fi
 
-# Build
-"$SCRIPT_DIR/gradlew" -p "$SCRIPT_DIR" :aceclaw-cli:installDist -q
+# Build (only if dev layout with gradlew exists)
+if [ -x "$SCRIPT_DIR/gradlew" ]; then
+    "$SCRIPT_DIR/gradlew" -p "$SCRIPT_DIR" :aceclaw-cli:installDist -q
+fi
+
+# Find CLI binary — release layout (bin/) or dev layout
+CLI_BIN="$SCRIPT_DIR/bin/aceclaw-cli"
+if [ ! -x "$CLI_BIN" ]; then
+    CLI_BIN="$SCRIPT_DIR/aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli"
+fi
 
 # Stop old daemon (best-effort) — warn about active sessions
-CLI_BIN="$SCRIPT_DIR/aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli"
 if [ -S ~/.aceclaw/aceclaw.sock ]; then
     ACTIVE_SESSIONS=$("$CLI_BIN" daemon status 2>/dev/null | sed -n 's/.*Active Sessions: *//p' || echo "0")
     if [ "$ACTIVE_SESSIONS" -gt 0 ] 2>/dev/null; then

@@ -1,21 +1,23 @@
 #!/bin/sh
-# AceClaw installer — clone, build, and install CLI shortcuts.
+# AceClaw installer — download pre-built release and install CLI commands.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/xinhuagu/AceClaw/main/install.sh | sh
 #
 # What it does:
-#   1. Checks prerequisites (Java 21, git)
-#   2. Clones (or updates) the repo to ~/.aceclaw/src
-#   3. Builds the CLI with Gradle
-#   4. Creates aceclaw, aceclaw-tui, aceclaw-restart, aceclaw-dev commands
+#   1. Checks prerequisites (Java 21 runtime)
+#   2. Downloads the latest release from GitHub
+#   3. Extracts to ~/.aceclaw/
+#   4. Creates aceclaw, aceclaw-tui, aceclaw-restart, aceclaw-update commands
 #
+# No build tools required — only Java 21 runtime.
 # Supports: macOS, Linux, Windows (Git Bash / WSL)
 set -e
 
-REPO_URL="https://github.com/xinhuagu/AceClaw.git"
-INSTALL_DIR="$HOME/.aceclaw/src"
+REPO="xinhuagu/AceClaw"
+INSTALL_DIR="$HOME/.aceclaw"
 BIN_DIR=""
+PLATFORM=""
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -37,7 +39,6 @@ detect_platform() {
         *)       fail "Unsupported OS: $OS" ;;
     esac
 
-    # Pick a bin directory on PATH
     if [ "$PLATFORM" = "windows" ]; then
         BIN_DIR="$HOME/bin"
     elif [ -d "$HOME/.local/bin" ] && echo "$PATH" | grep -q "$HOME/.local/bin"; then
@@ -52,18 +53,11 @@ detect_platform() {
 }
 
 # ---------------------------------------------------------------------------
-# Check prerequisites
+# Check prerequisites (only Java runtime — no git, no Gradle)
 # ---------------------------------------------------------------------------
 check_prereqs() {
     info "Checking prerequisites..."
 
-    # Git
-    if ! command -v git >/dev/null 2>&1; then
-        fail "git is required but not found. Install git first."
-    fi
-    ok "git found"
-
-    # Java 21 — check JAVA_HOME first, then PATH, then macOS java_home
     JAVA_CMD=""
     if [ -n "$JAVA_HOME" ] && [ -x "$JAVA_HOME/bin/java" ]; then
         JAVA_CMD="$JAVA_HOME/bin/java"
@@ -87,33 +81,81 @@ check_prereqs() {
     else
         fail "Java 21+ required, found Java $JAVA_VERSION"
     fi
-}
 
-# ---------------------------------------------------------------------------
-# Clone or update repo
-# ---------------------------------------------------------------------------
-setup_repo() {
-    if [ -d "$INSTALL_DIR/.git" ]; then
-        info "Updating existing repo at $INSTALL_DIR..."
-        cd "$INSTALL_DIR"
-        git pull --ff-only || warn "git pull failed, using existing version"
+    # Need curl or wget for downloading
+    if command -v curl >/dev/null 2>&1; then
+        DOWNLOAD_CMD="curl"
+    elif command -v wget >/dev/null 2>&1; then
+        DOWNLOAD_CMD="wget"
     else
-        info "Cloning AceClaw to $INSTALL_DIR..."
-        mkdir -p "$(dirname "$INSTALL_DIR")"
-        git clone "$REPO_URL" "$INSTALL_DIR"
-        cd "$INSTALL_DIR"
+        fail "curl or wget required for downloading releases."
     fi
-    ok "Repo ready at $INSTALL_DIR"
 }
 
 # ---------------------------------------------------------------------------
-# Build
+# Fetch latest release tag from GitHub API
 # ---------------------------------------------------------------------------
-build() {
-    info "Building CLI (this may take a minute on first run)..."
-    cd "$INSTALL_DIR"
-    ./gradlew :aceclaw-cli:installDist -q
-    ok "Build complete"
+fetch_latest_version() {
+    info "Fetching latest release..."
+    if [ "$DOWNLOAD_CMD" = "curl" ]; then
+        LATEST_TAG=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
+    else
+        LATEST_TAG=$(wget -qO- "https://api.github.com/repos/$REPO/releases/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')
+    fi
+
+    if [ -z "$LATEST_TAG" ]; then
+        fail "Could not determine latest release. Check https://github.com/$REPO/releases"
+    fi
+
+    VERSION="${LATEST_TAG#v}"
+    ok "Latest version: $VERSION"
+}
+
+# ---------------------------------------------------------------------------
+# Download and extract release
+# ---------------------------------------------------------------------------
+download_release() {
+    ARCHIVE_NAME="aceclaw-cli-${VERSION}.tar"
+    DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/$ARCHIVE_NAME"
+    TMP_DIR=$(mktemp -d)
+
+    info "Downloading $ARCHIVE_NAME..."
+    if [ "$DOWNLOAD_CMD" = "curl" ]; then
+        curl -fsSL -o "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || {
+            # Try .zip if .tar not found
+            ARCHIVE_NAME="aceclaw-cli-${VERSION}.zip"
+            DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/$ARCHIVE_NAME"
+            curl -fsSL -o "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || fail "Download failed: $DOWNLOAD_URL"
+        }
+    else
+        wget -q -O "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || {
+            ARCHIVE_NAME="aceclaw-cli-${VERSION}.zip"
+            DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/$ARCHIVE_NAME"
+            wget -q -O "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || fail "Download failed: $DOWNLOAD_URL"
+        }
+    fi
+    ok "Downloaded"
+
+    info "Extracting to $INSTALL_DIR..."
+    mkdir -p "$INSTALL_DIR"
+
+    # Remove old dist if exists (keep config, memory, workspaces)
+    rm -rf "$INSTALL_DIR/bin" "$INSTALL_DIR/lib"
+
+    case "$ARCHIVE_NAME" in
+        *.tar.gz) tar -xzf "$TMP_DIR/$ARCHIVE_NAME" -C "$INSTALL_DIR" --strip-components=1 ;;
+        *.tar)    tar -xf "$TMP_DIR/$ARCHIVE_NAME" -C "$INSTALL_DIR" --strip-components=1 ;;
+        *.zip)    unzip -qo "$TMP_DIR/$ARCHIVE_NAME" -d "$TMP_DIR/extract"
+                  cp -r "$TMP_DIR/extract"/aceclaw-cli-*/* "$INSTALL_DIR/" ;;
+    esac
+
+    rm -rf "$TMP_DIR"
+
+    # Make scripts executable
+    chmod +x "$INSTALL_DIR/bin/"* 2>/dev/null || true
+    chmod +x "$INSTALL_DIR/"*.sh 2>/dev/null || true
+
+    ok "Extracted to $INSTALL_DIR"
 }
 
 # ---------------------------------------------------------------------------
@@ -131,63 +173,36 @@ install_commands() {
 }
 
 install_unix_symlinks() {
-    # Main CLI
-    ln -sf "$INSTALL_DIR/aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli" "$BIN_DIR/aceclaw"
-    # Scripts
+    ln -sf "$INSTALL_DIR/bin/aceclaw-cli" "$BIN_DIR/aceclaw"
     ln -sf "$INSTALL_DIR/tui.sh" "$BIN_DIR/aceclaw-tui"
     ln -sf "$INSTALL_DIR/restart.sh" "$BIN_DIR/aceclaw-restart"
-    ln -sf "$INSTALL_DIR/dev.sh" "$BIN_DIR/aceclaw-dev"
     ln -sf "$INSTALL_DIR/update.sh" "$BIN_DIR/aceclaw-update"
 
-    ok "Installed: aceclaw, aceclaw-tui, aceclaw-restart, aceclaw-dev, aceclaw-update"
+    ok "Installed: aceclaw, aceclaw-tui, aceclaw-restart, aceclaw-update"
 }
 
 install_windows_cmd() {
-    local CLI_BAT="%USERPROFILE%\.aceclaw\src\aceclaw-cli\build\install\aceclaw-cli\bin\aceclaw-cli.bat"
+    local CLI_BAT="%USERPROFILE%\.aceclaw\bin\aceclaw-cli.bat"
 
-    # aceclaw.cmd
     cat > "$BIN_DIR/aceclaw.cmd" <<CMDEOF
 @echo off
 call "$CLI_BAT" %*
 CMDEOF
 
-    # aceclaw-tui.cmd
     cat > "$BIN_DIR/aceclaw-tui.cmd" <<CMDEOF
 @echo off
 set ACECLAW_BENCH_MODE=none
 call "$CLI_BAT" %*
 CMDEOF
 
-    # aceclaw-restart.cmd
-    cat > "$BIN_DIR/aceclaw-restart.cmd" <<CMDEOF
-@echo off
-set ACECLAW_BENCH_MODE=none
-cd /d "%USERPROFILE%\.aceclaw\src"
-call gradlew.bat :aceclaw-cli:installDist -q
-call "$CLI_BAT" daemon stop 2>nul
-call "$CLI_BAT" %*
-CMDEOF
-
-    # aceclaw-dev.cmd
-    cat > "$BIN_DIR/aceclaw-dev.cmd" <<CMDEOF
-@echo off
-cd /d "%USERPROFILE%\.aceclaw\src"
-call gradlew.bat :aceclaw-cli:installDist -q
-call "$CLI_BAT" daemon stop 2>nul
-call "$CLI_BAT" %*
-CMDEOF
-
-    # aceclaw-update.cmd
     cat > "$BIN_DIR/aceclaw-update.cmd" <<CMDEOF
 @echo off
-cd /d "%USERPROFILE%\.aceclaw\src"
-git pull --ff-only || (echo git pull failed & exit /b 1)
-call gradlew.bat :aceclaw-cli:installDist -q
-echo Update complete.
+echo Use: curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | sh
+echo to update AceClaw on Windows.
 CMDEOF
 
-    ok "Installed: aceclaw.cmd, aceclaw-tui.cmd, aceclaw-restart.cmd, aceclaw-dev.cmd, aceclaw-update.cmd"
-    warn "Windows support is experimental — see https://github.com/xinhuagu/AceClaw/issues/357"
+    ok "Installed: aceclaw.cmd, aceclaw-tui.cmd, aceclaw-update.cmd"
+    warn "Windows support is experimental — see https://github.com/$REPO/issues/357"
 }
 
 # ---------------------------------------------------------------------------
@@ -220,20 +235,19 @@ main() {
 
     detect_platform
     check_prereqs
-    setup_repo
-    build
+    fetch_latest_version
+    download_release
     install_commands
     verify_path
 
     echo ""
-    ok "AceClaw installed successfully!"
+    ok "AceClaw $VERSION installed successfully!"
     echo ""
     echo "  Commands available:"
     echo "    aceclaw          Start AceClaw (auto-starts daemon)"
     echo "    aceclaw-tui      Open another TUI window (non-destructive)"
     echo "    aceclaw-restart  Rebuild + restart daemon (no benchmarks)"
-    echo "    aceclaw-dev      Rebuild + restart + benchmark checks"
-    echo "    aceclaw-update   Pull latest + rebuild (safe: skips daemon restart if sessions active)"
+    echo "    aceclaw-update   Update to latest release"
     echo ""
 }
 

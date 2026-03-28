@@ -33,6 +33,25 @@ application {
     applicationDefaultJvmArgs = listOf("--enable-preview", "-Dlogback.configurationFile=logback-cli.xml")
 }
 
+// Include user-facing scripts and VERSION file in the distribution archive
+distributions {
+    main {
+        contents {
+            from(rootProject.file("tui.sh")) { into("") }
+            from(rootProject.file("restart.sh")) { into("") }
+            from(rootProject.file("update.sh")) { into("") }
+            from(provider {
+                val versionFile = layout.buildDirectory.file("VERSION").get().asFile
+                versionFile.parentFile.mkdirs()
+                versionFile.writeText(project.version.toString())
+                versionFile
+            }) {
+                into("")
+            }
+        }
+    }
+}
+
 graalvmNative {
     binaries {
         named("main") {

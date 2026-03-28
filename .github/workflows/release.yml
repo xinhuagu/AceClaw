@@ -71,20 +71,19 @@ jobs:
           java-version: 21
       - uses: gradle/actions/setup-gradle@v4
 
-      - run: ./gradlew clean build --no-daemon
+      - run: ./gradlew clean build :aceclaw-cli:distTar :aceclaw-cli:distZip --no-daemon
 
       - name: Verify artifacts
         run: |
           ls -la aceclaw-cli/build/distributions/
           test -n "$(ls aceclaw-cli/build/distributions/*.zip 2>/dev/null)"
-          test -n "$(ls aceclaw-cli/build/distributions/*.tar 2>/dev/null)"
+          test -n "$(ls aceclaw-cli/build/distributions/*.tar.gz 2>/dev/null || ls aceclaw-cli/build/distributions/*.tar 2>/dev/null)"
 
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.next }}
           name: "Release ${{ steps.version.outputs.next }}"
           body_path: /tmp/release-body.md
-          fail_on_unmatched_files: true
+          fail_on_unmatched_files: false
           files: |
-            aceclaw-cli/build/distributions/*.zip
-            aceclaw-cli/build/distributions/*.tar
+            aceclaw-cli/build/distributions/*

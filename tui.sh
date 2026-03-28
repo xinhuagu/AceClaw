@@ -36,11 +36,15 @@ if [ -z "$JAVA_HOME" ]; then
     fi
 fi
 
-# Build CLI distribution if it doesn't exist yet (paths relative to repo root)
-CLI_BIN="$SCRIPT_DIR/aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli"
+# Find CLI binary — release layout (bin/) or dev layout (aceclaw-cli/build/install/...)
+CLI_BIN="$SCRIPT_DIR/bin/aceclaw-cli"
+if [ ! -x "$CLI_BIN" ]; then
+    CLI_BIN="$SCRIPT_DIR/aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli"
+fi
 if [ ! -x "$CLI_BIN" ]; then
     echo ">> First run: building CLI..."
     "$SCRIPT_DIR/gradlew" -p "$SCRIPT_DIR" :aceclaw-cli:installDist -q
+    CLI_BIN="$SCRIPT_DIR/aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli"
 fi
 
 # Validate and set provider via env if specified
