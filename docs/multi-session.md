@@ -43,33 +43,37 @@ Each workspace (project directory) can have at most **one active TUI session** a
 
 ## State Model
 
+For a complete classification of every memory store, concurrency guarantees, and promotion paths, see [Memory Ownership Model](memory-ownership.md).
+
 ### Session-Local State
 
 Each TUI session owns:
 
-- Conversation messages (chat history)
-- Context window contents
-- Active tasks and their status
-- Resume checkpoints
-
-### Daemon-Shared State
-
-The daemon manages state shared across all sessions:
-
-- Memory stores (auto-memory, markdown memory, candidate state)
-- Learning engines (self-improvement, pattern detection, correction rules)
-- Cron scheduler and deferred actions
-- MCP client connections
-- Tool registry and permission manager
-- System prompt and model configuration
+- Conversation messages (chat history) — `SessionHistoryStore`
+- Context window contents — in-memory only
+- Active tasks and their status — `ResumeCheckpointStore`, `FilePlanCheckpointStore`
+- Error/pattern detection for current session
 
 ### Workspace-Shared State
 
-Some state is shared by all sessions targeting the same workspace:
+All sessions targeting the same project directory share:
 
-- Workspace-level memory and skill drafts
-- Historical session snapshots
-- Resume checkpoint routing (sessions can resume within the same workspace)
+- Workspace memory — `MarkdownMemoryStore` (MEMORY.md, topic files)
+- Daily journal — `DailyJournal`
+- Learning metrics — `LearningExplanationStore`, `LearningValidationStore`
+- Skill drafts — `SkillDraftGenerator`, `SessionSkillPacker`
+- Promoted rules — `CorrectionRulePromoter` → ACECLAW.md
+
+### Global/Daemon-Shared State
+
+The daemon manages state shared across all sessions and workspaces:
+
+- Global memory — `AutoMemoryStore` (global.jsonl)
+- Learning candidates — `CandidateStore`
+- Historical index — `HistoricalLogIndex`
+- User-scoped skills — `SkillMetricsStore`, `SkillRefinementEngine`
+- Cron scheduler, deferred actions, MCP clients
+- Tool registry, permission manager, system prompt
 
 ## Session Identity
 
