@@ -32,54 +32,13 @@ echo ""
 # Detect mode: release install vs git checkout
 # ---------------------------------------------------------------------------
 if [ -d "$SCRIPT_DIR/.git" ]; then
-    # Developer mode: git pull + rebuild
-    info "Detected git checkout — updating from source"
-    cd "$SCRIPT_DIR"
+    fail "This is a git checkout, not a release install. To update from source:
+    cd $SCRIPT_DIR && git pull && ./gradlew :aceclaw-cli:installDist -q"
+fi
 
-    # Auto-detect JAVA_HOME if not set
-    if [ -z "$JAVA_HOME" ]; then
-        DETECTED_JDK="$(/usr/libexec/java_home -v 21 2>/dev/null || true)"
-        if [ -n "$DETECTED_JDK" ] && [ -d "$DETECTED_JDK" ]; then
-            export JAVA_HOME="$DETECTED_JDK"
-        fi
-    fi
-
-    OLD_HEAD=$(git rev-parse HEAD)
-    git pull --ff-only || fail "git pull failed. Resolve conflicts manually."
-    NEW_HEAD=$(git rev-parse HEAD)
-
-    if [ "$OLD_HEAD" = "$NEW_HEAD" ]; then
-        ok "Already up to date"
-        echo ""
-        exit 0
-    fi
-
-    COMMIT_COUNT=$(git rev-list --count "$OLD_HEAD".."$NEW_HEAD")
-    ok "Updated: $COMMIT_COUNT new commit(s)"
-
-    info "Rebuilding CLI..."
-    "$SCRIPT_DIR/gradlew" -p "$SCRIPT_DIR" :aceclaw-cli:installDist -q
-    ok "Build complete"
-
-    # Restart daemon if idle
-    CLI_BIN="$SCRIPT_DIR/aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli"
-    if [ -S ~/.aceclaw/aceclaw.sock ] && [ -x "$CLI_BIN" ]; then
-        ACTIVE_SESSIONS=$("$CLI_BIN" daemon status 2>/dev/null | sed -n 's/.*Active Sessions: *//p' || echo "0")
-        if [ "$ACTIVE_SESSIONS" -gt 0 ] 2>/dev/null; then
-            warn "Daemon has $ACTIVE_SESSIONS active session(s) — not restarting"
-            echo "  Run 'aceclaw-restart' when ready."
-        else
-            info "Restarting daemon..."
-            "$CLI_BIN" daemon stop 2>/dev/null || true
-            sleep 0.5
-            ok "Daemon stopped. Will auto-start on next launch."
-        fi
-    fi
-
-    echo ""
-    ok "AceClaw updated from source!"
-    echo ""
-    exit 0
+if [ ! -f "$SCRIPT_DIR/VERSION" ] || [ ! -x "$SCRIPT_DIR/bin/aceclaw-cli" ]; then
+    fail "Not a valid release install (missing VERSION or bin/aceclaw-cli).
+  If this is a source checkout, use: git pull && ./gradlew :aceclaw-cli:installDist -q"
 fi
 
 # ---------------------------------------------------------------------------
