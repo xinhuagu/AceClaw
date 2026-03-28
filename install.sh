@@ -63,27 +63,29 @@ check_prereqs() {
     fi
     ok "git found"
 
-    # Java 21
-    if command -v java >/dev/null 2>&1; then
-        JAVA_VERSION=$(java -version 2>&1 | head -1 | sed 's/.*"\([0-9]*\)\..*/\1/')
-        if [ "$JAVA_VERSION" -ge 21 ] 2>/dev/null; then
-            ok "Java $JAVA_VERSION found"
-        else
-            fail "Java 21+ required, found Java $JAVA_VERSION"
+    # Java 21 — check JAVA_HOME first, then PATH, then macOS java_home
+    JAVA_CMD=""
+    if [ -n "$JAVA_HOME" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+        JAVA_CMD="$JAVA_HOME/bin/java"
+    elif command -v java >/dev/null 2>&1; then
+        JAVA_CMD="java"
+    elif [ "$PLATFORM" = "macos" ]; then
+        DETECTED_JDK="$(/usr/libexec/java_home -v 21 2>/dev/null || true)"
+        if [ -n "$DETECTED_JDK" ] && [ -d "$DETECTED_JDK" ]; then
+            export JAVA_HOME="$DETECTED_JDK"
+            JAVA_CMD="$JAVA_HOME/bin/java"
         fi
+    fi
+
+    if [ -z "$JAVA_CMD" ]; then
+        fail "Java 21+ required but not found. Set JAVA_HOME or install Java 21."
+    fi
+
+    JAVA_VERSION=$("$JAVA_CMD" -version 2>&1 | head -1 | sed 's/.*"\([0-9]*\)\..*/\1/')
+    if [ "$JAVA_VERSION" -ge 21 ] 2>/dev/null; then
+        ok "Java $JAVA_VERSION found"
     else
-        # Try macOS java_home
-        if [ "$PLATFORM" = "macos" ]; then
-            DETECTED_JDK="$(/usr/libexec/java_home -v 21 2>/dev/null || true)"
-            if [ -n "$DETECTED_JDK" ] && [ -d "$DETECTED_JDK" ]; then
-                export JAVA_HOME="$DETECTED_JDK"
-                ok "Java 21 found via java_home: $JAVA_HOME"
-            else
-                fail "Java 21+ required. Install with: brew install openjdk@21"
-            fi
-        else
-            fail "Java 21+ required but java not found."
-        fi
+        fail "Java 21+ required, found Java $JAVA_VERSION"
     fi
 }
 
@@ -140,32 +142,41 @@ install_unix_symlinks() {
 }
 
 install_windows_cmd() {
-    CLI_BIN="$INSTALL_DIR/aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli.bat"
+    local CLI_BAT="%USERPROFILE%\.aceclaw\src\aceclaw-cli\build\install\aceclaw-cli\bin\aceclaw-cli.bat"
 
     # aceclaw.cmd
     cat > "$BIN_DIR/aceclaw.cmd" <<CMDEOF
 @echo off
-"%~dp0..\.aceclaw\src\aceclaw-cli\build\install\aceclaw-cli\bin\aceclaw-cli.bat" %*
+call "$CLI_BAT" %*
 CMDEOF
 
     # aceclaw-tui.cmd
     cat > "$BIN_DIR/aceclaw-tui.cmd" <<CMDEOF
 @echo off
 set ACECLAW_BENCH_MODE=none
-"%~dp0..\.aceclaw\src\aceclaw-cli\build\install\aceclaw-cli\bin\aceclaw-cli.bat" %*
+call "$CLI_BAT" %*
 CMDEOF
 
     # aceclaw-restart.cmd
     cat > "$BIN_DIR/aceclaw-restart.cmd" <<CMDEOF
 @echo off
 set ACECLAW_BENCH_MODE=none
-cd /d "%~dp0..\.aceclaw\src"
+cd /d "%USERPROFILE%\.aceclaw\src"
 call gradlew.bat :aceclaw-cli:installDist -q
-"%~dp0..\.aceclaw\src\aceclaw-cli\build\install\aceclaw-cli\bin\aceclaw-cli.bat" daemon stop 2>nul
-"%~dp0..\.aceclaw\src\aceclaw-cli\build\install\aceclaw-cli\bin\aceclaw-cli.bat" %*
+call "$CLI_BAT" daemon stop 2>nul
+call "$CLI_BAT" %*
 CMDEOF
 
-    ok "Installed: aceclaw.cmd, aceclaw-tui.cmd, aceclaw-restart.cmd"
+    # aceclaw-dev.cmd
+    cat > "$BIN_DIR/aceclaw-dev.cmd" <<CMDEOF
+@echo off
+cd /d "%USERPROFILE%\.aceclaw\src"
+call gradlew.bat :aceclaw-cli:installDist -q
+call "$CLI_BAT" daemon stop 2>nul
+call "$CLI_BAT" %*
+CMDEOF
+
+    ok "Installed: aceclaw.cmd, aceclaw-tui.cmd, aceclaw-restart.cmd, aceclaw-dev.cmd"
     warn "Windows support is experimental — see https://github.com/xinhuagu/AceClaw/issues/357"
 }
 
