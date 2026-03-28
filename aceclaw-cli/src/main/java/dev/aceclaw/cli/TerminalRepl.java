@@ -441,6 +441,10 @@ public final class TerminalRepl {
                     }
                 } catch (UserInterruptException e) {
                     ensureCursorVisible();
+                    // Heartbeat rejection raises SIGINT to break readLine() — check first
+                    if (stopHeartbeat.get()) {
+                        continue; // will hit the attachment-loss check at top of loop
+                    }
                     // Permission requests can intentionally interrupt prompt input
                     // so approval appears immediately as a popup flow.
                     if (permissionInterruptRequested.getAndSet(false) || permissionBridge.hasPending()) {
@@ -539,36 +543,49 @@ public final class TerminalRepl {
     }
 
     /**
-     * Starts an independent heartbeat thread that sends workspace heartbeats every 30 seconds.
-     * If the daemon rejects the heartbeat (attachment lost or replaced), the REPL is stopped
-     * to preserve the one-TUI-per-workspace guarantee.
+     * Starts an independent heartbeat thread that sends workspace heartbeats every 30 seconds
+     * over its own dedicated daemon connection (avoids racing on the shared client line buffer).
+     *
+     * <p>If the daemon rejects the heartbeat ({@code accepted=false}), the REPL is stopped
+     * immediately by raising {@code SIGINT} on the terminal to break any blocking
+     * {@code readLine()} call, preserving the one-TUI-per-workspace guarantee.
      */
     private Thread startHeartbeatThread(AtomicBoolean stopFlag) {
         return Thread.ofVirtual()
                 .name("aceclaw-workspace-heartbeat")
                 .start(() -> {
-                    while (!stopFlag.get()) {
-                        try {
-                            Thread.sleep(30_000);
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            return;
-                        }
-                        if (stopFlag.get()) return;
-
-                        try {
-                            var params = client.objectMapper().createObjectNode();
-                            params.put("sessionId", sessionId);
-                            params.put("workspace", sessionInfo.project());
-                            var response = client.sendRequest("workspace.heartbeat", params);
-                            boolean accepted = response != null && response.path("accepted").asBoolean(false);
-                            if (!accepted) {
-                                log.warn("Workspace attachment lost — another TUI may have taken over. Exiting.");
-                                stopFlag.set(true);
+                    try (var heartbeatConn = client.openTaskConnection()) {
+                        while (!stopFlag.get()) {
+                            try {
+                                Thread.sleep(30_000);
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                return;
                             }
-                        } catch (Exception e) {
-                            log.debug("Workspace heartbeat failed: {}", e.getMessage());
+                            if (stopFlag.get()) return;
+
+                            try {
+                                var params = client.objectMapper().createObjectNode();
+                                params.put("sessionId", sessionId);
+                                params.put("workspace", sessionInfo.project());
+                                var response = heartbeatConn.sendRequest("workspace.heartbeat", params);
+                                boolean accepted = response != null
+                                        && response.path("accepted").asBoolean(false);
+                                if (!accepted) {
+                                    log.warn("Workspace attachment lost — another TUI may have taken over.");
+                                    stopFlag.set(true);
+                                    // Interrupt any blocking readLine() immediately
+                                    var term = activeTerminal;
+                                    if (term != null) {
+                                        term.raise(Terminal.Signal.INT);
+                                    }
+                                }
+                            } catch (Exception e) {
+                                log.debug("Workspace heartbeat failed: {}", e.getMessage());
+                            }
                         }
+                    } catch (Exception e) {
+                        log.debug("Heartbeat connection failed: {}", e.getMessage());
                     }
                 });
     }
@@ -1600,7 +1617,8 @@ public final class TerminalRepl {
 
         String project = sessionInfo.project();
         if (project != null && !project.isBlank()) {
-            String workspaceName = Path.of(project).getFileName().toString();
+            Path fileName = Path.of(project).getFileName();
+            String workspaceName = fileName != null ? fileName.toString() : project;
             sb.append(MUTED).append(" | ").append(RESET);
             sb.append(INFO).append("ws=").append(fitWidth(workspaceName, 20)).append(RESET);
         }
