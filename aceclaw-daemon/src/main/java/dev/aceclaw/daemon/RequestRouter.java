@@ -11,6 +11,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -43,9 +44,13 @@ public final class RequestRouter {
         Object handle(JsonNode params, StreamContext context) throws Exception;
     }
 
+    /** Application-level error code: workspace already has an active TUI attachment. */
+    public static final int WORKSPACE_CONFLICT = -32001;
+
     private final Map<String, MethodHandler> handlers = new ConcurrentHashMap<>();
     private final Map<String, StreamingMethodHandler> streamingHandlers = new ConcurrentHashMap<>();
     private final SessionManager sessionManager;
+    private final WorkspaceAttachmentRegistry attachmentRegistry;
     private final ObjectMapper objectMapper;
     private volatile Runnable shutdownCallback;
 
@@ -55,9 +60,23 @@ public final class RequestRouter {
     private volatile HealthMonitor healthMonitor;
 
     public RequestRouter(SessionManager sessionManager, ObjectMapper objectMapper) {
-        this.sessionManager = sessionManager;
-        this.objectMapper = objectMapper;
+        this(sessionManager, new WorkspaceAttachmentRegistry(), objectMapper);
+    }
+
+    public RequestRouter(SessionManager sessionManager,
+                         WorkspaceAttachmentRegistry attachmentRegistry,
+                         ObjectMapper objectMapper) {
+        this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager");
+        this.attachmentRegistry = Objects.requireNonNull(attachmentRegistry, "attachmentRegistry");
+        this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
         registerBuiltinHandlers();
+    }
+
+    /**
+     * Returns the workspace attachment registry for external access (e.g., daemon shutdown).
+     */
+    public WorkspaceAttachmentRegistry attachmentRegistry() {
+        return attachmentRegistry;
     }
 
     /**
@@ -155,6 +174,9 @@ public final class RequestRouter {
                 return null; // No response for notifications
             }
             return JsonRpc.Response.success(request.id(), result);
+        } catch (WorkspaceConflictException e) {
+            return JsonRpc.ErrorResponse.of(
+                    request.id(), WORKSPACE_CONFLICT, e.getMessage(), e.errorData());
         } catch (IllegalArgumentException e) {
             return JsonRpc.ErrorResponse.of(
                     request.id(), JsonRpc.INVALID_PARAMS, e.getMessage());
@@ -210,6 +232,8 @@ public final class RequestRouter {
         handlers.put("session.create", this::handleSessionCreate);
         handlers.put("session.destroy", this::handleSessionDestroy);
         handlers.put("session.list", this::handleSessionList);
+        handlers.put("workspace.heartbeat", this::handleWorkspaceHeartbeat);
+        handlers.put("workspace.release", this::handleWorkspaceRelease);
         handlers.put("health.status", this::handleHealthStatus);
         handlers.put("admin.shutdown", this::handleAdminShutdown);
     }
@@ -219,14 +243,56 @@ public final class RequestRouter {
         if (projectPath.trim().isEmpty()) {
             throw new IllegalArgumentException("Missing required parameter: project");
         }
+        var clientInstanceId = extractString(params, "clientInstanceId", "cli-default");
+        boolean interactive = params != null
+                && params.has("interactive")
+                && params.get("interactive").asBoolean(true);
+
         var canonicalProjectPath = canonicalizeProjectPath(projectPath);
         var session = sessionManager.createSession(canonicalProjectPath);
+
+        // If this is an interactive TUI session, acquire workspace attachment
+        if (interactive) {
+            var acquireResult = attachmentRegistry.acquire(
+                    canonicalProjectPath, session.id(), clientInstanceId);
+            if (acquireResult instanceof WorkspaceAttachmentRegistry.AcquireResult.Conflict conflict) {
+                // Roll back the session we just created
+                sessionManager.destroySession(session.id());
+
+                var errorData = objectMapper.createObjectNode();
+                errorData.put("existingSessionId", conflict.existing().sessionId());
+                errorData.put("existingClientInstanceId", conflict.existing().clientInstanceId());
+                errorData.put("workspace", conflict.workspace().toString());
+                errorData.put("attachedAt", conflict.existing().attachedAt().toString());
+                throw new WorkspaceConflictException(
+                        "Workspace already has an active TUI session: "
+                                + conflict.existing().sessionId(),
+                        errorData);
+            }
+        }
 
         var result = objectMapper.createObjectNode();
         result.put("sessionId", session.id());
         result.put("project", session.projectPath().toString());
         result.put("createdAt", session.createdAt().toString());
         return result;
+    }
+
+    /**
+     * Exception indicating a workspace attachment conflict.
+     * Carries structured error data for the client.
+     */
+    static final class WorkspaceConflictException extends RuntimeException {
+        private final ObjectNode errorData;
+
+        WorkspaceConflictException(String message, ObjectNode errorData) {
+            super(message);
+            this.errorData = errorData;
+        }
+
+        ObjectNode errorData() {
+            return errorData;
+        }
     }
 
     private static Path canonicalizeProjectPath(String projectPath) {
@@ -243,10 +309,39 @@ public final class RequestRouter {
 
     private Object handleSessionDestroy(JsonNode params) {
         var sessionId = requireString(params, "sessionId");
+
+        // Release workspace attachment if this session holds one
+        var session = sessionManager.getSession(sessionId);
+        if (session != null) {
+            attachmentRegistry.release(session.projectPath(), sessionId);
+        }
+
         boolean destroyed = sessionManager.destroySession(sessionId);
 
         var result = objectMapper.createObjectNode();
         result.put("destroyed", destroyed);
+        return result;
+    }
+
+    private Object handleWorkspaceHeartbeat(JsonNode params) {
+        var sessionId = requireString(params, "sessionId");
+        var projectPath = requireString(params, "workspace");
+        var canonicalPath = canonicalizeProjectPath(projectPath);
+
+        boolean accepted = attachmentRegistry.heartbeat(canonicalPath, sessionId);
+        var result = objectMapper.createObjectNode();
+        result.put("accepted", accepted);
+        return result;
+    }
+
+    private Object handleWorkspaceRelease(JsonNode params) {
+        var sessionId = requireString(params, "sessionId");
+        var projectPath = requireString(params, "workspace");
+        var canonicalPath = canonicalizeProjectPath(projectPath);
+
+        boolean released = attachmentRegistry.release(canonicalPath, sessionId);
+        var result = objectMapper.createObjectNode();
+        result.put("released", released);
         return result;
     }
 
@@ -292,6 +387,7 @@ public final class RequestRouter {
         }
 
         result.put("activeSessions", sessionManager.sessionCount());
+        result.put("activeAttachments", attachmentRegistry.activeCount());
         result.put("timestamp", Instant.now().toString());
         result.put("version", dev.aceclaw.core.BuildVersion.version());
         var m = modelName;
