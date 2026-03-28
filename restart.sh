@@ -6,7 +6,14 @@
 #   provider: anthropic (default), openai, openai-codex, ollama, copilot, groq
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolve symlinks to find the real script location (not the symlink dir)
+SELF="$0"
+while [ -L "$SELF" ]; do
+    DIR="$(cd "$(dirname "$SELF")" && pwd)"
+    SELF="$(readlink "$SELF")"
+    case "$SELF" in /*) ;; *) SELF="$DIR/$SELF" ;; esac
+done
+SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 
 # Parse optional provider
 PROVIDER=""

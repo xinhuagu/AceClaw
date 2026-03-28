@@ -4,7 +4,14 @@
 # Usage: aceclaw-update
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolve symlinks to find the real script location (not the symlink dir)
+SELF="$0"
+while [ -L "$SELF" ]; do
+    DIR="$(cd "$(dirname "$SELF")" && pwd)"
+    SELF="$(readlink "$SELF")"
+    case "$SELF" in /*) ;; *) SELF="$DIR/$SELF" ;; esac
+done
+SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 
 info()  { printf '  \033[1;34m>\033[0m %s\n' "$1"; }
 ok()    { printf '  \033[1;32m✓\033[0m %s\n' "$1"; }
