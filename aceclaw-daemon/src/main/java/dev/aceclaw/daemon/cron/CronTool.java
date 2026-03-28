@@ -290,7 +290,7 @@ public final class CronTool implements Tool {
             return new ToolResult("maxIterations must be > 0", true);
         }
 
-        String ws = existing.map(CronJob::workspace).orElse(currentWorkspace());
+        String ws = currentWorkspace();
         CronJob job = new CronJob(
                 id, name, ws, expression, prompt,
                 allowedTools,

@@ -568,6 +568,9 @@ public final class StreamingAgentHandler {
                                     ToolMetricsCollector metricsCollector,
                                     AdaptiveTurnResult adaptive,
                                     Set<String> requestToolNames) {
+        // Clear workspace context now that tool execution is complete
+        CronTool.clearWorkspaceContext();
+
         // Handle compaction
         if (turn.wasCompacted()) {
             handleCompactionResult(session, turn.compactionResult());

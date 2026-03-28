@@ -65,9 +65,6 @@ public record CronJob(
     public static final int CIRCUIT_BREAKER_THRESHOLD = 5;
 
     /**
-     * Creates a CronJob with sensible defaults for optional fields.
-     */
-    /**
      * Creates a CronJob with sensible defaults, scoped to a workspace.
      */
     public static CronJob create(String id, String name, String workspace,
