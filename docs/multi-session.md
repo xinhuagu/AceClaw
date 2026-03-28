@@ -2,23 +2,31 @@
 
 AceClaw follows a **one daemon, many sessions** architecture. A single persistent daemon process manages all sessions, while each CLI/TUI window gets its own independent session.
 
+## Installation
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/xinhuagu/AceClaw/main/install.sh | sh
+```
+
+After installation, the following commands are available globally: `aceclaw`, `aceclaw-tui`, `aceclaw-restart`, `aceclaw-dev`.
+
 ## Scripts
 
-### `dev.sh` — Development Entrypoint
+### `dev.sh` / `aceclaw-dev` — Development Entrypoint
 
 - Rebuilds the CLI distribution from source
 - Stops and restarts the daemon (destructive — interrupts all active sessions)
 - Auto-runs benchmark checks on feature branches (`--auto` by default)
 - Use when you are developing AceClaw itself and want benchmark validation
 
-### `restart.sh` — Quick Restart
+### `restart.sh` / `aceclaw-restart` — Quick Restart
 
 - Rebuilds the CLI distribution from source
 - Stops and restarts the daemon (destructive — interrupts all active sessions)
 - Never runs benchmarks — fastest way to restart
 - Use when you just want a clean daemon restart without waiting for checks
 
-### `tui.sh` — Non-Destructive TUI Entrypoint
+### `tui.sh` / `aceclaw-tui` — Non-Destructive TUI Entrypoint
 
 - Connects to the running daemon, or starts one if none exists
 - Never stops or restarts the daemon

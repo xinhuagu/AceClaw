@@ -141,30 +141,53 @@ See [Context Engineering](docs/context-engineering.md) for the full architecture
 
 ## Quick Start
 
+### One-Line Install
+
 ```bash
-# Build
-./gradlew clean build && ./gradlew :aceclaw-cli:installDist
+curl -fsSL https://raw.githubusercontent.com/xinhuagu/AceClaw/main/install.sh | sh
+```
 
-# Configure
+This clones the repo, builds the CLI, and adds commands to your PATH. Requires Java 21 and git.
+
+### Configure & Run
+
+```bash
 export ANTHROPIC_API_KEY="sk-ant-api03-..."
+aceclaw                # Start AceClaw (auto-starts daemon)
+```
 
-# Run (auto-starts daemon)
+### Scripts
+
+| Command | What it does |
+|---------|-------------|
+| `aceclaw` | Start AceClaw (auto-starts daemon if needed) |
+| `aceclaw-tui` | Open another TUI window (non-destructive, never restarts daemon) |
+| `aceclaw-restart` | Rebuild + restart daemon (no benchmarks, fastest restart) |
+| `aceclaw-dev` | Rebuild + restart + auto-benchmark on feature branches |
+
+See [Multi-Session Model](docs/multi-session.md) for details on running multiple TUI windows.
+
+### Manual Build (Alternative)
+
+```bash
+git clone https://github.com/xinhuagu/AceClaw.git && cd AceClaw
+./gradlew clean build && ./gradlew :aceclaw-cli:installDist
 ./aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli
 ```
 
-Multi-provider support — see [Provider Configuration](docs/provider-configuration.md) for full setup:
+### Multi-Provider Support
+
+See [Provider Configuration](docs/provider-configuration.md) for full setup:
 ```bash
 # GitHub Copilot (use your subscription — no separate API key needed)
-./dev.sh copilot
+aceclaw-dev copilot
 
 # OpenAI Codex OAuth (reuse ~/.codex/auth.json)
 aceclaw models auth login --provider openai-codex
-./dev.sh openai-codex
-# Note: in openai-codex mode, AceClaw follows Codex backend rules
-# (stream=true, store=false, no temperature/max_output_tokens).
+aceclaw-dev openai-codex
 
 # Ollama (local, offline)
-./dev.sh ollama
+aceclaw-dev ollama
 
 # Or any OpenAI-compatible provider
 export ACECLAW_PROVIDER="openai"   # or groq, together, mistral
