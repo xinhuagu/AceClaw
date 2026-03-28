@@ -8,8 +8,15 @@ AceClaw follows a **one daemon, many sessions** architecture. A single persisten
 
 - Rebuilds the CLI distribution from source
 - Stops and restarts the daemon (destructive — interrupts all active sessions)
-- Optionally runs benchmark checks (`--check`, `--baseline`, `--auto`)
-- Use when you are developing AceClaw itself or need a clean daemon restart
+- Auto-runs benchmark checks on feature branches (`--auto` by default)
+- Use when you are developing AceClaw itself and want benchmark validation
+
+### `restart.sh` — Quick Restart
+
+- Rebuilds the CLI distribution from source
+- Stops and restarts the daemon (destructive — interrupts all active sessions)
+- Never runs benchmarks — fastest way to restart
+- Use when you just want a clean daemon restart without waiting for checks
 
 ### `tui.sh` — Non-Destructive TUI Entrypoint
 
@@ -20,10 +27,11 @@ AceClaw follows a **one daemon, many sessions** architecture. A single persisten
 
 ### Recommended Workflow
 
-1. Start with `./dev.sh` in your primary terminal (rebuilds + starts daemon)
+1. Start with `./restart.sh` or `./dev.sh` in your primary terminal (rebuilds + starts daemon)
 2. Open additional TUI windows with `./tui.sh` in other terminals or workspaces
 3. Each TUI gets its own independent session and conversation history
-4. If you need to restart the daemon, use `./dev.sh` again (will warn about active sessions)
+4. If you need to restart the daemon, use `./restart.sh` (fast) or `./dev.sh` (with benchmarks)
+5. All scripts warn about active sessions before restarting the daemon
 
 ## Workspace Exclusivity
 

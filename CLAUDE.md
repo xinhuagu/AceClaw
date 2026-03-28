@@ -23,8 +23,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Run the CLI (auto-starts daemon)
 ./aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli
 
-# Development: rebuild + restart daemon (may interrupt other sessions)
+# Development: rebuild + restart daemon + auto-benchmark on feature branches
 ./dev.sh [--check | --baseline | --auto | --no-bench] [provider]
+
+# Quick restart: rebuild + restart daemon, no benchmarks ever
+./restart.sh [provider]
 
 # Multi-session: open another TUI window (non-destructive, never restarts daemon)
 ./tui.sh [provider]
