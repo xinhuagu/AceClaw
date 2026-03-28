@@ -5,8 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build & Test Commands
 
 ```bash
-# One-line install (clone, build, add to PATH)
+# One-line install (downloads pre-built release, no build tools needed)
 curl -fsSL https://raw.githubusercontent.com/xinhuagu/AceClaw/main/install.sh | sh
+
+# Update to latest release
+aceclaw-update
 
 # Full build (all 13 modules)
 ./gradlew clean build

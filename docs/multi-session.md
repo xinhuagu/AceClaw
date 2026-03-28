@@ -8,7 +8,17 @@ AceClaw follows a **one daemon, many sessions** architecture. A single persisten
 curl -fsSL https://raw.githubusercontent.com/xinhuagu/AceClaw/main/install.sh | sh
 ```
 
-After installation, the following commands are available globally: `aceclaw`, `aceclaw-tui`, `aceclaw-restart`, `aceclaw-dev`.
+Downloads the latest pre-built release to `~/.aceclaw/`. Only requires Java 21 runtime.
+
+After installation: `aceclaw`, `aceclaw-tui`, `aceclaw-restart`, `aceclaw-update`.
+
+### Update
+
+```bash
+aceclaw-update
+```
+
+Checks for a newer release, downloads and replaces if available. Refuses to update if the daemon has active sessions — stop all sessions first.
 
 ## Scripts
 

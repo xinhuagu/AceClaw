@@ -147,7 +147,13 @@ See [Context Engineering](docs/context-engineering.md) for the full architecture
 curl -fsSL https://raw.githubusercontent.com/xinhuagu/AceClaw/main/install.sh | sh
 ```
 
-This clones the repo, builds the CLI, and adds commands to your PATH. Requires Java 21 and git.
+Downloads the latest pre-built release, extracts to `~/.aceclaw/`, and adds commands to your PATH. Only requires Java 21 runtime (no build tools).
+
+### Update
+
+```bash
+aceclaw-update         # Downloads latest release if newer version available
+```
 
 ### Configure & Run
 
@@ -156,24 +162,28 @@ export ANTHROPIC_API_KEY="sk-ant-api03-..."
 aceclaw                # Start AceClaw (auto-starts daemon)
 ```
 
-### Scripts
+### Commands
 
 | Command | What it does |
 |---------|-------------|
 | `aceclaw` | Start AceClaw (auto-starts daemon if needed) |
 | `aceclaw-tui` | Open another TUI window (non-destructive, never restarts daemon) |
-| `aceclaw-restart` | Rebuild + restart daemon (no benchmarks, fastest restart) |
-| `aceclaw-dev` | Rebuild + restart + auto-benchmark on feature branches |
-| `aceclaw-update` | Pull latest code + rebuild (safe: skips restart if sessions active) |
+| `aceclaw-restart` | Restart daemon |
+| `aceclaw-update` | Update to latest release (safe: refuses if sessions active) |
 
 See [Multi-Session Model](docs/multi-session.md) for details on running multiple TUI windows.
 
-### Manual Build (Alternative)
+### Build from Source (Developers)
 
 ```bash
 git clone https://github.com/xinhuagu/AceClaw.git && cd AceClaw
 ./gradlew clean build && ./gradlew :aceclaw-cli:installDist
 ./aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli
+
+# Development scripts (from git checkout only):
+./dev.sh [provider]        # Rebuild + restart + auto-benchmark
+./restart.sh [provider]    # Rebuild + restart (no benchmarks)
+./tui.sh [provider]        # Open TUI window (no restart)
 ```
 
 ### Multi-Provider Support
