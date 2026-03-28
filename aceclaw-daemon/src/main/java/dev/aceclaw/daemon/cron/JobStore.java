@@ -36,8 +36,24 @@ public final class JobStore {
     private final ObjectMapper mapper;
     private final ReadWriteLock lock = new ReentrantReadWriteLock();
 
-    /** In-memory cache of jobs, keyed by composite key (workspace|id). */
-    private final Map<String, CronJob> jobs = new LinkedHashMap<>();
+    /** Structured key for workspace-scoped job lookup. */
+    record JobKey(String workspace, String id) {
+        JobKey {
+            // Normalize null workspace to empty string for consistent hashing
+            workspace = workspace != null ? workspace : "";
+        }
+
+        static JobKey of(CronJob job) {
+            return new JobKey(job.workspace(), job.id());
+        }
+
+        static JobKey of(String workspace, String id) {
+            return new JobKey(workspace, id);
+        }
+    }
+
+    /** In-memory cache of jobs, keyed by (workspace, id). */
+    private final Map<JobKey, CronJob> jobs = new LinkedHashMap<>();
 
     public JobStore(Path homeDir) {
         this.cronDir = homeDir.resolve("cron");
@@ -63,7 +79,7 @@ public final class JobStore {
                     // Validate expression on load
                     try {
                         CronExpression.parse(job.expression());
-                        jobs.put(compositeKey(job), job);
+                        jobs.put(JobKey.of(job), job);
                     } catch (IllegalArgumentException e) {
                         log.warn("Skipping job '{}' with invalid cron expression '{}': {}",
                                 job.id(), job.expression(), e.getMessage());
@@ -165,7 +181,7 @@ public final class JobStore {
     public Optional<CronJob> get(String workspace, String id) {
         lock.readLock().lock();
         try {
-            return Optional.ofNullable(jobs.get(compositeKey(workspace, id)));
+            return Optional.ofNullable(jobs.get(JobKey.of(workspace, id)));
         } finally {
             lock.readLock().unlock();
         }
@@ -192,7 +208,7 @@ public final class JobStore {
     public void put(CronJob job) {
         lock.writeLock().lock();
         try {
-            jobs.put(compositeKey(job), job);
+            jobs.put(JobKey.of(job), job);
         } finally {
             lock.writeLock().unlock();
         }
@@ -206,7 +222,7 @@ public final class JobStore {
     public boolean remove(String workspace, String id) {
         lock.writeLock().lock();
         try {
-            return jobs.remove(compositeKey(workspace, id)) != null;
+            return jobs.remove(JobKey.of(workspace, id)) != null;
         } finally {
             lock.writeLock().unlock();
         }
@@ -249,16 +265,4 @@ public final class JobStore {
         return jobsFile;
     }
 
-    /**
-     * Composite key for workspace-scoped job storage.
-     * Format: "workspace|id" for workspace-scoped jobs, "|id" for global jobs.
-     */
-    static String compositeKey(CronJob job) {
-        return compositeKey(job.workspace(), job.id());
-    }
-
-    static String compositeKey(String workspace, String id) {
-        String ws = workspace != null ? workspace : "";
-        return ws + "|" + id;
-    }
 }
