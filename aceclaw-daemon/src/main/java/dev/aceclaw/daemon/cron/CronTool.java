@@ -216,7 +216,11 @@ public final class CronTool implements Tool {
     }
 
     private ToolResult statusOne(String id) {
+        // Try workspace-scoped lookup first, then fall back to global (for heartbeat jobs)
         var maybe = jobStore.get(currentWorkspace(), id);
+        if (maybe.isEmpty()) {
+            maybe = jobStore.get(null, id);
+        }
         if (maybe.isEmpty()) {
             return new ToolResult("Job not found: " + id, true);
         }

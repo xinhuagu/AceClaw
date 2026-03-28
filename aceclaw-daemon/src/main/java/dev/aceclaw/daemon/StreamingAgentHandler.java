@@ -207,8 +207,10 @@ public final class StreamingAgentHandler {
             throw new IllegalArgumentException("Session is not active: " + sessionId);
         }
 
-        // Set workspace context for tools (e.g. CronTool) that need to know the current workspace
+        // Set workspace context for tools (e.g. CronTool) that need to know the current workspace.
+        // Cleared in the finally block below to cover all exit paths (success, plan, resume, error).
         CronTool.setWorkspaceContext(session.projectPath().toString());
+        try {
 
         log.info("Streaming agent prompt: sessionId={}, promptLength={}", sessionId, prompt.length());
 
@@ -331,6 +333,10 @@ public final class StreamingAgentHandler {
             cancelContext.stopMonitor();
             turnLock.unlock();
 
+        }
+
+        } finally {
+            CronTool.clearWorkspaceContext();
         }
     }
 
@@ -568,8 +574,6 @@ public final class StreamingAgentHandler {
                                     ToolMetricsCollector metricsCollector,
                                     AdaptiveTurnResult adaptive,
                                     Set<String> requestToolNames) {
-        // Clear workspace context now that tool execution is complete
-        CronTool.clearWorkspaceContext();
 
         // Handle compaction
         if (turn.wasCompacted()) {

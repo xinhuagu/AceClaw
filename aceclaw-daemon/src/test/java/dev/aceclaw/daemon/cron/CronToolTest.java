@@ -199,4 +199,40 @@ class CronToolTest {
         assertThat(jobStore.get("/workspace/a", "shared")).isEmpty();
         assertThat(jobStore.get("/workspace/b", "shared")).isPresent();
     }
+
+    @Test
+    void statusOneCanResolveGlobalHeartbeatJob() throws Exception {
+        // Heartbeat job with null workspace (global)
+        jobStore.put(CronJob.create("hb-check", "Heartbeat Check", "*/5 * * * *", "check health"));
+        jobStore.save();
+
+        // Query from a workspace context — should still find the global heartbeat
+        CronTool.setWorkspaceContext("/workspace/a");
+        try {
+            var result = tool.execute("{\"action\":\"status\",\"id\":\"hb-check\"}");
+            assertThat(result.isError()).isFalse();
+            assertThat(result.output()).contains("hb-check");
+        } finally {
+            CronTool.clearWorkspaceContext();
+        }
+    }
+
+    @Test
+    void schedulerWriteBackUsesWorkspaceScopedKey() throws Exception {
+        // Two jobs with same id in different workspaces
+        var jobA = CronJob.create("deploy", "Deploy A", "/ws/a", "0 0 * * *", "deploy A");
+        var jobB = CronJob.create("deploy", "Deploy B", "/ws/b", "0 0 * * *", "deploy B");
+        jobStore.put(jobA);
+        jobStore.put(jobB);
+        jobStore.save();
+
+        // Simulate scheduler writing back success for workspace A's job
+        var updatedA = jobA.withSuccess(java.time.Instant.now(), "deployed ok");
+        jobStore.put(updatedA);
+
+        // Workspace B's job should be unchanged
+        var bJob = jobStore.get("/ws/b", "deploy");
+        assertThat(bJob).isPresent();
+        assertThat(bJob.get().lastOutput()).isNull(); // not overwritten
+    }
 }
