@@ -17,17 +17,22 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 
 /**
  * Tool for managing scheduled cron jobs.
  *
  * <p>Supports listing jobs, adding/updating jobs, removing jobs, and viewing status.
+ * Jobs are workspace-scoped: list/add/remove operate on the current workspace by default.
  */
 public final class CronTool implements Tool {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final DateTimeFormatter TIME_FMT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault());
+
+    /** ThreadLocal workspace context, set by the agent handler before tool execution. */
+    private static final ThreadLocal<String> WORKSPACE_CONTEXT = new ThreadLocal<>();
 
     private final JobStore jobStore;
     private final BooleanSupplier schedulerRunning;
@@ -41,6 +46,29 @@ public final class CronTool implements Tool {
         this.jobStore = Objects.requireNonNull(jobStore, "jobStore cannot be null");
         this.schedulerRunning = Objects.requireNonNull(schedulerRunning, "schedulerRunning cannot be null");
         this.clock = Objects.requireNonNull(clock, "clock cannot be null");
+    }
+
+    /**
+     * Sets the workspace context for the current thread. Called by the agent handler
+     * before tool execution so CronTool knows which workspace to scope operations to.
+     */
+    public static void setWorkspaceContext(String workspace) {
+        if (workspace != null) {
+            WORKSPACE_CONTEXT.set(workspace);
+        } else {
+            WORKSPACE_CONTEXT.remove();
+        }
+    }
+
+    /**
+     * Clears the workspace context for the current thread.
+     */
+    public static void clearWorkspaceContext() {
+        WORKSPACE_CONTEXT.remove();
+    }
+
+    private String currentWorkspace() {
+        return WORKSPACE_CONTEXT.get();
     }
 
     @Override
@@ -127,7 +155,8 @@ public final class CronTool implements Tool {
     }
 
     private ToolResult listJobs() {
-        var allJobs = jobStore.all();
+        String ws = currentWorkspace();
+        var allJobs = ws != null ? jobStore.forWorkspace(ws) : jobStore.all();
         var jobs = (allJobs != null ? allJobs : List.<CronJob>of()).stream()
                 .sorted(Comparator.comparing(CronJob::id))
                 .toList();
@@ -163,7 +192,8 @@ public final class CronTool implements Tool {
         if (input.has("id") && !input.get("id").asText().isBlank()) {
             return statusOne(input.get("id").asText().trim());
         }
-        var allJobs = jobStore.all();
+        String ws = currentWorkspace();
+        var allJobs = ws != null ? jobStore.forWorkspace(ws) : jobStore.all();
         var jobs = allJobs != null ? allJobs : List.<CronJob>of();
         long enabled = jobs.stream().filter(CronJob::enabled).count();
         long heartbeat = jobs.stream()
@@ -260,8 +290,9 @@ public final class CronTool implements Tool {
             return new ToolResult("maxIterations must be > 0", true);
         }
 
+        String ws = existing.map(CronJob::workspace).orElse(currentWorkspace());
         CronJob job = new CronJob(
-                id, name, expression, prompt,
+                id, name, ws, expression, prompt,
                 allowedTools,
                 timeout,
                 maxIterations,

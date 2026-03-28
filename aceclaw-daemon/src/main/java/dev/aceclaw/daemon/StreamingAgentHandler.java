@@ -3,6 +3,7 @@ package dev.aceclaw.daemon;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.AgentLoopConfig;
+import dev.aceclaw.daemon.cron.CronTool;
 import dev.aceclaw.core.agent.CancellationAware;
 import dev.aceclaw.core.agent.CancellationToken;
 import dev.aceclaw.core.agent.CompactionConfig;
@@ -205,6 +206,9 @@ public final class StreamingAgentHandler {
         if (!session.isActive()) {
             throw new IllegalArgumentException("Session is not active: " + sessionId);
         }
+
+        // Set workspace context for tools (e.g. CronTool) that need to know the current workspace
+        CronTool.setWorkspaceContext(session.projectPath().toString());
 
         log.info("Streaming agent prompt: sessionId={}, promptLength={}", sessionId, prompt.length());
 

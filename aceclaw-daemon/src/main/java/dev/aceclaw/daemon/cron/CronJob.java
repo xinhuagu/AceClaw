@@ -11,9 +11,11 @@ import java.util.Set;
  *
  * <p>Each job specifies a cron expression for scheduling, a natural-language prompt
  * for the agent, and guardrails (allowed tools, timeout, max iterations).
+ * Jobs are workspace-scoped: each job records the canonical workspace path that owns it.
  *
  * @param id            unique job identifier (e.g. "daily-cleanup")
  * @param name          human-readable job name
+ * @param workspace     canonical workspace path that owns this job (null for legacy global jobs)
  * @param expression    5-field cron expression (e.g. "0 2 * * *")
  * @param prompt        natural-language prompt for the agent
  * @param allowedTools  set of tool names auto-approved for this job (empty = read-only only)
@@ -30,6 +32,7 @@ import java.util.Set;
 public record CronJob(
         String id,
         String name,
+        String workspace,
         String expression,
         String prompt,
         Set<String> allowedTools,
@@ -64,10 +67,21 @@ public record CronJob(
     /**
      * Creates a CronJob with sensible defaults for optional fields.
      */
-    public static CronJob create(String id, String name, String expression, String prompt) {
-        return new CronJob(id, name, expression, prompt,
+    /**
+     * Creates a CronJob with sensible defaults, scoped to a workspace.
+     */
+    public static CronJob create(String id, String name, String workspace,
+                                  String expression, String prompt) {
+        return new CronJob(id, name, workspace, expression, prompt,
                 Set.of(), DEFAULT_TIMEOUT_SECONDS, DEFAULT_MAX_ITERATIONS,
                 true, DEFAULT_RETRY_BACKOFF, null, null, null, 0);
+    }
+
+    /**
+     * Creates a CronJob with no workspace (global/legacy). Use the 5-arg overload for workspace-scoped jobs.
+     */
+    public static CronJob create(String id, String name, String expression, String prompt) {
+        return create(id, name, null, expression, prompt);
     }
 
     /**
@@ -81,7 +95,7 @@ public record CronJob(
      * Returns a copy with updated last-run info after a successful execution.
      */
     public CronJob withSuccess(Instant runAt, String output) {
-        return new CronJob(id, name, expression, prompt, allowedTools,
+        return new CronJob(id, name, workspace, expression, prompt, allowedTools,
                 timeoutSeconds, maxIterations, enabled, retryBackoff,
                 runAt, output, null, 0);
     }
@@ -90,7 +104,7 @@ public record CronJob(
      * Returns a copy with updated error info after a failed execution.
      */
     public CronJob withFailure(String error) {
-        return new CronJob(id, name, expression, prompt, allowedTools,
+        return new CronJob(id, name, workspace, expression, prompt, allowedTools,
                 timeoutSeconds, maxIterations, enabled, retryBackoff,
                 lastRunAt, lastOutput, error, consecutiveFailures + 1);
     }
@@ -99,7 +113,7 @@ public record CronJob(
      * Returns a copy with the enabled flag toggled.
      */
     public CronJob withEnabled(boolean enabled) {
-        return new CronJob(id, name, expression, prompt, allowedTools,
+        return new CronJob(id, name, workspace, expression, prompt, allowedTools,
                 timeoutSeconds, maxIterations, enabled, retryBackoff,
                 lastRunAt, lastOutput, lastError, consecutiveFailures);
     }

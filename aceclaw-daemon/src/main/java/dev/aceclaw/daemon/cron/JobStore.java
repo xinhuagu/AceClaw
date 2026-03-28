@@ -113,12 +113,30 @@ public final class JobStore {
     }
 
     /**
-     * Returns all jobs (snapshot).
+     * Returns all jobs across all workspaces (snapshot).
      */
     public List<CronJob> all() {
         lock.readLock().lock();
         try {
             return List.copyOf(jobs.values());
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    /**
+     * Returns jobs belonging to the specified workspace (snapshot).
+     *
+     * @param workspace canonical workspace path (null returns jobs with no workspace)
+     */
+    public List<CronJob> forWorkspace(String workspace) {
+        lock.readLock().lock();
+        try {
+            return jobs.values().stream()
+                    .filter(j -> workspace == null
+                            ? j.workspace() == null
+                            : workspace.equals(j.workspace()))
+                    .toList();
         } finally {
             lock.readLock().unlock();
         }
