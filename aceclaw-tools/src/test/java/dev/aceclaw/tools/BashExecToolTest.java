@@ -106,7 +106,12 @@ class BashExecToolTest {
         var result = tool.execute(input);
 
         assertThat(result.isError()).isFalse();
-        assertThat(result.output().trim()).contains(workDir.toRealPath().toString());
+        // Use Files.isSameFile for filesystem-identity comparison — handles Windows
+        // drive letter case, short/long path forms, and junction differences
+        Path outputPath = Path.of(result.output().trim());
+        assertThat(Files.isSameFile(outputPath, workDir))
+                .as("Tool should execute in the configured working directory")
+                .isTrue();
     }
 
     @Test
