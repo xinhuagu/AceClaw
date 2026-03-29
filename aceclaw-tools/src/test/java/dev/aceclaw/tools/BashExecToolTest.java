@@ -106,7 +106,10 @@ class BashExecToolTest {
         var result = tool.execute(input);
 
         assertThat(result.isError()).isFalse();
-        assertThat(result.output().trim()).contains(workDir.toRealPath().toString());
+        // Compare as normalized paths to handle Windows case/separator differences
+        Path outputPath = Path.of(result.output().trim()).toAbsolutePath().normalize();
+        Path expectedPath = workDir.toRealPath().toAbsolutePath().normalize();
+        assertThat(outputPath).isEqualTo(expectedPath);
     }
 
     @Test

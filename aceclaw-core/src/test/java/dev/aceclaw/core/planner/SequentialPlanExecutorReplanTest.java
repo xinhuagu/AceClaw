@@ -468,20 +468,21 @@ class SequentialPlanExecutorReplanTest {
         var plan = createTestPlan(2);
         var cancellationToken = new CancellationToken();
 
-        // perStepWallTime = 1 hour, totalPlanWallTime = 80ms.
-        // Step 1's watchdog reset is capped to min(1h, ~80ms) ≈ 80ms.
-        // The listener introduces a 100ms delay after step 1, exceeding the total budget.
-        // The capped watchdog fires during the delay (at ~80ms), cancelling the token.
+        // perStepWallTime = 1 hour, totalPlanWallTime = 200ms.
+        // Step 1's watchdog reset is capped to min(1h, ~200ms) ≈ 200ms.
+        // The listener introduces a 500ms delay after step 1, exceeding the total budget.
+        // The capped watchdog fires during the delay (at ~200ms), cancelling the token.
         // Without capping, the watchdog would wait 1 hour and the overrun would only
         // be caught at the pre-step check -- the key difference is that capping lets
         // the watchdog enforce the total deadline during step execution too.
+        // (Timings are generous to avoid flaky failures on slow CI runners.)
         var delayListener = new SequentialPlanExecutor.PlanEventListener() {
             @Override
             public void onStepStarted(PlannedStep step, int stepIndex, int totalSteps) {}
             @Override
             public void onStepCompleted(PlannedStep step, int stepIndex, StepResult result) {
                 try {
-                    Thread.sleep(100);
+                    Thread.sleep(500);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                 }
@@ -493,7 +494,7 @@ class SequentialPlanExecutorReplanTest {
         var loop = createLoop(client);
         try (var watchdog = new WatchdogTimer(0, Duration.ofHours(1), cancellationToken)) {
             var executor = new SequentialPlanExecutor(
-                    delayListener, null, watchdog, Duration.ofHours(1), Duration.ofMillis(80));
+                    delayListener, null, watchdog, Duration.ofHours(1), Duration.ofMillis(200));
 
             var result = executor.execute(plan, loop, new ArrayList<>(), noOpHandler, cancellationToken);
 
