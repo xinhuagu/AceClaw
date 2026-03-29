@@ -8,13 +8,21 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Locale;
 
 /**
  * Auto-starts the AceClaw daemon if it is not already running.
  *
  * <p>Probes the daemon socket to detect a live instance. If none is found,
- * spawns the daemon in background using the current JVM and waits for
- * the socket to become available.
+ * spawns the daemon in background using a platform-specific launch strategy
+ * and waits for the socket to become available.
+ *
+ * <p>Platform support:
+ * <ul>
+ *   <li>Linux: uses {@code setsid} to create a new process group</li>
+ *   <li>macOS: uses {@code trap '' INT} to ignore SIGINT in the daemon</li>
+ *   <li>Windows: uses {@code ProcessBuilder} with no console inheritance</li>
+ * </ul>
  */
 public final class DaemonStarter {
 
@@ -87,48 +95,130 @@ public final class DaemonStarter {
         }
     }
 
-    // -- internal --------------------------------------------------------
+    // -- Platform detection ------------------------------------------------
+
+    enum Platform {
+        LINUX, MACOS, WINDOWS;
+
+        static Platform detect() {
+            String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+            if (os.contains("win")) return WINDOWS;
+            if (os.contains("mac") || os.contains("darwin")) return MACOS;
+            return LINUX;
+        }
+    }
+
+    // -- Daemon process launch ---------------------------------------------
 
     private static void startDaemonProcess() throws IOException {
         Files.createDirectories(LOG_DIR);
 
-        // Resolve the java binary from the current JVM
-        String javaHome = System.getProperty("java.home");
-        Path javaBin = Path.of(javaHome, "bin", "java");
-
-        // Build classpath from current process
-        String classpath = System.getProperty("java.class.path");
-
-        // Launch daemon in a new process group so Ctrl+C in the CLI terminal
-        // does NOT send SIGINT to the daemon. Without this, pressing Ctrl+C
-        // kills both the CLI and the daemon, preventing session-end extraction.
-        // We use /bin/sh -c 'exec ...' with stdin redirected from /dev/null.
-        // The 'setsid' command (if available) creates a new session/process group.
-        String javaCmd = javaBin + " --enable-preview -cp '" + classpath
-                + "' dev.aceclaw.daemon.AceClawDaemon";
-
-        ProcessBuilder pb;
-        if (Files.exists(Path.of("/usr/bin/setsid"))) {
-            // Linux: setsid creates a new session (and thus a new process group)
-            pb = new ProcessBuilder("/usr/bin/setsid", "/bin/sh", "-c", javaCmd);
-        } else {
-            // macOS: no setsid command; use nohup to ignore HUP and trap to ignore INT
-            pb = new ProcessBuilder("/bin/sh", "-c",
-                    "trap '' INT; exec " + javaCmd);
-        }
-
-        // Daemon's logback.xml FILE appender writes directly to daemon.log.
-        // Discard stdout to avoid duplicate lines from the STDOUT appender.
-        // Redirect stderr to daemon.log to capture pre-logback JVM errors.
-        pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
-        pb.redirectError(ProcessBuilder.Redirect.appendTo(DAEMON_LOG.toFile()));
-        pb.redirectInput(ProcessBuilder.Redirect.from(Path.of("/dev/null").toFile()));
+        Platform platform = Platform.detect();
+        ProcessBuilder pb = switch (platform) {
+            case LINUX -> buildLinuxLauncher();
+            case MACOS -> buildMacOSLauncher();
+            case WINDOWS -> buildWindowsLauncher();
+        };
 
         // Inherit the CLI's working directory so tools resolve paths
         // relative to the user's project, not ~/.aceclaw/
 
         Process process = pb.start();
-        log.info("Daemon process started (PID {}); logs at {}", process.pid(), DAEMON_LOG);
+        log.info("Daemon process started (PID {}, platform={}); logs at {}",
+                process.pid(), platform, DAEMON_LOG);
+    }
+
+    /**
+     * Resolves the java binary from the current JVM.
+     * Returns {@code java.exe} on Windows, {@code java} on Unix.
+     */
+    static Path resolveJavaBin() {
+        String javaHome = System.getProperty("java.home");
+        String binary = Platform.detect() == Platform.WINDOWS ? "java.exe" : "java";
+        return Path.of(javaHome, "bin", binary);
+    }
+
+    /**
+     * Returns the JVM command to launch the daemon with preview features.
+     */
+    private static String buildJavaCommand() {
+        String classpath = System.getProperty("java.class.path");
+        return resolveJavaBin() + " --enable-preview -cp "
+                + quoteForShell(classpath)
+                + " dev.aceclaw.daemon.AceClawDaemon";
+    }
+
+    /**
+     * Quotes a string for the current platform's shell.
+     */
+    private static String quoteForShell(String value) {
+        if (Platform.detect() == Platform.WINDOWS) {
+            // Windows cmd.exe uses double quotes
+            return "\"" + value.replace("\"", "\\\"") + "\"";
+        }
+        // Unix shells use single quotes (no escaping needed except for single quotes)
+        return "'" + value.replace("'", "'\\''") + "'";
+    }
+
+    // -- Platform-specific launchers ----------------------------------------
+
+    /**
+     * Linux: uses {@code setsid} to create a new session/process group,
+     * preventing Ctrl+C in the CLI from killing the daemon.
+     */
+    private static ProcessBuilder buildLinuxLauncher() {
+        String javaCmd = buildJavaCommand();
+        ProcessBuilder pb;
+        if (Files.exists(Path.of("/usr/bin/setsid"))) {
+            pb = new ProcessBuilder("/usr/bin/setsid", "/bin/sh", "-c", javaCmd);
+        } else {
+            // Fallback: nohup + background
+            pb = new ProcessBuilder("/bin/sh", "-c", "nohup " + javaCmd + " &");
+        }
+        pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+        pb.redirectError(ProcessBuilder.Redirect.appendTo(DAEMON_LOG.toFile()));
+        pb.redirectInput(ProcessBuilder.Redirect.from(Path.of("/dev/null").toFile()));
+        return pb;
+    }
+
+    /**
+     * macOS: no setsid command; uses {@code trap '' INT} to ignore SIGINT
+     * so Ctrl+C in the CLI does not kill the daemon.
+     */
+    private static ProcessBuilder buildMacOSLauncher() {
+        String javaCmd = buildJavaCommand();
+        var pb = new ProcessBuilder("/bin/sh", "-c", "trap '' INT; exec " + javaCmd);
+        pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+        pb.redirectError(ProcessBuilder.Redirect.appendTo(DAEMON_LOG.toFile()));
+        pb.redirectInput(ProcessBuilder.Redirect.from(Path.of("/dev/null").toFile()));
+        return pb;
+    }
+
+    /**
+     * Windows: launches daemon as a detached process. {@code ProcessBuilder} on Windows
+     * does not share the console by default when stdin/stdout/stderr are redirected,
+     * so Ctrl+C in the CLI terminal does not propagate to the daemon.
+     */
+    private static ProcessBuilder buildWindowsLauncher() {
+        Path javaBin = resolveJavaBin();
+        String classpath = System.getProperty("java.class.path");
+
+        var pb = new ProcessBuilder(
+                javaBin.toString(),
+                "--enable-preview",
+                "-cp", classpath,
+                "dev.aceclaw.daemon.AceClawDaemon");
+
+        // On Windows, redirecting all three streams detaches the process from the
+        // parent console. No setsid/trap equivalent needed.
+        pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+        pb.redirectError(ProcessBuilder.Redirect.appendTo(DAEMON_LOG.toFile()));
+
+        // Windows has no /dev/null; use Redirect.PIPE and don't write to it
+        // (the daemon doesn't read stdin, so this is safe)
+        pb.redirectInput(ProcessBuilder.Redirect.PIPE);
+
+        return pb;
     }
 
     private static boolean waitForSocket() throws InterruptedException {
