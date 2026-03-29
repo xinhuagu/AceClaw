@@ -61,7 +61,9 @@ jobs:
             # macOS: run all modules except daemon integration tests (timing-sensitive)
             test-args: "-x generateReplayCases -x generateReplayReport -x preMergeCheck -x replayQualityGate -x benchmarkScorecard -x validateReplaySuite -x continuousLearningSmoke"
           - os: windows-latest
-            # Windows: skip daemon module entirely (Gradle worker JVM crash with AF_UNIX class scanning)
+            # Windows: skip daemon test module (Gradle test worker JVM crashes when forking
+            # tests in a module that references AF_UNIX classes, even with @DisabledOnOs).
+            # All other modules run their full test suites on Windows.
             test-args: "-x :aceclaw-daemon:test -x generateReplayCases -x generateReplayReport -x preMergeCheck -x replayQualityGate -x benchmarkScorecard -x validateReplaySuite -x continuousLearningSmoke"
     runs-on: ${{ matrix.os }}
     # Observational only — failures do not block PRs
