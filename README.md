@@ -14,6 +14,10 @@
 > When an agent runs for minutes or hours, context is not enough. It must absorb experience while it works, reuse what succeeds, and govern what it learns so it does not become noisy or unsafe.
 > The goal is to make an agent behave more like an experienced engineering system over time.
 
+<p align="center">
+  <a href="https://medium.com/@xinhua-gu/why-i-built-my-ai-agent-harness-in-java-without-any-ai-framework-f864170d5b6a"><strong>Read the philosophy behind AceClaw: Why I Built My AI Agent Harness in Java — Without Any AI Framework</strong></a>
+</p>
+
 An **agent harness** is the orchestration layer that turns LLMs into persistent, self-correcting workers — the loop that reasons, acts, observes, recovers, and remembers. Most harnesses treat each session as a blank slate. **AceClaw doesn't.** It is built for long-running execution, where repeated failures, recoveries, tool sequences, and user corrections must become reusable knowledge instead of disappearing at the end of the session.
 
 <p align="center">
