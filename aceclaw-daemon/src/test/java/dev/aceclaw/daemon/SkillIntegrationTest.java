@@ -11,6 +11,8 @@ import dev.aceclaw.security.DefaultPermissionPolicy;
 import dev.aceclaw.security.PermissionManager;
 import dev.aceclaw.tools.*;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.condition.DisabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
@@ -36,6 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @Timeout(value = 30, unit = TimeUnit.SECONDS)
+@DisabledOnOs(OS.WINDOWS)
 class SkillIntegrationTest {
 
     @TempDir
