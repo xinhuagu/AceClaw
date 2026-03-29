@@ -182,27 +182,45 @@ install_unix_symlinks() {
 }
 
 install_windows_cmd() {
-    CLI_BAT="%USERPROFILE%\.aceclaw\bin\aceclaw-cli.bat"
-
-    cat > "$BIN_DIR/aceclaw.cmd" <<CMDEOF
+    # Use %USERPROFILE% so .cmd files resolve at runtime, not install time
+    cat > "$BIN_DIR/aceclaw.cmd" <<'CMDEOF'
 @echo off
-call "$CLI_BAT" %*
+call "%USERPROFILE%\.aceclaw\bin\aceclaw-cli.bat" %*
 CMDEOF
 
-    cat > "$BIN_DIR/aceclaw-tui.cmd" <<CMDEOF
+    cat > "$BIN_DIR/aceclaw-tui.cmd" <<'CMDEOF'
 @echo off
 set ACECLAW_BENCH_MODE=none
-call "$CLI_BAT" %*
+call "%USERPROFILE%\.aceclaw\bin\aceclaw-cli.bat" %*
 CMDEOF
 
-    cat > "$BIN_DIR/aceclaw-update.cmd" <<CMDEOF
+    cat > "$BIN_DIR/aceclaw-restart.cmd" <<'CMDEOF'
 @echo off
-echo Use: curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | sh
-echo to update AceClaw on Windows.
+set ACECLAW_BENCH_MODE=none
+call "%USERPROFILE%\.aceclaw\bin\aceclaw-cli.bat" daemon stop 2>nul
+call "%USERPROFILE%\.aceclaw\bin\aceclaw-cli.bat" %*
 CMDEOF
 
-    ok "Installed: aceclaw.cmd, aceclaw-tui.cmd, aceclaw-update.cmd"
-    warn "Windows support is experimental — see https://github.com/$REPO/issues/357"
+    cat > "$BIN_DIR/aceclaw-update.cmd" <<'CMDEOF'
+@echo off
+setlocal
+set "INSTALL_DIR=%USERPROFILE%\.aceclaw"
+if not exist "%INSTALL_DIR%\VERSION" (
+    echo No AceClaw installation found at %INSTALL_DIR%
+    exit /b 1
+)
+set /p CURRENT=<"%INSTALL_DIR%\VERSION"
+echo Current version: %CURRENT%
+echo.
+echo To update, re-run the installer:
+echo   curl -fsSL https://raw.githubusercontent.com/xinhuagu/AceClaw/main/install.sh ^| sh
+echo.
+echo Or download the latest release from:
+echo   https://github.com/xinhuagu/AceClaw/releases/latest
+CMDEOF
+
+    ok "Installed: aceclaw.cmd, aceclaw-tui.cmd, aceclaw-restart.cmd, aceclaw-update.cmd"
+    warn "Windows support is experimental — see https://github.com/xinhuagu/AceClaw/issues/357"
 }
 
 # ---------------------------------------------------------------------------
