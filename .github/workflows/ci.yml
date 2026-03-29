@@ -48,6 +48,39 @@ jobs:
         shell: bash
 
   # -----------------------------------------------------------------------
+  # Cross-platform full test suite (Windows + macOS) — observational, NOT required.
+  # Runs broader test coverage to surface platform-specific regressions.
+  # Will be promoted to required once stable (Step 7c).
+  # -----------------------------------------------------------------------
+  platform-full:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            # macOS: run all modules except daemon integration tests (timing-sensitive)
+            test-args: "-x generateReplayCases -x generateReplayReport -x preMergeCheck -x replayQualityGate -x benchmarkScorecard -x validateReplaySuite -x continuousLearningSmoke"
+          - os: windows-latest
+            # Windows: skip daemon module entirely (Gradle worker JVM crash with AF_UNIX class scanning)
+            test-args: "-x :aceclaw-daemon:test -x generateReplayCases -x generateReplayReport -x preMergeCheck -x replayQualityGate -x benchmarkScorecard -x validateReplaySuite -x continuousLearningSmoke"
+    runs-on: ${{ matrix.os }}
+    # Observational only — failures do not block PRs
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Full platform test suite
+        run: ./gradlew build ${{ matrix.test-args }} --no-daemon
+        shell: bash
+
+  # -----------------------------------------------------------------------
   # Full pre-merge check (Linux only — includes replay, benchmark, quality gates)
   # -----------------------------------------------------------------------
   pre-merge-check:
