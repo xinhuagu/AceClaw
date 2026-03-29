@@ -208,6 +208,16 @@ export ACECLAW_PROVIDER="openai"   # or groq, together, mistral
 export OPENAI_API_KEY="sk-..."
 ```
 
+## Platform Support
+
+| Platform | Status | IPC | CI |
+|----------|--------|-----|-----|
+| **Linux** | Fully supported | AF_UNIX | Full test suite |
+| **macOS** | Fully supported | AF_UNIX | Smoke tests |
+| **Windows 10 1803+** | Experimental | AF_UNIX (JEP 380) | Smoke tests |
+
+Windows requires Java 21 runtime and Windows 10 version 1803 or later (for AF_UNIX socket support). See [Windows UDS Spike](docs/windows-uds-spike.md) for technical details.
+
 ## Tech Stack
 
 Java 21 (preview features) · Gradle 8.14 · Picocli 4.7.6 · JLine3 3.27.1 · Jackson 2.18.2 · GraalVM Native Image · JUnit 5

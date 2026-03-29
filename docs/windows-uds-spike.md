@@ -76,8 +76,13 @@ Uses `DaemonConnection.connect()` internally. No platform-specific code.
 - **Low risk**: Users on Windows 10 pre-1803 (2017) cannot use AF_UNIX. This is acceptable for a JDK 21 project (JDK 21 itself requires modern Windows).
 - **Low risk**: Some enterprise environments disable AF_UNIX. Mitigation: clear error message on `SocketException` at startup.
 
-## Impact on Subsequent Steps
+## Implementation Status
 
-- **Step 2** (DaemonStarter refactoring): Confirmed as the correct next step. No transport changes needed.
-- **Step 3** (Runtime bring-up): UdsListener and DaemonConnection need no changes. Focus on DaemonStarter, DaemonLock, and file permission handling.
-- **Step 5** (Scripts): `.cmd` wrappers are sufficient; no shell emulation needed.
+All steps completed:
+
+- **Step 1**: Spike confirmed AF_UNIX works on Windows 10 1803+ with JDK 21
+- **Step 2**: DaemonStarter refactored into platform-aware launchers (Linux/macOS/Windows)
+- **Step 3**: ReadFileTool charset detection uses BOM on Windows (fail-safe, no guessing)
+- **Step 4**: CI runs Windows + macOS smoke tests (assemble + targeted cross-platform tests)
+- **Step 5**: Native `.cmd` wrappers for Windows (aceclaw, aceclaw-tui, aceclaw-restart, aceclaw-update)
+- **Step 6**: README platform support matrix, Windows marked as experimental
