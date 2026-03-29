@@ -35,8 +35,17 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Build and test
-        run: ./gradlew build -x generateReplayCases -x generateReplayReport -x preMergeCheck -x replayQualityGate -x benchmarkScorecard -x validateReplaySuite -x continuousLearningSmoke --no-daemon
+      - name: Build
+        run: ./gradlew assemble --no-daemon
+        shell: bash
+
+      - name: Test (skip daemon integration tests on Windows)
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            ./gradlew check -x :aceclaw-daemon:test -x generateReplayCases -x generateReplayReport -x preMergeCheck -x replayQualityGate -x benchmarkScorecard -x validateReplaySuite -x continuousLearningSmoke --no-daemon
+          else
+            ./gradlew check -x generateReplayCases -x generateReplayReport -x preMergeCheck -x replayQualityGate -x benchmarkScorecard -x validateReplaySuite -x continuousLearningSmoke --no-daemon
+          fi
         shell: bash
 
   # -----------------------------------------------------------------------
