@@ -257,8 +257,11 @@ public final class ReadFileTool implements Tool {
     }
 
     /**
-     * Windows charset detection: checks BOM (byte order mark) at start of file,
-     * then falls back to {@code windows-1252} for non-UTF-8 text files.
+     * Windows charset detection: checks BOM (byte order mark) at start of file.
+     * Returns null (fail-safe) for files without a BOM, including binary files
+     * and files in non-Latin encodings (GBK, Shift_JIS, etc.). This matches
+     * the Unix behavior where {@code file -bi} returning "binary" or failing
+     * causes the caller to report an error rather than silently corrupt content.
      */
     private Charset detectCharsetWindows(Path filePath) {
         try {
@@ -276,8 +279,10 @@ public final class ReadFileTool implements Tool {
                     return StandardCharsets.UTF_16BE;
                 }
             }
-            // Windows default encoding for non-BOM text files
-            return Charset.forName("windows-1252");
+            // No BOM found — return null to fail safely rather than guess an encoding
+            // that may silently corrupt non-Latin or binary content
+            log.debug("No BOM detected for {}; cannot determine charset on Windows", filePath);
+            return null;
         } catch (IOException e) {
             log.debug("Windows charset detection failed for {}: {}", filePath, e.getMessage());
             return null;
