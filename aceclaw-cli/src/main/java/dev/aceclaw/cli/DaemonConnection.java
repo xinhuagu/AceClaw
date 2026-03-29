@@ -27,6 +27,9 @@ import java.util.concurrent.locks.ReentrantLock;
  * to prevent concurrent writes from corrupting JSON on the wire.
  * Multiple connections can share a single {@link AtomicLong} request ID counter
  * to ensure globally unique request IDs.
+ *
+ * <p>Platform support: Uses {@code StandardProtocolFamily.UNIX} which is available
+ * on macOS, Linux, and Windows 10 1803+ (JEP 380). No platform-specific code needed.
  */
 public final class DaemonConnection implements AutoCloseable {
 

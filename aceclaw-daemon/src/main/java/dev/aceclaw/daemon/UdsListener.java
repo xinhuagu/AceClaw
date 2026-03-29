@@ -18,6 +18,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <p>Listens on {@code ~/.aceclaw/aceclaw.sock} and dispatches each accepted
  * connection to a {@link ConnectionHandler} on a virtual thread.
+ *
+ * <p>Platform support: AF_UNIX is available on macOS, Linux, and Windows 10 1803+
+ * via JEP 380 (Java 16+). POSIX file permissions degrade gracefully on Windows.
+ * See {@code docs/windows-uds-spike.md} for the Windows compatibility analysis.
  */
 public final class UdsListener {
 
