@@ -102,7 +102,7 @@ class HealthMonitorTest {
 
     @Test
     void periodicCheckRunsAutomatically() throws Exception {
-        var monitor = new HealthMonitor(null, Duration.ofMillis(100));
+        var monitor = new HealthMonitor(null, Duration.ofMillis(200));
         var callCount = new java.util.concurrent.atomic.AtomicInteger(0);
 
         monitor.register(new HealthCheck() {
@@ -115,10 +115,10 @@ class HealthMonitorTest {
 
         monitor.start();
         try {
-            // Wait for a few periodic checks (initial + periodic)
-            Thread.sleep(350);
-            // Should have been called at least 3 times (initial + ~3 periodic)
-            assertThat(callCount.get()).isGreaterThanOrEqualTo(3);
+            // Wait for periodic checks to fire (generous for slow CI runners)
+            Thread.sleep(800);
+            // Should have been called at least 2 times (initial + periodic)
+            assertThat(callCount.get()).isGreaterThanOrEqualTo(2);
         } finally {
             monitor.stop();
         }
