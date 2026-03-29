@@ -130,11 +130,12 @@ class TerminalMarkdownRendererTest {
 
         String result = renderer.renderToString(md);
 
-        // Strip trailing whitespace (mimics the .stripTrailing() fix in TerminalRepl)
-        String stripped = result.stripTrailing();
+        // Normalize line endings (Windows produces \r\n) before counting trailing newlines
+        String normalized = result.replace("\r\n", "\n");
+        String stripped = normalized.stripTrailing();
         // After stripping, re-adding a single \n is fine — but the raw output
         // should not have more than 2 trailing newlines (one after the table is normal).
-        int trailingNewlines = result.length() - stripped.length();
+        int trailingNewlines = normalized.length() - stripped.length();
         assertThat(trailingNewlines)
                 .as("Rendered table + heading should not produce excessive trailing newlines")
                 .isLessThanOrEqualTo(2);
