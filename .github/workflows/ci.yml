@@ -15,6 +15,33 @@ permissions:
   contents: read
 
 jobs:
+  # -----------------------------------------------------------------------
+  # Cross-platform build + test smoke (Windows + macOS)
+  # Runs compile + unit tests only (no replay/benchmark — those are Linux-only)
+  # -----------------------------------------------------------------------
+  platform-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build and test
+        run: ./gradlew build -x generateReplayCases -x generateReplayReport -x preMergeCheck -x replayQualityGate -x benchmarkScorecard -x validateReplaySuite -x continuousLearningSmoke --no-daemon
+        shell: bash
+
+  # -----------------------------------------------------------------------
+  # Full pre-merge check (Linux only — includes replay, benchmark, quality gates)
+  # -----------------------------------------------------------------------
   pre-merge-check:
     runs-on: ubuntu-latest
     env:
