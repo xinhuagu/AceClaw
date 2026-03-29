@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.3.0] - 2026-03-29
+
+### Bug Fixes
+
+- HealthMonitorTest timing tolerance for slow CI, document Windows daemon skip (#380)
+
+### Documentation
+
+- Windows UDS spike — AF_UNIX works on Windows 10 1803+, no transport abstraction needed (#372)
+- Add philosophy article link to README header
+- Add design philosophy document and link from README
+- Add platform support matrix, clarify Windows as experimental (#377)
+- Platform-smoke is now a required check for all PRs (#378)
+
+### Features
+
+- Make scheduled jobs workspace-scoped instead of daemon-global (#367)
+- Windows runtime bring-up — charset detection and platform audit (#374)
+- Fix Windows .cmd wrappers — proper path expansion, add restart, fix update (#376)
 ## [0.2.2] - 2026-03-28
 
 ### Bug Fixes
