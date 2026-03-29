@@ -16,6 +16,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.charset.UnsupportedCharsetException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -33,6 +34,9 @@ public final class ReadFileTool implements Tool {
 
     /** Maximum lines to return when no limit is specified. */
     private static final int DEFAULT_LIMIT = 2000;
+
+    private static final boolean IS_WINDOWS = System.getProperty("os.name", "")
+            .toLowerCase(Locale.ROOT).startsWith("win");
 
     /** Maximum characters per line before truncation. */
     private static final int MAX_LINE_LENGTH = 2000;
@@ -201,12 +205,20 @@ public final class ReadFileTool implements Tool {
     }
 
     /**
-     * Detects the charset of a file using the system {@code file -bi} command.
-     * Parses the "charset=xxx" field from the output.
+     * Detects the charset of a file. On Unix, uses {@code file -bi} command.
+     * On Windows, uses {@link Files#probeContentType} and BOM detection as fallback
+     * (the {@code file} command is not available on Windows).
      *
      * @return the detected Charset, or null if detection fails
      */
     private Charset detectCharset(Path filePath) {
+        if (IS_WINDOWS) {
+            return detectCharsetWindows(filePath);
+        }
+        return detectCharsetUnix(filePath);
+    }
+
+    private Charset detectCharsetUnix(Path filePath) {
         try {
             var pb = new ProcessBuilder("file", "-bi", filePath.toAbsolutePath().toString());
             pb.redirectErrorStream(true);
@@ -240,6 +252,39 @@ public final class ReadFileTool implements Tool {
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }
+            return null;
+        }
+    }
+
+    /**
+     * Windows charset detection: checks BOM (byte order mark) at start of file.
+     * Returns null (fail-safe) for files without a BOM, including binary files
+     * and files in non-Latin encodings (GBK, Shift_JIS, etc.). This matches
+     * the Unix behavior where {@code file -bi} returning "binary" or failing
+     * causes the caller to report an error rather than silently corrupt content.
+     */
+    private Charset detectCharsetWindows(Path filePath) {
+        try {
+            byte[] header = new byte[4];
+            try (var is = Files.newInputStream(filePath)) {
+                int read = is.read(header);
+                if (read >= 3 && header[0] == (byte) 0xEF
+                        && header[1] == (byte) 0xBB && header[2] == (byte) 0xBF) {
+                    return StandardCharsets.UTF_8;
+                }
+                if (read >= 2 && header[0] == (byte) 0xFF && header[1] == (byte) 0xFE) {
+                    return StandardCharsets.UTF_16LE;
+                }
+                if (read >= 2 && header[0] == (byte) 0xFE && header[1] == (byte) 0xFF) {
+                    return StandardCharsets.UTF_16BE;
+                }
+            }
+            // No BOM found — return null to fail safely rather than guess an encoding
+            // that may silently corrupt non-Latin or binary content
+            log.debug("No BOM detected for {}; cannot determine charset on Windows", filePath);
+            return null;
+        } catch (IOException e) {
+            log.debug("Windows charset detection failed for {}: {}", filePath, e.getMessage());
             return null;
         }
     }
