@@ -210,13 +210,13 @@ export OPENAI_API_KEY="sk-..."
 
 ## Platform Support
 
-| Platform | Status | IPC | CI |
-|----------|--------|-----|-----|
-| **Linux** | Fully supported | AF_UNIX | Full test suite |
-| **macOS** | Fully supported | AF_UNIX | Smoke tests |
-| **Windows 10 1803+** | Experimental | AF_UNIX (JEP 380) | Smoke tests |
+| Platform | Status | IPC | CI Gate |
+|----------|--------|-----|---------|
+| **Linux** | Fully supported | AF_UNIX | `pre-merge-check` — full test suite (required) |
+| **macOS** | Fully supported | AF_UNIX | `platform-smoke` — build + cross-platform tests (required) |
+| **Windows 10 1803+** | Experimental | AF_UNIX (JEP 380) | `platform-smoke` — build + cross-platform tests (required) |
 
-Windows requires Java 21 runtime and Windows 10 version 1803 or later (for AF_UNIX socket support). See [Windows UDS Spike](docs/windows-uds-spike.md) for technical details.
+All three platform checks are required for merging to main. Windows requires Java 21 runtime and Windows 10 version 1803 or later (for AF_UNIX socket support). See [Windows UDS Spike](docs/windows-uds-spike.md) for technical details.
 
 ## Tech Stack
 
