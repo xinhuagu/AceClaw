@@ -45,6 +45,8 @@ subprojects {
     tasks.withType<Test> {
         useJUnitPlatform()
         jvmArgs("--enable-preview")
+        // Ensure forked test JVMs have enough memory on Windows CI runners
+        maxHeapSize = "1g"
     }
 
     tasks.withType<JavaExec> {

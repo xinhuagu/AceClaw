@@ -36,7 +36,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Build and test
-        run: ./gradlew build -x generateReplayCases -x generateReplayReport -x preMergeCheck -x replayQualityGate -x benchmarkScorecard -x validateReplaySuite -x continuousLearningSmoke --no-daemon -Dorg.gradle.jvmargs="-Xmx2g"
+        run: ./gradlew build -x generateReplayCases -x generateReplayReport -x preMergeCheck -x replayQualityGate -x benchmarkScorecard -x validateReplaySuite -x continuousLearningSmoke --no-daemon
         shell: bash
 
   # -----------------------------------------------------------------------
