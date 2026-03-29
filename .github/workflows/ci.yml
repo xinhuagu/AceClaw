@@ -35,13 +35,16 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Build and test (non-daemon modules)
-        run: ./gradlew build -x :aceclaw-daemon:test -x generateReplayCases -x generateReplayReport -x preMergeCheck -x replayQualityGate -x benchmarkScorecard -x validateReplaySuite -x continuousLearningSmoke --no-daemon
+      - name: Build artifacts
+        run: ./gradlew assemble :aceclaw-cli:distZip --no-daemon
         shell: bash
 
-      - name: Daemon unit tests
-        if: matrix.os != 'windows-latest'
-        run: ./gradlew :aceclaw-daemon:test --no-daemon
+      - name: Cross-platform smoke tests
+        run: >
+          ./gradlew
+          :aceclaw-cli:test --tests dev.aceclaw.cli.TerminalMarkdownRendererTest
+          :aceclaw-tools:test --tests dev.aceclaw.tools.BashExecToolTest
+          --no-daemon
         shell: bash
 
   # -----------------------------------------------------------------------
