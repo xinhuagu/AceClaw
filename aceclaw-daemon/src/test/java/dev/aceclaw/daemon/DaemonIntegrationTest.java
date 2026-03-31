@@ -3,6 +3,8 @@ package dev.aceclaw.daemon;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import dev.aceclaw.core.agent.Tool;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import dev.aceclaw.core.agent.StreamingAgentLoop;
 import dev.aceclaw.core.agent.ToolRegistry;
@@ -39,6 +41,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -538,6 +541,86 @@ class DaemonIntegrationTest {
 
     @Test
     @Order(7)
+    void testAgentPromptWaitsForMcpInitBeforeBuildingRequestRegistry() throws Exception {
+        var toolRegistry = extractToolRegistry(agentHandlerRef);
+        var delayedMcpToolName = "mcp__demo__echo";
+        var mcpReady = new CompletableFuture<Void>();
+        agentHandlerRef.setMcpInitFuture(mcpReady);
+
+        Thread.ofVirtual().start(() -> {
+            try {
+                Thread.sleep(100);
+                toolRegistry.register(new Tool() {
+                    @Override
+                    public String name() {
+                        return delayedMcpToolName;
+                    }
+
+                    @Override
+                    public String description() {
+                        return "Test MCP tool registered after daemon startup.";
+                    }
+
+                    @Override
+                    public JsonNode inputSchema() {
+                        return JsonNodeFactory.instance.objectNode().put("type", "object");
+                    }
+
+                    @Override
+                    public ToolResult execute(String inputJson) {
+                        return new ToolResult("mcp echo ok", false);
+                    }
+                });
+                mcpReady.complete(null);
+            } catch (Exception e) {
+                mcpReady.completeExceptionally(e);
+            }
+        });
+
+        try (var channel = connectToSocket()) {
+            String sessionId = createSession(channel, 1);
+
+            mockLlm.enqueueResponse(MockLlmClient.toolUseResponse(
+                    "Using the MCP tool now.",
+                    "toolu_mcp_001",
+                    delayedMcpToolName,
+                    "{}"
+            ));
+            mockLlm.enqueueResponse(MockLlmClient.textResponse(
+                    "The delayed MCP tool executed successfully."));
+
+            var promptParams = objectMapper.createObjectNode();
+            promptParams.put("sessionId", sessionId);
+            promptParams.put("prompt", "Use the delayed MCP echo tool.");
+
+            var result = sendPromptAndHandlePermissions(channel, promptParams, 2, true);
+
+            var response = result.finalResponse();
+            assertThat(response.has("result")).isTrue();
+            assertThat(response.get("result").get("response").asText())
+                    .isEqualTo("The delayed MCP tool executed successfully.");
+
+            var toolCompleted = result.notifications().stream()
+                    .filter(n -> "stream.tool_completed".equals(n.get("method").asText()))
+                    .findFirst();
+            assertThat(toolCompleted).isPresent();
+            assertThat(toolCompleted.get().path("params").path("name").asText()).isEqualTo(delayedMcpToolName);
+            assertThat(toolCompleted.get().path("params").path("isError").asBoolean()).isFalse();
+
+            var requests = mockLlm.capturedRequests();
+            assertThat(requests).hasSize(2);
+            assertThat(requests.getFirst().tools())
+                    .extracting(def -> def.name())
+                    .contains(delayedMcpToolName);
+
+            destroySession(channel, sessionId, 3);
+        } finally {
+            agentHandlerRef.setMcpInitFuture(CompletableFuture.completedFuture(null));
+        }
+    }
+
+    @Test
+    @Order(8)
     void testAgentPromptWithWriteFileTool() throws Exception {
         try (var channel = connectToSocket()) {
             String sessionId = createSession(channel, 1);
@@ -575,7 +658,7 @@ class DaemonIntegrationTest {
     }
 
     @Test
-    @Order(8)
+    @Order(9)
     void testAgentPromptWithPermissionDenied() throws Exception {
         try (var channel = connectToSocket()) {
             String sessionId = createSession(channel, 1);
@@ -615,7 +698,7 @@ class DaemonIntegrationTest {
     }
 
     @Test
-    @Order(9)
+    @Order(10)
     void testMultiTurnConversation() throws Exception {
         try (var channel = connectToSocket()) {
             String sessionId = createSession(channel, 1);
@@ -1390,6 +1473,59 @@ class DaemonIntegrationTest {
         }
     }
 
+    @Test
+    @Order(999)
+    void testInspectContextWaitsForDelayedToolRegistration() throws Exception {
+        var session = sessionManager.createSession(workDir);
+        var toolRegistry = extractToolRegistry(agentHandlerRef);
+        var delayedToolName = "screen_capture";
+
+        try {
+            var initialInspection = agentHandlerRef.inspectContext(session.id(), "Check the UI state.");
+            assertThat(initialInspection.prompt()).doesNotContain("**screen_capture**");
+
+            var mcpReady = new CompletableFuture<Void>();
+            agentHandlerRef.setMcpInitFuture(mcpReady);
+
+            Thread.ofVirtual().start(() -> {
+                try {
+                    Thread.sleep(100);
+                    toolRegistry.register(new Tool() {
+                        @Override
+                        public String name() {
+                            return delayedToolName;
+                        }
+
+                        @Override
+                        public String description() {
+                            return "Delayed test tool for inspectContext coverage.";
+                        }
+
+                        @Override
+                        public JsonNode inputSchema() {
+                            return JsonNodeFactory.instance.objectNode().put("type", "object");
+                        }
+
+                        @Override
+                        public ToolResult execute(String inputJson) {
+                            return new ToolResult("inspect ok", false);
+                        }
+                    });
+                    mcpReady.complete(null);
+                } catch (Exception e) {
+                    mcpReady.completeExceptionally(e);
+                }
+            });
+
+            var inspection = agentHandlerRef.inspectContext(session.id(), "Check the UI state.");
+            assertThat(inspection.prompt()).contains("**screen_capture**");
+            assertThat(inspection.prompt()).contains("LAST RESORT ONLY");
+        } finally {
+            agentHandlerRef.setMcpInitFuture(CompletableFuture.completedFuture(null));
+            sessionManager.destroySession(session.id());
+        }
+    }
+
     // -- Helper methods --
 
     private SocketChannel connectToSocket() throws IOException {
@@ -1407,6 +1543,12 @@ class DaemonIntegrationTest {
         var params = objectMapper.createObjectNode().put("project", projectPath.toString());
         var response = sendAndReceive(channel, "session.create", params, requestId);
         return response.get("result").get("sessionId").asText();
+    }
+
+    private ToolRegistry extractToolRegistry(StreamingAgentHandler handler) throws Exception {
+        var field = StreamingAgentHandler.class.getDeclaredField("toolRegistry");
+        field.setAccessible(true);
+        return (ToolRegistry) field.get(handler);
     }
 
     private void destroySession(SocketChannel channel, String sessionId, int requestId) throws Exception {

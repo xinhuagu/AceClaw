@@ -94,6 +94,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.stream.Collectors;
 import java.util.function.Function;
 
 /**
@@ -228,8 +229,16 @@ public final class StreamingAgentHandler {
         // Create a StreamEventHandler that forwards events via the cancel-aware context
         var eventHandler = new StreamingNotificationHandler(cancelContext, objectMapper);
 
+        // Wait briefly for asynchronous MCP initialization so prompt assembly and
+        // request-scoped tool execution both see the same registry contents.
+        awaitMcpInitForRequest();
+
+        var requestTools = snapshotCurrentTools();
+        var requestToolNames = toolNames(requestTools);
+
         // Wrap tools with permission checking and hooks for this request
-        var permissionAwareRegistry = createPermissionAwareRegistry(cancelContext, sessionId, eventHandler);
+        var permissionAwareRegistry = createPermissionAwareRegistry(
+                requestTools, cancelContext, sessionId, eventHandler);
 
         // Get or create a session-scoped metrics collector so tool stats accumulate across turns
         var metricsCollector = sessionMetrics.computeIfAbsent(sessionId, _ -> new ToolMetricsCollector());
@@ -253,11 +262,8 @@ public final class StreamingAgentHandler {
         var doomLoop = sessionDoomLoops.computeIfAbsent(sessionId, _ -> new DoomLoopDetector());
         var progress = sessionProgressDetectors.computeIfAbsent(sessionId, _ -> new ProgressDetector());
 
-        var promptAssembly = assembleSystemPromptForRequest(sessionId, session, prompt);
+        var promptAssembly = assembleSystemPromptForRequest(sessionId, session, prompt, requestToolNames);
         var effectiveCompactor = createRequestCompactor(sessionId, promptAssembly.prompt());
-        var requestToolNames = permissionAwareRegistry.all().stream()
-                .map(Tool::name)
-                .collect(java.util.stream.Collectors.toUnmodifiableSet());
 
         // Create a temporary agent loop with the permission-aware registry, compaction and metrics
         var agentConfig = AgentLoopConfig.builder()
@@ -1224,10 +1230,14 @@ public final class StreamingAgentHandler {
      * Tools that need user approval will use the StreamContext to ask the client.
      */
     private ToolRegistry createPermissionAwareRegistry(
-            CancelAwareStreamContext context, String sessionId, StreamEventHandler eventHandler) {
+            List<Tool> requestTools,
+            CancelAwareStreamContext context,
+            String sessionId,
+            StreamEventHandler eventHandler) {
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(sessionId, "sessionId");
         Objects.requireNonNull(eventHandler, "eventHandler");
+        Objects.requireNonNull(requestTools, "requestTools");
         var registry = new ToolRegistry();
         var antiPatternGate = AntiPatternPreExecutionGate.fromStores(
                 memoryStore,
@@ -1245,7 +1255,7 @@ public final class StreamingAgentHandler {
         // Build a session-scoped read/write pair so relative paths always resolve to this session project.
         var sessionWriteFileTool = new WriteFileTool(sessionProject);
         var sessionReadFileTool = new ReadFileTool(sessionProject, sessionWriteFileTool.readFiles());
-        for (var tool : toolRegistry.all()) {
+        for (var tool : requestTools) {
             Tool effectiveTool = materializeSessionScopedTool(
                     tool, sessionProject, sessionReadFileTool, sessionWriteFileTool, sessionId, eventHandler);
             registry.register(new PermissionAwareTool(
@@ -1316,7 +1326,8 @@ public final class StreamingAgentHandler {
     private Path workingDir;
     private String provider;
     private SystemPromptBudget systemPromptBudget = SystemPromptBudget.DEFAULT;
-    private Set<String> registeredToolNames = Set.of();
+    private volatile CompletableFuture<Void> mcpInitFuture = CompletableFuture.completedFuture(null);
+    private static final long MCP_REQUEST_TIMEOUT_MS = 5_000;
     private boolean hasBraveApiKey;
     private Function<String, String> skillDescriptionsProvider = ignored -> "";
     private int contextWindowTokens;
@@ -1428,13 +1439,11 @@ public final class StreamingAgentHandler {
     public void setContextAssemblyConfig(MarkdownMemoryStore markdownStore,
                                          String provider,
                                          SystemPromptBudget systemPromptBudget,
-                                         Set<String> registeredToolNames,
                                          boolean hasBraveApiKey,
                                          Function<String, String> skillDescriptionsProvider) {
         this.markdownStore = markdownStore;
         this.provider = provider;
         this.systemPromptBudget = systemPromptBudget != null ? systemPromptBudget : SystemPromptBudget.DEFAULT;
-        this.registeredToolNames = registeredToolNames != null ? Set.copyOf(registeredToolNames) : Set.of();
         this.hasBraveApiKey = hasBraveApiKey;
         this.skillDescriptionsProvider = skillDescriptionsProvider != null
                 ? sessionId -> {
@@ -1442,6 +1451,49 @@ public final class StreamingAgentHandler {
                     return descriptions != null ? descriptions : "";
                 }
                 : ignored -> "";
+    }
+
+    /**
+     * Sets the MCP initialization future so request-time code can await readiness.
+     */
+    public void setMcpInitFuture(CompletableFuture<Void> mcpInitFuture) {
+        this.mcpInitFuture = mcpInitFuture != null
+                ? mcpInitFuture
+                : CompletableFuture.completedFuture(null);
+    }
+
+    /**
+     * Awaits MCP initialization with a bounded timeout so request-time prompt assembly
+     * and request-scoped tool registry creation observe a consistent view of available tools.
+     */
+    private void awaitMcpInitForRequest() {
+        var future = this.mcpInitFuture;
+        if (!future.isDone()) {
+            try {
+                future.get(MCP_REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                log.debug("MCP init completed within request timeout");
+            } catch (TimeoutException e) {
+                log.warn("MCP init not ready within {}ms; proceeding without MCP tools for this request. "
+                                + "If this is the first startup or an MCP server is downloading dependencies, "
+                                + "retrying the request after startup completes may help.",
+                        MCP_REQUEST_TIMEOUT_MS);
+            } catch (Exception e) {
+                log.warn("MCP init failed: {}", e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Returns an immutable snapshot of the currently registered tools.
+     */
+    private List<Tool> snapshotCurrentTools() {
+        return List.copyOf(toolRegistry.all());
+    }
+
+    private Set<String> toolNames(List<Tool> tools) {
+        return tools.stream()
+                .map(Tool::name)
+                .collect(Collectors.toUnmodifiableSet());
     }
 
     /**
@@ -1723,7 +1775,7 @@ public final class StreamingAgentHandler {
     }
 
     private SystemPromptLoader.RequestAssembly assembleSystemPromptForRequest(
-            String sessionId, AgentSession session, String prompt) {
+            String sessionId, AgentSession session, String prompt, Set<String> requestToolNames) {
         if (session == null || session.projectPath() == null) {
             return new SystemPromptLoader.RequestAssembly(getSystemPrompt(sessionId), List.of(), List.of(), List.of());
         }
@@ -1744,7 +1796,7 @@ public final class StreamingAgentHandler {
                 getModelForSession(sessionId),
                 provider,
                 systemPromptBudget,
-                registeredToolNames,
+                requestToolNames,
                 hasBraveApiKey,
                 candidateStore,
                 config,
@@ -1786,6 +1838,8 @@ public final class StreamingAgentHandler {
                     ContextEstimator.estimateTokens(prompt),
                     systemPromptBudget);
         }
+        awaitMcpInitForRequest();
+        var requestToolNames = toolNames(snapshotCurrentTools());
         var activePaths = inferActiveFilePaths(effectiveQuery, session.messages(), session.projectPath());
         var config = new CandidatePromptAssembler.Config(
                 candidateInjectionEnabled,
@@ -1800,7 +1854,7 @@ public final class StreamingAgentHandler {
                 getModelForSession(sessionId),
                 provider,
                 systemPromptBudget,
-                registeredToolNames,
+                requestToolNames,
                 hasBraveApiKey,
                 candidateStore,
                 config,
