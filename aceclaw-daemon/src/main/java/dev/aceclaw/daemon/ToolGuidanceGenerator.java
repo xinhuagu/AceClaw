@@ -111,6 +111,20 @@ public final class ToolGuidanceGenerator {
             sb.append("~/.aceclaw/config.json or as an environment variable.\n");
         }
 
+        // MCP tool guidance — list any externally provided tools
+        var mcpTools = registeredToolNames.stream()
+                .filter(name -> name.startsWith("mcp__"))
+                .sorted()
+                .toList();
+        if (!mcpTools.isEmpty()) {
+            sb.append("\n## MCP Tools (external servers)\n\n");
+            sb.append("The following tools are provided by configured MCP servers. ");
+            sb.append("Use them when the task matches their capabilities:\n");
+            for (var tool : mcpTools) {
+                sb.append("- **").append(tool).append("**\n");
+            }
+        }
+
         // Tool composition guidance (always appended)
         sb.append(loadCompositionGuidance());
 

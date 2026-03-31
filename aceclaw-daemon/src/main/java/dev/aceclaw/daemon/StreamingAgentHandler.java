@@ -1242,6 +1242,11 @@ public final class StreamingAgentHandler {
         }
         Path sessionProject = session.projectPath().toAbsolutePath().normalize();
         String cwd = sessionProject.toString();
+        // Wait for async MCP server init to complete so MCP tools are in the global registry.
+        // McpClientManager.start() handles its own retries/backoff and always returns (never hangs),
+        // so join() completes in finite time. After first completion this is a no-op.
+        mcpReady.join();
+
         // Build a session-scoped read/write pair so relative paths always resolve to this session project.
         var sessionWriteFileTool = new WriteFileTool(sessionProject);
         var sessionReadFileTool = new ReadFileTool(sessionProject, sessionWriteFileTool.readFiles());
@@ -1317,6 +1322,7 @@ public final class StreamingAgentHandler {
     private String provider;
     private SystemPromptBudget systemPromptBudget = SystemPromptBudget.DEFAULT;
     private boolean hasBraveApiKey;
+    private java.util.concurrent.CompletableFuture<Void> mcpReady = java.util.concurrent.CompletableFuture.completedFuture(null);
     private Function<String, String> skillDescriptionsProvider = ignored -> "";
     private int contextWindowTokens;
     private SelfImprovementEngine selfImprovementEngine;
@@ -1439,6 +1445,15 @@ public final class StreamingAgentHandler {
                     return descriptions != null ? descriptions : "";
                 }
                 : ignored -> "";
+    }
+
+    /**
+     * Sets the future that completes when asynchronous MCP server initialization is done.
+     * The handler joins on this before building per-request tool registries, ensuring
+     * MCP tools are present in both tool definitions and the execution lookup.
+     */
+    public void setMcpReady(java.util.concurrent.CompletableFuture<Void> mcpReady) {
+        this.mcpReady = mcpReady != null ? mcpReady : java.util.concurrent.CompletableFuture.completedFuture(null);
     }
 
     /**

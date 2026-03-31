@@ -296,8 +296,12 @@ public final class AceClawDaemon {
         }
 
         // MCP servers (config-driven external tool providers)
-        // Started asynchronously to avoid blocking daemon boot (npx downloads can be slow)
+        // Started asynchronously to avoid blocking daemon boot (npx downloads can be slow).
+        // The CompletableFuture is passed to StreamingAgentHandler so it can join() before
+        // building per-request tool registries, ensuring MCP tools are in both tool definitions
+        // and the execution lookup.
         var mcpConfig = McpServerConfig.load(workingDir);
+        var mcpReady = new java.util.concurrent.CompletableFuture<Void>();
         if (!mcpConfig.isEmpty()) {
             var mcpManager = new McpClientManager(mcpConfig);
             shutdownManager.register(new ShutdownManager.ShutdownParticipant() {
@@ -315,9 +319,13 @@ public final class AceClawDaemon {
                             mcpConfig.size(), mcpManager.bridgedTools().size());
                 } catch (Exception e) {
                     log.error("MCP initialization failed: {}", e.getMessage(), e);
+                } finally {
+                    mcpReady.complete(null);
                 }
             });
             log.info("MCP: {} server(s) configured, initializing in background...", mcpConfig.size());
+        } else {
+            mcpReady.complete(null);
         }
 
         log.info("Registered {} base tools", toolRegistry.size());
@@ -437,6 +445,7 @@ public final class AceClawDaemon {
         // (factory may translate or fall back, e.g. copilot ignores anthropic model names)
         String effectiveModel = "anthropic".equals(config.provider()) ? model : llmClient.defaultModel();
         agentHandler.setLlmConfig(llmClient, effectiveModel, systemPrompt);
+        agentHandler.setMcpReady(mcpReady);
         agentHandler.setTokenConfig(config.maxTokens(), config.thinkingBudget(), config.maxTurns(), contextWindow);
         agentHandler.setContextAssemblyConfig(
                 markdownStore,

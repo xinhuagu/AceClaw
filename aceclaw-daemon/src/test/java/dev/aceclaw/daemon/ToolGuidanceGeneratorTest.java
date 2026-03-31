@@ -99,4 +99,26 @@ class ToolGuidanceGeneratorTest {
         // No tool-specific lines
         assertThat(result).doesNotContain("**web_search**");
     }
+
+    @Test
+    void mcpToolsGetDedicatedGuidanceSection() {
+        var tools = Set.of("read_file", "bash", "mcp__drawio__create_new_diagram",
+                "mcp__drawio__export_diagram", "mcp__context7__query_docs");
+
+        var result = ToolGuidanceGenerator.generate(tools, false);
+
+        assertThat(result).contains("## MCP Tools (external servers)");
+        assertThat(result).contains("**mcp__drawio__create_new_diagram**");
+        assertThat(result).contains("**mcp__drawio__export_diagram**");
+        assertThat(result).contains("**mcp__context7__query_docs**");
+    }
+
+    @Test
+    void noMcpToolsOmitsMcpSection() {
+        var tools = Set.of("read_file", "bash", "web_search");
+
+        var result = ToolGuidanceGenerator.generate(tools, false);
+
+        assertThat(result).doesNotContain("MCP Tools");
+    }
 }
