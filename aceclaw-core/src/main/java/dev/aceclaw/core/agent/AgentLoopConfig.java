@@ -17,6 +17,7 @@ import dev.aceclaw.infra.event.EventBus;
  * @param watchdog           optional watchdog timer for turn/time budget enforcement (null = disabled)
  * @param doomLoopDetector   optional session-scoped doom loop detector (null = disabled)
  * @param progressDetector   optional session-scoped progress detector (null = disabled)
+ * @param retryConfig        retry settings for transient API errors (null = use defaults)
  */
 public record AgentLoopConfig(
         String sessionId,
@@ -27,14 +28,22 @@ public record AgentLoopConfig(
         Integer maxIterations,
         WatchdogTimer watchdog,
         DoomLoopDetector doomLoopDetector,
-        ProgressDetector progressDetector
+        ProgressDetector progressDetector,
+        RetryConfig retryConfig
 ) {
 
     /** Default maximum ReAct iterations per turn when no override is provided. */
     public static final int DEFAULT_MAX_ITERATIONS = 25;
 
     /** Empty config with all integrations disabled. */
-    public static final AgentLoopConfig EMPTY = new AgentLoopConfig(null, null, null, null, null, null, null, null, null);
+    public static final AgentLoopConfig EMPTY = new AgentLoopConfig(null, null, null, null, null, null, null, null, null, null);
+
+    /**
+     * Resolves the effective retry config, falling back to defaults when null.
+     */
+    public RetryConfig effectiveRetryConfig() {
+        return retryConfig != null ? retryConfig : RetryConfig.DEFAULT;
+    }
 
     /**
      * Resolves the effective max iterations for this loop config.
@@ -60,6 +69,7 @@ public record AgentLoopConfig(
         private WatchdogTimer watchdog;
         private DoomLoopDetector doomLoopDetector;
         private ProgressDetector progressDetector;
+        private RetryConfig retryConfig;
 
         private Builder() {}
 
@@ -108,10 +118,15 @@ public record AgentLoopConfig(
             return this;
         }
 
+        public Builder retryConfig(RetryConfig retryConfig) {
+            this.retryConfig = retryConfig;
+            return this;
+        }
+
         public AgentLoopConfig build() {
             return new AgentLoopConfig(
                     sessionId, eventBus, permissionChecker, memoryHandler, metricsCollector,
-                    maxIterations, watchdog, doomLoopDetector, progressDetector);
+                    maxIterations, watchdog, doomLoopDetector, progressDetector, retryConfig);
         }
     }
 }

@@ -224,10 +224,11 @@ public final class AnthropicClient implements LlmClient {
 
                 if (statusCode != 200) {
                     log.error("Anthropic API error: status={}, body={}", statusCode, responseBody);
-                    long retryAfter = parseRetryAfter(httpResponse);
+                    long retryAfterMs = parseRetryAfterMs(httpResponse);
+                    Boolean shouldRetry = parseShouldRetry(httpResponse);
                     throw new LlmException(
                             "Anthropic API returned HTTP " + statusCode + ": " + responseBody,
-                            statusCode, retryAfter);
+                            statusCode, retryAfterMs, shouldRetry);
                 }
 
                 LlmResponse response = mapper.toResponse(responseBody);
@@ -288,10 +289,11 @@ public final class AnthropicClient implements LlmClient {
                     String errorBody = httpResponse.body()
                             .reduce("", (a, b) -> a + b);
                     log.error("Anthropic API stream error: status={}, body={}", statusCode, errorBody);
-                    long retryAfter = parseRetryAfter(httpResponse);
+                    long retryAfterMs = parseRetryAfterMs(httpResponse);
+                    Boolean shouldRetry = parseShouldRetry(httpResponse);
                     throw new LlmException(
                             "Anthropic API returned HTTP " + statusCode + ": " + errorBody,
-                            statusCode, retryAfter);
+                            statusCode, retryAfterMs, shouldRetry);
                 }
 
                 return new AnthropicStreamSession(httpResponse, mapper);
@@ -334,30 +336,53 @@ public final class AnthropicClient implements LlmClient {
 
     /**
      * Calculates backoff delay for a retry attempt.
-     * Uses exponential backoff (1s, 2s, 4s) with +/-20% jitter.
-     * Respects the Retry-After header if present (capped at 60s).
+     * Uses exponential backoff (0.5s, 1s, 2s, 4s, 8s) with ±25% jitter.
+     * Respects the retry-after-ms / Retry-After headers if present (capped at 60s).
      */
     private static long calculateBackoff(int attempt, LlmException e) {
-        if (e.retryAfterSeconds() > 0) {
-            return Math.min(e.retryAfterSeconds() * 1000L, MAX_BACKOFF_MS);
+        if (e.retryAfterMs() > 0) {
+            return Math.min(e.retryAfterMs(), MAX_BACKOFF_MS);
         }
-        long baseMs = 1000L * (1L << attempt); // 1s, 2s, 4s
-        double jitterFactor = 1.0 + 0.2 * (ThreadLocalRandom.current().nextDouble() * 2 - 1);
-        return Math.min((long) (baseMs * jitterFactor), MAX_BACKOFF_MS);
+        long baseMs = 500L * (1L << attempt); // 0.5s, 1s, 2s, 4s, 8s
+        long jitter = (long) (baseMs * 0.25 * Math.random());
+        return Math.min(baseMs + jitter, MAX_BACKOFF_MS);
     }
 
     /**
-     * Parses the Retry-After header from an HTTP response.
-     * Returns the delay in seconds, or -1 if not present or unparseable.
+     * Parses retry delay from HTTP response headers.
+     * Checks {@code retry-after-ms} first (millisecond precision),
+     * then falls back to {@code Retry-After} (second precision).
+     *
+     * @return delay in milliseconds, or -1 if not present
      */
-    private static long parseRetryAfter(HttpResponse<?> response) {
+    private static long parseRetryAfterMs(HttpResponse<?> response) {
+        // Prefer retry-after-ms for sub-second precision (Anthropic extension)
+        var msHeader = response.headers().firstValue("retry-after-ms").orElse(null);
+        if (msHeader != null) {
+            try {
+                long ms = Long.parseLong(msHeader.trim());
+                if (ms > 0) return ms;
+            } catch (NumberFormatException ignored) {}
+        }
+        // Fall back to standard Retry-After (seconds)
         var header = response.headers().firstValue("retry-after").orElse(null);
         if (header == null) return -1;
         try {
-            return Long.parseLong(header.trim());
+            return Long.parseLong(header.trim()) * 1000L;
         } catch (NumberFormatException e) {
             return -1;
         }
+    }
+
+    /**
+     * Parses the {@code x-should-retry} header from an HTTP response.
+     *
+     * @return true/false if header is present, null if absent
+     */
+    private static Boolean parseShouldRetry(HttpResponse<?> response) {
+        var header = response.headers().firstValue("x-should-retry").orElse(null);
+        if (header == null) return null;
+        return "true".equalsIgnoreCase(header.trim());
     }
 
     @FunctionalInterface

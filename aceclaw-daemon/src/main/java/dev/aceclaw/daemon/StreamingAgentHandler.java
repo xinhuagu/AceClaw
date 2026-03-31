@@ -273,6 +273,7 @@ public final class StreamingAgentHandler {
                 .watchdog(watchdog)
                 .doomLoopDetector(doomLoop)
                 .progressDetector(progress)
+                .retryConfig(retryConfig)
                 .build();
         var permissionAwareLoop = new StreamingAgentLoop(
                 getLlmClient(), permissionAwareRegistry,
@@ -1340,6 +1341,7 @@ public final class StreamingAgentHandler {
     private volatile int candidateInjectionMaxTokens = 1200;
     private boolean plannerEnabled = true;
     private int plannerThreshold = 5;
+    private dev.aceclaw.core.agent.RetryConfig retryConfig = dev.aceclaw.core.agent.RetryConfig.DEFAULT;
     private boolean adaptiveReplanEnabled = true;
     private int maxAgentTurns = 50;
     private int maxAgentWallTimeSec = 600;
@@ -1460,6 +1462,13 @@ public final class StreamingAgentHandler {
         this.mcpInitFuture = mcpInitFuture != null
                 ? mcpInitFuture
                 : CompletableFuture.completedFuture(null);
+    }
+
+    /**
+     * Sets the retry configuration for transient API errors.
+     */
+    public void setRetryConfig(dev.aceclaw.core.agent.RetryConfig retryConfig) {
+        this.retryConfig = retryConfig != null ? retryConfig : dev.aceclaw.core.agent.RetryConfig.DEFAULT;
     }
 
     /**

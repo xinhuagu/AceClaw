@@ -188,6 +188,10 @@ public final class AceClawConfig {
     private Map<String, List<HookMatcherFormat>> hooks;
     private boolean context1m;
     private List<String> extraAnthropicBetas;
+    private int retryMaxRetries;
+    private long retryInitialBackoffMs;
+    private long retryMaxBackoffMs;
+    private double retryJitterFactor;
 
     private AceClawConfig() {
         this.provider = "anthropic";
@@ -252,6 +256,10 @@ public final class AceClawConfig {
         this.providerModels = new java.util.HashMap<>();
         this.context1m = DEFAULT_CONTEXT_1M;
         this.extraAnthropicBetas = List.of();
+        this.retryMaxRetries = (int) dev.aceclaw.core.agent.RetryConfig.DEFAULT.maxRetries();
+        this.retryInitialBackoffMs = dev.aceclaw.core.agent.RetryConfig.DEFAULT.initialBackoffMs();
+        this.retryMaxBackoffMs = dev.aceclaw.core.agent.RetryConfig.DEFAULT.maxBackoffMs();
+        this.retryJitterFactor = dev.aceclaw.core.agent.RetryConfig.DEFAULT.jitterFactor();
     }
 
     /**
@@ -1189,6 +1197,14 @@ public final class AceClawConfig {
     }
 
     /**
+     * Returns the retry configuration assembled from config fields.
+     */
+    public dev.aceclaw.core.agent.RetryConfig retryConfig() {
+        return new dev.aceclaw.core.agent.RetryConfig(
+                retryMaxRetries, retryInitialBackoffMs, retryMaxBackoffMs, retryJitterFactor);
+    }
+
+    /**
      * Loads Claude CLI credentials with Keychain priority (macOS).
      * Falls back to credential files if Keychain is unavailable.
      */
@@ -1558,6 +1574,21 @@ public final class AceClawConfig {
                     .filter(b -> b != null && !b.isBlank())
                     .toList();
         }
+        if (fileConfig.retry != null) {
+            if (fileConfig.retry.maxRetries != null && fileConfig.retry.maxRetries >= 0) {
+                this.retryMaxRetries = fileConfig.retry.maxRetries;
+            }
+            if (fileConfig.retry.initialBackoffMs != null && fileConfig.retry.initialBackoffMs >= 0) {
+                this.retryInitialBackoffMs = fileConfig.retry.initialBackoffMs;
+            }
+            if (fileConfig.retry.maxBackoffMs != null && fileConfig.retry.maxBackoffMs >= 0) {
+                this.retryMaxBackoffMs = fileConfig.retry.maxBackoffMs;
+            }
+            if (fileConfig.retry.jitterFactor != null
+                    && fileConfig.retry.jitterFactor >= 0.0 && fileConfig.retry.jitterFactor <= 1.0) {
+                this.retryJitterFactor = fileConfig.retry.jitterFactor;
+            }
+        }
         if (fileConfig.subAgentAutoApproveTools != null && !fileConfig.subAgentAutoApproveTools.isEmpty()) {
             // Project config appends to global config (not replaces)
             var merged = new ArrayList<>(this.subAgentAutoApproveTools);
@@ -1644,6 +1675,18 @@ public final class AceClawConfig {
         public Map<String, List<HookMatcherFormat>> hooks;
         public Boolean context1m;
         public List<String> extraAnthropicBetas;
+        public RetryConfigFormat retry;
+    }
+
+    /**
+     * JSON structure for retry configuration.
+     * <pre>{ "maxRetries": 5, "initialBackoffMs": 500, "maxBackoffMs": 60000, "jitterFactor": 0.25 }</pre>
+     */
+    public static class RetryConfigFormat {
+        public Integer maxRetries;
+        public Long initialBackoffMs;
+        public Long maxBackoffMs;
+        public Double jitterFactor;
     }
 
     /**

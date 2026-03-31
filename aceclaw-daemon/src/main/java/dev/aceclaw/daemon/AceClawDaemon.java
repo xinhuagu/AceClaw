@@ -462,6 +462,7 @@ public final class AceClawDaemon {
                 config.braveSearchApiKey() != null,
                 skillRegistry::formatDescriptions);
         agentHandler.setMcpInitFuture(mcpInitFuture);
+        agentHandler.setRetryConfig(config.retryConfig());
         agentHandler.setAdaptiveContinuationConfig(
                 config.adaptiveContinuationEnabled(),
                 config.adaptiveContinuationMaxSegments(),

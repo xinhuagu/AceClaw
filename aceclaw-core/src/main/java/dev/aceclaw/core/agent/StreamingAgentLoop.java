@@ -44,11 +44,7 @@ public final class StreamingAgentLoop {
     /** Extra wall-clock time granted per auto-extension. */
     private static final Duration EXTENSION_WALL_TIME = Duration.ofSeconds(300);
 
-    /** Maximum retry attempts for retryable in-stream errors (overloaded, rate-limit). */
-    private static final int STREAM_MAX_RETRIES = 3;
-
-    /** Maximum backoff delay in milliseconds for stream retries (cap for Retry-After). */
-    private static final long STREAM_MAX_BACKOFF_MS = 60_000;
+    // Retry constants removed — now driven by RetryConfig in AgentLoopConfig.
 
     private final LlmClient llmClient;
     private final ToolRegistry toolRegistry;
@@ -271,8 +267,9 @@ public final class StreamingAgentLoop {
                 var request = buildRequest(requestMessages);
 
                 // Stream the response with retry on transient errors (overloaded, rate-limit)
+                var retryConfig = config.effectiveRetryConfig();
                 StreamAccumulator accumulator = null;
-                for (int streamAttempt = 0; streamAttempt <= STREAM_MAX_RETRIES; streamAttempt++) {
+                for (int streamAttempt = 0; streamAttempt <= retryConfig.maxRetries(); streamAttempt++) {
                     accumulator = new StreamAccumulator(eventHandler);
                     var session = llmClient.streamMessage(request);
 
@@ -290,14 +287,15 @@ public final class StreamingAgentLoop {
 
                     // If stream succeeded or error is not retryable, break out
                     if (accumulator.error == null || !accumulator.error.isRetryable()
-                            || streamAttempt == STREAM_MAX_RETRIES) {
+                            || streamAttempt == retryConfig.maxRetries()) {
                         break;
                     }
 
                     // Retryable stream error — back off and retry
-                    long backoffMs = calculateStreamBackoff(accumulator.error, streamAttempt);
+                    long backoffMs = retryConfig.calculateBackoffMs(
+                            streamAttempt, accumulator.error.retryAfterMs());
                     log.warn("Retryable stream error (attempt {}/{}), backing off {}ms: {}",
-                            streamAttempt + 1, STREAM_MAX_RETRIES, backoffMs,
+                            streamAttempt + 1, retryConfig.maxRetries(), backoffMs,
                             accumulator.error.getMessage());
                     try {
                         Thread.sleep(backoffMs);
@@ -554,18 +552,6 @@ public final class StreamingAgentLoop {
         return pruneResult;
     }
 
-    /**
-     * Calculates backoff delay for a stream retry attempt.
-     * Respects Retry-After if present, otherwise uses exponential backoff with 20% jitter.
-     */
-    private static long calculateStreamBackoff(LlmException e, int attempt) {
-        if (e.retryAfterSeconds() > 0) {
-            return Math.min(e.retryAfterSeconds() * 1000L, STREAM_MAX_BACKOFF_MS);
-        }
-        long baseMs = 1000L * (1L << attempt); // 1s, 2s, 4s
-        long jitter = (long) (baseMs * 0.2 * Math.random());
-        return Math.min(baseMs + jitter, STREAM_MAX_BACKOFF_MS);
-    }
 
     private LlmRequest buildRequest(List<Message> messages) {
         int effectiveThinkingBudget = thinkingBudget;
