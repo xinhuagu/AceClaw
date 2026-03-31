@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.4] - 2026-03-31
+
+### Documentation
+
+- Document all CLI commands, provider switching, and daemon management (#385)
 ## [0.3.3] - 2026-03-31
 
 ### Bug Fixes
