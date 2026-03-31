@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.2] - 2026-03-31
+
+### Bug Fixes
+
+- Retry on Anthropic SSE overloaded/rate-limit errors instead of failing immediately
+- Auto-bump to SNAPSHOT after release, fix stale version cache (#383)
 ## [0.3.1] - 2026-03-31
 
 ### Bug Fixes
