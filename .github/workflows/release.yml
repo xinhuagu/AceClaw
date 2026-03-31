@@ -87,3 +87,17 @@ jobs:
           fail_on_unmatched_files: false
           files: |
             aceclaw-cli/build/distributions/*
+
+      - name: Bump to next SNAPSHOT
+        run: |
+          BARE="${{ steps.version.outputs.next }}"
+          BARE="${BARE#v}"
+          # Increment patch: 0.3.1 -> 0.3.2-SNAPSHOT
+          MAJOR=$(echo "$BARE" | cut -d. -f1)
+          MINOR=$(echo "$BARE" | cut -d. -f2)
+          PATCH=$(echo "$BARE" | cut -d. -f3)
+          NEXT_DEV="${MAJOR}.${MINOR}.$((PATCH + 1))-SNAPSHOT"
+          sed -i "s/^version=.*/version=${NEXT_DEV}/" gradle.properties
+          git add gradle.properties
+          git commit -m "chore: bump to ${NEXT_DEV} for development"
+          git push origin HEAD:main
