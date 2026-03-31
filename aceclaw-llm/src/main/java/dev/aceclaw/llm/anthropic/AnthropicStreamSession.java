@@ -250,8 +250,22 @@ final class AnthropicStreamSession implements StreamSession {
         JsonNode root = mapper.objectMapper().readTree(data);
         String type = root.path("error").path("type").asText("unknown_error");
         String message = root.path("error").path("message").asText("Unknown error");
+        int statusCode = mapErrorTypeToStatusCode(type);
         handler.onError(new StreamEvent.StreamError(
-                new LlmException("Anthropic stream error [" + type + "]: " + message)));
+                new LlmException("Anthropic stream error [" + type + "]: " + message, statusCode)));
+    }
+
+    /**
+     * Maps Anthropic SSE error types to HTTP-equivalent status codes so that
+     * {@link LlmException#isRetryable()} works correctly for in-stream errors.
+     */
+    private static int mapErrorTypeToStatusCode(String errorType) {
+        return switch (errorType) {
+            case "overloaded_error" -> 529;
+            case "rate_limit_error" -> 429;
+            case "api_error", "internal_server_error" -> 500;
+            default -> -1;
+        };
     }
 
     /**
