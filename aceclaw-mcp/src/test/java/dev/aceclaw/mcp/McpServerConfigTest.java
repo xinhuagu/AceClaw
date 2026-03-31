@@ -58,6 +58,28 @@ class McpServerConfigTest {
     }
 
     @Test
+    void loadGlobalAceClawConfigJson() throws IOException {
+        var aceclawDir = tempDir.resolve(".aceclaw");
+        Files.createDirectories(aceclawDir);
+        Files.writeString(aceclawDir.resolve("config.json"), """
+                {
+                  "mcpServers": {
+                    "drawio": {
+                      "command": "npx",
+                      "args": ["@next-ai-drawio/mcp-server@latest"]
+                    }
+                  }
+                }
+                """);
+
+        var result = McpServerConfig.load(tempDir);
+
+        assertThat(result).containsKey("drawio");
+        assertThat(result.get("drawio").command()).isEqualTo("npx");
+        assertThat(result.get("drawio").args()).containsExactly("@next-ai-drawio/mcp-server@latest");
+    }
+
+    @Test
     void parseValidSseConfig() throws IOException {
         var config = """
                 {
@@ -147,6 +169,33 @@ class McpServerConfigTest {
 
         assertThat(result.get("server-a").command()).isEqualTo("new");
         assertThat(result.get("server-b").command()).isEqualTo("keep");
+    }
+
+    @Test
+    void projectAceClawConfigOverridesClaudeCompatibleConfig() throws IOException {
+        Files.writeString(tempDir.resolve(".mcp.json"), """
+                {
+                  "mcpServers": {
+                    "drawio": { "command": "old" }
+                  }
+                }
+                """);
+
+        var aceclawDir = tempDir.resolve(".aceclaw");
+        Files.createDirectories(aceclawDir);
+        Files.writeString(aceclawDir.resolve("config.json"), """
+                {
+                  "mcpServers": {
+                    "drawio": { "command": "new" },
+                    "context7": { "command": "ctx" }
+                  }
+                }
+                """);
+
+        var result = McpServerConfig.load(tempDir);
+
+        assertThat(result.get("drawio").command()).isEqualTo("new");
+        assertThat(result.get("context7").command()).isEqualTo("ctx");
     }
 
     @Test

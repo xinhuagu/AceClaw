@@ -44,7 +44,7 @@ public final class AceClawMain implements Runnable {
     @Override
     public void run() {
         // Pre-flight: if copilot provider and no cached OAuth token, run device-code flow
-        ensureCopilotAuth();
+        ensureCopilotAuth(null);
 
         try (DaemonClient client = DaemonStarter.ensureRunning()) {
 
@@ -145,10 +145,14 @@ public final class AceClawMain implements Runnable {
      * If the active provider is "copilot" and no cached OAuth token exists,
      * runs the interactive device-code flow before starting the daemon.
      */
-    private static void ensureCopilotAuth() {
+    static void ensureCopilotAuth(String providerOverride) {
         try {
-            AceClawConfig config = AceClawConfig.load(null);
-            if (!"copilot".equals(config.provider())) {
+            String effectiveProvider = providerOverride;
+            if (effectiveProvider == null || effectiveProvider.isBlank()) {
+                AceClawConfig config = AceClawConfig.load(null);
+                effectiveProvider = config.provider();
+            }
+            if (!"copilot".equalsIgnoreCase(effectiveProvider)) {
                 return;
             }
             // Check if we already have a cached OAuth token
@@ -341,21 +345,58 @@ public final class AceClawMain implements Runnable {
     }
 
     /**
-     * Starts the daemon in the foreground (blocking).
+     * Starts the daemon, defaulting to background mode.
      */
     @Command(
         name = "start",
-        description = "Start the daemon in foreground"
+        description = "Start the daemon (background by default; use --foreground for debugging)"
     )
     static final class DaemonStartCommand implements Runnable {
+        @Option(
+                names = {"-p", "--provider"},
+                description = "Provider override for this daemon start (e.g. anthropic, copilot, openai)"
+        )
+        String provider;
+
+        @Option(
+                names = {"-f", "--foreground"},
+                description = "Run in foreground and keep this terminal attached"
+        )
+        boolean foreground;
+
         @Override
         public void run() {
-            System.out.println("Starting AceClaw daemon in foreground...");
-            var daemon = AceClawDaemon.createDefault();
+            String providerOverride = provider == null || provider.isBlank()
+                    ? null
+                    : provider.trim().toLowerCase();
+            ensureCopilotAuth(providerOverride);
             try {
-                daemon.start();
+                if (foreground) {
+                    System.out.println("Starting AceClaw daemon in foreground...");
+                    var daemon = providerOverride == null
+                            ? AceClawDaemon.createDefault()
+                            : AceClawDaemon.createDefault(providerOverride);
+                    daemon.start();
+                    return;
+                }
+
+                boolean started = DaemonStarter.ensureStarted(providerOverride);
+                if (started) {
+                    System.out.println("Daemon started in background.");
+                } else if (providerOverride != null) {
+                    System.out.println("Daemon is already running. Stop it first to switch provider.");
+                } else {
+                    System.out.println("Daemon is already running.");
+                }
             } catch (AceClawDaemon.DaemonException e) {
                 System.err.println("Daemon failed to start: " + e.getMessage());
+                System.exit(1);
+            } catch (IOException e) {
+                System.err.println("Failed to start daemon: " + e.getMessage());
+                System.exit(1);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                System.err.println("Interrupted while starting daemon");
                 System.exit(1);
             }
         }

@@ -117,12 +117,16 @@ public final class AceClawDaemon {
     private volatile boolean running;
 
     private AceClawDaemon(Path homeDir) {
+        this(homeDir, null);
+    }
+
+    private AceClawDaemon(Path homeDir, String providerOverride) {
         this.homeDir = homeDir;
         this.startedAt = Instant.now();
 
         // Load configuration (files + env vars)
         Path workingDir = Path.of(System.getProperty("user.dir"));
-        this.config = AceClawConfig.load(workingDir);
+        this.config = AceClawConfig.load(workingDir, providerOverride);
 
         // Infrastructure
         this.objectMapper = createObjectMapper();
@@ -1880,6 +1884,14 @@ public final class AceClawDaemon {
     public static AceClawDaemon createDefault() {
         var home = Path.of(System.getProperty("user.home"), ".aceclaw");
         return new AceClawDaemon(home);
+    }
+
+    /**
+     * Creates a daemon with the default home directory and a provider override.
+     */
+    public static AceClawDaemon createDefault(String providerOverride) {
+        var home = Path.of(System.getProperty("user.home"), ".aceclaw");
+        return new AceClawDaemon(home, providerOverride);
     }
 
     /**

@@ -62,7 +62,7 @@ public final class DaemonStarter {
 
         // Daemon not running; start it
         log.info("Daemon not running; starting...");
-        startDaemonProcess();
+        startDaemonProcess(null);
 
         // Wait for the socket to become available
         if (!waitForSocket()) {
@@ -75,6 +75,31 @@ public final class DaemonStarter {
         client.connect();
         log.info("Connected to newly started daemon");
         return client;
+    }
+
+    /**
+     * Ensures the daemon is running in the background.
+     *
+     * @param providerOverride optional provider override for the newly spawned daemon
+     * @return true if a new daemon process was started, false if one was already running
+     * @throws IOException if the daemon cannot be started
+     * @throws InterruptedException if waiting for the socket is interrupted
+     */
+    public static boolean ensureStarted(String providerOverride) throws IOException, InterruptedException {
+        if (isDaemonRunning()) {
+            log.debug("Daemon already running; background start skipped");
+            return false;
+        }
+
+        log.info("Daemon not running; starting...");
+        startDaemonProcess(providerOverride);
+
+        if (!waitForSocket()) {
+            throw new IOException(
+                    "Daemon did not start within " + START_TIMEOUT_MS + "ms. "
+                            + "Check logs at " + DAEMON_LOG);
+        }
+        return true;
     }
 
     /**
@@ -110,7 +135,7 @@ public final class DaemonStarter {
 
     // -- Daemon process launch ---------------------------------------------
 
-    private static void startDaemonProcess() throws IOException {
+    private static void startDaemonProcess(String providerOverride) throws IOException {
         Files.createDirectories(LOG_DIR);
 
         Platform platform = Platform.detect();
@@ -119,6 +144,7 @@ public final class DaemonStarter {
             case MACOS -> buildMacOSLauncher();
             case WINDOWS -> buildWindowsLauncher();
         };
+        applyProviderOverride(pb, providerOverride);
 
         // Inherit the CLI's working directory so tools resolve paths
         // relative to the user's project, not ~/.aceclaw/
@@ -126,6 +152,13 @@ public final class DaemonStarter {
         Process process = pb.start();
         log.info("Daemon process started (PID {}, platform={}); logs at {}",
                 process.pid(), platform, DAEMON_LOG);
+    }
+
+    private static void applyProviderOverride(ProcessBuilder pb, String providerOverride) {
+        if (providerOverride == null || providerOverride.isBlank()) {
+            return;
+        }
+        pb.environment().put("ACECLAW_PROVIDER", providerOverride.trim().toLowerCase(Locale.ROOT));
     }
 
     /**

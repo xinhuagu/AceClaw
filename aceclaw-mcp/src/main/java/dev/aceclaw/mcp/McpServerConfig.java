@@ -18,9 +18,11 @@ import java.util.Map;
  *
  * <p>Config loading order (later overrides earlier):
  * <ol>
- *   <li>{@code ~/.aceclaw/mcp-servers.json} (global)</li>
+ *   <li>{@code ~/.aceclaw/config.json} (global AceClaw config, {@code mcpServers} key)</li>
+ *   <li>{@code ~/.aceclaw/mcp-servers.json} (global dedicated MCP config)</li>
  *   <li>{@code {project}/.mcp.json} (project, Claude Code compatible)</li>
- *   <li>{@code {project}/.aceclaw/mcp-servers.json} (project AceClaw-specific)</li>
+ *   <li>{@code {project}/.aceclaw/config.json} (project AceClaw config, {@code mcpServers} key)</li>
+ *   <li>{@code {project}/.aceclaw/mcp-servers.json} (project AceClaw-specific dedicated MCP config)</li>
  * </ol>
  *
  * <p>Supports stdio, SSE, and streamable HTTP transports:
@@ -108,16 +110,23 @@ public final class McpServerConfig {
      */
     public static Map<String, ServerEntry> load(Path workingDir) {
         var result = new LinkedHashMap<String, ServerEntry>();
+        var aceclawHome = Path.of(System.getProperty("user.home"), ".aceclaw");
 
-        // 1. Global: ~/.aceclaw/mcp-servers.json
-        var globalConfig = Path.of(System.getProperty("user.home"), ".aceclaw", "mcp-servers.json");
-        mergeFrom(result, globalConfig);
+        // 1. Global: ~/.aceclaw/config.json
+        mergeFrom(result, aceclawHome.resolve("config.json"));
 
-        // 2. Project: {workingDir}/.mcp.json (Claude Code compatible)
+        // 2. Global: ~/.aceclaw/mcp-servers.json
+        mergeFrom(result, aceclawHome.resolve("mcp-servers.json"));
+
+        // 3. Project: {workingDir}/.mcp.json (Claude Code compatible)
         mergeFrom(result, workingDir.resolve(".mcp.json"));
 
-        // 3. Project: {workingDir}/.aceclaw/mcp-servers.json
-        mergeFrom(result, workingDir.resolve(".aceclaw").resolve("mcp-servers.json"));
+        // 4. Project: {workingDir}/.aceclaw/config.json
+        var projectAceClawDir = workingDir.resolve(".aceclaw");
+        mergeFrom(result, projectAceClawDir.resolve("config.json"));
+
+        // 5. Project: {workingDir}/.aceclaw/mcp-servers.json
+        mergeFrom(result, projectAceClawDir.resolve("mcp-servers.json"));
 
         if (!result.isEmpty()) {
             log.info("Loaded {} MCP server(s): {}", result.size(), result.keySet());

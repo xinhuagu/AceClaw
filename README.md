@@ -183,7 +183,9 @@ All commands installed by `install.sh`. Every command that accepts `[provider]` 
 The daemon is a persistent JVM process that runs in the background. It auto-starts when you run `aceclaw`, but can be managed directly:
 
 ```bash
-aceclaw daemon start    # Start daemon in foreground (for debugging)
+aceclaw daemon start              # Start daemon in background
+aceclaw daemon start -p copilot   # Start background daemon with provider override
+aceclaw daemon start --foreground # Start daemon in foreground (for debugging)
 aceclaw daemon stop     # Gracefully stop daemon
 aceclaw daemon status   # Show health, version, model, active sessions
 ```

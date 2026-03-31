@@ -261,6 +261,18 @@ public final class AceClawConfig {
      * @return the merged configuration
      */
     public static AceClawConfig load(Path projectPath) {
+        return load(projectPath, null);
+    }
+
+    /**
+     * Loads configuration from global and project config files, with env var overrides
+     * and an optional provider override used by foreground startup paths.
+     *
+     * @param projectPath the project working directory (may be null)
+     * @param providerOverride optional provider override (may be null)
+     * @return the merged configuration
+     */
+    public static AceClawConfig load(Path projectPath, String providerOverride) {
         var config = new AceClawConfig();
 
         // 1. Load global config
@@ -291,6 +303,9 @@ public final class AceClawConfig {
         // 4. Environment variables (highest precedence)
         if (envProvider != null && !envProvider.isBlank()) {
             config.provider = envProvider.toLowerCase();
+        }
+        if (providerOverride != null && !providerOverride.isBlank()) {
+            config.provider = providerOverride.trim().toLowerCase();
         }
         var envBaseUrl = System.getenv("ACECLAW_BASE_URL");
         if (envBaseUrl != null && !envBaseUrl.isBlank()) {
