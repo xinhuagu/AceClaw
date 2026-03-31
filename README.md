@@ -152,12 +152,6 @@ curl -fsSL https://raw.githubusercontent.com/xinhuagu/AceClaw/main/install.sh | 
 
 Downloads the latest pre-built release, extracts to `~/.aceclaw/`, and adds commands to your PATH. Only requires Java 21 runtime (no build tools).
 
-### Update
-
-```bash
-aceclaw-update         # Downloads latest release if newer version available
-```
-
 ### Configure & Run
 
 ```bash
@@ -165,16 +159,76 @@ export ANTHROPIC_API_KEY="sk-ant-api03-..."
 aceclaw                # Start AceClaw (auto-starts daemon)
 ```
 
+Or use OAuth (auto-discovered from Claude CLI credentials):
+```bash
+claude                 # Login via Claude CLI first
+aceclaw                # Token auto-refreshes from Keychain
+```
+
 ### Commands
+
+All commands installed by `install.sh`. Every command that accepts `[provider]` switches the LLM backend for that session.
 
 | Command | What it does |
 |---------|-------------|
-| `aceclaw` | Start AceClaw (auto-starts daemon if needed) |
-| `aceclaw-tui` | Open another TUI window (non-destructive, never restarts daemon) |
-| `aceclaw-restart` | Restart daemon |
-| `aceclaw-update` | Update to latest release (safe: refuses if sessions active) |
+| `aceclaw` | Start AceClaw TUI (auto-starts daemon if not running) |
+| `aceclaw-tui [provider]` | Open another TUI window — never restarts daemon, safe for multi-session |
+| `aceclaw-restart [provider]` | Stop daemon + restart with fresh build (warns if sessions active) |
+| `aceclaw-update` | Update to latest release (refuses if sessions active) |
 
-See [Multi-Session Model](docs/multi-session.md) for details on running multiple TUI windows.
+**Supported providers:** `anthropic` (default), `copilot`, `openai`, `openai-codex`, `ollama`, `groq`, `together`, `mistral`
+
+#### Daemon Management
+
+The daemon is a persistent JVM process that runs in the background. It auto-starts when you run `aceclaw`, but can be managed directly:
+
+```bash
+aceclaw daemon start    # Start daemon in foreground (for debugging)
+aceclaw daemon stop     # Gracefully stop daemon
+aceclaw daemon status   # Show health, version, model, active sessions
+```
+
+#### Switching Providers
+
+Pass the provider name as an argument to any launch command:
+
+```bash
+# Release install (symlinked commands)
+aceclaw-restart copilot       # Restart daemon with GitHub Copilot
+aceclaw-tui ollama            # Open TUI against local Ollama (no daemon restart)
+aceclaw-restart anthropic     # Switch back to Anthropic Claude
+
+# Or via environment variable (works with any command)
+ACECLAW_PROVIDER=groq aceclaw
+```
+
+#### Provider Authentication
+
+```bash
+# Anthropic — API key or OAuth
+export ANTHROPIC_API_KEY="sk-ant-api03-..."     # API key in env
+# Or add to ~/.aceclaw/config.json: {"apiKey": "sk-ant-api03-..."}
+# Or login via Claude CLI for OAuth token auto-refresh
+
+# GitHub Copilot — uses your existing subscription
+aceclaw-restart copilot                         # No extra key needed
+
+# OpenAI / OpenAI Codex
+export OPENAI_API_KEY="sk-..."
+aceclaw-restart openai
+# Or OAuth for Codex:
+aceclaw models auth login --provider openai-codex
+aceclaw-restart openai-codex
+
+# Ollama (local, offline, no key needed)
+aceclaw-restart ollama
+
+# Groq / Together / Mistral
+export OPENAI_API_KEY="gsk_..."                 # Provider-specific key
+aceclaw-restart groq
+```
+
+See [Provider Configuration](docs/provider-configuration.md) for full setup details.
 
 ### Build from Source (Developers)
 
@@ -182,31 +236,24 @@ See [Multi-Session Model](docs/multi-session.md) for details on running multiple
 git clone https://github.com/xinhuagu/AceClaw.git && cd AceClaw
 ./gradlew clean build && ./gradlew :aceclaw-cli:installDist
 ./aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli
-
-# Development scripts (from git checkout only):
-./dev.sh [provider]        # Rebuild + restart + auto-benchmark
-./restart.sh [provider]    # Rebuild + restart (no benchmarks)
-./tui.sh [provider]        # Open TUI window (no restart)
 ```
 
-### Multi-Provider Support
+Development scripts (from git checkout only — same provider argument support):
 
-See [Provider Configuration](docs/provider-configuration.md) for full setup:
+| Script | What it does |
+|--------|-------------|
+| `./dev.sh [provider]` | Rebuild + restart daemon + auto-benchmark on feature branches |
+| `./restart.sh [provider]` | Rebuild + restart daemon (no benchmarks, fastest restart) |
+| `./tui.sh [provider]` | Open TUI window (no restart, no rebuild if binary exists) |
+
 ```bash
-# GitHub Copilot (use your subscription — no separate API key needed)
-aceclaw-dev copilot
-
-# OpenAI Codex OAuth (reuse ~/.codex/auth.json)
-aceclaw models auth login --provider openai-codex
-aceclaw-dev openai-codex
-
-# Ollama (local, offline)
-aceclaw-dev ollama
-
-# Or any OpenAI-compatible provider
-export ACECLAW_PROVIDER="openai"   # or groq, together, mistral
-export OPENAI_API_KEY="sk-..."
+./dev.sh                    # Default: anthropic, with benchmarks on feature branches
+./dev.sh --no-bench copilot # Copilot, skip benchmarks
+./restart.sh ollama         # Quick restart with Ollama
+./tui.sh                    # Attach to running daemon
 ```
+
+See [Multi-Session Model](docs/multi-session.md) for details on running multiple TUI windows.
 
 ## Platform Support
 
