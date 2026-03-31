@@ -301,7 +301,9 @@ public final class AceClawDaemon {
 
         // MCP servers (config-driven external tool providers)
         // Started asynchronously to avoid blocking daemon boot (npx downloads can be slow).
-        // A CompletableFuture is exposed so request-time code can await readiness with a bounded timeout.
+        // Tools are registered incrementally as each server connects, so one slow/failing server
+        // does not block tools from already-succeeded servers.
+        // The mcpInitFuture completes once the first server's tools are available (or all fail).
         var mcpConfig = McpServerConfig.load(workingDir);
         var mcpInitFuture = new java.util.concurrent.CompletableFuture<Void>();
         if (!mcpConfig.isEmpty()) {
@@ -314,16 +316,21 @@ public final class AceClawDaemon {
             log.info("MCP: {} server(s) configured, initializing in background...", mcpConfig.size());
             Thread.ofVirtual().name("mcp-init").start(() -> {
                 try {
-                    mcpManager.start();
-                    for (var tool : mcpManager.bridgedTools()) {
-                        toolRegistry.register(tool);
-                    }
-                    log.info("MCP: {} servers, {} tools registered (async)",
-                            mcpConfig.size(), mcpManager.bridgedTools().size());
+                    mcpManager.start(tools -> {
+                        // Register each server's tools as soon as they are discovered
+                        for (var tool : tools) {
+                            toolRegistry.register(tool);
+                        }
+                        log.info("MCP: registered {} tool(s) incrementally", tools.size());
+                        // Complete the future on the first successful server so requests
+                        // don't wait for slow/failing servers
+                        mcpInitFuture.complete(null);
+                    });
+                    // If no server succeeded, the future is still pending — complete it now
                     mcpInitFuture.complete(null);
                 } catch (Exception e) {
                     log.error("MCP initialization failed: {}", e.getMessage(), e);
-                    mcpInitFuture.completeExceptionally(e);
+                    mcpInitFuture.complete(null);
                 }
             });
         } else {

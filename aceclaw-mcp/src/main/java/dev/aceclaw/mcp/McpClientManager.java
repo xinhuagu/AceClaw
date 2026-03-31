@@ -22,6 +22,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 /**
  * Manages the lifecycle of MCP server connections (stdio, SSE, and streamable HTTP).
@@ -68,6 +69,20 @@ public final class McpClientManager implements AutoCloseable {
      * Failed servers are logged and skipped; the daemon still starts normally.
      */
     public void start() {
+        start(null);
+    }
+
+    /**
+     * Starts all configured MCP servers with an optional per-server callback.
+     *
+     * <p>When a server connects and its tools are discovered, the callback is invoked immediately
+     * with the newly bridged tools. This allows callers to register tools incrementally rather
+     * than waiting for all servers to finish — so one slow or failing server does not block
+     * tools from already-succeeded servers.
+     *
+     * @param onServerTools callback invoked per server with its bridged tools, or null to skip
+     */
+    public void start(Consumer<List<Tool>> onServerTools) {
         for (var entry : serverConfigs.entrySet()) {
             var serverName = entry.getKey();
             var config = entry.getValue();
@@ -98,7 +113,12 @@ public final class McpClientManager implements AutoCloseable {
             if (client != null) {
                 clients.put(serverName, client);
                 statuses.put(serverName, ServerStatus.CONNECTED);
+                var toolsBefore = bridgedTools.size();
                 discoverAndBridgeTools(serverName, client);
+                if (onServerTools != null && bridgedTools.size() > toolsBefore) {
+                    onServerTools.accept(
+                            Collections.unmodifiableList(bridgedTools.subList(toolsBefore, bridgedTools.size())));
+                }
             } else {
                 statuses.put(serverName, ServerStatus.FAILED);
                 log.error("MCP server '{}' failed to start after {} attempts: {}",
