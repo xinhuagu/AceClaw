@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.5] - 2026-03-31
+
+### Bug Fixes
+
+- Register MCP tools incrementally per server
 ## [0.3.4] - 2026-03-31
 
 ### Documentation
