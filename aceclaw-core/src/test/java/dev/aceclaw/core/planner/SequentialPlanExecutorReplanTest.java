@@ -38,9 +38,11 @@ class SequentialPlanExecutorReplanTest {
         }
 
         void enqueueStreamError() {
+            // Use 400 (non-retryable) so StreamingAgentLoop's stream retry logic
+            // does not consume subsequent queued responses meant for later steps.
             streamResponses.add(List.of(
                     new StreamEvent.MessageStart("msg-mock", "mock-model"),
-                    new StreamEvent.StreamError(new LlmException("Step failed", 500))));
+                    new StreamEvent.StreamError(new LlmException("Step failed", 400))));
         }
 
         void enqueueSendResponse(String text) {
