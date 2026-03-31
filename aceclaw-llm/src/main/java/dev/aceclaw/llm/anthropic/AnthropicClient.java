@@ -54,9 +54,12 @@ public final class AnthropicClient implements LlmClient {
     /** Claude Code's OAuth client ID. */
     private static final String OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 
-    /** OAuth scopes required for token refresh. */
-    private static final String OAUTH_SCOPES =
-            "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
+    /**
+     * OAuth scopes for token refresh. Omitted from the request body because
+     * the platform derives scopes from the original authorization grant.
+     * Sending explicit scopes causes {@code invalid_scope} errors when the
+     * server-side scope set changes.
+     */
 
     private volatile String accessToken;
     private volatile String refreshToken;
@@ -451,7 +454,6 @@ public final class AnthropicClient implements LlmClient {
             bodyNode.put("grant_type", "refresh_token");
             bodyNode.put("client_id", OAUTH_CLIENT_ID);
             bodyNode.put("refresh_token", refreshToken);
-            bodyNode.put("scope", OAUTH_SCOPES);
 
             HttpRequest refreshRequest = HttpRequest.newBuilder()
                     .uri(URI.create(TOKEN_REFRESH_URL))
