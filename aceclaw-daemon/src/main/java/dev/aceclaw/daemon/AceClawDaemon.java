@@ -296,8 +296,10 @@ public final class AceClawDaemon {
         }
 
         // MCP servers (config-driven external tool providers)
-        // Started asynchronously to avoid blocking daemon boot (npx downloads can be slow)
+        // Started asynchronously to avoid blocking daemon boot (npx downloads can be slow).
+        // A CompletableFuture is exposed so request-time code can await readiness with a bounded timeout.
         var mcpConfig = McpServerConfig.load(workingDir);
+        var mcpInitFuture = new java.util.concurrent.CompletableFuture<Void>();
         if (!mcpConfig.isEmpty()) {
             var mcpManager = new McpClientManager(mcpConfig);
             shutdownManager.register(new ShutdownManager.ShutdownParticipant() {
@@ -305,6 +307,7 @@ public final class AceClawDaemon {
                 @Override public int priority() { return 85; }
                 @Override public void onShutdown() { mcpManager.close(); }
             });
+            log.info("MCP: {} server(s) configured, initializing in background...", mcpConfig.size());
             Thread.ofVirtual().name("mcp-init").start(() -> {
                 try {
                     mcpManager.start();
@@ -313,11 +316,14 @@ public final class AceClawDaemon {
                     }
                     log.info("MCP: {} servers, {} tools registered (async)",
                             mcpConfig.size(), mcpManager.bridgedTools().size());
+                    mcpInitFuture.complete(null);
                 } catch (Exception e) {
                     log.error("MCP initialization failed: {}", e.getMessage(), e);
+                    mcpInitFuture.completeExceptionally(e);
                 }
             });
-            log.info("MCP: {} server(s) configured, initializing in background...", mcpConfig.size());
+        } else {
+            mcpInitFuture.complete(null);
         }
 
         log.info("Registered {} base tools", toolRegistry.size());
@@ -442,9 +448,9 @@ public final class AceClawDaemon {
                 markdownStore,
                 config.provider(),
                 promptBudget,
-                toolNames,
                 config.braveSearchApiKey() != null,
                 skillRegistry::formatDescriptions);
+        agentHandler.setMcpInitFuture(mcpInitFuture);
         agentHandler.setAdaptiveContinuationConfig(
                 config.adaptiveContinuationEnabled(),
                 config.adaptiveContinuationMaxSegments(),
