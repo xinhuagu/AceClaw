@@ -1316,7 +1316,6 @@ public final class StreamingAgentHandler {
     private Path workingDir;
     private String provider;
     private SystemPromptBudget systemPromptBudget = SystemPromptBudget.DEFAULT;
-    private Set<String> registeredToolNames = Set.of();
     private boolean hasBraveApiKey;
     private Function<String, String> skillDescriptionsProvider = ignored -> "";
     private int contextWindowTokens;
@@ -1428,13 +1427,11 @@ public final class StreamingAgentHandler {
     public void setContextAssemblyConfig(MarkdownMemoryStore markdownStore,
                                          String provider,
                                          SystemPromptBudget systemPromptBudget,
-                                         Set<String> registeredToolNames,
                                          boolean hasBraveApiKey,
                                          Function<String, String> skillDescriptionsProvider) {
         this.markdownStore = markdownStore;
         this.provider = provider;
         this.systemPromptBudget = systemPromptBudget != null ? systemPromptBudget : SystemPromptBudget.DEFAULT;
-        this.registeredToolNames = registeredToolNames != null ? Set.copyOf(registeredToolNames) : Set.of();
         this.hasBraveApiKey = hasBraveApiKey;
         this.skillDescriptionsProvider = skillDescriptionsProvider != null
                 ? sessionId -> {
@@ -1744,7 +1741,7 @@ public final class StreamingAgentHandler {
                 getModelForSession(sessionId),
                 provider,
                 systemPromptBudget,
-                registeredToolNames,
+                currentToolNames(),
                 hasBraveApiKey,
                 candidateStore,
                 config,
@@ -1800,7 +1797,7 @@ public final class StreamingAgentHandler {
                 getModelForSession(sessionId),
                 provider,
                 systemPromptBudget,
-                registeredToolNames,
+                currentToolNames(),
                 hasBraveApiKey,
                 candidateStore,
                 config,
@@ -1841,6 +1838,16 @@ public final class StreamingAgentHandler {
                 0.60,
                 5);
         return new MessageCompactor(getLlmClient(), getModelForSession(sessionId), config);
+    }
+
+    /**
+     * Returns a live snapshot of all tool names currently registered in the global registry.
+     * This includes MCP tools that may have been registered asynchronously after daemon startup.
+     */
+    private Set<String> currentToolNames() {
+        return toolRegistry.all().stream()
+                .map(dev.aceclaw.core.agent.Tool::name)
+                .collect(java.util.stream.Collectors.toSet());
     }
 
     private String getSystemPrompt(String sessionId) {

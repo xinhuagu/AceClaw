@@ -442,7 +442,6 @@ public final class AceClawDaemon {
                 markdownStore,
                 config.provider(),
                 promptBudget,
-                toolNames,
                 config.braveSearchApiKey() != null,
                 skillRegistry::formatDescriptions);
         agentHandler.setAdaptiveContinuationConfig(
