@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.6] - 2026-04-04
+
+### Bug Fixes
+
+- Improve retry logic for Anthropic API rate limits (#391)
+- Print plan summary and step progress in CLI console (#394)
 ## [0.3.5] - 2026-03-31
 
 ### Bug Fixes
