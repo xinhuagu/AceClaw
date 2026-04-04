@@ -336,7 +336,7 @@ public final class ForegroundOutputSink implements OutputSink {
             if (steps != null && steps.isArray()) {
                 for (JsonNode step : steps) {
                     int index = step.path("index").asInt(0);
-                    String name = step.path("name").asText("");
+                    String name = truncate(step.path("name").asText(""), 80);
                     out.println(ACCENT + BOX_LIGHT_VERTICAL + RESET + "  "
                             + MUTED + index + ". " + RESET + name);
                 }
