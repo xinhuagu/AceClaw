@@ -394,9 +394,10 @@ public final class ForegroundOutputSink implements OutputSink {
     @Override
     public void onPlanCompleted(JsonNode params) {
         synchronized (lock) {
+            if (params == null) return;
             statusRenderer.hide();
 
-            boolean success = params != null && params.path("success").asBoolean(true);
+            boolean success = params.path("success").asBoolean(true);
             if (success) {
                 out.println(SUCCESS + BOLD + "[plan] complete" + RESET);
             } else {

@@ -11,7 +11,15 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * ANSI escape codes split tokens in output, so strip them for content assertions.
+ */
+
 class ForegroundOutputSinkTest {
+
+    private static String stripAnsi(String text) {
+        return text.replaceAll("\u001B\\[[0-9;]*m", "");
+    }
 
     @Test
     void toolLifecycle_rendersStatusWithSummaryAndCompletion() {
@@ -48,6 +56,172 @@ class ForegroundOutputSinkTest {
         assertThat(output).contains("Sub-agent");
         assertThat(output).contains("step 2/4");
         assertThat(output).contains("Run tests");
+    }
+
+    @Test
+    void planCreated_printsBoxedSummaryWithSteps() {
+        var mapper = new ObjectMapper();
+        var buffer = new StringWriter();
+        var sink = new ForegroundOutputSink(new PrintWriter(buffer), new TerminalMarkdownRenderer());
+
+        var params = mapper.createObjectNode();
+        params.put("planId", "plan-1");
+        params.put("stepCount", 3);
+        params.put("goal", "Refactor auth module");
+        var steps = mapper.createArrayNode();
+        for (int i = 1; i <= 3; i++) {
+            var step = mapper.createObjectNode();
+            step.put("index", i);
+            step.put("name", "Step " + i);
+            step.put("description", "Description " + i);
+            steps.add(step);
+        }
+        params.set("steps", steps);
+
+        sink.onPlanCreated(params);
+
+        String output = stripAnsi(buffer.toString());
+        assertThat(output).contains("Plan (3 steps)");
+        assertThat(output).contains("Refactor auth module");
+        assertThat(output).contains("1. Step 1");
+        assertThat(output).contains("2. Step 2");
+        assertThat(output).contains("3. Step 3");
+    }
+
+    @Test
+    void planCreated_resumedPlan_showsResumedLabel() {
+        var mapper = new ObjectMapper();
+        var buffer = new StringWriter();
+        var sink = new ForegroundOutputSink(new PrintWriter(buffer), new TerminalMarkdownRenderer());
+
+        var params = mapper.createObjectNode();
+        params.put("planId", "plan-2");
+        params.put("stepCount", 2);
+        params.put("goal", "Continue refactoring");
+        params.put("resumed", true);
+        params.put("resumedFromStep", 3);
+        params.set("steps", mapper.createArrayNode());
+
+        sink.onPlanCreated(params);
+
+        String output = stripAnsi(buffer.toString());
+        assertThat(output).contains("resumed from step 3");
+        assertThat(output).contains("2 remaining");
+    }
+
+    @Test
+    void planCreated_nullParams_noOutput() {
+        var buffer = new StringWriter();
+        var sink = new ForegroundOutputSink(new PrintWriter(buffer), new TerminalMarkdownRenderer());
+
+        sink.onPlanCreated(null);
+
+        assertThat(buffer.toString()).isEmpty();
+    }
+
+    @Test
+    void planStepCompleted_printsPersistentLine() {
+        var mapper = new ObjectMapper();
+        var buffer = new StringWriter();
+        var sink = new ForegroundOutputSink(new PrintWriter(buffer), new TerminalMarkdownRenderer());
+
+        var params = mapper.createObjectNode();
+        params.put("stepId", "s1");
+        params.put("stepIndex", 1);
+        params.put("stepName", "Read files");
+        params.put("success", true);
+        params.put("durationMs", 2300);
+
+        sink.onPlanStepCompleted(params);
+
+        String output = stripAnsi(buffer.toString());
+        assertThat(output).contains("step 1");
+        assertThat(output).contains("done");
+        assertThat(output).contains("2.3s");
+        assertThat(output).contains("Read files");
+    }
+
+    @Test
+    void planStepCompleted_failure_printsFailedLine() {
+        var mapper = new ObjectMapper();
+        var buffer = new StringWriter();
+        var sink = new ForegroundOutputSink(new PrintWriter(buffer), new TerminalMarkdownRenderer());
+
+        var params = mapper.createObjectNode();
+        params.put("stepId", "s2");
+        params.put("stepIndex", 2);
+        params.put("stepName", "Write output");
+        params.put("success", false);
+        params.put("durationMs", 500);
+
+        sink.onPlanStepCompleted(params);
+
+        String output = stripAnsi(buffer.toString());
+        assertThat(output).contains("step 2");
+        assertThat(output).contains("failed");
+    }
+
+    @Test
+    void planCompleted_success_printsCompleteLine() {
+        var mapper = new ObjectMapper();
+        var buffer = new StringWriter();
+        var sink = new ForegroundOutputSink(new PrintWriter(buffer), new TerminalMarkdownRenderer());
+
+        var params = mapper.createObjectNode();
+        params.put("success", true);
+
+        sink.onPlanCompleted(params);
+
+        assertThat(stripAnsi(buffer.toString())).contains("[plan] complete");
+    }
+
+    @Test
+    void planCompleted_failure_printsFailedLine() {
+        var mapper = new ObjectMapper();
+        var buffer = new StringWriter();
+        var sink = new ForegroundOutputSink(new PrintWriter(buffer), new TerminalMarkdownRenderer());
+
+        var params = mapper.createObjectNode();
+        params.put("success", false);
+
+        sink.onPlanCompleted(params);
+
+        assertThat(stripAnsi(buffer.toString())).contains("[plan] failed");
+    }
+
+    @Test
+    void planCompleted_nullParams_noOutput() {
+        var buffer = new StringWriter();
+        var sink = new ForegroundOutputSink(new PrintWriter(buffer), new TerminalMarkdownRenderer());
+
+        sink.onPlanCompleted(null);
+
+        assertThat(buffer.toString()).isEmpty();
+    }
+
+    @Test
+    void planCreated_truncatesLongStepNames() {
+        var mapper = new ObjectMapper();
+        var buffer = new StringWriter();
+        var sink = new ForegroundOutputSink(new PrintWriter(buffer), new TerminalMarkdownRenderer());
+
+        var params = mapper.createObjectNode();
+        params.put("planId", "plan-3");
+        params.put("stepCount", 1);
+        params.put("goal", "test");
+        var steps = mapper.createArrayNode();
+        var step = mapper.createObjectNode();
+        step.put("index", 1);
+        step.put("name", "A".repeat(200));
+        steps.add(step);
+        params.set("steps", steps);
+
+        sink.onPlanCreated(params);
+
+        String output = stripAnsi(buffer.toString());
+        assertThat(output).contains("...");
+        // Should be truncated, not contain the full 200-char name
+        assertThat(output).doesNotContain("A".repeat(200));
     }
 
     @Test
