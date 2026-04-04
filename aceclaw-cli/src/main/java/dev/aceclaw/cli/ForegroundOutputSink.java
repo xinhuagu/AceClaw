@@ -298,8 +298,69 @@ public final class ForegroundOutputSink implements OutputSink {
     }
 
     @Override
+    public void onPlanCreated(JsonNode params) {
+        synchronized (lock) {
+            if (params == null) return;
+            stopSpinnerInternal();
+            statusRenderer.hide();
+
+            if (receivedTextOutput) {
+                flushMarkdown();
+                inCodeFence = false;
+                receivedTextOutput = false;
+            }
+            if (wasThinking) {
+                out.println();
+                wasThinking = false;
+            }
+
+            String goal = truncate(params.path("goal").asText(""), 120);
+            int stepCount = params.path("stepCount").asInt(0);
+            boolean resumed = params.path("resumed").asBoolean(false);
+
+            out.println();
+            if (resumed) {
+                int resumedFrom = params.path("resumedFromStep").asInt(1);
+                out.println(BOLD + ACCENT + BOX_LIGHT_TOP_LEFT + BOX_LIGHT_HORIZONTAL
+                        + " Plan (resumed from step " + resumedFrom + ", "
+                        + stepCount + " remaining)" + RESET);
+            } else {
+                out.println(BOLD + ACCENT + BOX_LIGHT_TOP_LEFT + BOX_LIGHT_HORIZONTAL
+                        + " Plan (" + stepCount + " steps)" + RESET);
+            }
+            if (!goal.isEmpty()) {
+                out.println(ACCENT + BOX_LIGHT_VERTICAL + RESET + " " + MUTED + goal + RESET);
+            }
+
+            JsonNode steps = params.get("steps");
+            if (steps != null && steps.isArray()) {
+                for (JsonNode step : steps) {
+                    int index = step.path("index").asInt(0);
+                    String name = step.path("name").asText("");
+                    out.println(ACCENT + BOX_LIGHT_VERTICAL + RESET + "  "
+                            + MUTED + index + ". " + RESET + name);
+                }
+            }
+            out.println(ACCENT + BOX_LIGHT_BOTTOM_LEFT + BOX_LIGHT_HORIZONTAL + RESET);
+            out.println();
+            out.flush();
+        }
+    }
+
+    @Override
     public void onPlanStepStarted(JsonNode params) {
         synchronized (lock) {
+            if (params == null) return;
+            statusRenderer.hide();
+
+            int stepIndex = params.path("stepIndex").asInt(0);
+            int totalSteps = params.path("totalSteps").asInt(0);
+            String stepName = params.path("stepName").asText("step");
+
+            out.println(ACCENT + BOLD + "[plan] " + RESET + ACCENT
+                    + "step " + stepIndex + "/" + totalSteps
+                    + " - " + truncate(stepName, 80) + RESET);
+            out.flush();
             statusRenderer.onPlanStepStarted(params);
         }
     }
@@ -307,6 +368,25 @@ public final class ForegroundOutputSink implements OutputSink {
     @Override
     public void onPlanStepCompleted(JsonNode params) {
         synchronized (lock) {
+            if (params == null) return;
+            statusRenderer.hide();
+
+            int stepIndex = params.path("stepIndex").asInt(0);
+            String stepName = params.path("stepName").asText("step");
+            boolean success = params.path("success").asBoolean(true);
+            long durationMs = params.path("durationMs").asLong(0);
+            String elapsed = String.format(Locale.ROOT, "%.1fs", Math.max(0L, durationMs) / 1000.0);
+
+            if (success) {
+                out.println(SUCCESS + CHECKMARK + " step " + stepIndex
+                        + " done" + RESET + MUTED + " (" + elapsed + ") "
+                        + truncate(stepName, 60) + RESET);
+            } else {
+                out.println(ERROR + "x step " + stepIndex
+                        + " failed" + RESET + MUTED + " (" + elapsed + ") "
+                        + truncate(stepName, 60) + RESET);
+            }
+            out.flush();
             statusRenderer.onPlanStepCompleted(params);
         }
     }
@@ -314,6 +394,16 @@ public final class ForegroundOutputSink implements OutputSink {
     @Override
     public void onPlanCompleted(JsonNode params) {
         synchronized (lock) {
+            statusRenderer.hide();
+
+            boolean success = params != null && params.path("success").asBoolean(true);
+            if (success) {
+                out.println(SUCCESS + BOLD + "[plan] complete" + RESET);
+            } else {
+                out.println(ERROR + BOLD + "[plan] failed" + RESET);
+            }
+            out.println();
+            out.flush();
             statusRenderer.onPlanCompleted(params);
         }
     }
