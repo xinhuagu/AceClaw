@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.8] - 2026-04-05
+
+### Bug Fixes
+
+- Prevent orphan tool_use blocks in conversation history (#397)
 ## [0.3.7] - 2026-04-05
 
 ### Features
