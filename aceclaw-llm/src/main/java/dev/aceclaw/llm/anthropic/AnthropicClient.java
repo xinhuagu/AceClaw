@@ -492,7 +492,17 @@ public final class AnthropicClient implements LlmClient {
      * @return true if refresh succeeded
      */
     private boolean refreshAccessToken() {
+        // Acquire the token lock (reentrant — safe when called from proactive refresh
+        // which already holds the lock).  This serializes all token mutations so the
+        // 401 reactive path cannot race with the proactive path.
+        tokenLock.lock();
         try {
+            // Double-check: another thread may have refreshed while we waited.
+            if (tokenExpiresAt > 0 && System.currentTimeMillis() < tokenExpiresAt) {
+                log.debug("Token already refreshed by another thread, skipping");
+                return true;
+            }
+
             var bodyNode = jsonMapper.createObjectNode();
             bodyNode.put("grant_type", "refresh_token");
             bodyNode.put("client_id", OAUTH_CLIENT_ID);
@@ -546,6 +556,8 @@ public final class AnthropicClient implements LlmClient {
         } catch (Exception e) {
             log.error("OAuth token refresh error: {}", e.getMessage());
             return false;
+        } finally {
+            tokenLock.unlock();
         }
     }
 
