@@ -28,6 +28,16 @@ public final class ToolRegistry {
     }
 
     /**
+     * Unregisters a tool by name.
+     *
+     * @param name the tool name to remove
+     * @return true if the tool was removed, false if it was not registered
+     */
+    public boolean unregister(String name) {
+        return tools.remove(name) != null;
+    }
+
+    /**
      * Looks up a tool by name.
      *
      * @param name the tool name

@@ -42,6 +42,7 @@ public final class McpClientManager implements AutoCloseable {
     private static final Duration BACKOFF_BASE = Duration.ofSeconds(2);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration RECONNECT_COOLDOWN = Duration.ofSeconds(30);
+    private static final Duration BACKGROUND_REFRESH_INTERVAL = Duration.ofSeconds(15);
 
     /**
      * Health status of an individual MCP server.
@@ -59,13 +60,26 @@ public final class McpClientManager implements AutoCloseable {
      */
     public record ServerHealth(ServerStatus status, int toolCount, String lastError) {}
 
+    /**
+     * Factory that creates and initializes an MCP client for a given server.
+     * Package-private for testability.
+     */
+    @FunctionalInterface
+    interface ClientFactory {
+        McpSyncClient create(String serverName, McpServerConfig.ServerEntry config);
+    }
+
     private final Map<String, McpServerConfig.ServerEntry> serverConfigs;
+    private final ClientFactory clientFactory;
     private final Map<String, McpSyncClient> clients = new LinkedHashMap<>();
     private final Map<String, ServerStatus> statuses = new LinkedHashMap<>();
     private final List<Tool> bridgedTools = new ArrayList<>();
     private final Map<String, String> lastErrors = new LinkedHashMap<>();
     private final Map<String, Long> lastReconnectAttemptMillis = new LinkedHashMap<>();
     private Consumer<List<Tool>> onServerTools;
+    private Consumer<String> onToolRemoved;
+    private volatile boolean closed;
+    private volatile Thread refreshThread;
 
     /**
      * Creates a manager for the given server configurations.
@@ -73,7 +87,25 @@ public final class McpClientManager implements AutoCloseable {
      * @param serverConfigs map of server name to configuration entry
      */
     public McpClientManager(Map<String, McpServerConfig.ServerEntry> serverConfigs) {
+        this(serverConfigs, null);
+    }
+
+    /**
+     * Package-private constructor for testing with a custom client factory.
+     */
+    McpClientManager(Map<String, McpServerConfig.ServerEntry> serverConfigs,
+                     ClientFactory clientFactory) {
         this.serverConfigs = Objects.requireNonNull(serverConfigs, "serverConfigs");
+        this.clientFactory = clientFactory;
+    }
+
+    /**
+     * Sets an optional callback invoked when a tool is removed during reconnect.
+     *
+     * @param onToolRemoved callback receiving the removed tool name, or null to skip
+     */
+    public void setOnToolRemoved(Consumer<String> onToolRemoved) {
+        this.onToolRemoved = onToolRemoved;
     }
 
     /**
@@ -143,6 +175,26 @@ public final class McpClientManager implements AutoCloseable {
 
         log.info("MCP client manager started: {}/{} servers connected, {} tools discovered",
                 clients.size(), serverConfigs.size(), bridgedTools.size());
+
+        // Start background health refresh thread for non-blocking status queries
+        refreshThread = Thread.ofVirtual().name("mcp-health-refresh").start(() -> {
+            while (!closed) {
+                try {
+                    Thread.sleep(BACKGROUND_REFRESH_INTERVAL.toMillis());
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+                if (closed) break;
+                try {
+                    synchronized (this) {
+                        refreshServerHealth(true);
+                    }
+                } catch (Exception e) {
+                    log.debug("Background MCP health refresh failed: {}", e.getMessage());
+                }
+            }
+        });
     }
 
     /**
@@ -153,21 +205,22 @@ public final class McpClientManager implements AutoCloseable {
     }
 
     /**
-     * Returns the health status of each configured server, refreshed via ping.
+     * Returns the cached health status of each configured server.
+     *
+     * <p>Statuses are refreshed periodically by a background thread started in {@link #start}.
      */
     public synchronized Map<String, ServerStatus> serverStatus() {
-        refreshServerHealth(true);
         return Collections.unmodifiableMap(new LinkedHashMap<>(statuses));
     }
 
     /**
-     * Returns detailed health state for every configured server.
+     * Returns cached detailed health state for every configured server.
      *
-     * <p>This refreshes current connections and attempts auto-repair for failed servers with
-     * reconnect cooldown applied.
+     * <p>A background thread periodically pings servers and attempts auto-repair for failed
+     * servers with reconnect cooldown. This method returns the most recent cached snapshot
+     * without performing any blocking I/O.
      */
     public synchronized Map<String, ServerHealth> serverHealth() {
-        refreshServerHealth(true);
         var result = new LinkedHashMap<String, ServerHealth>();
         for (var serverName : serverConfigs.keySet()) {
             result.put(serverName, new ServerHealth(
@@ -255,8 +308,19 @@ public final class McpClientManager implements AutoCloseable {
             }
         }
 
-        // Remove old bridged tools for this server
-        bridgedTools.removeIf(t -> t.name().startsWith("mcp__" + serverName + "__"));
+        // Remove old bridged tools for this server and notify callback
+        String prefix = "mcp__" + serverName + "__";
+        var removed = bridgedTools.stream()
+                .filter(t -> t.name().startsWith(prefix))
+                .map(Tool::name)
+                .toList();
+        bridgedTools.removeIf(t -> t.name().startsWith(prefix));
+        var removalCallback = this.onToolRemoved;
+        if (removalCallback != null) {
+            for (var name : removed) {
+                removalCallback.accept(name);
+            }
+        }
 
         // Reconnect
         try {
@@ -284,6 +348,11 @@ public final class McpClientManager implements AutoCloseable {
 
     @Override
     public synchronized void close() {
+        closed = true;
+        var rt = refreshThread;
+        if (rt != null) {
+            rt.interrupt();
+        }
         for (var entry : clients.entrySet()) {
             var serverName = entry.getKey();
             var client = entry.getValue();
@@ -299,6 +368,9 @@ public final class McpClientManager implements AutoCloseable {
     }
 
     private McpSyncClient createAndInitialize(String serverName, McpServerConfig.ServerEntry config) {
+        if (clientFactory != null) {
+            return clientFactory.create(serverName, config);
+        }
         log.info("Starting MCP server '{}' via {} transport", serverName, config.transport());
 
         var jsonMapper = new JacksonMcpJsonMapper(new ObjectMapper());

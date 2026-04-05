@@ -314,6 +314,10 @@ public final class AceClawDaemon {
                 @Override public int priority() { return 85; }
                 @Override public void onShutdown() { mcpManager.close(); }
             });
+            mcpManager.setOnToolRemoved(toolName -> {
+                toolRegistry.unregister(toolName);
+                log.info("MCP: unregistered stale tool '{}'", toolName);
+            });
             log.info("MCP: {} server(s) configured, initializing in background...", mcpConfig.size());
             Thread.ofVirtual().name("mcp-init").start(() -> {
                 try {
