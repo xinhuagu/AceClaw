@@ -13,6 +13,7 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 /**
  * Routes JSON-RPC 2.0 requests to the appropriate handler methods.
@@ -58,6 +59,7 @@ public final class RequestRouter {
     private volatile String providerName;
     private volatile int contextWindowTokens;
     private volatile HealthMonitor healthMonitor;
+    private volatile Supplier<JsonNode> mcpStatusSupplier;
 
     public RequestRouter(SessionManager sessionManager, ObjectMapper objectMapper) {
         this(sessionManager, new WorkspaceAttachmentRegistry(), objectMapper);
@@ -101,6 +103,13 @@ public final class RequestRouter {
      */
     public void setHealthMonitor(HealthMonitor healthMonitor) {
         this.healthMonitor = healthMonitor;
+    }
+
+    /**
+     * Sets an optional MCP status supplier to enrich the health status endpoint.
+     */
+    public void setMcpStatusSupplier(Supplier<JsonNode> mcpStatusSupplier) {
+        this.mcpStatusSupplier = mcpStatusSupplier;
     }
 
     /**
@@ -400,6 +409,17 @@ public final class RequestRouter {
         }
         if (contextWindowTokens > 0) {
             result.put("contextWindowTokens", contextWindowTokens);
+        }
+        var mcpSupplier = this.mcpStatusSupplier;
+        if (mcpSupplier != null) {
+            try {
+                var mcp = mcpSupplier.get();
+                if (mcp != null) {
+                    result.set("mcp", mcp);
+                }
+            } catch (Exception e) {
+                log.debug("Failed to resolve MCP status: {}", e.getMessage());
+            }
         }
         return result;
     }
