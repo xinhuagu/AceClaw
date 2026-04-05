@@ -20,6 +20,7 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Stream;
 
 /**
@@ -78,6 +79,9 @@ public final class AnthropicClient implements LlmClient {
 
     /** Pluggable credential reader for testability. */
     private final java.util.function.Supplier<KeychainCredentialReader.Credential> credentialSupplier;
+
+    /** Guards OAuth token mutations without blocking concurrent API calls. */
+    private final ReentrantLock tokenLock = new ReentrantLock();
 
     /**
      * Creates a client with a standard API key using default settings.
@@ -444,26 +448,40 @@ public final class AnthropicClient implements LlmClient {
      * request with a stale token. Falls back silently if no refresh token is
      * available — the 401 reactive path will handle it.
      */
-    private synchronized void refreshProactivelyIfNeeded() {
+    private void refreshProactivelyIfNeeded() {
+        // Fast-path: no lock needed for non-OAuth or when token is still valid.
         if (!isOAuth) return;
         if (tokenExpiresAt <= 0) return; // unknown expiry — rely on 401 path
         if (System.currentTimeMillis() < tokenExpiresAt) return; // still valid
 
-        log.info("OAuth access token expired, refreshing proactively...");
-        // Try to get refresh token from Keychain if we don't have one
-        if (refreshToken == null) {
-            var recovery = recoverCredentials();
-            if (recovery == CredentialRecovery.ACCESS_TOKEN_UPDATED) {
-                log.info("Proactive refresh: got fresh access token from credential store");
-                return;
-            }
-            if (recovery == CredentialRecovery.NO_RECOVERY) {
-                log.warn("Proactive refresh: no refresh token available, will rely on 401 path");
-                return;
-            }
+        // Token appears expired — try to acquire the lock without blocking.
+        // If another thread is already refreshing, skip: worst case we get a 401
+        // and the reactive recovery path handles it.
+        if (!tokenLock.tryLock()) {
+            log.debug("Proactive refresh skipped — another thread is refreshing");
+            return;
         }
-        if (refreshToken != null) {
-            refreshAccessToken();
+        try {
+            // Double-check after acquiring lock (token may have been refreshed already).
+            if (tokenExpiresAt > 0 && System.currentTimeMillis() < tokenExpiresAt) return;
+
+            log.info("OAuth access token expired, refreshing proactively...");
+            if (refreshToken == null) {
+                var recovery = recoverCredentials0();
+                if (recovery == CredentialRecovery.ACCESS_TOKEN_UPDATED) {
+                    log.info("Proactive refresh: got fresh access token from credential store");
+                    return;
+                }
+                if (recovery == CredentialRecovery.NO_RECOVERY) {
+                    log.warn("Proactive refresh: no refresh token available, will rely on 401 path");
+                    return;
+                }
+            }
+            if (refreshToken != null) {
+                refreshAccessToken();
+            }
+        } finally {
+            tokenLock.unlock();
         }
     }
 
@@ -554,7 +572,17 @@ public final class AnthropicClient implements LlmClient {
      * Attempts to recover credentials from Keychain/file after a 401.
      * Always checks the credential store for fresher tokens.
      */
-    synchronized CredentialRecovery recoverCredentials() {
+    CredentialRecovery recoverCredentials() {
+        tokenLock.lock();
+        try {
+            return recoverCredentials0();
+        } finally {
+            tokenLock.unlock();
+        }
+    }
+
+    /** Internal credential recovery — caller must hold {@link #tokenLock}. */
+    private CredentialRecovery recoverCredentials0() {
         String previousAccessToken = this.accessToken;
         try {
             var cred = credentialSupplier.get();
