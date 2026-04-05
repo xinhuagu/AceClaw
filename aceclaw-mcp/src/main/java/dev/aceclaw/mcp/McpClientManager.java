@@ -365,6 +365,15 @@ public final class McpClientManager implements AutoCloseable {
             }
         }
         clients.clear();
+
+        // Unregister all bridged tools so the daemon ToolRegistry stays in sync
+        var removalCallback = this.onToolRemoved;
+        if (removalCallback != null) {
+            for (var tool : bridgedTools) {
+                removalCallback.accept(tool.name());
+            }
+        }
+        bridgedTools.clear();
     }
 
     private McpSyncClient createAndInitialize(String serverName, McpServerConfig.ServerEntry config) {

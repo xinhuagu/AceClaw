@@ -228,18 +228,21 @@ class McpClientManagerTest {
     }
 
     @Test
-    void closeStopsBackgroundRefreshThread() throws InterruptedException {
-        when(mockClient.listTools()).thenReturn(toolsResult());
-        // closeGracefully() returns non-void; default mock return is fine
+    void closeClearsToolsAndNotifiesCallback() {
+        when(mockClient.listTools()).thenReturn(toolsResult("t1", "t2"));
 
         var configs = Map.of("s", dummyConfig("cmd"));
         manager = new McpClientManager(configs, (name, config) -> mockClient);
+
+        var removedTools = new ArrayList<String>();
+        manager.setOnToolRemoved(removedTools::add);
         manager.start();
 
-        // Close should not hang — background thread should stop
+        assertThat(manager.bridgedTools()).hasSize(2);
+
         manager.close();
         manager = null; // prevent double-close in tearDown
 
-        // Verify server marked as shutdown
+        assertThat(removedTools).containsExactlyInAnyOrder("mcp__s__t1", "mcp__s__t2");
     }
 }
