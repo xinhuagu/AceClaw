@@ -81,6 +81,22 @@ class McpClientManagerTest {
     }
 
     @Test
+    void toolDiscoveryFailureMarksServerFailed() {
+        when(mockClient.listTools()).thenThrow(new RuntimeException("listTools timeout"));
+
+        var configs = Map.of("srv", dummyConfig("cmd"));
+        manager = new McpClientManager(configs, (name, config) -> mockClient);
+        manager.start();
+
+        // Server connected but tool discovery failed — should be marked FAILED, not CONNECTED
+        var health = manager.serverHealth();
+        assertThat(health.get("srv").status()).isEqualTo(McpClientManager.ServerStatus.FAILED);
+        assertThat(health.get("srv").lastError()).contains("listTools timeout");
+        assertThat(health.get("srv").toolCount()).isZero();
+        assertThat(manager.bridgedTools()).isEmpty();
+    }
+
+    @Test
     void reconnectIfDueRespectssCooldown() {
         when(mockClient.listTools()).thenReturn(toolsResult("t"));
         // closeGracefully() returns non-void; Mockito default (null) is fine

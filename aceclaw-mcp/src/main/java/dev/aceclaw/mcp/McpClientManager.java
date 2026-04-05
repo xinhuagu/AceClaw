@@ -177,7 +177,8 @@ public final class McpClientManager implements AutoCloseable {
         log.info("MCP client manager started: {}/{} servers connected, {} tools discovered",
                 clients.size(), serverConfigs.size(), bridgedTools.size());
 
-        // Start background health refresh thread for non-blocking status queries
+        // Start background health refresh thread for non-blocking status queries.
+        // I/O (ping, reconnect) runs outside the monitor so serverHealth() never blocks.
         refreshThread = Thread.ofVirtual().name("mcp-health-refresh").start(() -> {
             while (!closed) {
                 try {
@@ -188,9 +189,7 @@ public final class McpClientManager implements AutoCloseable {
                 }
                 if (closed) break;
                 try {
-                    synchronized (this) {
-                        refreshServerHealth(true);
-                    }
+                    refreshServerHealthInBackground();
                 } catch (Exception e) {
                     log.debug("Background MCP health refresh failed: {}", e.getMessage());
                 }
@@ -442,64 +441,110 @@ public final class McpClientManager implements AutoCloseable {
         headers.forEach(reqBuilder::setHeader);
     }
 
-    private void bridgeServerTools(String serverName,
-                                   McpSyncClient client,
-                                   Consumer<List<Tool>> onServerTools) {
-        var newlyBridged = discoverAndBridgeTools(serverName, client);
-        if (onServerTools != null && !newlyBridged.isEmpty()) {
-            onServerTools.accept(Collections.unmodifiableList(newlyBridged));
-        }
-    }
-
-    private List<Tool> discoverAndBridgeTools(String serverName, McpSyncClient client) {
+    /**
+     * Bridges tools from a connected server. On discovery failure, marks the server FAILED
+     * so it is not reported as healthy with zero tools.
+     *
+     * @return true if tool discovery succeeded (even if zero tools), false on failure
+     */
+    private boolean bridgeServerTools(String serverName,
+                                      McpSyncClient client,
+                                      Consumer<List<Tool>> onServerTools) {
         try {
-            var toolsResult = client.listTools();
-            var tools = toolsResult.tools();
-
-            if (tools.isEmpty()) {
-                log.info("MCP server '{}' has no tools", serverName);
-                return List.of();
+            var newlyBridged = discoverAndBridgeTools(serverName, client);
+            if (onServerTools != null && !newlyBridged.isEmpty()) {
+                onServerTools.accept(Collections.unmodifiableList(newlyBridged));
             }
-
-            var bridgedForServer = new ArrayList<Tool>();
-            for (var mcpTool : tools) {
-                var bridged = McpToolBridge.create(serverName, mcpTool, client);
-                bridgedTools.add(bridged);
-                bridgedForServer.add(bridged);
-                log.debug("Bridged MCP tool: {}", bridged.name());
-            }
-
-            log.info("MCP server '{}' provides {} tool(s): {}", serverName, tools.size(),
-                    tools.stream().map(McpSchema.Tool::name).toList());
-            return List.copyOf(bridgedForServer);
+            return true;
         } catch (Exception e) {
             log.warn("Failed to discover tools from MCP server '{}': {}", serverName, e.getMessage());
+            statuses.put(serverName, ServerStatus.FAILED);
             lastErrors.put(serverName, e.getMessage());
-            return List.of();
+            return false;
         }
     }
 
-    private void refreshServerHealth(boolean autoReconnect) {
+    /**
+     * Discovers and bridges tools from a connected MCP server.
+     *
+     * @throws RuntimeException if tool discovery fails — caller must handle failure
+     */
+    private List<Tool> discoverAndBridgeTools(String serverName, McpSyncClient client) {
+        var toolsResult = client.listTools();
+        var tools = toolsResult.tools();
+
+        if (tools.isEmpty()) {
+            log.info("MCP server '{}' has no tools", serverName);
+            return List.of();
+        }
+
+        var bridgedForServer = new ArrayList<Tool>();
+        for (var mcpTool : tools) {
+            var bridged = McpToolBridge.create(serverName, mcpTool, client);
+            bridgedTools.add(bridged);
+            bridgedForServer.add(bridged);
+            log.debug("Bridged MCP tool: {}", bridged.name());
+        }
+
+        log.info("MCP server '{}' provides {} tool(s): {}", serverName, tools.size(),
+                tools.stream().map(McpSchema.Tool::name).toList());
+        return List.copyOf(bridgedForServer);
+    }
+
+    /**
+     * Background-safe health refresh: takes a snapshot under lock, does I/O outside the
+     * monitor, then publishes results in a short synchronized section. This ensures
+     * serverHealth()/serverStatus() never block on slow pings or reconnects.
+     */
+    private void refreshServerHealthInBackground() {
+        // 1. Snapshot under lock
+        Map<String, McpSyncClient> clientSnapshot;
+        Map<String, ServerStatus> statusSnapshot;
+        synchronized (this) {
+            clientSnapshot = new LinkedHashMap<>(clients);
+            statusSnapshot = new LinkedHashMap<>(statuses);
+        }
+
+        // 2. Ping outside the monitor — no lock held during I/O
+        var pingResults = new LinkedHashMap<String, Boolean>();
+        var pingErrors = new LinkedHashMap<String, String>();
         for (var serverName : serverConfigs.keySet()) {
-            var client = clients.get(serverName);
+            var client = clientSnapshot.get(serverName);
             if (client == null) {
-                statuses.putIfAbsent(serverName, ServerStatus.FAILED);
-                if (autoReconnect && statuses.get(serverName) == ServerStatus.FAILED) {
-                    reconnectIfDue(serverName);
-                }
+                pingResults.put(serverName, false);
                 continue;
             }
-
             try {
                 client.ping();
-                statuses.put(serverName, ServerStatus.CONNECTED);
-                lastErrors.remove(serverName);
+                pingResults.put(serverName, true);
             } catch (Exception e) {
                 log.warn("MCP server '{}' ping failed: {}", serverName, e.getMessage());
-                statuses.put(serverName, ServerStatus.FAILED);
-                lastErrors.put(serverName, e.getMessage());
-                if (autoReconnect) {
+                pingResults.put(serverName, false);
+                pingErrors.put(serverName, e.getMessage());
+            }
+        }
+
+        // 3. Publish results + trigger reconnects under lock
+        synchronized (this) {
+            for (var serverName : serverConfigs.keySet()) {
+                Boolean ok = pingResults.get(serverName);
+                if (ok != null && ok) {
+                    statuses.put(serverName, ServerStatus.CONNECTED);
+                    lastErrors.remove(serverName);
+                } else if (clientSnapshot.containsKey(serverName)) {
+                    // Had a client but ping failed
+                    statuses.put(serverName, ServerStatus.FAILED);
+                    var err = pingErrors.get(serverName);
+                    if (err != null) {
+                        lastErrors.put(serverName, err);
+                    }
                     reconnectIfDue(serverName);
+                } else {
+                    // No client — was already failed
+                    statuses.putIfAbsent(serverName, ServerStatus.FAILED);
+                    if (statuses.get(serverName) == ServerStatus.FAILED) {
+                        reconnectIfDue(serverName);
+                    }
                 }
             }
         }
