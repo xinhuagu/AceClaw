@@ -459,6 +459,17 @@ public final class AceClawMain implements Runnable {
                 System.out.println("  Version:         " + result.path("version").asText("unknown"));
                 System.out.println("  Model:           " + result.path("model").asText("unknown"));
                 System.out.println("  Active Sessions: " + result.path("activeSessions").asInt(0));
+                JsonNode mcp = result.path("mcp");
+                if (!mcp.isMissingNode()) {
+                    System.out.println("  MCP Servers:     "
+                            + mcp.path("connected").asInt(0)
+                            + "/" + mcp.path("configured").asInt(0)
+                            + " connected"
+                            + (mcp.path("failed").asInt(0) > 0
+                            ? " (" + mcp.path("failed").asInt(0) + " failed)"
+                            : ""));
+                    System.out.println("  MCP Tools:       " + mcp.path("tools").asInt(0));
+                }
                 System.out.println("  Timestamp:       " + result.path("timestamp").asText("unknown"));
             } catch (DaemonClient.DaemonClientException e) {
                 System.err.println("Error: " + e.getMessage());

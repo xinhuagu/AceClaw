@@ -102,6 +102,7 @@ fi
 # ---------------------------------------------------------------------------
 # Build + restart
 # ---------------------------------------------------------------------------
+echo ">> Building CLI..."
 ./gradlew :aceclaw-cli:installDist -q
 
 # Stop old daemon (best-effort) — warn about active sessions
@@ -131,4 +132,5 @@ if [ -n "$PROVIDER" ]; then
     echo "Provider: $PROVIDER"
 fi
 
+echo ">> Launching AceClaw..."
 exec ./aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli

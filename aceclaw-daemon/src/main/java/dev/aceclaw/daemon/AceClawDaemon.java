@@ -306,12 +306,17 @@ public final class AceClawDaemon {
         // The mcpInitFuture completes once the first server's tools are available (or all fail).
         var mcpConfig = McpServerConfig.load(workingDir);
         var mcpInitFuture = new java.util.concurrent.CompletableFuture<Void>();
+        final McpClientManager mcpManager;
         if (!mcpConfig.isEmpty()) {
-            var mcpManager = new McpClientManager(mcpConfig);
+            mcpManager = new McpClientManager(mcpConfig);
             shutdownManager.register(new ShutdownManager.ShutdownParticipant() {
                 @Override public String name() { return "MCP Servers"; }
                 @Override public int priority() { return 85; }
                 @Override public void onShutdown() { mcpManager.close(); }
+            });
+            mcpManager.setOnToolRemoved(toolName -> {
+                toolRegistry.unregister(toolName);
+                log.info("MCP: unregistered stale tool '{}'", toolName);
             });
             log.info("MCP: {} server(s) configured, initializing in background...", mcpConfig.size());
             Thread.ofVirtual().name("mcp-init").start(() -> {
@@ -334,6 +339,7 @@ public final class AceClawDaemon {
                 }
             });
         } else {
+            mcpManager = null;
             mcpInitFuture.complete(null);
         }
 
@@ -830,6 +836,45 @@ public final class AceClawDaemon {
         router.setModelName(effectiveModel);
         router.setProviderInfo(config.provider(), contextWindow);
         router.setHealthMonitor(healthMonitor);
+        router.setMcpStatusSupplier(() -> {
+            var node = objectMapper.createObjectNode();
+            node.put("configured", mcpConfig.size());
+            if (mcpManager == null) {
+                node.put("connected", 0);
+                node.put("failed", 0);
+                node.put("tools", 0);
+                node.put("autoRepair", false);
+                return node;
+            }
+
+            var health = mcpManager.serverHealth();
+            int connected = 0;
+            int failed = 0;
+            int tools = 0;
+            var servers = objectMapper.createArrayNode();
+            for (var entry : health.entrySet()) {
+                var server = objectMapper.createObjectNode();
+                server.put("name", entry.getKey());
+                server.put("status", entry.getValue().status().name().toLowerCase());
+                server.put("tools", entry.getValue().toolCount());
+                if (entry.getValue().lastError() != null && !entry.getValue().lastError().isBlank()) {
+                    server.put("lastError", entry.getValue().lastError());
+                }
+                servers.add(server);
+                tools += entry.getValue().toolCount();
+                if (entry.getValue().status() == McpClientManager.ServerStatus.CONNECTED) {
+                    connected++;
+                } else if (entry.getValue().status() == McpClientManager.ServerStatus.FAILED) {
+                    failed++;
+                }
+            }
+            node.put("connected", connected);
+            node.put("failed", failed);
+            node.put("tools", tools);
+            node.put("autoRepair", true);
+            node.set("servers", servers);
+            return node;
+        });
 
         // Register model.list and model.switch RPC methods
         final var llmClientRef = llmClient;

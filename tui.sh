@@ -59,4 +59,5 @@ fi
 # No bench mode for TUI sessions
 export ACECLAW_BENCH_MODE="none"
 
+echo ">> Launching AceClaw TUI..."
 exec "$CLI_BIN"

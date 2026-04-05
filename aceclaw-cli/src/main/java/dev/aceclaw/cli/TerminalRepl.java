@@ -76,6 +76,7 @@ public final class TerminalRepl {
     private static final Duration LEARNING_STATUS_REFRESH = Duration.ofSeconds(5);
     private static final Duration SKILL_DRAFT_REFRESH = Duration.ofSeconds(5);
     private static final Duration CRON_STATUS_REFRESH = Duration.ofSeconds(5);
+    private static final Duration MCP_STATUS_REFRESH = Duration.ofSeconds(5);
     /** Slightly shorter than the bridge timeout so user answers win the race near deadline. */
     private static final long PERMISSION_MODAL_TIMEOUT_MS =
             TaskStreamReader.CLIENT_PERMISSION_WAIT_TIMEOUT_MS - 5_000L;
@@ -142,6 +143,9 @@ public final class TerminalRepl {
     /** Cached cron status snapshot from daemon RPC. */
     private volatile CronStatusSnapshot cachedCronStatus;
     private volatile Instant cachedCronStatusAt = Instant.EPOCH;
+    /** Cached MCP server status snapshot from daemon health RPC. */
+    private volatile McpStatusSnapshot cachedMcpStatus;
+    private volatile Instant cachedMcpStatusAt = Instant.EPOCH;
     /** Cached git branch name, refreshed periodically. */
     private volatile String cachedGitBranch;
     private volatile Instant cachedGitBranchAt = Instant.EPOCH;
@@ -191,6 +195,27 @@ public final class TerminalRepl {
     ) {
         private CronStatusSnapshot {
             jobs = jobs != null ? List.copyOf(jobs) : List.of();
+        }
+    }
+
+    private record McpStatusSnapshot(
+            int configured,
+            int connected,
+            int failed,
+            int tools,
+            List<McpServerStatus> servers
+    ) {}
+
+    private record McpServerStatus(
+            String name,
+            String status,
+            int tools,
+            String lastError
+    ) {
+        private McpServerStatus {
+            name = name != null ? name : "";
+            status = status != null && !status.isBlank() ? status : "unknown";
+            lastError = lastError != null ? lastError : "";
         }
     }
 
@@ -538,6 +563,7 @@ public final class TerminalRepl {
                         pollAndRenderDeferredEvents(schedulerEventConn, reader);
                         pollAndRenderSkillDraftEvents(schedulerEventConn);
                         pollCronStatus(schedulerEventConn);
+                        pollMcpStatus(schedulerEventConn);
                     }
                 });
     }
@@ -731,6 +757,42 @@ public final class TerminalRepl {
             requestUiRender();
         } catch (Exception e) {
             log.debug("Failed to poll scheduler.cron.status: {}", e.getMessage());
+        }
+    }
+
+    private void pollMcpStatus(DaemonConnection conn) {
+        if (conn == null) return;
+        Instant now = Instant.now();
+        if (cachedMcpStatus != null
+                && Duration.between(cachedMcpStatusAt, now).compareTo(MCP_STATUS_REFRESH) < 0) {
+            return;
+        }
+        try {
+            JsonNode result = conn.sendRequest("health.status",
+                    client != null ? client.objectMapper().createObjectNode() : null);
+            JsonNode mcp = result.path("mcp");
+            var servers = new ArrayList<McpServerStatus>();
+            JsonNode arr = mcp.path("servers");
+            if (arr.isArray()) {
+                for (JsonNode server : arr) {
+                    servers.add(new McpServerStatus(
+                            server.path("name").asText(""),
+                            server.path("status").asText("unknown"),
+                            server.path("tools").asInt(0),
+                            server.path("lastError").asText("")
+                    ));
+                }
+            }
+            cachedMcpStatus = new McpStatusSnapshot(
+                    mcp.path("configured").asInt(0),
+                    mcp.path("connected").asInt(0),
+                    mcp.path("failed").asInt(0),
+                    mcp.path("tools").asInt(0),
+                    List.copyOf(servers));
+            cachedMcpStatusAt = now;
+            requestUiRender();
+        } catch (Exception e) {
+            log.debug("Failed to poll health.status for MCP state: {}", e.getMessage());
         }
     }
 
@@ -1974,7 +2036,11 @@ public final class TerminalRepl {
         lines.add(MUTED + "  " + TREE_BRANCH + " " + ICON_TASKS + " " + RESET
                 + INFO + "tasks" + RESET
                 + MUTED + " | running=" + runningTasks.size()
-                + " | permissions=" + pending.size() + RESET);
+                + " | permissions=" + pending.size()
+                + formatMcpTaskSuffix()
+                + RESET);
+
+        appendMcpServerLines(lines);
 
         if (!runningTasks.isEmpty()) {
             int maxVisible = 2;
@@ -2017,6 +2083,79 @@ public final class TerminalRepl {
         }
 
         return lines;
+    }
+
+    private String formatMcpTaskSuffix() {
+        var mcp = cachedMcpStatus;
+        if (mcp == null || mcp.configured() <= 0) {
+            return "";
+        }
+        var sb = new StringBuilder();
+        sb.append(" | mcp=").append(mcp.connected()).append("/").append(mcp.configured());
+        if (mcp.failed() > 0) {
+            sb.append(" failed=").append(mcp.failed());
+        }
+        if (mcp.tools() > 0) {
+            sb.append(" tools=").append(mcp.tools());
+        }
+        return sb.toString();
+    }
+
+    private void appendMcpServerLines(List<String> lines) {
+        var mcp = cachedMcpStatus;
+        if (mcp == null || mcp.servers().isEmpty()) {
+            return;
+        }
+
+        var ordered = new ArrayList<>(mcp.servers());
+        ordered.sort((a, b) -> {
+            int pa = mcpServerPriority(a.status());
+            int pb = mcpServerPriority(b.status());
+            if (pa != pb) return Integer.compare(pa, pb);
+            return a.name().compareToIgnoreCase(b.name());
+        });
+
+        int maxVisible = 2;
+        int shown = 0;
+        for (var server : ordered) {
+            if (shown >= maxVisible) break;
+            String safeName = normalizeStatusPanelField(server.name());
+            String safeStatus = normalizeStatusPanelField(server.status());
+            String statusLabel = switch (safeStatus) {
+                case "connected" -> SUCCESS + "connected" + RESET;
+                case "failed" -> ERROR + "failed" + RESET;
+                case "starting" -> WARNING + "starting" + RESET;
+                case "shutdown" -> MUTED + "shutdown" + RESET;
+                default -> MUTED + safeStatus + RESET;
+            };
+            var line = new StringBuilder();
+            line.append(MUTED).append("       ").append(ICON_ITEM).append(" ").append(RESET)
+                    .append(INFO).append("mcp ").append(safeName).append(RESET)
+                    .append(MUTED).append(" | ").append(RESET)
+                    .append(statusLabel)
+                    .append(MUTED).append(" | tools=").append(server.tools());
+            if (!server.lastError().isBlank()) {
+                line.append(" | ").append(fitWidth(normalizeStatusPanelField(server.lastError()), 42));
+            }
+            line.append(RESET);
+            lines.add(line.toString());
+            shown++;
+        }
+
+        int hidden = ordered.size() - shown;
+        if (hidden > 0) {
+            lines.add(MUTED + "         +" + hidden + " more mcp server(s)" + RESET);
+        }
+    }
+
+    private int mcpServerPriority(String status) {
+        return switch (status) {
+            case "failed" -> 0;
+            case "starting" -> 1;
+            case "connected" -> 2;
+            case "shutdown" -> 3;
+            default -> 4;
+        };
     }
 
     private String buildContinuousLearningStatusLine() {
