@@ -647,7 +647,46 @@ class MessageCompactorTest {
 
         // protectedTurns=2 -> walk backward, find 2nd UserMessage from end
         // Index 4 = UserMessage -> count 1
-        // Index 2 = UserMessage (tool result) -> count 2 -> return index 2
+        // Index 2 = UserMessage (tool result) -> count 2 -> boundary candidate = 2
+        // Index 2 has tool_result and index 1 is AssistantMessage -> pull back to 1
+        int boundary = MessageCompactor.calculateProtectedBoundary(messages, 2);
+        assertThat(boundary).isEqualTo(1);
+    }
+
+    @Test
+    void calculateProtectedBoundaryDoesNotSplitToolUseToolResultPair() {
+        var messages = List.<Message>of(
+                Message.user("Old prompt"),                                          // index 0
+                new Message.AssistantMessage(List.of(                               // index 1
+                        new ContentBlock.ToolUse("tu1", "read_file", "{}")
+                )),
+                Message.toolResult("tu1", "file content", false),                   // index 2
+                new Message.AssistantMessage(List.of(                               // index 3
+                        new ContentBlock.Text("Here is the file.")
+                )),
+                Message.user("Thanks"),                                             // index 4
+                Message.assistant("You're welcome")                                 // index 5
+        );
+
+        // protectedTurns=2: boundary candidate = index 2 (tool_result UserMessage)
+        // Must pull back to index 1 (preceding AssistantMessage with tool_use)
+        int boundary = MessageCompactor.calculateProtectedBoundary(messages, 2);
+        assertThat(boundary).isEqualTo(1);
+    }
+
+    @Test
+    void calculateProtectedBoundaryNoPullBackForRegularUserMessage() {
+        var messages = List.<Message>of(
+                Message.user("Turn 1"),           // index 0
+                Message.assistant("Response 1"),  // index 1
+                Message.user("Turn 2"),           // index 2 - regular user message, no tool_result
+                Message.assistant("Response 2"),  // index 3
+                Message.user("Turn 3"),           // index 4
+                Message.assistant("Response 3")   // index 5
+        );
+
+        // protectedTurns=2: boundary = index 2 (regular UserMessage, no tool_result)
+        // No pull-back needed
         int boundary = MessageCompactor.calculateProtectedBoundary(messages, 2);
         assertThat(boundary).isEqualTo(2);
     }

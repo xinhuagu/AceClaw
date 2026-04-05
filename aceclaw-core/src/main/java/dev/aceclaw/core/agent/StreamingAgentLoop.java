@@ -312,6 +312,23 @@ public final class StreamingAgentLoop {
                     if (!partialBlocks.isEmpty()) {
                         var partialMessage = new Message.AssistantMessage(partialBlocks);
                         newMessages.add(partialMessage);
+
+                        // Safety: generate placeholder tool_results for any tool_use blocks
+                        // so the conversation history stays valid for the next API call.
+                        var orphanToolUses = partialBlocks.stream()
+                                .filter(b -> b instanceof ContentBlock.ToolUse)
+                                .map(b -> (ContentBlock.ToolUse) b)
+                                .toList();
+                        if (!orphanToolUses.isEmpty()) {
+                            log.info("Generating {} placeholder tool_result(s) for cancelled stream",
+                                    orphanToolUses.size());
+                            var placeholderResults = orphanToolUses.stream()
+                                    .map(tu -> (ContentBlock) new ContentBlock.ToolResult(
+                                            tu.id(), "Tool execution cancelled by user", true))
+                                    .toList();
+                            var toolResultMessage = new Message.UserMessage(placeholderResults);
+                            newMessages.add(toolResultMessage);
+                        }
                     }
                     if (accumulator.usage != null) {
                         totalInputTokens += accumulator.usage.inputTokens();
