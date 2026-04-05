@@ -563,6 +563,7 @@ public final class TerminalRepl {
                         pollAndRenderDeferredEvents(schedulerEventConn, reader);
                         pollAndRenderSkillDraftEvents(schedulerEventConn);
                         pollCronStatus(schedulerEventConn);
+                        pollMcpStatus(schedulerEventConn);
                     }
                 });
     }
@@ -759,15 +760,16 @@ public final class TerminalRepl {
         }
     }
 
-    private void pollMcpStatus() {
-        if (client == null) return;
+    private void pollMcpStatus(DaemonConnection conn) {
+        if (conn == null) return;
         Instant now = Instant.now();
         if (cachedMcpStatus != null
                 && Duration.between(cachedMcpStatusAt, now).compareTo(MCP_STATUS_REFRESH) < 0) {
             return;
         }
         try {
-            JsonNode result = client.sendRequest("health.status", null);
+            JsonNode result = conn.sendRequest("health.status",
+                    client != null ? client.objectMapper().createObjectNode() : null);
             JsonNode mcp = result.path("mcp");
             var servers = new ArrayList<McpServerStatus>();
             JsonNode arr = mcp.path("servers");
@@ -1950,7 +1952,6 @@ public final class TerminalRepl {
     private List<String> buildStatusPanelLines() {
         var lines = new ArrayList<String>();
         Instant now = Instant.now();
-        pollMcpStatus();
 
         // -- 1. Header --
         lines.add(buildStatusString());
@@ -2118,16 +2119,18 @@ public final class TerminalRepl {
         int shown = 0;
         for (var server : ordered) {
             if (shown >= maxVisible) break;
-            String statusLabel = switch (server.status()) {
+            String safeName = normalizeStatusPanelField(server.name());
+            String safeStatus = normalizeStatusPanelField(server.status());
+            String statusLabel = switch (safeStatus) {
                 case "connected" -> SUCCESS + "connected" + RESET;
                 case "failed" -> ERROR + "failed" + RESET;
                 case "starting" -> WARNING + "starting" + RESET;
                 case "shutdown" -> MUTED + "shutdown" + RESET;
-                default -> MUTED + server.status() + RESET;
+                default -> MUTED + safeStatus + RESET;
             };
             var line = new StringBuilder();
             line.append(MUTED).append("       ").append(ICON_ITEM).append(" ").append(RESET)
-                    .append(INFO).append("mcp ").append(server.name()).append(RESET)
+                    .append(INFO).append("mcp ").append(safeName).append(RESET)
                     .append(MUTED).append(" | ").append(RESET)
                     .append(statusLabel)
                     .append(MUTED).append(" | tools=").append(server.tools());

@@ -164,6 +164,7 @@ public final class McpClientManager implements AutoCloseable {
                 bridgeServerTools(serverName, client, onServerTools);
             } else {
                 statuses.put(serverName, ServerStatus.FAILED);
+                lastReconnectAttemptMillis.put(serverName, System.currentTimeMillis());
                 if (lastError != null) {
                     lastErrors.put(serverName, lastError.getMessage());
                 }
@@ -201,7 +202,7 @@ public final class McpClientManager implements AutoCloseable {
      * Returns all bridged MCP tools adapted to the AceClaw {@link Tool} interface.
      */
     public synchronized List<Tool> bridgedTools() {
-        return Collections.unmodifiableList(bridgedTools);
+        return List.copyOf(bridgedTools);
     }
 
     /**
