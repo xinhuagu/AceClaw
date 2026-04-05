@@ -214,7 +214,7 @@ public final class AnthropicClient implements LlmClient {
                         }
                         case REFRESH_AVAILABLE -> {
                             log.info("OAuth token expired, attempting refresh...");
-                            if (refreshAccessToken()) {
+                            if (refreshAccessToken(true)) {
                                 httpRequest = buildRequest(requestBody, model);
                                 httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
                                 statusCode = httpResponse.statusCode();
@@ -278,7 +278,7 @@ public final class AnthropicClient implements LlmClient {
                         }
                         case REFRESH_AVAILABLE -> {
                             log.info("OAuth token expired, attempting refresh...");
-                            if (refreshAccessToken()) {
+                            if (refreshAccessToken(true)) {
                                 httpRequest = buildRequest(requestBody, model);
                                 httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofLines());
                                 statusCode = httpResponse.statusCode();
@@ -492,13 +492,23 @@ public final class AnthropicClient implements LlmClient {
      * @return true if refresh succeeded
      */
     private boolean refreshAccessToken() {
+        return refreshAccessToken(false);
+    }
+
+    /**
+     * @param force if true, skip the local expiry check and always contact the token
+     *              endpoint. Used by the 401 reactive path where the server has already
+     *              rejected the current token (e.g. early revocation).
+     */
+    private boolean refreshAccessToken(boolean force) {
         // Acquire the token lock (reentrant — safe when called from proactive refresh
         // which already holds the lock).  This serializes all token mutations so the
         // 401 reactive path cannot race with the proactive path.
         tokenLock.lock();
         try {
             // Double-check: another thread may have refreshed while we waited.
-            if (tokenExpiresAt > 0 && System.currentTimeMillis() < tokenExpiresAt) {
+            // Skip this check when forced (401 path — server already rejected the token).
+            if (!force && tokenExpiresAt > 0 && System.currentTimeMillis() < tokenExpiresAt) {
                 log.debug("Token already refreshed by another thread, skipping");
                 return true;
             }
