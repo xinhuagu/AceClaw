@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.7] - 2026-04-05
+
+### Features
+
+- MCP server health monitoring with auto-repair and status display (#395)
+- Startup progress messages in CLI and shell scripts
+
 ## [0.3.6] - 2026-04-04
 
 ### Bug Fixes
