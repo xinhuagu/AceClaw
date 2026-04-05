@@ -312,21 +312,39 @@ public final class MessageCompactor {
     /**
      * Calculates the message index at which protected turns begin.
      * A "turn" starts with a UserMessage.
+     *
+     * <p>After finding the boundary, ensures it does not split a tool_use / tool_result
+     * pair. If the boundary falls on a UserMessage containing tool_result blocks, the
+     * preceding AssistantMessage (with the matching tool_use) must also be included
+     * in the protected region to keep the conversation valid for the Anthropic API.
      */
     static int calculateProtectedBoundary(List<Message> messages, int protectedTurns) {
         if (protectedTurns <= 0) return messages.size();
 
         int turnCount = 0;
+        int boundary = 0;
         for (int i = messages.size() - 1; i >= 0; i--) {
             if (messages.get(i) instanceof Message.UserMessage) {
                 turnCount++;
                 if (turnCount >= protectedTurns) {
-                    return i;
+                    boundary = i;
+                    break;
                 }
             }
         }
 
-        return 0; // protect everything if fewer turns than requested
+        // If the boundary message is a UserMessage with tool_result blocks,
+        // pull the boundary back to include the preceding AssistantMessage
+        // that contains the matching tool_use blocks.
+        if (boundary > 0 && messages.get(boundary) instanceof Message.UserMessage u) {
+            boolean hasToolResults = u.content().stream()
+                    .anyMatch(b -> b instanceof ContentBlock.ToolResult);
+            if (hasToolResults && messages.get(boundary - 1) instanceof Message.AssistantMessage) {
+                boundary--;
+            }
+        }
+
+        return boundary;
     }
 
     /**

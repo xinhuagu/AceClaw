@@ -172,6 +172,46 @@ class StreamingToolUseToolResultInvariantTest {
         assertThat(turn.maxIterationsReached()).isTrue();
     }
 
+    @Test
+    void streamingLoop_cancellationDuringToolUseStream_generatesPlaceholderToolResults() throws Exception {
+        // LLM returns tool_use, but we cancel before tool execution
+        var responses = List.of(
+                toolUseStreamResponse("tu-1", "write_file", "{}",
+                        "tu-2", "write_file", "{}")
+        );
+        var llm = new FakeStreamingLlmClient(responses);
+
+        var registry = new ToolRegistry();
+        registry.register(new StubTool("write_file", "ok"));
+
+        var cancellationToken = new CancellationToken();
+        // Cancel immediately after stream completes (before tool execution)
+        var handler = new StreamEventHandler() {
+            @Override
+            public void onComplete(StreamEvent.StreamComplete event) {
+                cancellationToken.cancel();
+            }
+        };
+
+        var loop = new StreamingAgentLoop(llm, registry, "model", null);
+        var turn = loop.runTurn("write files", List.of(), handler, cancellationToken);
+
+        // The invariant must hold: every tool_use has a matching tool_result
+        assertToolUseToolResultInvariant(turn.newMessages());
+
+        // Verify the placeholder results are marked as errors
+        var lastMsg = turn.newMessages().getLast();
+        assertThat(lastMsg).isInstanceOf(Message.UserMessage.class);
+        var results = ((Message.UserMessage) lastMsg).content().stream()
+                .filter(b -> b instanceof ContentBlock.ToolResult)
+                .map(b -> (ContentBlock.ToolResult) b)
+                .toList();
+        assertThat(results).hasSize(2);
+        assertThat(results).allMatch(ContentBlock.ToolResult::isError);
+        assertThat(results).extracting(ContentBlock.ToolResult::toolUseId)
+                .containsExactlyInAnyOrder("tu-1", "tu-2");
+    }
+
     // ---- Invariant assertion (same logic as non-streaming test) ----
 
     private static void assertToolUseToolResultInvariant(List<Message> messages) {
