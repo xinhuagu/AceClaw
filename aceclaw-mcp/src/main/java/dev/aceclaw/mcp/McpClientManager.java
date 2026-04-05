@@ -328,7 +328,11 @@ public final class McpClientManager implements AutoCloseable {
             clients.put(serverName, client);
             statuses.put(serverName, ServerStatus.CONNECTED);
             lastErrors.remove(serverName);
-            bridgeServerTools(serverName, client, onServerTools);
+            if (!bridgeServerTools(serverName, client, onServerTools)) {
+                // Connected but tool discovery failed — server already marked FAILED by bridgeServerTools
+                log.warn("MCP server '{}' reconnected but tool discovery failed", serverName);
+                return false;
+            }
             log.info("MCP server '{}' reconnected successfully", serverName);
             return true;
         } catch (Exception e) {
@@ -533,8 +537,9 @@ public final class McpClientManager implements AutoCloseable {
             }
         }
 
-        // 3. Publish results + trigger reconnects under lock
+        // 3. Publish results + trigger reconnects under lock (skip if shutting down)
         synchronized (this) {
+            if (closed) return;
             for (var serverName : serverConfigs.keySet()) {
                 Boolean ok = pingResults.get(serverName);
                 if (ok != null && ok) {
