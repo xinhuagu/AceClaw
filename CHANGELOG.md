@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.9] - 2026-04-05
+
+### Bug Fixes
+
+- Unblock concurrent API calls in AnthropicClient (#398)
 ## [0.3.8] - 2026-04-05
 
 ### Bug Fixes
