@@ -37,6 +37,9 @@ public final class DaemonStarter {
     private static final long START_TIMEOUT_MS = 5_000;
     /** Interval between connection probes. */
     private static final long PROBE_INTERVAL_MS = 200;
+    /** Whether to print user-facing startup progress messages. */
+    private static final boolean PROGRESS_ENABLED =
+            !Boolean.parseBoolean(System.getenv().getOrDefault("ACECLAW_QUIET_STARTUP", "false"));
 
     private DaemonStarter() {}
 
@@ -55,6 +58,7 @@ public final class DaemonStarter {
         // Try connecting to an existing daemon
         if (isDaemonRunning()) {
             log.debug("Daemon already running; connecting");
+            progress("Connecting to existing daemon...");
             var client = new DaemonClient(SOCKET_PATH);
             client.connect();
             return client;
@@ -62,15 +66,18 @@ public final class DaemonStarter {
 
         // Daemon not running; start it
         log.info("Daemon not running; starting...");
+        progress("No daemon detected. Starting background daemon...");
         startDaemonProcess(null);
 
         // Wait for the socket to become available
+        progress("Waiting for daemon to become ready...");
         if (!waitForSocket()) {
             throw new IOException(
                     "Daemon did not start within " + START_TIMEOUT_MS + "ms. "
                     + "Check logs at " + DAEMON_LOG);
         }
 
+        progress("Daemon ready. Connecting...");
         var client = new DaemonClient(SOCKET_PATH);
         client.connect();
         log.info("Connected to newly started daemon");
@@ -88,17 +95,21 @@ public final class DaemonStarter {
     public static boolean ensureStarted(String providerOverride) throws IOException, InterruptedException {
         if (isDaemonRunning()) {
             log.debug("Daemon already running; background start skipped");
+            progress("Daemon already running.");
             return false;
         }
 
         log.info("Daemon not running; starting...");
+        progress("Starting background daemon...");
         startDaemonProcess(providerOverride);
 
+        progress("Waiting for daemon to become ready...");
         if (!waitForSocket()) {
             throw new IOException(
                     "Daemon did not start within " + START_TIMEOUT_MS + "ms. "
                             + "Check logs at " + DAEMON_LOG);
         }
+        progress("Daemon ready.");
         return true;
     }
 
@@ -255,10 +266,26 @@ public final class DaemonStarter {
     }
 
     private static boolean waitForSocket() throws InterruptedException {
-        return WaitSupport.awaitCondition(
-                DaemonStarter::isDaemonRunning,
-                Duration.ofMillis(START_TIMEOUT_MS),
-                Duration.ofMillis(PROBE_INTERVAL_MS)
-        );
+        long deadline = System.currentTimeMillis() + START_TIMEOUT_MS;
+        long nextNoticeAt = System.currentTimeMillis() + 1_000L;
+        while (System.currentTimeMillis() < deadline) {
+            if (isDaemonRunning()) {
+                return true;
+            }
+            if (System.currentTimeMillis() >= nextNoticeAt) {
+                long remainingMs = Math.max(0L, deadline - System.currentTimeMillis());
+                progress("Still waiting for daemon... " + remainingMs + "ms remaining");
+                nextNoticeAt += 1_000L;
+            }
+            WaitSupport.sleepInterruptibly(Duration.ofMillis(PROBE_INTERVAL_MS));
+        }
+        return isDaemonRunning();
+    }
+
+    private static void progress(String message) {
+        if (!PROGRESS_ENABLED) {
+            return;
+        }
+        System.err.println(">> " + message);
     }
 }
