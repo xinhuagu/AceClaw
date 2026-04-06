@@ -10,6 +10,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 
+import java.time.Duration;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class McpServerConfigTest {
@@ -334,5 +336,29 @@ class McpServerConfigTest {
         assertThat(target).hasSize(2);
         assertThat(target.get("s1").transport()).isEqualTo(McpServerConfig.TransportType.SSE);
         assertThat(target.get("s2").transport()).isEqualTo(McpServerConfig.TransportType.STDIO);
+    }
+
+    // --- Manager-level wiring tests: config timeout → Duration ---
+
+    @Test
+    void resolveTimeoutUsesCustomValue() {
+        var entry = McpServerConfig.ServerEntry.stdio("node", java.util.List.of(), java.util.Map.of());
+        // Override with timeout via constructor
+        var withTimeout = new McpServerConfig.ServerEntry(
+                "node", java.util.List.of(), java.util.Map.of(), null, java.util.Map.of(),
+                McpServerConfig.TransportType.STDIO, 120);
+
+        var resolved = McpClientManager.resolveTimeout(withTimeout);
+
+        assertThat(resolved).isEqualTo(Duration.ofSeconds(120));
+    }
+
+    @Test
+    void resolveTimeoutFallsBackToDefaultWhenNull() {
+        var entry = McpServerConfig.ServerEntry.stdio("node", java.util.List.of(), java.util.Map.of());
+
+        var resolved = McpClientManager.resolveTimeout(entry);
+
+        assertThat(resolved).isEqualTo(Duration.ofSeconds(30));
     }
 }

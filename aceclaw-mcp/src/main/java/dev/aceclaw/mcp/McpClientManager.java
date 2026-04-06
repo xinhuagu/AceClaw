@@ -393,9 +393,7 @@ public final class McpClientManager implements AutoCloseable {
             case STREAMABLE_HTTP -> createStreamableHttpTransport(config, jsonMapper);
         };
 
-        var timeout = config.timeout() != null
-                ? Duration.ofSeconds(config.timeout())
-                : DEFAULT_REQUEST_TIMEOUT;
+        var timeout = resolveTimeout(config);
         log.debug("MCP server '{}' request timeout: {}s", serverName, timeout.toSeconds());
 
         var client = McpClient.sync(transport)
@@ -416,6 +414,12 @@ public final class McpClientManager implements AutoCloseable {
         log.info("MCP server '{}' initialized successfully", serverName);
 
         return client;
+    }
+
+    static Duration resolveTimeout(McpServerConfig.ServerEntry config) {
+        return config.timeout() != null
+                ? Duration.ofSeconds(config.timeout())
+                : DEFAULT_REQUEST_TIMEOUT;
     }
 
     private McpClientTransport createStdioTransport(McpServerConfig.ServerEntry config,
