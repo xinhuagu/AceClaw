@@ -381,6 +381,8 @@ public final class McpClientManager implements AutoCloseable {
     }
 
     private McpSyncClient createAndInitialize(String serverName, McpServerConfig.ServerEntry config) {
+        Objects.requireNonNull(serverName, "serverName");
+        Objects.requireNonNull(config, "config");
         if (clientFactory != null) {
             return clientFactory.create(serverName, config);
         }
