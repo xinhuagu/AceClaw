@@ -223,6 +223,100 @@ class McpServerConfigTest {
     }
 
     @Test
+    void parseTimeoutFromConfig() throws IOException {
+        Files.writeString(tempDir.resolve(".mcp.json"), """
+                {
+                  "mcpServers": {
+                    "slow-server": {
+                      "command": "npx",
+                      "args": ["server"],
+                      "timeout": 120
+                    }
+                  }
+                }
+                """);
+
+        var result = McpServerConfig.load(tempDir);
+
+        var entry = result.get("slow-server");
+        assertThat(entry.timeout()).isEqualTo(120);
+    }
+
+    @Test
+    void missingTimeoutDefaultsToNull() throws IOException {
+        Files.writeString(tempDir.resolve(".mcp.json"), """
+                {
+                  "mcpServers": {
+                    "default-server": {
+                      "command": "node",
+                      "args": ["server.js"]
+                    }
+                  }
+                }
+                """);
+
+        var result = McpServerConfig.load(tempDir);
+
+        assertThat(result.get("default-server").timeout()).isNull();
+    }
+
+    @Test
+    void zeroTimeoutFallsBackToNull() throws IOException {
+        Files.writeString(tempDir.resolve(".mcp.json"), """
+                {
+                  "mcpServers": {
+                    "bad-server": {
+                      "command": "node",
+                      "timeout": 0
+                    }
+                  }
+                }
+                """);
+
+        var result = McpServerConfig.load(tempDir);
+
+        assertThat(result.get("bad-server").timeout()).isNull();
+    }
+
+    @Test
+    void negativeTimeoutFallsBackToNull() throws IOException {
+        Files.writeString(tempDir.resolve(".mcp.json"), """
+                {
+                  "mcpServers": {
+                    "neg-server": {
+                      "command": "node",
+                      "timeout": -1
+                    }
+                  }
+                }
+                """);
+
+        var result = McpServerConfig.load(tempDir);
+
+        assertThat(result.get("neg-server").timeout()).isNull();
+    }
+
+    @Test
+    void timeoutParsedForRemoteTransport() throws IOException {
+        Files.writeString(tempDir.resolve(".mcp.json"), """
+                {
+                  "mcpServers": {
+                    "remote-slow": {
+                      "url": "https://example.com/mcp",
+                      "timeout": 300
+                    }
+                  }
+                }
+                """);
+
+        var result = McpServerConfig.load(tempDir);
+
+        var entry = result.get("remote-slow");
+        assertThat(entry.transport()).isEqualTo(McpServerConfig.TransportType.SSE);
+        assertThat(entry.timeout()).isEqualTo(300);
+    }
+
+    @Test
     void mergeFromDirectlyWithValidConfig() throws IOException {
         var configFile = tempDir.resolve("test.json");
         Files.writeString(configFile, """

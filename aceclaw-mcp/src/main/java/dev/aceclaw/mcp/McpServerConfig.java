@@ -174,10 +174,16 @@ public final class McpServerConfig {
                             name, configFile);
                 }
 
-                // Parse optional timeout (seconds)
+                // Parse optional timeout (seconds); must be positive
                 Integer timeout = null;
                 if (value.has("timeout") && value.get("timeout").isNumber()) {
-                    timeout = value.get("timeout").asInt();
+                    int raw = value.get("timeout").asInt();
+                    if (raw > 0) {
+                        timeout = raw;
+                    } else {
+                        log.warn("MCP server '{}' in {} has non-positive timeout {}; using default",
+                                name, configFile, raw);
+                    }
                 }
 
                 if (hasUrl) {
