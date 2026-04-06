@@ -71,7 +71,7 @@ public final class McpServerConfig {
      * @param url       the server URL (SSE/HTTP transports)
      * @param headers   HTTP headers (SSE/HTTP transports)
      * @param transport the transport type
-     * @param timeout   request timeout in seconds (null = use default 30s)
+     * @param timeout   request timeout in seconds (null = use default 10min)
      */
     public record ServerEntry(
             String command,
