@@ -40,7 +40,7 @@ public final class McpClientManager implements AutoCloseable {
 
     private static final int MAX_START_ATTEMPTS = 3;
     private static final Duration BACKOFF_BASE = Duration.ofSeconds(2);
-    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
+    private static final Duration DEFAULT_REQUEST_TIMEOUT = Duration.ofMinutes(10);
     private static final Duration RECONNECT_COOLDOWN = Duration.ofSeconds(30);
     private static final Duration BACKGROUND_REFRESH_INTERVAL = Duration.ofSeconds(15);
 
@@ -393,8 +393,13 @@ public final class McpClientManager implements AutoCloseable {
             case STREAMABLE_HTTP -> createStreamableHttpTransport(config, jsonMapper);
         };
 
+        var timeout = config.timeout() != null
+                ? Duration.ofSeconds(config.timeout())
+                : DEFAULT_REQUEST_TIMEOUT;
+        log.debug("MCP server '{}' request timeout: {}s", serverName, timeout.toSeconds());
+
         var client = McpClient.sync(transport)
-                .requestTimeout(REQUEST_TIMEOUT)
+                .requestTimeout(timeout)
                 .build();
 
         try {

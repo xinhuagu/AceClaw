@@ -25,14 +25,16 @@ import java.util.Map;
  *   <li>{@code {project}/.aceclaw/mcp-servers.json} (project AceClaw-specific dedicated MCP config)</li>
  * </ol>
  *
- * <p>Supports stdio, SSE, and streamable HTTP transports:
+ * <p>Supports stdio, SSE, and streamable HTTP transports. Each server can optionally
+ * specify a {@code timeout} in seconds for MCP requests (default: 30s):
  * <pre>{@code
  * {
  *   "mcpServers": {
  *     "local-server": {
  *       "command": "npx",
  *       "args": ["-y", "@package/mcp-server"],
- *       "env": { "KEY": "value" }
+ *       "env": { "KEY": "value" },
+ *       "timeout": 120
  *     },
  *     "remote-sse": {
  *       "url": "https://example.com/mcp",
@@ -41,7 +43,8 @@ import java.util.Map;
  *     "remote-streamable": {
  *       "url": "https://example.com/mcp",
  *       "transport": "streamable-http",
- *       "headers": { "Authorization": "Bearer xxx" }
+ *       "headers": { "Authorization": "Bearer xxx" },
+ *       "timeout": 300
  *     }
  *   }
  * }
@@ -68,6 +71,7 @@ public final class McpServerConfig {
      * @param url       the server URL (SSE/HTTP transports)
      * @param headers   HTTP headers (SSE/HTTP transports)
      * @param transport the transport type
+     * @param timeout   request timeout in seconds (null = use default 30s)
      */
     public record ServerEntry(
             String command,
@@ -75,7 +79,8 @@ public final class McpServerConfig {
             Map<String, String> env,
             String url,
             Map<String, String> headers,
-            TransportType transport
+            TransportType transport,
+            Integer timeout
     ) {
         public ServerEntry {
             args = args != null ? List.copyOf(args) : List.of();
@@ -86,17 +91,17 @@ public final class McpServerConfig {
 
         /** Creates a stdio server entry. */
         public static ServerEntry stdio(String command, List<String> args, Map<String, String> env) {
-            return new ServerEntry(command, args, env, null, Map.of(), TransportType.STDIO);
+            return new ServerEntry(command, args, env, null, Map.of(), TransportType.STDIO, null);
         }
 
         /** Creates an SSE server entry. */
         public static ServerEntry sse(String url, Map<String, String> headers) {
-            return new ServerEntry(null, List.of(), Map.of(), url, headers, TransportType.SSE);
+            return new ServerEntry(null, List.of(), Map.of(), url, headers, TransportType.SSE, null);
         }
 
         /** Creates a streamable HTTP server entry. */
         public static ServerEntry streamableHttp(String url, Map<String, String> headers) {
-            return new ServerEntry(null, List.of(), Map.of(), url, headers, TransportType.STREAMABLE_HTTP);
+            return new ServerEntry(null, List.of(), Map.of(), url, headers, TransportType.STREAMABLE_HTTP, null);
         }
     }
 
@@ -169,6 +174,12 @@ public final class McpServerConfig {
                             name, configFile);
                 }
 
+                // Parse optional timeout (seconds)
+                Integer timeout = null;
+                if (value.has("timeout") && value.get("timeout").isNumber()) {
+                    timeout = value.get("timeout").asInt();
+                }
+
                 if (hasUrl) {
                     // Remote transport: SSE or streamable HTTP
                     var url = urlText;
@@ -176,9 +187,11 @@ public final class McpServerConfig {
                     var transportStr = value.has("transport") ? value.get("transport").asText().trim() : "";
 
                     if ("streamable-http".equalsIgnoreCase(transportStr)) {
-                        target.put(name, ServerEntry.streamableHttp(url, headers));
+                        target.put(name, new ServerEntry(null, List.of(), Map.of(), url, headers,
+                                TransportType.STREAMABLE_HTTP, timeout));
                     } else {
-                        target.put(name, ServerEntry.sse(url, headers));
+                        target.put(name, new ServerEntry(null, List.of(), Map.of(), url, headers,
+                                TransportType.SSE, timeout));
                     }
                     log.debug("Loaded MCP server '{}' from {}: {} ({})", name, configFile, url,
                             target.get(name).transport());
@@ -192,7 +205,8 @@ public final class McpServerConfig {
                         }
                     }
                     var env = parseStringMap(value, "env");
-                    target.put(name, ServerEntry.stdio(command, args, env));
+                    target.put(name, new ServerEntry(command, args, env, null, Map.of(),
+                            TransportType.STDIO, timeout));
                     log.debug("Loaded MCP server '{}' from {}: {} {}", name, configFile, command, args);
                 }
             }
