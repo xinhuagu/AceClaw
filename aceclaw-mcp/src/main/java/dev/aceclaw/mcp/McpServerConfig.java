@@ -26,7 +26,7 @@ import java.util.Map;
  * </ol>
  *
  * <p>Supports stdio, SSE, and streamable HTTP transports. Each server can optionally
- * specify a {@code timeout} in seconds for MCP requests (default: 30s):
+ * specify a {@code timeout} in seconds for MCP requests (default: 10min):
  * <pre>{@code
  * {
  *   "mcpServers": {

@@ -359,6 +359,6 @@ class McpServerConfigTest {
 
         var resolved = McpClientManager.resolveTimeout(entry);
 
-        assertThat(resolved).isEqualTo(Duration.ofSeconds(30));
+        assertThat(resolved).isEqualTo(Duration.ofMinutes(10));
     }
 }
