@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.10] - 2026-04-06
+
+### Features
+
+- Add per-server timeout config for MCP requests (#399)
 ## [0.3.9] - 2026-04-05
 
 ### Bug Fixes
