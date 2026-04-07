@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.locks.Lock;
 
 /**
  * Adapts an MCP tool to the AceClaw {@link Tool} interface.
@@ -30,14 +31,16 @@ public final class McpToolBridge implements Tool {
     private final String description;
     private final JsonNode inputSchema;
     private final McpSyncClient client;
+    private final Lock serverLock;
 
     private McpToolBridge(String qualifiedName, String mcpToolName, String description,
-                          JsonNode inputSchema, McpSyncClient client) {
+                          JsonNode inputSchema, McpSyncClient client, Lock serverLock) {
         this.qualifiedName = qualifiedName;
         this.mcpToolName = mcpToolName;
         this.description = description;
         this.inputSchema = inputSchema;
         this.client = client;
+        this.serverLock = serverLock;
     }
 
     /**
@@ -46,9 +49,11 @@ public final class McpToolBridge implements Tool {
      * @param serverName the MCP server name (from config)
      * @param mcpTool    the MCP tool definition
      * @param client     the MCP client for tool execution
+     * @param serverLock per-server lock to serialize requests over the shared transport
      * @return a new tool bridge instance
      */
-    public static McpToolBridge create(String serverName, McpSchema.Tool mcpTool, McpSyncClient client) {
+    public static McpToolBridge create(String serverName, McpSchema.Tool mcpTool,
+                                       McpSyncClient client, Lock serverLock) {
         var qualifiedName = "mcp__" + serverName + "__" + mcpTool.name();
 
         // Convert MCP input schema to Jackson JsonNode
@@ -63,7 +68,7 @@ public final class McpToolBridge implements Tool {
         }
 
         return new McpToolBridge(qualifiedName, mcpTool.name(),
-                mcpTool.description(), inputSchema, client);
+                mcpTool.description(), inputSchema, client, serverLock);
     }
 
     @Override
@@ -95,9 +100,17 @@ public final class McpToolBridge implements Tool {
             args = parsed;
         }
 
-        // Call the MCP tool
+        // Serialize requests per server — the MCP SDK's StdioClientTransport uses a
+        // Reactor unicast sink whose tryEmitNext() is not thread-safe; concurrent calls
+        // from parallel virtual threads cause FAIL_NON_SERIALIZED ("Failed to enqueue message").
         var request = new McpSchema.CallToolRequest(mcpToolName, args);
-        var result = client.callTool(request);
+        McpSchema.CallToolResult result;
+        serverLock.lock();
+        try {
+            result = client.callTool(request);
+        } finally {
+            serverLock.unlock();
+        }
 
         // Extract text content from the result
         var output = extractContent(result);

@@ -23,6 +23,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 
 /**
@@ -75,6 +77,7 @@ public final class McpClientManager implements AutoCloseable {
     private final Map<String, ServerStatus> statuses = new LinkedHashMap<>();
     private final List<Tool> bridgedTools = new ArrayList<>();
     private final Map<String, String> lastErrors = new LinkedHashMap<>();
+    private final Map<String, Lock> serverLocks = new LinkedHashMap<>();
     private final Map<String, Long> lastReconnectAttemptMillis = new LinkedHashMap<>();
     private Consumer<List<Tool>> onServerTools;
     private Consumer<String> onToolRemoved;
@@ -502,9 +505,10 @@ public final class McpClientManager implements AutoCloseable {
             return List.of();
         }
 
+        var lock = serverLocks.computeIfAbsent(serverName, k -> new ReentrantLock());
         var bridgedForServer = new ArrayList<Tool>();
         for (var mcpTool : tools) {
-            var bridged = McpToolBridge.create(serverName, mcpTool, client);
+            var bridged = McpToolBridge.create(serverName, mcpTool, client, lock);
             bridgedTools.add(bridged);
             bridgedForServer.add(bridged);
             log.debug("Bridged MCP tool: {}", bridged.name());
