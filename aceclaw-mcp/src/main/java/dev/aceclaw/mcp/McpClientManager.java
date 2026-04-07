@@ -243,8 +243,14 @@ public final class McpClientManager implements AutoCloseable {
         var results = new LinkedHashMap<String, Boolean>();
         for (var entry : clients.entrySet()) {
             var serverName = entry.getKey();
+            var lock = serverLocks.get(serverName);
             try {
-                entry.getValue().ping();
+                if (lock != null) lock.lock();
+                try {
+                    entry.getValue().ping();
+                } finally {
+                    if (lock != null) lock.unlock();
+                }
                 results.put(serverName, true);
                 statuses.put(serverName, ServerStatus.CONNECTED);
                 lastErrors.remove(serverName);
@@ -528,12 +534,14 @@ public final class McpClientManager implements AutoCloseable {
         // 1. Snapshot under lock
         Map<String, McpSyncClient> clientSnapshot;
         Map<String, ServerStatus> statusSnapshot;
+        Map<String, Lock> lockSnapshot;
         synchronized (this) {
             clientSnapshot = new LinkedHashMap<>(clients);
             statusSnapshot = new LinkedHashMap<>(statuses);
+            lockSnapshot = new LinkedHashMap<>(serverLocks);
         }
 
-        // 2. Ping outside the monitor — no lock held during I/O
+        // 2. Ping outside the monitor — per-server lock prevents racing with callTool()
         var pingResults = new LinkedHashMap<String, Boolean>();
         var pingErrors = new LinkedHashMap<String, String>();
         for (var serverName : serverConfigs.keySet()) {
@@ -542,8 +550,14 @@ public final class McpClientManager implements AutoCloseable {
                 pingResults.put(serverName, false);
                 continue;
             }
+            var lock = lockSnapshot.get(serverName);
             try {
-                client.ping();
+                if (lock != null) lock.lock();
+                try {
+                    client.ping();
+                } finally {
+                    if (lock != null) lock.unlock();
+                }
                 pingResults.put(serverName, true);
             } catch (Exception e) {
                 log.warn("MCP server '{}' ping failed: {}", serverName, e.getMessage());
