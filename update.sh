@@ -30,13 +30,15 @@ echo ""
 
 # ---------------------------------------------------------------------------
 # Detect mode: release install vs git checkout
+# A release install has a VERSION file; a git checkout has .git but no VERSION.
+# Some installs may have both (e.g. daemon-created .git for config tracking).
 # ---------------------------------------------------------------------------
-if [ -d "$SCRIPT_DIR/.git" ]; then
+if [ -f "$SCRIPT_DIR/VERSION" ] && [ -x "$SCRIPT_DIR/bin/aceclaw-cli" ]; then
+    : # Valid release install — proceed
+elif [ -d "$SCRIPT_DIR/.git" ]; then
     fail "This is a git checkout, not a release install. To update from source:
     cd $SCRIPT_DIR && git pull && ./gradlew :aceclaw-cli:installDist -q"
-fi
-
-if [ ! -f "$SCRIPT_DIR/VERSION" ] || [ ! -x "$SCRIPT_DIR/bin/aceclaw-cli" ]; then
+else
     fail "Not a valid release install (missing VERSION or bin/aceclaw-cli).
   If this is a source checkout, use: git pull && ./gradlew :aceclaw-cli:installDist -q"
 fi
