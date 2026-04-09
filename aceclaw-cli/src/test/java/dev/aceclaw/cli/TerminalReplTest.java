@@ -863,4 +863,324 @@ class TerminalReplTest {
     private static String stripAnsi(String text) {
         return text.replaceAll("\\u001B\\[[0-?]*[ -/]*[@-~]", "");
     }
+
+    // ── MCP carousel tests ──────────────────────────────────────────────
+
+    /**
+     * Creates an McpStatusSnapshot via reflection (private inner record).
+     */
+    @SuppressWarnings("unchecked")
+    private static Object newMcpStatusSnapshot(int configured, int connected, int failed,
+                                                int tools, List<?> servers) throws Exception {
+        Class<?> snapshotClass = Class.forName(TerminalRepl.class.getName() + "$McpStatusSnapshot");
+        var ctor = snapshotClass.getDeclaredConstructors()[0];
+        ctor.setAccessible(true);
+        return ctor.newInstance(configured, connected, failed, tools, servers);
+    }
+
+    private static Object newMcpServerStatus(String name, String status, int tools, String lastError) throws Exception {
+        Class<?> serverClass = Class.forName(TerminalRepl.class.getName() + "$McpServerStatus");
+        var ctor = serverClass.getDeclaredConstructors()[0];
+        ctor.setAccessible(true);
+        return ctor.newInstance(name, status, tools, lastError);
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> callAppendMcpServerLines() throws Exception {
+        var lines = new ArrayList<String>();
+        invokePrivate(repl, "appendMcpServerLines",
+                new Class<?>[]{List.class}, lines);
+        return lines;
+    }
+
+    @Test
+    void mcpCarousel_twoOrFewerServers_noScrolling() throws Exception {
+        var servers = List.of(
+                newMcpServerStatus("server-a", "connected", 3, ""),
+                newMcpServerStatus("server-b", "connected", 2, ""));
+        setPrivateField(repl, "cachedMcpStatus",
+                newMcpStatusSnapshot(2, 2, 0, 5, servers));
+
+        var lines = callAppendMcpServerLines();
+        var plain = lines.stream().map(TerminalReplTest::stripAnsi).toList();
+
+        assertThat(plain).hasSize(2);
+        assertThat(plain.get(0)).contains("server-a");
+        assertThat(plain.get(1)).contains("server-b");
+        // No scroll indicator
+        assertThat(plain).noneMatch(l -> l.contains("\u21BB"));
+    }
+
+    @Test
+    void mcpCarousel_moreThanTwoConnected_showsScrollIndicator() throws Exception {
+        var servers = List.of(
+                newMcpServerStatus("alpha", "connected", 2, ""),
+                newMcpServerStatus("beta", "connected", 3, ""),
+                newMcpServerStatus("gamma", "connected", 1, ""));
+        setPrivateField(repl, "cachedMcpStatus",
+                newMcpStatusSnapshot(3, 3, 0, 6, servers));
+
+        var lines = callAppendMcpServerLines();
+        var plain = lines.stream().map(TerminalReplTest::stripAnsi).toList();
+
+        // 2 server lines + 1 scroll indicator line
+        assertThat(plain).hasSize(3);
+        assertThat(plain.get(2)).contains("\u21BB");
+        assertThat(plain.get(2)).contains("/3");
+    }
+
+    @Test
+    void mcpCarousel_firstRender_startsAtOffsetZero() throws Exception {
+        var servers = List.of(
+                newMcpServerStatus("alpha", "connected", 2, ""),
+                newMcpServerStatus("beta", "connected", 3, ""),
+                newMcpServerStatus("gamma", "connected", 1, ""));
+        setPrivateField(repl, "cachedMcpStatus",
+                newMcpStatusSnapshot(3, 3, 0, 6, servers));
+        // Ensure fresh state (mcpLastScrollTick = 0, mcpScrollOffset = 0)
+        setPrivateField(repl, "mcpScrollOffset", 0);
+        setPrivateField(repl, "mcpLastScrollTick", 0L);
+
+        var lines = callAppendMcpServerLines();
+        var plain = lines.stream().map(TerminalReplTest::stripAnsi).toList();
+
+        // First two alphabetically: alpha, beta (offset 0)
+        assertThat(plain.get(0)).contains("alpha");
+        assertThat(plain.get(1)).contains("beta");
+
+        // Offset should still be 0 after first render (only timestamp initialized)
+        int offset = (int) getPrivateField(repl, "mcpScrollOffset");
+        assertThat(offset).isEqualTo(0);
+    }
+
+    @Test
+    void mcpCarousel_advancesAfterInterval() throws Exception {
+        var servers = List.of(
+                newMcpServerStatus("alpha", "connected", 2, ""),
+                newMcpServerStatus("beta", "connected", 3, ""),
+                newMcpServerStatus("gamma", "connected", 1, ""));
+        setPrivateField(repl, "cachedMcpStatus",
+                newMcpStatusSnapshot(3, 3, 0, 6, servers));
+
+        // First render: initializes timestamp, offset stays 0
+        setPrivateField(repl, "mcpScrollOffset", 0);
+        setPrivateField(repl, "mcpLastScrollTick", 0L);
+        callAppendMcpServerLines();
+
+        // Simulate time passing beyond the scroll interval
+        long pastTick = System.currentTimeMillis() - 4_000;
+        setPrivateField(repl, "mcpLastScrollTick", pastTick);
+
+        var lines = callAppendMcpServerLines();
+        var plain = lines.stream().map(TerminalReplTest::stripAnsi).toList();
+
+        // After advance, offset becomes 1: beta, gamma
+        assertThat(plain.get(0)).contains("beta");
+        assertThat(plain.get(1)).contains("gamma");
+    }
+
+    @Test
+    void mcpCarousel_failedServersPinned_connectedServersScroll() throws Exception {
+        var servers = List.of(
+                newMcpServerStatus("alpha", "connected", 2, ""),
+                newMcpServerStatus("broken", "failed", 0, "connection refused"),
+                newMcpServerStatus("beta", "connected", 3, ""),
+                newMcpServerStatus("gamma", "connected", 1, ""));
+        setPrivateField(repl, "cachedMcpStatus",
+                newMcpStatusSnapshot(4, 3, 1, 6, servers));
+
+        // Fresh state
+        setPrivateField(repl, "mcpScrollOffset", 0);
+        setPrivateField(repl, "mcpLastScrollTick", 0L);
+
+        var lines = callAppendMcpServerLines();
+        var plain = lines.stream().map(TerminalReplTest::stripAnsi).toList();
+
+        // First line: pinned failed server
+        assertThat(plain.get(0)).contains("broken");
+        assertThat(plain.get(0)).contains("failed");
+        // Second line: first scrollable connected server (only 1 scroll slot remains)
+        assertThat(plain.get(1)).contains("alpha");
+        // Third line: scroll indicator for remaining connected servers
+        assertThat(plain.get(2)).contains("\u21BB");
+        assertThat(plain.get(2)).contains("/3");
+    }
+
+    @Test
+    void mcpCarousel_allFailed_noScrolling() throws Exception {
+        var servers = List.of(
+                newMcpServerStatus("srv-a", "failed", 0, "timeout"),
+                newMcpServerStatus("srv-b", "failed", 0, "refused"));
+        setPrivateField(repl, "cachedMcpStatus",
+                newMcpStatusSnapshot(2, 0, 2, 0, servers));
+
+        var lines = callAppendMcpServerLines();
+        var plain = lines.stream().map(TerminalReplTest::stripAnsi).toList();
+
+        assertThat(plain).hasSize(2);
+        assertThat(plain.get(0)).contains("srv-a").contains("failed");
+        assertThat(plain.get(1)).contains("srv-b").contains("failed");
+        assertThat(plain).noneMatch(l -> l.contains("\u21BB"));
+    }
+
+    @Test
+    void mcpCarousel_noServers_emptyOutput() throws Exception {
+        setPrivateField(repl, "cachedMcpStatus",
+                newMcpStatusSnapshot(0, 0, 0, 0, List.of()));
+
+        var lines = callAppendMcpServerLines();
+        assertThat(lines).isEmpty();
+    }
+
+    @Test
+    void mcpCarousel_offsetWrapsAround() throws Exception {
+        var servers = List.of(
+                newMcpServerStatus("alpha", "connected", 2, ""),
+                newMcpServerStatus("beta", "connected", 3, ""),
+                newMcpServerStatus("gamma", "connected", 1, ""));
+        setPrivateField(repl, "cachedMcpStatus",
+                newMcpStatusSnapshot(3, 3, 0, 6, servers));
+
+        // Set offset to last position so next advance wraps to 0
+        setPrivateField(repl, "mcpScrollOffset", 2);
+        long pastTick = System.currentTimeMillis() - 4_000;
+        setPrivateField(repl, "mcpLastScrollTick", pastTick);
+
+        var lines = callAppendMcpServerLines();
+        var plain = lines.stream().map(TerminalReplTest::stripAnsi).toList();
+
+        // Offset wraps: (2+1) % 3 = 0 → back to alpha, beta
+        assertThat(plain.get(0)).contains("alpha");
+        assertThat(plain.get(1)).contains("beta");
+    }
+
+    @Test
+    void mcpCarousel_allSlotsPinned_showsOverflowCount() throws Exception {
+        var servers = List.of(
+                newMcpServerStatus("fail-a", "failed", 0, "err"),
+                newMcpServerStatus("fail-b", "starting", 0, ""),
+                newMcpServerStatus("ok-c", "connected", 5, ""));
+        setPrivateField(repl, "cachedMcpStatus",
+                newMcpStatusSnapshot(3, 1, 1, 5, servers));
+
+        var lines = callAppendMcpServerLines();
+        var plain = lines.stream().map(TerminalReplTest::stripAnsi).toList();
+
+        // Both slots consumed by pinned (failed + starting)
+        assertThat(plain.get(0)).contains("fail-a");
+        assertThat(plain.get(1)).contains("fail-b");
+        // Overflow shows the connected server count
+        assertThat(plain.get(2)).contains("+1 more mcp server(s)");
+    }
+
+    @Test
+    void mcpCarousel_moreThanTwoPinned_showsPinnedOverflow() throws Exception {
+        var servers = List.of(
+                newMcpServerStatus("fail-a", "failed", 0, "timeout"),
+                newMcpServerStatus("fail-b", "failed", 0, "refused"),
+                newMcpServerStatus("fail-c", "starting", 0, ""),
+                newMcpServerStatus("ok-d", "connected", 5, ""));
+        setPrivateField(repl, "cachedMcpStatus",
+                newMcpStatusSnapshot(4, 1, 2, 5, servers));
+
+        var lines = callAppendMcpServerLines();
+        var plain = lines.stream().map(TerminalReplTest::stripAnsi).toList();
+
+        // Two highest-priority pinned shown (both failed, alphabetical)
+        assertThat(plain.get(0)).contains("fail-a");
+        assertThat(plain.get(1)).contains("fail-b");
+        // Pinned overflow for the third pinned server (starting)
+        assertThat(plain.get(2)).contains("+1 more pinned mcp server(s)");
+        // Scrollable server overflow also shown
+        assertThat(plain.get(3)).contains("+1 more mcp server(s)");
+    }
+
+    // ── MCP carousel integration tests (through buildStatusPanelLines) ──
+
+    @SuppressWarnings("unchecked")
+    private List<String> callBuildStatusPanelLines() throws Exception {
+        return (List<String>) invokePrivate(repl, "buildStatusPanelLines", new Class<?>[]{});
+    }
+
+    @Test
+    void mcpCarousel_survivesFullPanelBuild() throws Exception {
+        // Set up 4 connected MCP servers → triggers carousel in buildStatusPanelLines
+        var servers = List.of(
+                newMcpServerStatus("alpha", "connected", 2, ""),
+                newMcpServerStatus("beta", "connected", 3, ""),
+                newMcpServerStatus("gamma", "connected", 1, ""),
+                newMcpServerStatus("delta", "connected", 4, ""));
+        setPrivateField(repl, "cachedMcpStatus",
+                newMcpStatusSnapshot(4, 4, 0, 10, servers));
+        // Fresh carousel state
+        setPrivateField(repl, "mcpScrollOffset", 0);
+        setPrivateField(repl, "mcpLastScrollTick", 0L);
+
+        var lines = callBuildStatusPanelLines();
+        var plain = lines.stream().map(TerminalReplTest::stripAnsi).toList();
+
+        // Baseline: header(1) + learning(1) + cron(1) + tasks(1) = 4
+        // MCP adds: 2 server lines + 1 scroll indicator = 3
+        // Total = 7, well within FIXED_STATUS_LINE_COUNT (9)
+        assertThat(plain).hasSizeGreaterThanOrEqualTo(7);
+
+        // MCP server lines and scroll indicator are present in the full panel
+        assertThat(plain).anyMatch(l -> l.contains("mcp alpha"));
+        assertThat(plain).anyMatch(l -> l.contains("mcp beta"));
+        assertThat(plain).anyMatch(l -> l.contains("\u21BB"));
+        assertThat(plain).anyMatch(l -> l.contains("/4"));
+    }
+
+    @Test
+    void mcpCarousel_panelLineBudget_mcpNotTruncated() throws Exception {
+        // Verify MCP carousel lines fit within the 9-line panel budget.
+        // renderStatusFrame adds +1 separator line, so effective content budget = 8.
+        // Worst case without cron expansion: header(1) + learning(1) + cron(1) + tasks(1) +
+        //   mcp servers(2) + scroll indicator(1) = 7. Should be fine.
+        var servers = List.of(
+                newMcpServerStatus("srv-1", "connected", 5, ""),
+                newMcpServerStatus("srv-2", "connected", 3, ""),
+                newMcpServerStatus("srv-3", "connected", 2, ""));
+        setPrivateField(repl, "cachedMcpStatus",
+                newMcpStatusSnapshot(3, 3, 0, 10, servers));
+        setPrivateField(repl, "mcpScrollOffset", 0);
+        setPrivateField(repl, "mcpLastScrollTick", 0L);
+
+        var lines = callBuildStatusPanelLines();
+
+        // renderStatusFrame prepends 1 separator line then truncates to maxLines.
+        // FIXED_STATUS_LINE_COUNT = 9, so content must be <= 8 to survive.
+        int fixedLineCount = 9;
+        assertThat(lines.size())
+                .as("buildStatusPanelLines output must fit within panel budget (separator takes 1)")
+                .isLessThanOrEqualTo(fixedLineCount - 1);
+
+        // MCP scroll indicator is present (not truncated)
+        var plain = lines.stream().map(TerminalReplTest::stripAnsi).toList();
+        assertThat(plain).anyMatch(l -> l.contains("\u21BB"));
+    }
+
+    @Test
+    void mcpCarousel_failedPinned_visibleInFullPanel() throws Exception {
+        // Failed server pinned at top, connected servers scroll — verify through full panel build
+        var servers = List.of(
+                newMcpServerStatus("broken", "failed", 0, "connection refused"),
+                newMcpServerStatus("alpha", "connected", 2, ""),
+                newMcpServerStatus("beta", "connected", 3, ""),
+                newMcpServerStatus("gamma", "connected", 1, ""));
+        setPrivateField(repl, "cachedMcpStatus",
+                newMcpStatusSnapshot(4, 3, 1, 6, servers));
+        setPrivateField(repl, "mcpScrollOffset", 0);
+        setPrivateField(repl, "mcpLastScrollTick", 0L);
+
+        var lines = callBuildStatusPanelLines();
+        var plain = lines.stream().map(TerminalReplTest::stripAnsi).toList();
+
+        // Failed server must be visible in the panel
+        assertThat(plain).anyMatch(l -> l.contains("broken") && l.contains("failed"));
+        // One scrollable server visible in the remaining slot
+        assertThat(plain).anyMatch(l -> l.contains("mcp alpha"));
+        // Scroll indicator for the other 2 connected servers
+        assertThat(plain).anyMatch(l -> l.contains("\u21BB") && l.contains("/3"));
+    }
 }
