@@ -77,6 +77,8 @@ public final class TerminalRepl {
     private static final Duration SKILL_DRAFT_REFRESH = Duration.ofSeconds(5);
     private static final Duration CRON_STATUS_REFRESH = Duration.ofSeconds(5);
     private static final Duration MCP_STATUS_REFRESH = Duration.ofSeconds(5);
+    /** How often the MCP server list rotates when there are more servers than visible slots. */
+    private static final long MCP_SCROLL_INTERVAL_MS = 3_000;
     /** Slightly shorter than the bridge timeout so user answers win the race near deadline. */
     private static final long PERMISSION_MODAL_TIMEOUT_MS =
             TaskStreamReader.CLIENT_PERMISSION_WAIT_TIMEOUT_MS - 5_000L;
@@ -146,6 +148,10 @@ public final class TerminalRepl {
     /** Cached MCP server status snapshot from daemon health RPC. */
     private volatile McpStatusSnapshot cachedMcpStatus;
     private volatile Instant cachedMcpStatusAt = Instant.EPOCH;
+    /** Current scroll offset for MCP server carousel (rotates through servers > maxVisible). */
+    private int mcpScrollOffset;
+    /** System.currentTimeMillis() when the MCP scroll last advanced. */
+    private long mcpLastScrollTick;
     /** Cached git branch name, refreshed periodically. */
     private volatile String cachedGitBranch;
     private volatile Instant cachedGitBranchAt = Instant.EPOCH;
@@ -2101,14 +2107,39 @@ public final class TerminalRepl {
         return sb.toString();
     }
 
+    /**
+     * Appends MCP server lines to the status panel with auto-scrolling carousel.
+     *
+     * <p>Servers that need attention (failed / starting) are always pinned at the top.
+     * Remaining visible slots rotate through connected / shutdown servers every
+     * {@link #MCP_SCROLL_INTERVAL_MS} so the user eventually sees every server's
+     * real-time health without manual interaction.
+     */
     private void appendMcpServerLines(List<String> lines) {
         var mcp = cachedMcpStatus;
         if (mcp == null || mcp.servers().isEmpty()) {
             return;
         }
 
-        var ordered = new ArrayList<>(mcp.servers());
-        ordered.sort((a, b) -> {
+        // Partition into pinned (failed/starting — always visible) and scrollable.
+        var pinned = new ArrayList<McpServerStatus>();
+        var scrollable = new ArrayList<McpServerStatus>();
+        for (var server : mcp.servers()) {
+            String st = server.status();
+            if ("failed".equals(st) || "starting".equals(st)) {
+                pinned.add(server);
+            } else {
+                scrollable.add(server);
+            }
+        }
+        // Stable sort within each group: failed before starting, then alphabetical.
+        pinned.sort((a, b) -> {
+            int pa = mcpServerPriority(a.status());
+            int pb = mcpServerPriority(b.status());
+            if (pa != pb) return Integer.compare(pa, pb);
+            return a.name().compareToIgnoreCase(b.name());
+        });
+        scrollable.sort((a, b) -> {
             int pa = mcpServerPriority(a.status());
             int pb = mcpServerPriority(b.status());
             if (pa != pb) return Integer.compare(pa, pb);
@@ -2116,35 +2147,75 @@ public final class TerminalRepl {
         });
 
         int maxVisible = 2;
-        int shown = 0;
-        for (var server : ordered) {
-            if (shown >= maxVisible) break;
-            String safeName = normalizeStatusPanelField(server.name());
-            String safeStatus = normalizeStatusPanelField(server.status());
-            String statusLabel = switch (safeStatus) {
-                case "connected" -> SUCCESS + "connected" + RESET;
-                case "failed" -> ERROR + "failed" + RESET;
-                case "starting" -> WARNING + "starting" + RESET;
-                case "shutdown" -> MUTED + "shutdown" + RESET;
-                default -> MUTED + safeStatus + RESET;
-            };
-            var line = new StringBuilder();
-            line.append(MUTED).append("       ").append(ICON_ITEM).append(" ").append(RESET)
-                    .append(INFO).append("mcp ").append(safeName).append(RESET)
-                    .append(MUTED).append(" | ").append(RESET)
-                    .append(statusLabel)
-                    .append(MUTED).append(" | tools=").append(server.tools());
-            if (!server.lastError().isBlank()) {
-                line.append(" | ").append(fitWidth(normalizeStatusPanelField(server.lastError()), 42));
-            }
-            line.append(RESET);
-            lines.add(line.toString());
-            shown++;
+        int pinnedSlots = Math.min(pinned.size(), maxVisible);
+        int scrollSlots = maxVisible - pinnedSlots;
+
+        // Render pinned servers (always shown).
+        for (int i = 0; i < pinnedSlots; i++) {
+            lines.add(formatMcpServerLine(pinned.get(i)));
         }
 
-        int hidden = ordered.size() - shown;
-        if (hidden > 0) {
-            lines.add(MUTED + "         +" + hidden + " more mcp server(s)" + RESET);
+        // Render scrollable servers with carousel rotation.
+        if (scrollSlots > 0 && !scrollable.isEmpty()) {
+            int total = scrollable.size();
+            if (total <= scrollSlots) {
+                // All fit — no scrolling needed.
+                for (var server : scrollable) {
+                    lines.add(formatMcpServerLine(server));
+                }
+            } else {
+                // Advance carousel offset on timer.
+                advanceMcpScroll(total);
+                int offset = mcpScrollOffset % total;
+                for (int i = 0; i < scrollSlots; i++) {
+                    int idx = (offset + i) % total;
+                    lines.add(formatMcpServerLine(scrollable.get(idx)));
+                }
+                // Scroll indicator: e.g. [2-3/5 ↻]
+                int first = offset + 1;
+                int last = ((offset + scrollSlots - 1) % total) + 1;
+                String range = scrollSlots == 1
+                        ? String.valueOf(first)
+                        : first + "-" + last;
+                lines.add(MUTED + "         [" + range + "/" + total + " \u21BB]"
+                        + " +" + (total - scrollSlots) + " more mcp server(s)" + RESET);
+            }
+        } else if (scrollable.size() > scrollSlots) {
+            // All slots consumed by pinned; show overflow count.
+            lines.add(MUTED + "         +" + scrollable.size() + " more mcp server(s)" + RESET);
+        }
+    }
+
+    /** Formats a single MCP server status line for the panel. */
+    private String formatMcpServerLine(McpServerStatus server) {
+        String safeName = normalizeStatusPanelField(server.name());
+        String safeStatus = normalizeStatusPanelField(server.status());
+        String statusLabel = switch (safeStatus) {
+            case "connected" -> SUCCESS + "connected" + RESET;
+            case "failed" -> ERROR + "failed" + RESET;
+            case "starting" -> WARNING + "starting" + RESET;
+            case "shutdown" -> MUTED + "shutdown" + RESET;
+            default -> MUTED + safeStatus + RESET;
+        };
+        var line = new StringBuilder();
+        line.append(MUTED).append("       ").append(ICON_ITEM).append(" ").append(RESET)
+                .append(INFO).append("mcp ").append(safeName).append(RESET)
+                .append(MUTED).append(" | ").append(RESET)
+                .append(statusLabel)
+                .append(MUTED).append(" | tools=").append(server.tools());
+        if (!server.lastError().isBlank()) {
+            line.append(" | ").append(fitWidth(normalizeStatusPanelField(server.lastError()), 42));
+        }
+        line.append(RESET);
+        return line.toString();
+    }
+
+    /** Advances the MCP carousel offset if the scroll interval has elapsed. */
+    private void advanceMcpScroll(int totalScrollable) {
+        long now = System.currentTimeMillis();
+        if (now - mcpLastScrollTick >= MCP_SCROLL_INTERVAL_MS) {
+            mcpLastScrollTick = now;
+            mcpScrollOffset = (mcpScrollOffset + 1) % totalScrollable;
         }
     }
 
