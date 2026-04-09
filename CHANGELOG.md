@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.11] - 2026-04-09
+
+### Features
+
+- Auto-scroll MCP server status bar when >2 servers (#403)
 ## [0.3.10] - 2026-04-06
 
 ### Features
