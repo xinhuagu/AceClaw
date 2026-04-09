@@ -1094,4 +1094,93 @@ class TerminalReplTest {
         // Scrollable server overflow also shown
         assertThat(plain.get(3)).contains("+1 more mcp server(s)");
     }
+
+    // ── MCP carousel integration tests (through buildStatusPanelLines) ──
+
+    @SuppressWarnings("unchecked")
+    private List<String> callBuildStatusPanelLines() throws Exception {
+        return (List<String>) invokePrivate(repl, "buildStatusPanelLines", new Class<?>[]{});
+    }
+
+    @Test
+    void mcpCarousel_survivesFullPanelBuild() throws Exception {
+        // Set up 4 connected MCP servers → triggers carousel in buildStatusPanelLines
+        var servers = List.of(
+                newMcpServerStatus("alpha", "connected", 2, ""),
+                newMcpServerStatus("beta", "connected", 3, ""),
+                newMcpServerStatus("gamma", "connected", 1, ""),
+                newMcpServerStatus("delta", "connected", 4, ""));
+        setPrivateField(repl, "cachedMcpStatus",
+                newMcpStatusSnapshot(4, 4, 0, 10, servers));
+        // Fresh carousel state
+        setPrivateField(repl, "mcpScrollOffset", 0);
+        setPrivateField(repl, "mcpLastScrollTick", 0L);
+
+        var lines = callBuildStatusPanelLines();
+        var plain = lines.stream().map(TerminalReplTest::stripAnsi).toList();
+
+        // Baseline: header(1) + learning(1) + cron(1) + tasks(1) = 4
+        // MCP adds: 2 server lines + 1 scroll indicator = 3
+        // Total = 7, well within FIXED_STATUS_LINE_COUNT (9)
+        assertThat(plain).hasSizeGreaterThanOrEqualTo(7);
+
+        // MCP server lines and scroll indicator are present in the full panel
+        assertThat(plain).anyMatch(l -> l.contains("mcp alpha"));
+        assertThat(plain).anyMatch(l -> l.contains("mcp beta"));
+        assertThat(plain).anyMatch(l -> l.contains("\u21BB"));
+        assertThat(plain).anyMatch(l -> l.contains("/4"));
+    }
+
+    @Test
+    void mcpCarousel_panelLineBudget_mcpNotTruncated() throws Exception {
+        // Verify MCP carousel lines fit within the 9-line panel budget.
+        // renderStatusFrame adds +1 separator line, so effective content budget = 8.
+        // Worst case without cron expansion: header(1) + learning(1) + cron(1) + tasks(1) +
+        //   mcp servers(2) + scroll indicator(1) = 7. Should be fine.
+        var servers = List.of(
+                newMcpServerStatus("srv-1", "connected", 5, ""),
+                newMcpServerStatus("srv-2", "connected", 3, ""),
+                newMcpServerStatus("srv-3", "connected", 2, ""));
+        setPrivateField(repl, "cachedMcpStatus",
+                newMcpStatusSnapshot(3, 3, 0, 10, servers));
+        setPrivateField(repl, "mcpScrollOffset", 0);
+        setPrivateField(repl, "mcpLastScrollTick", 0L);
+
+        var lines = callBuildStatusPanelLines();
+
+        // renderStatusFrame prepends 1 separator line then truncates to maxLines.
+        // FIXED_STATUS_LINE_COUNT = 9, so content must be <= 8 to survive.
+        int fixedLineCount = 9;
+        assertThat(lines.size())
+                .as("buildStatusPanelLines output must fit within panel budget (separator takes 1)")
+                .isLessThanOrEqualTo(fixedLineCount - 1);
+
+        // MCP scroll indicator is present (not truncated)
+        var plain = lines.stream().map(TerminalReplTest::stripAnsi).toList();
+        assertThat(plain).anyMatch(l -> l.contains("\u21BB"));
+    }
+
+    @Test
+    void mcpCarousel_failedPinned_visibleInFullPanel() throws Exception {
+        // Failed server pinned at top, connected servers scroll — verify through full panel build
+        var servers = List.of(
+                newMcpServerStatus("broken", "failed", 0, "connection refused"),
+                newMcpServerStatus("alpha", "connected", 2, ""),
+                newMcpServerStatus("beta", "connected", 3, ""),
+                newMcpServerStatus("gamma", "connected", 1, ""));
+        setPrivateField(repl, "cachedMcpStatus",
+                newMcpStatusSnapshot(4, 3, 1, 6, servers));
+        setPrivateField(repl, "mcpScrollOffset", 0);
+        setPrivateField(repl, "mcpLastScrollTick", 0L);
+
+        var lines = callBuildStatusPanelLines();
+        var plain = lines.stream().map(TerminalReplTest::stripAnsi).toList();
+
+        // Failed server must be visible in the panel
+        assertThat(plain).anyMatch(l -> l.contains("broken") && l.contains("failed"));
+        // One scrollable server visible in the remaining slot
+        assertThat(plain).anyMatch(l -> l.contains("mcp alpha"));
+        // Scroll indicator for the other 2 connected servers
+        assertThat(plain).anyMatch(l -> l.contains("\u21BB") && l.contains("/3"));
+    }
 }
