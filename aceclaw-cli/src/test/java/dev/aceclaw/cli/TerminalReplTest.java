@@ -1072,4 +1072,26 @@ class TerminalReplTest {
         // Overflow shows the connected server count
         assertThat(plain.get(2)).contains("+1 more mcp server(s)");
     }
+
+    @Test
+    void mcpCarousel_moreThanTwoPinned_showsPinnedOverflow() throws Exception {
+        var servers = List.of(
+                newMcpServerStatus("fail-a", "failed", 0, "timeout"),
+                newMcpServerStatus("fail-b", "failed", 0, "refused"),
+                newMcpServerStatus("fail-c", "starting", 0, ""),
+                newMcpServerStatus("ok-d", "connected", 5, ""));
+        setPrivateField(repl, "cachedMcpStatus",
+                newMcpStatusSnapshot(4, 1, 2, 5, servers));
+
+        var lines = callAppendMcpServerLines();
+        var plain = lines.stream().map(TerminalReplTest::stripAnsi).toList();
+
+        // Two highest-priority pinned shown (both failed, alphabetical)
+        assertThat(plain.get(0)).contains("fail-a");
+        assertThat(plain.get(1)).contains("fail-b");
+        // Pinned overflow for the third pinned server (starting)
+        assertThat(plain.get(2)).contains("+1 more pinned mcp server(s)");
+        // Scrollable server overflow also shown
+        assertThat(plain.get(3)).contains("+1 more mcp server(s)");
+    }
 }

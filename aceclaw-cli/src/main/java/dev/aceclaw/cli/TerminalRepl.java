@@ -33,6 +33,7 @@ import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -2133,18 +2134,11 @@ public final class TerminalRepl {
             }
         }
         // Stable sort within each group: failed before starting, then alphabetical.
-        pinned.sort((a, b) -> {
-            int pa = mcpServerPriority(a.status());
-            int pb = mcpServerPriority(b.status());
-            if (pa != pb) return Integer.compare(pa, pb);
-            return a.name().compareToIgnoreCase(b.name());
-        });
-        scrollable.sort((a, b) -> {
-            int pa = mcpServerPriority(a.status());
-            int pb = mcpServerPriority(b.status());
-            if (pa != pb) return Integer.compare(pa, pb);
-            return a.name().compareToIgnoreCase(b.name());
-        });
+        var byPriorityThenName = Comparator
+                .comparingInt((McpServerStatus s) -> mcpServerPriority(s.status()))
+                .thenComparing(McpServerStatus::name, String.CASE_INSENSITIVE_ORDER);
+        pinned.sort(byPriorityThenName);
+        scrollable.sort(byPriorityThenName);
 
         int maxVisible = 2;
         int pinnedSlots = Math.min(pinned.size(), maxVisible);
@@ -2153,6 +2147,10 @@ public final class TerminalRepl {
         // Render pinned servers (always shown).
         for (int i = 0; i < pinnedSlots; i++) {
             lines.add(formatMcpServerLine(pinned.get(i)));
+        }
+        int pinnedOverflow = pinned.size() - pinnedSlots;
+        if (pinnedOverflow > 0) {
+            lines.add(MUTED + "         +" + pinnedOverflow + " more pinned mcp server(s)" + RESET);
         }
 
         // Render scrollable servers with carousel rotation.
