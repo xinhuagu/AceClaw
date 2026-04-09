@@ -2213,6 +2213,11 @@ public final class TerminalRepl {
     /** Advances the MCP carousel offset if the scroll interval has elapsed. */
     private void advanceMcpScroll(int totalScrollable) {
         long now = System.currentTimeMillis();
+        if (mcpLastScrollTick == 0) {
+            // First render: initialize timestamp, show offset 0 first.
+            mcpLastScrollTick = now;
+            return;
+        }
         if (now - mcpLastScrollTick >= MCP_SCROLL_INTERVAL_MS) {
             mcpLastScrollTick = now;
             mcpScrollOffset = (mcpScrollOffset + 1) % totalScrollable;
