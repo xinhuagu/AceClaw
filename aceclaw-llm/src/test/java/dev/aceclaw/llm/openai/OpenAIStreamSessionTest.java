@@ -15,6 +15,7 @@ import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -23,6 +24,45 @@ import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class OpenAIStreamSessionTest {
+
+    @Test
+    void standardOpenAIIncrementalToolCallStreaming() {
+        var mapper = new OpenAIMapper(new ObjectMapper()
+                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false));
+        var session = new OpenAIStreamSession(response(Stream.of(
+                // First chunk: tool call header with id, name, empty args
+                """
+                data: {"id":"chatcmpl-100","model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"read_file","arguments":""}}]},"finish_reason":null}]}
+                """.strip(),
+                // Second chunk: argument fragment
+                """
+                data: {"id":"chatcmpl-100","model":"gpt-4","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"path\\":"}}]},"finish_reason":null}]}
+                """.strip(),
+                // Third chunk: argument fragment
+                """
+                data: {"id":"chatcmpl-100","model":"gpt-4","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"/tmp/a\\"}"}}]},"finish_reason":null}]}
+                """.strip(),
+                // Finish
+                """
+                data: {"id":"chatcmpl-100","model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":20,"completion_tokens":8}}
+                """.strip(),
+                "data: [DONE]"
+        )), mapper);
+
+        var handler = new CapturingHandler();
+        session.onEvent(handler);
+
+        // Verify incremental deltas were emitted (not batched at flush)
+        assertThat(handler.toolUseDeltaCount).as("should stream deltas incrementally").isGreaterThanOrEqualTo(2);
+        assertThat(handler.toolUses)
+                .extracting(ContentBlock.ToolUse::name)
+                .containsExactly("read_file");
+        assertThat(handler.toolUses)
+                .extracting(ContentBlock.ToolUse::inputJson)
+                .containsExactly("{\"path\":\"/tmp/a\"}");
+        assertThat(handler.stopReasons).containsOnly(StopReason.TOOL_USE);
+        assertThat(handler.completed).isTrue();
+    }
 
     @Test
     void ollamaToolCallsWithoutIndexAndStopFinishReasonStillBecomeToolUse() {
@@ -54,6 +94,27 @@ class OpenAIStreamSessionTest {
         assertThat(handler.completed).isTrue();
     }
 
+    @Test
+    void maxTokensToolCallStreamIsNotCoercedToToolUse() {
+        var mapper = new OpenAIMapper(new ObjectMapper()
+                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false), "ollama");
+        var session = new OpenAIStreamSession(response(Stream.of(
+                """
+                data: {"id":"chatcmpl-915","model":"llama3.1","choices":[{"delta":{"role":"assistant","content":"","tool_calls":[{"id":"call_a","type":"function","function":{"name":"read_file","arguments":"{\\"path\\":"}}]},"index":0}]}
+                """.strip(),
+                """
+                data: {"id":"chatcmpl-915","model":"llama3.1","choices":[{"delta":{},"finish_reason":"length","index":0}]}
+                """.strip(),
+                "data: [DONE]"
+        )), mapper);
+
+        var handler = new CapturingHandler();
+        session.onEvent(handler);
+
+        assertThat(handler.stopReasons).containsOnly(StopReason.MAX_TOKENS);
+        assertThat(handler.completed).isTrue();
+    }
+
     private static HttpResponse<Stream<String>> response(Stream<String> body) {
         return new HttpResponse<>() {
             @Override public int statusCode() { return 200; }
@@ -67,38 +128,37 @@ class OpenAIStreamSessionTest {
         };
     }
 
+    /** Tracks multiple concurrent tool calls by block index (handles interleaved Start events). */
     private static final class CapturingHandler implements StreamEventHandler {
         private final List<ContentBlock.ToolUse> toolUses = new ArrayList<>();
         private final List<StopReason> stopReasons = new ArrayList<>();
-        private String currentToolUseId;
-        private String currentToolUseName;
-        private final StringBuilder currentArguments = new StringBuilder();
-        private boolean inToolUse;
+        private final Map<Integer, ToolAccumulator> activeTools = new LinkedHashMap<>();
+        private int toolUseDeltaCount;
         private boolean completed;
 
         @Override
         public void onContentBlockStart(StreamEvent.ContentBlockStart event) {
             if (event.block() instanceof ContentBlock.ToolUse toolUse) {
-                currentToolUseId = toolUse.id();
-                currentToolUseName = toolUse.name();
-                currentArguments.setLength(0);
-                inToolUse = true;
+                activeTools.put(event.index(), new ToolAccumulator(toolUse.id(), toolUse.name()));
             }
         }
 
         @Override
         public void onToolUseDelta(StreamEvent.ToolUseDelta event) {
             if (event.partialJson() != null) {
-                currentArguments.append(event.partialJson());
+                var acc = activeTools.get(event.index());
+                if (acc != null) {
+                    acc.arguments.append(event.partialJson());
+                }
+                toolUseDeltaCount++;
             }
         }
 
         @Override
         public void onContentBlockStop(StreamEvent.ContentBlockStop event) {
-            if (inToolUse) {
-                toolUses.add(new ContentBlock.ToolUse(
-                        currentToolUseId, currentToolUseName, currentArguments.toString()));
-                inToolUse = false;
+            var acc = activeTools.remove(event.index());
+            if (acc != null) {
+                toolUses.add(new ContentBlock.ToolUse(acc.id, acc.name, acc.arguments.toString()));
             }
         }
 
@@ -110,6 +170,16 @@ class OpenAIStreamSessionTest {
         @Override
         public void onComplete(StreamEvent.StreamComplete event) {
             completed = true;
+        }
+
+        private static final class ToolAccumulator {
+            final String id;
+            final String name;
+            final StringBuilder arguments = new StringBuilder();
+            ToolAccumulator(String id, String name) {
+                this.id = id;
+                this.name = name;
+            }
         }
     }
 }

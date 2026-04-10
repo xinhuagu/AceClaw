@@ -47,6 +47,7 @@ final class OpenAIStreamSession implements StreamSession {
     // Tool call accumulation: stable key -> state. Ollama has emitted tool calls
     // without index in OpenAI-compatible streams, so id is used as a fallback.
     private final Map<String, ToolCallState> toolCallStates = new LinkedHashMap<>();
+    private int nextToolCallSeq;
     private StopReason lastStopReason;
 
     OpenAIStreamSession(HttpResponse<Stream<String>> response, OpenAIMapper mapper) {
@@ -152,7 +153,7 @@ final class OpenAIStreamSession implements StreamSession {
                 // Extract usage from top-level (OpenAI puts it at root when stream_options.include_usage=true)
                 Usage usage = mapper.parseUsage(root.path("usage"));
                 StopReason stopReason = StopReason.fromString(finishReason);
-                if (hasToolCalls && stopReason != StopReason.ERROR) {
+                if (hasToolCalls && stopReason == StopReason.END_TURN) {
                     stopReason = StopReason.TOOL_USE;
                 }
                 lastStopReason = stopReason;
@@ -215,32 +216,43 @@ final class OpenAIStreamSession implements StreamSession {
         String toolKey = toolCallKey(tc);
         ToolCallState state = toolCallStates.get(toolKey);
 
-        // New tool call
-        if (state == null) {
-            String tcId = tc.path("id").asText("");
-            JsonNode function = tc.path("function");
-            String name = function.path("name").asText("");
+        String tcId = tc.path("id").asText("");
+        JsonNode function = tc.path("function");
+        String name = function.path("name").asText("");
 
+        if (state == null) {
             int blockIndex = nextBlockIndex++;
             state = new ToolCallState(tcId, name, blockIndex);
             toolCallStates.put(toolKey, state);
         } else {
-            String tcId = tc.path("id").asText("");
             if (!tcId.isBlank() && state.id.isBlank()) {
                 state.id = tcId;
             }
-            JsonNode function = tc.path("function");
-            String name = function.path("name").asText("");
             if (!name.isBlank() && state.name.isBlank()) {
                 state.name = name;
             }
         }
 
-        // Accumulate arguments
-        JsonNode function = tc.path("function");
+        // Emit onContentBlockStart eagerly once id and name are known
+        if (!state.started && !state.id.isBlank() && !state.name.isBlank()) {
+            state.started = true;
+            handler.onContentBlockStart(new StreamEvent.ContentBlockStart(
+                    state.blockIndex, new ContentBlock.ToolUse(state.id, state.name, "")));
+            // Flush any arguments that were accumulated before id/name arrived
+            if (!state.argumentsBuilder.isEmpty()) {
+                handler.onToolUseDelta(new StreamEvent.ToolUseDelta(
+                        state.blockIndex, state.name, state.argumentsBuilder.toString()));
+            }
+        }
+
+        // Accumulate and stream arguments incrementally
         String argFragment = function.path("arguments").asText(null);
         if (argFragment != null) {
             state.argumentsBuilder.append(argFragment);
+            if (state.started) {
+                handler.onToolUseDelta(new StreamEvent.ToolUseDelta(
+                        state.blockIndex, state.name, argFragment));
+            }
         }
     }
 
@@ -252,11 +264,11 @@ final class OpenAIStreamSession implements StreamSession {
         if (!id.isBlank()) {
             return "id:" + id;
         }
-        String name = tc.path("function").path("name").asText("");
-        if (!name.isBlank()) {
-            return "name:" + name;
-        }
-        return "position:" + toolCallStates.size();
+        // No index or id available — assign a monotonic sequence number.
+        // This avoids collisions when the same tool is called multiple times
+        // (a "name:" key would merge them) and is stable across calls
+        // (unlike using map size which changes after insertion).
+        return "seq:" + nextToolCallSeq++;
     }
 
     /**
@@ -272,13 +284,16 @@ final class OpenAIStreamSession implements StreamSession {
             inTextBlock = false;
         }
         for (ToolCallState state : toolCallStates.values()) {
-            String arguments = state.argumentsBuilder.isEmpty()
-                    ? "{}"
-                    : state.argumentsBuilder.toString();
-            handler.onContentBlockStart(new StreamEvent.ContentBlockStart(
-                    state.blockIndex, new ContentBlock.ToolUse(state.id, state.name, "")));
-            handler.onToolUseDelta(new StreamEvent.ToolUseDelta(
-                    state.blockIndex, state.name, arguments));
+            if (!state.started) {
+                // Tool call never received id/name during streaming — emit with what we have
+                String arguments = state.argumentsBuilder.isEmpty()
+                        ? "{}"
+                        : state.argumentsBuilder.toString();
+                handler.onContentBlockStart(new StreamEvent.ContentBlockStart(
+                        state.blockIndex, new ContentBlock.ToolUse(state.id, state.name, "")));
+                handler.onToolUseDelta(new StreamEvent.ToolUseDelta(
+                        state.blockIndex, state.name, arguments));
+            }
             handler.onContentBlockStop(new StreamEvent.ContentBlockStop(state.blockIndex));
         }
         toolCallStates.clear();
@@ -288,10 +303,12 @@ final class OpenAIStreamSession implements StreamSession {
      * Tracks the accumulation state for a single tool call during streaming.
      */
     private static final class ToolCallState {
+        // Mutable: some providers (Ollama) may deliver id/name in later deltas
         String id;
         String name;
         final int blockIndex;
         final StringBuilder argumentsBuilder = new StringBuilder();
+        boolean started; // whether onContentBlockStart has been emitted
 
         ToolCallState(String id, String name, int blockIndex) {
             this.id = id != null ? id : "";
