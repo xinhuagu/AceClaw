@@ -46,6 +46,15 @@ class OpenAIMapperTest {
     }
 
     @Test
+    void toRequestJson_ollamaUsesLegacyMaxTokensField() throws Exception {
+        var ollamaMapper = new OpenAIMapper(objectMapper, "ollama");
+        JsonNode root = objectMapper.readTree(ollamaMapper.toRequestJson(baseRequest().build(), false));
+
+        assertThat(root.get("max_tokens").asInt()).isGreaterThan(0);
+        assertThat(root.has("max_completion_tokens")).isFalse();
+    }
+
+    @Test
     void systemPrompt_isFirstMessage() throws Exception {
         var request = baseRequest().systemPrompt("Be helpful").build();
         JsonNode root = objectMapper.readTree(mapper.toRequestJson(request, false));
