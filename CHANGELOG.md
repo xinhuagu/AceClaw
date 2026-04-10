@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.12] - 2026-04-10
+
+### Bug Fixes
+
+- Aceclaw-update fails on release installs when .git exists
 ## [0.3.11] - 2026-04-09
 
 ### Features
