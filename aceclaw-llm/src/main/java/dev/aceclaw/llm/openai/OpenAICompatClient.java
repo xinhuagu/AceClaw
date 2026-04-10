@@ -125,7 +125,7 @@ public final class OpenAICompatClient implements LlmClient {
 
         var jsonMapper = new ObjectMapper()
                 .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-        this.mapper = new OpenAIMapper(jsonMapper);
+        this.mapper = new OpenAIMapper(jsonMapper, providerName);
 
         log.info("OpenAI-compatible client created: provider={}, baseUrl={}, path={}, defaultModel={}",
                 providerName, this.baseUrl, this.completionsPath, defaultModel);

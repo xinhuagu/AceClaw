@@ -12,7 +12,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.http.HttpResponse;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Stream;
@@ -44,8 +44,10 @@ final class OpenAIStreamSession implements StreamSession {
     private boolean inReasoningBlock;
     private int reasoningBlockIndex;
 
-    // Tool call accumulation: index -> state
-    private final Map<Integer, ToolCallState> toolCallStates = new HashMap<>();
+    // Tool call accumulation: stable key -> state. Ollama has emitted tool calls
+    // without index in OpenAI-compatible streams, so id is used as a fallback.
+    private final Map<String, ToolCallState> toolCallStates = new LinkedHashMap<>();
+    private StopReason lastStopReason;
 
     OpenAIStreamSession(HttpResponse<Stream<String>> response, OpenAIMapper mapper) {
         this.response = response;
@@ -144,11 +146,16 @@ final class OpenAIStreamSession implements StreamSession {
 
             // Process finish_reason
             if (finishReason != null) {
+                boolean hasToolCalls = !toolCallStates.isEmpty();
                 flushOpenBlocks(handler);
 
                 // Extract usage from top-level (OpenAI puts it at root when stream_options.include_usage=true)
                 Usage usage = mapper.parseUsage(root.path("usage"));
                 StopReason stopReason = StopReason.fromString(finishReason);
+                if (hasToolCalls && stopReason != StopReason.ERROR) {
+                    stopReason = StopReason.TOOL_USE;
+                }
+                lastStopReason = stopReason;
                 handler.onMessageDelta(new StreamEvent.MessageDelta(stopReason, usage));
             }
         }
@@ -159,7 +166,9 @@ final class OpenAIStreamSession implements StreamSession {
             if (chunkUsage.inputTokens() > 0 || chunkUsage.outputTokens() > 0) {
                 // Emit MessageDelta with usage so token counts reach the client
                 flushOpenBlocks(handler);
-                handler.onMessageDelta(new StreamEvent.MessageDelta(StopReason.END_TURN, chunkUsage));
+                handler.onMessageDelta(new StreamEvent.MessageDelta(
+                        lastStopReason != null ? lastStopReason : StopReason.END_TURN,
+                        chunkUsage));
             }
         }
     }
@@ -191,8 +200,6 @@ final class OpenAIStreamSession implements StreamSession {
     }
 
     private void handleToolCallDelta(JsonNode tc, StreamEventHandler handler) {
-        int toolIndex = tc.path("index").asInt(0);
-
         // Close reasoning block if transitioning to tool calls
         if (inReasoningBlock) {
             handler.onContentBlockStop(new StreamEvent.ContentBlockStop(reasoningBlockIndex));
@@ -205,7 +212,8 @@ final class OpenAIStreamSession implements StreamSession {
             inTextBlock = false;
         }
 
-        ToolCallState state = toolCallStates.get(toolIndex);
+        String toolKey = toolCallKey(tc);
+        ToolCallState state = toolCallStates.get(toolKey);
 
         // New tool call
         if (state == null) {
@@ -215,10 +223,17 @@ final class OpenAIStreamSession implements StreamSession {
 
             int blockIndex = nextBlockIndex++;
             state = new ToolCallState(tcId, name, blockIndex);
-            toolCallStates.put(toolIndex, state);
-
-            handler.onContentBlockStart(new StreamEvent.ContentBlockStart(
-                    blockIndex, new ContentBlock.ToolUse(tcId, name, "")));
+            toolCallStates.put(toolKey, state);
+        } else {
+            String tcId = tc.path("id").asText("");
+            if (!tcId.isBlank() && state.id.isBlank()) {
+                state.id = tcId;
+            }
+            JsonNode function = tc.path("function");
+            String name = function.path("name").asText("");
+            if (!name.isBlank() && state.name.isBlank()) {
+                state.name = name;
+            }
         }
 
         // Accumulate arguments
@@ -226,9 +241,22 @@ final class OpenAIStreamSession implements StreamSession {
         String argFragment = function.path("arguments").asText(null);
         if (argFragment != null) {
             state.argumentsBuilder.append(argFragment);
-            handler.onToolUseDelta(new StreamEvent.ToolUseDelta(
-                    state.blockIndex, state.name, argFragment));
         }
+    }
+
+    private String toolCallKey(JsonNode tc) {
+        if (tc.has("index") && tc.path("index").canConvertToInt()) {
+            return "index:" + tc.path("index").asInt();
+        }
+        String id = tc.path("id").asText("");
+        if (!id.isBlank()) {
+            return "id:" + id;
+        }
+        String name = tc.path("function").path("name").asText("");
+        if (!name.isBlank()) {
+            return "name:" + name;
+        }
+        return "position:" + toolCallStates.size();
     }
 
     /**
@@ -244,6 +272,13 @@ final class OpenAIStreamSession implements StreamSession {
             inTextBlock = false;
         }
         for (ToolCallState state : toolCallStates.values()) {
+            String arguments = state.argumentsBuilder.isEmpty()
+                    ? "{}"
+                    : state.argumentsBuilder.toString();
+            handler.onContentBlockStart(new StreamEvent.ContentBlockStart(
+                    state.blockIndex, new ContentBlock.ToolUse(state.id, state.name, "")));
+            handler.onToolUseDelta(new StreamEvent.ToolUseDelta(
+                    state.blockIndex, state.name, arguments));
             handler.onContentBlockStop(new StreamEvent.ContentBlockStop(state.blockIndex));
         }
         toolCallStates.clear();
@@ -253,14 +288,14 @@ final class OpenAIStreamSession implements StreamSession {
      * Tracks the accumulation state for a single tool call during streaming.
      */
     private static final class ToolCallState {
-        final String id;
-        final String name;
+        String id;
+        String name;
         final int blockIndex;
         final StringBuilder argumentsBuilder = new StringBuilder();
 
         ToolCallState(String id, String name, int blockIndex) {
-            this.id = id;
-            this.name = name;
+            this.id = id != null ? id : "";
+            this.name = name != null ? name : "";
             this.blockIndex = blockIndex;
         }
     }

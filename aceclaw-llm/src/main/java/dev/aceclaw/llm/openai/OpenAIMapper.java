@@ -31,9 +31,15 @@ import java.util.regex.Pattern;
 final class OpenAIMapper {
 
     private final ObjectMapper objectMapper;
+    private final String providerName;
 
     OpenAIMapper(ObjectMapper objectMapper) {
+        this(objectMapper, "");
+    }
+
+    OpenAIMapper(ObjectMapper objectMapper, String providerName) {
         this.objectMapper = objectMapper;
+        this.providerName = providerName != null ? providerName : "";
     }
 
     // -- Request mapping --
@@ -48,7 +54,7 @@ final class OpenAIMapper {
     String toRequestJson(LlmRequest request, boolean stream) {
         ObjectNode root = objectMapper.createObjectNode();
         root.put("model", request.model());
-        root.put("max_completion_tokens", request.maxTokens());
+        root.put(maxTokensFieldName(), request.maxTokens());
 
         if (request.temperature() >= 0.0) {
             root.put("temperature", request.temperature());
@@ -98,6 +104,12 @@ final class OpenAIMapper {
         }
 
         return root.toString();
+    }
+
+    private String maxTokensFieldName() {
+        // Ollama's OpenAI-compatible endpoint documents max_tokens rather than
+        // OpenAI's newer max_completion_tokens field.
+        return "ollama".equals(providerName) ? "max_tokens" : "max_completion_tokens";
     }
 
     /**
