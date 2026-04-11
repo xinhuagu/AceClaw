@@ -12,9 +12,13 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -244,5 +248,85 @@ class McpClientManagerTest {
         manager = null; // prevent double-close in tearDown
 
         assertThat(removedTools).containsExactlyInAnyOrder("mcp__s__t1", "mcp__s__t2");
+    }
+
+    /**
+     * Verifies that ping() and callTool() on the same server cannot execute
+     * concurrently — both must acquire the per-server lock. Uses a mock client
+     * that detects concurrent access (simulating the StdioClientTransport
+     * unicast sink that rejects parallel emits).
+     */
+    @Test
+    void pingAndCallToolSerializedOnSameServer() throws Exception {
+        var concurrency = new AtomicInteger();
+        var maxConcurrency = new AtomicInteger();
+        var errors = new CopyOnWriteArrayList<String>();
+
+        var guardClient = mock(McpSyncClient.class);
+
+        // listTools — called during start() to discover tools
+        when(guardClient.listTools()).thenReturn(toolsResult("t"));
+
+        // callTool — tracks concurrency with 50ms hold time
+        when(guardClient.callTool(any(McpSchema.CallToolRequest.class))).thenAnswer(inv -> {
+            int current = concurrency.incrementAndGet();
+            maxConcurrency.updateAndGet(max -> Math.max(max, current));
+            if (current > 1) {
+                errors.add("Concurrent access in callTool: " + current);
+            }
+            try { Thread.sleep(50); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            concurrency.decrementAndGet();
+            return new McpSchema.CallToolResult(List.of(new McpSchema.TextContent("ok")), false);
+        });
+
+        // ping — tracks concurrency with 50ms hold time
+        when(guardClient.ping()).thenAnswer(inv -> {
+            int current = concurrency.incrementAndGet();
+            maxConcurrency.updateAndGet(max -> Math.max(max, current));
+            if (current > 1) {
+                errors.add("Concurrent access in ping: " + current);
+            }
+            try { Thread.sleep(50); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            concurrency.decrementAndGet();
+            return null;
+        });
+
+        var configs = Map.of("srv", dummyConfig("cmd"));
+        manager = new McpClientManager(configs, (name, config) -> guardClient);
+        manager.start();
+
+        assertThat(manager.bridgedTools()).hasSize(1);
+        var tool = manager.bridgedTools().getFirst();
+
+        // Fire callTool and ping concurrently
+        var startLatch = new CountDownLatch(1);
+        var doneLatch = new CountDownLatch(2);
+
+        Thread.ofVirtual().start(() -> {
+            try {
+                startLatch.await(5, TimeUnit.SECONDS);
+                tool.execute("{}");
+            } catch (Exception e) {
+                errors.add("callTool threw: " + e.getMessage());
+            } finally {
+                doneLatch.countDown();
+            }
+        });
+        Thread.ofVirtual().start(() -> {
+            try {
+                startLatch.await(5, TimeUnit.SECONDS);
+                manager.ping();
+            } catch (Exception e) {
+                errors.add("ping threw: " + e.getMessage());
+            } finally {
+                doneLatch.countDown();
+            }
+        });
+
+        startLatch.countDown();
+        assertThat(doneLatch.await(10, TimeUnit.SECONDS)).isTrue();
+
+        assertThat(errors).as("no concurrent access between ping and callTool").isEmpty();
+        assertThat(maxConcurrency.get()).as("lock must serialize ping vs callTool").isEqualTo(1);
     }
 }

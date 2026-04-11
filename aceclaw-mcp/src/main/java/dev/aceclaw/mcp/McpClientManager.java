@@ -23,6 +23,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 
 /**
@@ -75,6 +77,7 @@ public final class McpClientManager implements AutoCloseable {
     private final Map<String, ServerStatus> statuses = new LinkedHashMap<>();
     private final List<Tool> bridgedTools = new ArrayList<>();
     private final Map<String, String> lastErrors = new LinkedHashMap<>();
+    private final Map<String, Lock> serverLocks = new LinkedHashMap<>();
     private final Map<String, Long> lastReconnectAttemptMillis = new LinkedHashMap<>();
     private Consumer<List<Tool>> onServerTools;
     private Consumer<String> onToolRemoved;
@@ -240,8 +243,14 @@ public final class McpClientManager implements AutoCloseable {
         var results = new LinkedHashMap<String, Boolean>();
         for (var entry : clients.entrySet()) {
             var serverName = entry.getKey();
+            var lock = serverLocks.get(serverName);
             try {
-                entry.getValue().ping();
+                if (lock != null) lock.lock();
+                try {
+                    entry.getValue().ping();
+                } finally {
+                    if (lock != null) lock.unlock();
+                }
                 results.put(serverName, true);
                 statuses.put(serverName, ServerStatus.CONNECTED);
                 lastErrors.remove(serverName);
@@ -502,9 +511,10 @@ public final class McpClientManager implements AutoCloseable {
             return List.of();
         }
 
+        var lock = serverLocks.computeIfAbsent(serverName, k -> new ReentrantLock());
         var bridgedForServer = new ArrayList<Tool>();
         for (var mcpTool : tools) {
-            var bridged = McpToolBridge.create(serverName, mcpTool, client);
+            var bridged = McpToolBridge.create(serverName, mcpTool, client, lock);
             bridgedTools.add(bridged);
             bridgedForServer.add(bridged);
             log.debug("Bridged MCP tool: {}", bridged.name());
@@ -524,12 +534,14 @@ public final class McpClientManager implements AutoCloseable {
         // 1. Snapshot under lock
         Map<String, McpSyncClient> clientSnapshot;
         Map<String, ServerStatus> statusSnapshot;
+        Map<String, Lock> lockSnapshot;
         synchronized (this) {
             clientSnapshot = new LinkedHashMap<>(clients);
             statusSnapshot = new LinkedHashMap<>(statuses);
+            lockSnapshot = new LinkedHashMap<>(serverLocks);
         }
 
-        // 2. Ping outside the monitor — no lock held during I/O
+        // 2. Ping outside the monitor — per-server lock prevents racing with callTool()
         var pingResults = new LinkedHashMap<String, Boolean>();
         var pingErrors = new LinkedHashMap<String, String>();
         for (var serverName : serverConfigs.keySet()) {
@@ -538,8 +550,14 @@ public final class McpClientManager implements AutoCloseable {
                 pingResults.put(serverName, false);
                 continue;
             }
+            var lock = lockSnapshot.get(serverName);
             try {
-                client.ping();
+                if (lock != null) lock.lock();
+                try {
+                    client.ping();
+                } finally {
+                    if (lock != null) lock.unlock();
+                }
                 pingResults.put(serverName, true);
             } catch (Exception e) {
                 log.warn("MCP server '{}' ping failed: {}", serverName, e.getMessage());
