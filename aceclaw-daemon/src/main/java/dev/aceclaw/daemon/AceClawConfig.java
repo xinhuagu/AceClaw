@@ -1211,26 +1211,38 @@ public final class AceClawConfig {
     private void loadClaudeCliCredentialsWithKeychain() {
         var cred = dev.aceclaw.llm.anthropic.KeychainCredentialReader.read();
         if (cred != null) {
-            // For OAuth tokens: always prefer Keychain's fresher token over config.json's
-            // stale one. Config.json tokens expire but Keychain is kept fresh by Claude CLI.
-            boolean configHasOAuth = this.apiKey != null && this.apiKey.startsWith("sk-ant-oat");
-            if (this.apiKey == null || this.apiKey.isBlank() || configHasOAuth) {
-                if (!cred.isExpired()) {
-                    this.apiKey = cred.accessToken();
-                    log.info("Loaded OAuth access token from Claude CLI credentials (Keychain)");
-                } else {
-                    log.info("Keychain OAuth token is expired, will rely on refresh");
-                }
-            }
-            if (cred.refreshToken() != null) {
-                this.refreshToken = cred.refreshToken();
-                log.info("Loaded OAuth refresh token from Claude CLI credentials");
-            }
+            applyKeychainCredential(cred);
             return;
         }
         // Fall back to legacy file-based loading
         if (this.apiKey != null && this.apiKey.startsWith("sk-ant-oat") && this.refreshToken == null) {
             loadClaudeCliCredentials();
+        }
+    }
+
+    /**
+     * Applies a Keychain credential to this config, setting apiKey and refreshToken as appropriate.
+     * For OAuth tokens: always prefer Keychain's fresher token over config.json's stale one.
+     * Always sets the access token even if expired, relying on AnthropicClient's proactive refresh.
+     *
+     * <p>Package-private for testing.
+     */
+    void applyKeychainCredential(dev.aceclaw.llm.anthropic.KeychainCredentialReader.Credential cred) {
+        boolean configHasOAuth = this.apiKey != null && this.apiKey.startsWith("sk-ant-oat");
+        if (this.apiKey == null || this.apiKey.isBlank() || configHasOAuth) {
+            // Always set the access token so AnthropicClient can be constructed.
+            // If expired, the client's refreshProactivelyIfNeeded() will refresh it
+            // before the first API call using the refresh token loaded below.
+            this.apiKey = cred.accessToken();
+            if (!cred.isExpired()) {
+                log.info("Loaded OAuth access token from Claude CLI credentials (Keychain)");
+            } else {
+                log.info("Loaded expired OAuth access token from Keychain, will refresh before first request");
+            }
+        }
+        if (cred.refreshToken() != null) {
+            this.refreshToken = cred.refreshToken();
+            log.info("Loaded OAuth refresh token from Claude CLI credentials");
         }
     }
 
