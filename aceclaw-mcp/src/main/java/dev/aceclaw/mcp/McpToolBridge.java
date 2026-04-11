@@ -8,9 +8,9 @@ import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -31,10 +31,7 @@ public final class McpToolBridge implements Tool {
     private static final Logger log = LoggerFactory.getLogger(McpToolBridge.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    /** Maximum time to wait for an MCP tool call before timing out. */
-    private static final long MCP_TOOL_TIMEOUT_SECONDS = 60;
-
-    /** Dedicated executor for blocking MCP RPC calls (avoids starving the common pool). */
+    /** Dedicated executor for blocking MCP RPC calls (virtual threads are interruptible). */
     private static final ExecutorService MCP_TOOL_EXECUTOR = Executors.newVirtualThreadPerTaskExecutor();
 
     private final String qualifiedName;
@@ -42,14 +39,16 @@ public final class McpToolBridge implements Tool {
     private final String description;
     private final JsonNode inputSchema;
     private final McpSyncClient client;
+    private final Duration timeout;
 
     private McpToolBridge(String qualifiedName, String mcpToolName, String description,
-                          JsonNode inputSchema, McpSyncClient client) {
+                          JsonNode inputSchema, McpSyncClient client, Duration timeout) {
         this.qualifiedName = qualifiedName;
         this.mcpToolName = mcpToolName;
         this.description = description;
         this.inputSchema = inputSchema;
         this.client = client;
+        this.timeout = timeout;
     }
 
     /**
@@ -58,9 +57,11 @@ public final class McpToolBridge implements Tool {
      * @param serverName the MCP server name (from config)
      * @param mcpTool    the MCP tool definition
      * @param client     the MCP client for tool execution
+     * @param timeout    per-server request timeout (from config); if null, the SDK's own timeout applies
      * @return a new tool bridge instance
      */
-    public static McpToolBridge create(String serverName, McpSchema.Tool mcpTool, McpSyncClient client) {
+    public static McpToolBridge create(String serverName, McpSchema.Tool mcpTool,
+                                       McpSyncClient client, Duration timeout) {
         var qualifiedName = "mcp__" + serverName + "__" + mcpTool.name();
 
         // Convert MCP input schema to Jackson JsonNode
@@ -75,7 +76,14 @@ public final class McpToolBridge implements Tool {
         }
 
         return new McpToolBridge(qualifiedName, mcpTool.name(),
-                mcpTool.description(), inputSchema, client);
+                mcpTool.description(), inputSchema, client, timeout);
+    }
+
+    /**
+     * Creates a bridged tool with the default SDK timeout (no AceClaw-side timeout wrapper).
+     */
+    public static McpToolBridge create(String serverName, McpSchema.Tool mcpTool, McpSyncClient client) {
+        return create(serverName, mcpTool, client, null);
     }
 
     @Override
@@ -107,18 +115,23 @@ public final class McpToolBridge implements Tool {
             args = parsed;
         }
 
-        // Call the MCP tool with a timeout to prevent indefinite hanging.
-        // Uses a dedicated virtual-thread executor to avoid starving the common pool.
+        // Call the MCP tool on a virtual thread so cancel(true) actually interrupts it.
+        // Uses the per-server timeout from config, or falls back to the SDK's own timeout.
         var request = new McpSchema.CallToolRequest(mcpToolName, args);
         McpSchema.CallToolResult result;
-        var future = CompletableFuture.supplyAsync(() -> client.callTool(request), MCP_TOOL_EXECUTOR);
+        var future = MCP_TOOL_EXECUTOR.submit(() -> client.callTool(request));
         try {
-            result = future.get(MCP_TOOL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            if (timeout != null) {
+                result = future.get(timeout.toSeconds(), TimeUnit.SECONDS);
+            } else {
+                result = future.get();
+            }
         } catch (TimeoutException e) {
             future.cancel(true);
-            log.warn("MCP tool '{}' timed out after {}s", qualifiedName, MCP_TOOL_TIMEOUT_SECONDS);
+            long timeoutSecs = timeout.toSeconds();
+            log.warn("MCP tool '{}' timed out after {}s", qualifiedName, timeoutSecs);
             return new ToolResult(
-                    "MCP tool '" + qualifiedName + "' timed out after " + MCP_TOOL_TIMEOUT_SECONDS
+                    "MCP tool '" + qualifiedName + "' timed out after " + timeoutSecs
                             + " seconds. The MCP server may be unresponsive.",
                     true);
         } catch (ExecutionException e) {
