@@ -2891,12 +2891,22 @@ public final class StreamingAgentHandler {
                 context.sendNotification("stream.heartbeat", params);
             } catch (IOException e) {
                 log.debug("Failed to send heartbeat notification: {}", e.getMessage());
-                if (!clientDisconnected) {
+                if (!clientDisconnected && isDisconnectException(e)) {
                     clientDisconnected = true;
-                    log.info("Client disconnected (heartbeat broken pipe), triggering cancellation");
+                    log.info("Client disconnected (heartbeat send failed: {}), triggering cancellation",
+                            e.getClass().getSimpleName());
                     cancellationToken.cancel();
                 }
             }
+        }
+
+        private static boolean isDisconnectException(IOException e) {
+            if (e instanceof java.nio.channels.ClosedChannelException
+                    || e instanceof java.nio.channels.AsynchronousCloseException) {
+                return true;
+            }
+            String msg = e.getMessage();
+            return msg != null && (msg.contains("Broken pipe") || msg.contains("Connection reset"));
         }
 
         /**

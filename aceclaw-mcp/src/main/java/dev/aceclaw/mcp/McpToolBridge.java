@@ -12,6 +12,8 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
@@ -31,6 +33,9 @@ public final class McpToolBridge implements Tool {
 
     /** Maximum time to wait for an MCP tool call before timing out. */
     private static final long MCP_TOOL_TIMEOUT_SECONDS = 60;
+
+    /** Dedicated executor for blocking MCP RPC calls (avoids starving the common pool). */
+    private static final ExecutorService MCP_TOOL_EXECUTOR = Executors.newVirtualThreadPerTaskExecutor();
 
     private final String qualifiedName;
     private final String mcpToolName;
@@ -102,14 +107,15 @@ public final class McpToolBridge implements Tool {
             args = parsed;
         }
 
-        // Call the MCP tool with a timeout to prevent indefinite hanging
+        // Call the MCP tool with a timeout to prevent indefinite hanging.
+        // Uses a dedicated virtual-thread executor to avoid starving the common pool.
         var request = new McpSchema.CallToolRequest(mcpToolName, args);
         McpSchema.CallToolResult result;
+        var future = CompletableFuture.supplyAsync(() -> client.callTool(request), MCP_TOOL_EXECUTOR);
         try {
-            result = CompletableFuture
-                    .supplyAsync(() -> client.callTool(request))
-                    .get(MCP_TOOL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            result = future.get(MCP_TOOL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         } catch (TimeoutException e) {
+            future.cancel(true);
             log.warn("MCP tool '{}' timed out after {}s", qualifiedName, MCP_TOOL_TIMEOUT_SECONDS);
             return new ToolResult(
                     "MCP tool '" + qualifiedName + "' timed out after " + MCP_TOOL_TIMEOUT_SECONDS
@@ -119,6 +125,7 @@ public final class McpToolBridge implements Tool {
             throw e.getCause() instanceof Exception cause ? cause
                     : new RuntimeException("MCP tool execution failed", e.getCause());
         } catch (InterruptedException e) {
+            future.cancel(true);
             Thread.currentThread().interrupt();
             return new ToolResult("MCP tool '" + qualifiedName + "' was interrupted", true);
         }
