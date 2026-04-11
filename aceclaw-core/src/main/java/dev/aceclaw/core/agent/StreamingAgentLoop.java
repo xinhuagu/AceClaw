@@ -639,9 +639,10 @@ public final class StreamingAgentLoop {
         Objects.requireNonNull(failureAdvisor, "failureAdvisor");
 
         var heartbeatDone = new AtomicBoolean(false);
+        var cancellation = activeCancellationToken;
         var heartbeat = Thread.ofVirtual()
                 .name("tool-heartbeat")
-                .start(() -> heartbeatLoop(handler, heartbeatDone, "tool_execution"));
+                .start(() -> heartbeatLoop(handler, heartbeatDone, "tool_execution", cancellation));
 
         try {
             if (toolUseBlocks.size() == 1) {
@@ -688,14 +689,21 @@ public final class StreamingAgentLoop {
     }
 
     /**
-     * Sends periodic heartbeat events until the done flag is set.
+     * Sends periodic heartbeat events until the done flag is set or cancellation is triggered.
+     * Cancellation can be triggered by the heartbeat handler itself (e.g., when it detects
+     * a broken pipe to a disconnected client).
      */
-    private static void heartbeatLoop(StreamEventHandler handler, AtomicBoolean done, String phase) {
+    private static void heartbeatLoop(StreamEventHandler handler, AtomicBoolean done,
+                                       String phase, CancellationToken cancellationToken) {
         while (!done.get()) {
             try {
                 Thread.sleep(TOOL_HEARTBEAT_INTERVAL_MS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+                return;
+            }
+            if (cancellationToken != null && cancellationToken.isCancelled()) {
+                log.debug("Heartbeat loop stopping: cancellation detected");
                 return;
             }
             if (!done.get()) {

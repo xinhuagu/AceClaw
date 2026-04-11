@@ -227,7 +227,7 @@ public final class StreamingAgentHandler {
         var cancelContext = new CancelAwareStreamContext(context, cancellationToken, objectMapper);
 
         // Create a StreamEventHandler that forwards events via the cancel-aware context
-        var eventHandler = new StreamingNotificationHandler(cancelContext, objectMapper);
+        var eventHandler = new StreamingNotificationHandler(cancelContext, objectMapper, cancellationToken);
 
         // Wait briefly for asynchronous MCP initialization so prompt assembly and
         // request-scoped tool execution both see the same registry contents.
@@ -2814,10 +2814,15 @@ public final class StreamingAgentHandler {
 
         private final StreamContext context;
         private final ObjectMapper objectMapper;
+        private final CancellationToken cancellationToken;
+        /** Set to true when a heartbeat detects a broken pipe (client disconnected). */
+        private volatile boolean clientDisconnected;
 
-        StreamingNotificationHandler(StreamContext context, ObjectMapper objectMapper) {
+        StreamingNotificationHandler(StreamContext context, ObjectMapper objectMapper,
+                                     CancellationToken cancellationToken) {
             this.context = context;
             this.objectMapper = objectMapper;
+            this.cancellationToken = cancellationToken;
         }
 
         @Override
@@ -2886,7 +2891,20 @@ public final class StreamingAgentHandler {
                 context.sendNotification("stream.heartbeat", params);
             } catch (IOException e) {
                 log.debug("Failed to send heartbeat notification: {}", e.getMessage());
+                if (!clientDisconnected) {
+                    clientDisconnected = true;
+                    log.info("Client disconnected (heartbeat broken pipe), triggering cancellation");
+                    cancellationToken.cancel();
+                }
             }
+        }
+
+        /**
+         * Returns true if a heartbeat has detected that the client disconnected.
+         * Used by the heartbeat loop to stop sending heartbeats to a dead connection.
+         */
+        boolean isClientDisconnected() {
+            return clientDisconnected;
         }
 
         @Override

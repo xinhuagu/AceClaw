@@ -10,6 +10,10 @@ import org.slf4j.LoggerFactory;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Adapts an MCP tool to the AceClaw {@link Tool} interface.
@@ -24,6 +28,9 @@ public final class McpToolBridge implements Tool {
 
     private static final Logger log = LoggerFactory.getLogger(McpToolBridge.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    /** Maximum time to wait for an MCP tool call before timing out. */
+    private static final long MCP_TOOL_TIMEOUT_SECONDS = 60;
 
     private final String qualifiedName;
     private final String mcpToolName;
@@ -95,9 +102,26 @@ public final class McpToolBridge implements Tool {
             args = parsed;
         }
 
-        // Call the MCP tool
+        // Call the MCP tool with a timeout to prevent indefinite hanging
         var request = new McpSchema.CallToolRequest(mcpToolName, args);
-        var result = client.callTool(request);
+        McpSchema.CallToolResult result;
+        try {
+            result = CompletableFuture
+                    .supplyAsync(() -> client.callTool(request))
+                    .get(MCP_TOOL_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (TimeoutException e) {
+            log.warn("MCP tool '{}' timed out after {}s", qualifiedName, MCP_TOOL_TIMEOUT_SECONDS);
+            return new ToolResult(
+                    "MCP tool '" + qualifiedName + "' timed out after " + MCP_TOOL_TIMEOUT_SECONDS
+                            + " seconds. The MCP server may be unresponsive.",
+                    true);
+        } catch (ExecutionException e) {
+            throw e.getCause() instanceof Exception cause ? cause
+                    : new RuntimeException("MCP tool execution failed", e.getCause());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new ToolResult("MCP tool '" + qualifiedName + "' was interrupted", true);
+        }
 
         // Extract text content from the result
         var output = extractContent(result);
