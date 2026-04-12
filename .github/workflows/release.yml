@@ -35,9 +35,12 @@ jobs:
       - name: Compute next version
         id: version
         run: |
-          NEXT=$(git cliff --bump ${{ inputs.bump }} --bumped-version)
-          echo "next=${NEXT}" >> "$GITHUB_OUTPUT"
-          echo "Next version: ${NEXT}"
+          # Read version from gradle.properties (source of truth).
+          # SNAPSHOT suffix is stripped; result is the release version.
+          CURRENT=$(grep '^version=' gradle.properties | cut -d= -f2)
+          BARE="${CURRENT%-SNAPSHOT}"
+          echo "next=v${BARE}" >> "$GITHUB_OUTPUT"
+          echo "Next version: v${BARE}"
 
       - name: Bump gradle.properties
         run: |
