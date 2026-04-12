@@ -559,10 +559,12 @@ public final class StreamingAgentHandler {
 
         int totalInput = planResult.stepResults().stream().mapToInt(StepResult::inputTokens).sum();
         int totalOutput = planResult.stepResults().stream().mapToInt(StepResult::outputTokens).sum();
+        int totalLlmRequests = planResult.stepResults().stream().mapToInt(StepResult::llmRequestCount).sum();
         var usageNode = objectMapper.createObjectNode();
         usageNode.put("inputTokens", totalInput);
         usageNode.put("outputTokens", totalOutput);
         usageNode.put("totalTokens", planResult.totalTokensUsed());
+        usageNode.put("llmRequests", totalLlmRequests);
         result.set("usage", usageNode);
 
         log.info("Planned task complete: sessionId={}, success={}, steps={}/{}, tokens={}",
@@ -632,6 +634,7 @@ public final class StreamingAgentHandler {
         usageNode.put("inputTokens", turn.totalUsage().inputTokens());
         usageNode.put("outputTokens", turn.totalUsage().outputTokens());
         usageNode.put("totalTokens", turn.totalUsage().totalTokens());
+        usageNode.put("llmRequests", turn.llmRequestCount());
         result.set("usage", usageNode);
 
         if (turn.wasCompacted()) {
@@ -720,7 +723,9 @@ public final class StreamingAgentHandler {
     private dev.aceclaw.core.agent.Turn syntheticTurn(PlanExecutionResult planResult, StopReason stopReason) {
         int totalInput = planResult.stepResults().stream().mapToInt(StepResult::inputTokens).sum();
         int totalOutput = planResult.stepResults().stream().mapToInt(StepResult::outputTokens).sum();
-        return new dev.aceclaw.core.agent.Turn(planResult.messages(), stopReason, new dev.aceclaw.core.llm.Usage(totalInput, totalOutput));
+        int totalLlmRequests = planResult.stepResults().stream().mapToInt(StepResult::llmRequestCount).sum();
+        return new dev.aceclaw.core.agent.Turn(planResult.messages(), stopReason,
+                new dev.aceclaw.core.llm.Usage(totalInput, totalOutput), totalLlmRequests);
     }
 
     private static String shortenSessionId(String sessionId) {
@@ -997,6 +1002,7 @@ public final class StreamingAgentHandler {
         int totalOutput = 0;
         int totalCacheCreate = 0;
         int totalCacheRead = 0;
+        int totalLlmRequests = 0;
         String reason = "single_segment";
         int segments = 0;
         int continuationCount = 0;
@@ -1041,6 +1047,7 @@ public final class StreamingAgentHandler {
             totalOutput += turn.totalUsage().outputTokens();
             totalCacheCreate += turn.totalUsage().cacheCreationInputTokens();
             totalCacheRead += turn.totalUsage().cacheReadInputTokens();
+            totalLlmRequests += turn.llmRequestCount();
             conversation.addAll(turn.newMessages());
 
             String signature = normalizeSignature(turn.text());
@@ -1091,7 +1098,7 @@ public final class StreamingAgentHandler {
         var usage = new dev.aceclaw.core.llm.Usage(totalInput, totalOutput, totalCacheCreate, totalCacheRead);
         var mergedTurn = new dev.aceclaw.core.agent.Turn(
                 mergedMessages, lastStopReason, usage, lastCompaction, maxIterationsReached,
-                budgetExhausted, budgetExhaustionReason);
+                budgetExhausted, budgetExhaustionReason, totalLlmRequests);
         return new AdaptiveTurnResult(
                 mergedTurn,
                 segments <= 0 ? 1 : segments,
@@ -2605,10 +2612,12 @@ public final class StreamingAgentHandler {
 
         int totalInput = planResult.stepResults().stream().mapToInt(StepResult::inputTokens).sum();
         int totalOutput = planResult.stepResults().stream().mapToInt(StepResult::outputTokens).sum();
+        int totalLlmRequests = planResult.stepResults().stream().mapToInt(StepResult::llmRequestCount).sum();
         var usageNode = objectMapper.createObjectNode();
         usageNode.put("inputTokens", totalInput);
         usageNode.put("outputTokens", totalOutput);
         usageNode.put("totalTokens", planResult.totalTokensUsed());
+        usageNode.put("llmRequests", totalLlmRequests);
         result.set("usage", usageNode);
 
         log.info("Resumed plan complete: sessionId={}, success={}, steps={}/{}, tokens={}",

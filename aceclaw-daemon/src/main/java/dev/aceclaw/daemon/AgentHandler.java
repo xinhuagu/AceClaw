@@ -83,6 +83,7 @@ public final class AgentHandler {
         usageNode.put("inputTokens", turn.totalUsage().inputTokens());
         usageNode.put("outputTokens", turn.totalUsage().outputTokens());
         usageNode.put("totalTokens", turn.totalUsage().totalTokens());
+        usageNode.put("llmRequests", turn.llmRequestCount());
         result.set("usage", usageNode);
 
         log.info("Agent turn complete: sessionId={}, stopReason={}, tokens={}",

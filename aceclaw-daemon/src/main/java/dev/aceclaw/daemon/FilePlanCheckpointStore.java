@@ -427,17 +427,20 @@ public final class FilePlanCheckpointStore implements PlanCheckpointStore {
             String error,
             long durationMs,
             int inputTokens,
-            int outputTokens
+            int outputTokens,
+            int llmRequestCount
     ) {
         static StepResultDto from(StepResult result) {
             return new StepResultDto(
                     result.success(), result.output(), result.error(),
-                    result.durationMs(), result.inputTokens(), result.outputTokens()
+                    result.durationMs(), result.inputTokens(), result.outputTokens(),
+                    result.llmRequestCount()
             );
         }
 
         StepResult toDomain() {
-            return new StepResult(success, output, error, durationMs, inputTokens, outputTokens);
+            return new StepResult(success, output, error, durationMs, inputTokens,
+                    outputTokens, llmRequestCount);
         }
     }
 }
