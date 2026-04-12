@@ -263,6 +263,66 @@ class AgentLoopIntegrationTest {
         assertThat(turn.finalStopReason()).isEqualTo(StopReason.END_TURN);
     }
 
+    @Test
+    void singleLlmCallReportsOneRequest() throws Exception {
+        var llm = new FakeLlmClient(List.of(
+                new LlmResponse("id", "model", List.of(new ContentBlock.Text("Hello")),
+                        StopReason.END_TURN, new Usage(10, 5, 0, 0))
+        ));
+        var loop = new AgentLoop(llm, new ToolRegistry(), "model", null);
+        var turn = loop.runTurn("hi", List.of());
+
+        assertThat(turn.llmRequestCount()).isEqualTo(1);
+    }
+
+    @Test
+    void multiIterationToolUseCountsAllLlmRequests() throws Exception {
+        var toolUse = new ContentBlock.ToolUse("t1", "echo", "{}");
+        var llm = new FakeLlmClient(List.of(
+                new LlmResponse("id", "model", List.of(toolUse),
+                        StopReason.TOOL_USE, new Usage(10, 5, 0, 0)),
+                new LlmResponse("id", "model", List.of(new ContentBlock.Text("Done")),
+                        StopReason.END_TURN, new Usage(10, 5, 0, 0))
+        ));
+
+        var registry = new ToolRegistry();
+        registry.register(new StubTool("echo", "echoed"));
+
+        var loop = new AgentLoop(llm, registry, "model", null);
+        var turn = loop.runTurn("do something", List.of());
+
+        assertThat(turn.llmRequestCount()).isEqualTo(2);
+    }
+
+    @Test
+    void maxIterationsReachedCountsAllLlmRequests() throws Exception {
+        var llmCalls = new AtomicInteger();
+        var llm = new LlmClient() {
+            @Override public String provider() { return "test"; }
+            @Override public String defaultModel() { return "test-model"; }
+
+            @Override
+            public LlmResponse sendMessage(LlmRequest request) {
+                int seq = llmCalls.incrementAndGet();
+                var toolUse = new ContentBlock.ToolUse("t" + seq, "missing_tool", "{}");
+                return new LlmResponse(
+                        "id-" + seq, "model", List.of(toolUse), StopReason.TOOL_USE, new Usage(1, 1, 0, 0));
+            }
+
+            @Override
+            public StreamSession streamMessage(LlmRequest request) {
+                throw new UnsupportedOperationException();
+            }
+        };
+
+        var config = AgentLoopConfig.builder().maxIterations(5).build();
+        var loop = new AgentLoop(llm, new ToolRegistry(), "model", null, config);
+        var turn = loop.runTurn("loop forever", List.of());
+
+        assertThat(turn.maxIterationsReached()).isTrue();
+        assertThat(turn.llmRequestCount()).isEqualTo(5);
+    }
+
     // -- Test helpers --
 
     private static final ObjectMapper JSON = new ObjectMapper();

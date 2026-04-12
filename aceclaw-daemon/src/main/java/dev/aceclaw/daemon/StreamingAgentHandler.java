@@ -1028,6 +1028,17 @@ public final class StreamingAgentHandler {
             continuationCount = Math.max(0, segment - 1);
             lastStopReason = turn.finalStopReason();
             maxIterationsReached = turn.maxIterationsReached();
+            if (turn.wasCompacted()) {
+                lastCompaction = turn.compactionResult();
+            }
+            mergedMessages.addAll(turn.newMessages());
+            totalInput += turn.totalUsage().inputTokens();
+            totalOutput += turn.totalUsage().outputTokens();
+            totalCacheCreate += turn.totalUsage().cacheCreationInputTokens();
+            totalCacheRead += turn.totalUsage().cacheReadInputTokens();
+            totalLlmRequests += turn.llmRequestCount();
+            conversation.addAll(turn.newMessages());
+
             if (turn.budgetExhausted()) {
                 budgetExhausted = true;
                 budgetExhaustionReason = turn.budgetExhaustionReason();
@@ -1039,16 +1050,6 @@ public final class StreamingAgentHandler {
                 reason = "cancelled";
                 break;
             }
-            if (turn.wasCompacted()) {
-                lastCompaction = turn.compactionResult();
-            }
-            mergedMessages.addAll(turn.newMessages());
-            totalInput += turn.totalUsage().inputTokens();
-            totalOutput += turn.totalUsage().outputTokens();
-            totalCacheCreate += turn.totalUsage().cacheCreationInputTokens();
-            totalCacheRead += turn.totalUsage().cacheReadInputTokens();
-            totalLlmRequests += turn.llmRequestCount();
-            conversation.addAll(turn.newMessages());
 
             String signature = normalizeSignature(turn.text());
             if (!signature.isEmpty() && signature.equals(prevSignature)) {

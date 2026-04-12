@@ -12,21 +12,21 @@ import java.util.List;
  * @param newMessages      all messages produced during this turn (assistant messages and tool results)
  * @param finalStopReason  the stop reason from the last LLM call
  * @param totalUsage       aggregated token usage across all LLM calls in this turn
- * @param llmRequestCount  number of LLM requests sent during this turn
  * @param compactionResult        context compaction result, or null if no compaction occurred
  * @param maxIterationsReached    whether the loop hit max-iterations guardrail
  * @param budgetExhausted         whether the turn was stopped by a watchdog budget limit
  * @param budgetExhaustionReason  the budget that was exhausted: {@code "turn_budget"}, {@code "time_budget"}, or null
+ * @param llmRequestCount  number of LLM API requests sent during this turn (attempts, including retries)
  */
 public record Turn(
         List<Message> newMessages,
         StopReason finalStopReason,
         Usage totalUsage,
-        int llmRequestCount,
         CompactionResult compactionResult,
         boolean maxIterationsReached,
         boolean budgetExhausted,
-        String budgetExhaustionReason
+        String budgetExhaustionReason,
+        int llmRequestCount
 ) {
 
     public Turn {
@@ -38,7 +38,7 @@ public record Turn(
      * Creates a turn result without compaction info (backward-compatible).
      */
     public Turn(List<Message> newMessages, StopReason finalStopReason, Usage totalUsage) {
-        this(newMessages, finalStopReason, totalUsage, 0, null, false, false, null);
+        this(newMessages, finalStopReason, totalUsage, null, false, false, null, 0);
     }
 
     /**
@@ -46,15 +46,15 @@ public record Turn(
      */
     public Turn(List<Message> newMessages, StopReason finalStopReason, Usage totalUsage,
                 int llmRequestCount) {
-        this(newMessages, finalStopReason, totalUsage, llmRequestCount, null, false, false, null);
+        this(newMessages, finalStopReason, totalUsage, null, false, false, null, llmRequestCount);
     }
 
     /**
-     * Creates a turn result with optional compaction info (backward-compatible).
+     * Creates a turn result with optional compaction info.
      */
     public Turn(List<Message> newMessages, StopReason finalStopReason, Usage totalUsage,
                 CompactionResult compactionResult) {
-        this(newMessages, finalStopReason, totalUsage, 0, compactionResult, false, false, null);
+        this(newMessages, finalStopReason, totalUsage, compactionResult, false, false, null, 0);
     }
 
     /**
@@ -62,17 +62,17 @@ public record Turn(
      */
     public Turn(List<Message> newMessages, StopReason finalStopReason, Usage totalUsage,
                 CompactionResult compactionResult, int llmRequestCount) {
-        this(newMessages, finalStopReason, totalUsage, llmRequestCount, compactionResult,
-                false, false, null);
+        this(newMessages, finalStopReason, totalUsage, compactionResult, false, false, null,
+                llmRequestCount);
     }
 
     /**
-     * Creates a turn result with compaction and max-iterations info (backward-compatible).
+     * Creates a turn result with compaction and max-iterations info.
      */
     public Turn(List<Message> newMessages, StopReason finalStopReason, Usage totalUsage,
                 CompactionResult compactionResult, boolean maxIterationsReached) {
-        this(newMessages, finalStopReason, totalUsage, 0, compactionResult, maxIterationsReached,
-                false, null);
+        this(newMessages, finalStopReason, totalUsage, compactionResult, maxIterationsReached,
+                false, null, 0);
     }
 
     /**
@@ -81,29 +81,18 @@ public record Turn(
     public Turn(List<Message> newMessages, StopReason finalStopReason, Usage totalUsage,
                 CompactionResult compactionResult, boolean maxIterationsReached,
                 int llmRequestCount) {
-        this(newMessages, finalStopReason, totalUsage, llmRequestCount, compactionResult,
-                maxIterationsReached, false, null);
+        this(newMessages, finalStopReason, totalUsage, compactionResult, maxIterationsReached,
+                false, null, llmRequestCount);
     }
 
     /**
-     * Creates a turn result with budget info and an LLM request count.
+     * Creates a turn result with full status info (budget exhaustion).
      */
     public Turn(List<Message> newMessages, StopReason finalStopReason, Usage totalUsage,
                 CompactionResult compactionResult, boolean maxIterationsReached,
                 boolean budgetExhausted, String budgetExhaustionReason) {
-        this(newMessages, finalStopReason, totalUsage, 0, compactionResult,
-                maxIterationsReached, budgetExhausted, budgetExhaustionReason);
-    }
-
-    /**
-     * Creates a turn result with full status info and an LLM request count.
-     */
-    public Turn(List<Message> newMessages, StopReason finalStopReason, Usage totalUsage,
-                CompactionResult compactionResult, boolean maxIterationsReached,
-                boolean budgetExhausted, String budgetExhaustionReason,
-                int llmRequestCount) {
-        this(newMessages, finalStopReason, totalUsage, llmRequestCount, compactionResult,
-                maxIterationsReached, budgetExhausted, budgetExhaustionReason);
+        this(newMessages, finalStopReason, totalUsage, compactionResult, maxIterationsReached,
+                budgetExhausted, budgetExhaustionReason, 0);
     }
 
     /**
