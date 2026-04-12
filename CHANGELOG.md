@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.13] - 2026-04-12
+
+### Bug Fixes
+
+- Read release version from gradle.properties instead of git-cliff
 ## [0.3.12] - 2026-04-11
 
 ### Bug Fixes
