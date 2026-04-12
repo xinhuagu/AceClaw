@@ -94,6 +94,7 @@ public final class AgentLoop {
         int totalOutputTokens = 0;
         int totalCacheCreationTokens = 0;
         int totalCacheReadTokens = 0;
+        int llmRequestCount = 0;
         int maxIterations = config.effectiveMaxIterations();
 
         try {
@@ -102,6 +103,7 @@ public final class AgentLoop {
 
                 // Build and send the LLM request
                 var request = buildRequest(allMessages);
+                llmRequestCount++;
                 var response = llmClient.sendMessage(request);
 
                 // Accumulate usage
@@ -124,7 +126,8 @@ public final class AgentLoop {
                         var totalUsage = new Usage(
                                 totalInputTokens, totalOutputTokens,
                                 totalCacheCreationTokens, totalCacheReadTokens);
-                        var turn = new Turn(newMessages, response.stopReason(), totalUsage);
+                        var turn = new Turn(newMessages, response.stopReason(), totalUsage,
+                                llmRequestCount);
                         long durationMs = System.currentTimeMillis() - turnStart;
                         publishEvent(new AgentEvent.TurnCompleted(
                                 config.sessionId(), turnNumber, durationMs, Instant.now()));
@@ -160,7 +163,8 @@ public final class AgentLoop {
             var totalUsage = new Usage(
                     totalInputTokens, totalOutputTokens,
                     totalCacheCreationTokens, totalCacheReadTokens);
-            var turn = new Turn(newMessages, StopReason.END_TURN, totalUsage, null, true);
+            var turn = new Turn(newMessages, StopReason.END_TURN, totalUsage, null, true,
+                    llmRequestCount);
             long durationMs = System.currentTimeMillis() - turnStart;
             publishEvent(new AgentEvent.TurnCompleted(
                     config.sessionId(), turnNumber, durationMs, Instant.now()));

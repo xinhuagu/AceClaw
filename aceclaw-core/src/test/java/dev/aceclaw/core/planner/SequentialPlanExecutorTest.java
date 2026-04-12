@@ -233,6 +233,26 @@ class SequentialPlanExecutorTest {
     }
 
     @Test
+    void stepResultsCarryLlmRequestCount() throws LlmException {
+        var client = new SimpleMockLlmClient();
+        client.enqueueTextResponse("result 1");
+        client.enqueueTextResponse("result 2");
+
+        var plan = createTestPlan(2);
+        var loop = createLoop(client);
+        var executor = new SequentialPlanExecutor();
+
+        var result = executor.execute(plan, loop, new ArrayList<>(), noOpHandler, null);
+
+        assertTrue(result.success());
+        // Each step makes exactly 1 LLM streaming call
+        for (var sr : result.stepResults()) {
+            assertEquals(1, sr.llmRequestCount(),
+                    "Each single-call step should report 1 LLM request");
+        }
+    }
+
+    @Test
     void buildStepPrompt_includesPreviousResults() {
         var plan = createTestPlan(3);
         var previousResults = List.of(

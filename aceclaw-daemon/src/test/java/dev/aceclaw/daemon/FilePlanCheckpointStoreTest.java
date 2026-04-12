@@ -243,6 +243,45 @@ class FilePlanCheckpointStoreTest {
     }
 
     @Test
+    void llmRequestCount_preservedAfterRoundTrip() {
+        var plan = samplePlan("plan-llm", 2);
+        var results = List.of(
+                new StepResult(true, "step1 done", null, 100, 50, 25, 3),
+                new StepResult(true, "step2 done", null, 200, 80, 40, 7));
+        var cp = new PlanCheckpoint("plan-llm", "s1", "ws", "goal", plan,
+                results, 1, List.of(), PlanCheckpoint.CheckpointStatus.ACTIVE,
+                null, List.of(), Instant.now(), Instant.now());
+        store.save(cp);
+
+        var loaded = store.load("plan-llm").orElseThrow();
+        var loadedResults = loaded.completedStepResults();
+        assertEquals(2, loadedResults.size());
+        assertEquals(3, loadedResults.get(0).llmRequestCount());
+        assertEquals(7, loadedResults.get(1).llmRequestCount());
+    }
+
+    @Test
+    void llmRequestCount_defaultsToZeroForLegacyCheckpoints() throws IOException {
+        // Simulate a checkpoint file written before llmRequestCount existed:
+        // StepResult JSON without the llmRequestCount field.
+        var plan = samplePlan("plan-legacy", 1);
+        var results = List.of(new StepResult(true, "done", null, 100, 50, 25));
+        var cp = new PlanCheckpoint("plan-legacy", "s1", "ws", "goal", plan,
+                results, 0, List.of(), PlanCheckpoint.CheckpointStatus.ACTIVE,
+                null, List.of(), Instant.now(), Instant.now());
+        store.save(cp);
+
+        // Read the raw JSON file and strip the llmRequestCount field to simulate legacy format
+        var checkpointFile = tempDir.resolve("plan-legacy.checkpoint.json");
+        var json = Files.readString(checkpointFile);
+        var stripped = json.replaceAll(",?\"llmRequestCount\":\\d+", "");
+        Files.writeString(checkpointFile, stripped);
+
+        var loaded = store.load("plan-legacy").orElseThrow();
+        assertEquals(0, loaded.completedStepResults().get(0).llmRequestCount());
+    }
+
+    @Test
     void cleanup_deletesOldCheckpoints() {
         // Save a checkpoint with very old updatedAt
         var now = Instant.now();

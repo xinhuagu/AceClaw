@@ -1215,6 +1215,7 @@ public final class TerminalRepl {
             var usage = result.get("usage");
             int turnIn = usage.path("inputTokens").asInt(0);
             int turnOut = usage.path("outputTokens").asInt(0);
+            int llmRequests = usage.path("llmRequests").asInt(0);
 
             // Use the per-call liveInputTokens for context display (actual context occupation).
             // The JSON-RPC result's inputTokens is cumulative across all API calls in the turn,
@@ -1232,10 +1233,11 @@ public final class TerminalRepl {
             String elapsed = elapsedMs >= 1000
                     ? String.format("%.1fs", elapsedMs / 1000.0)
                     : elapsedMs + "ms";
+            String llmRequestText = llmRequests > 0 ? "  " + llmRequests + " LLM req" : "";
 
             out.println();
-            out.printf("%s%s  %d in / %d out  %s%s%n",
-                    MUTED, elapsed, turnIn, turnOut,
+            out.printf("%s%s%s  %d in / %d out  %s%s%n",
+                    MUTED, elapsed, llmRequestText, turnIn, turnOut,
                     sessionInfo.contextWindowTokens() > 0
                             ? "context " + formatTokenCount(displayContext) + "/"
                               + formatTokenCount(sessionInfo.contextWindowTokens())

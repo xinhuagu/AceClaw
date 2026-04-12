@@ -471,6 +471,9 @@ class DaemonIntegrationTest {
                     .isEqualTo("Hello! I'm AceClaw, your AI assistant.");
             assertThat(responseResult.get("stopReason").asText()).isEqualTo("END_TURN");
             assertThat(responseResult.has("usage")).isTrue();
+            var usage = responseResult.get("usage");
+            assertThat(usage.has("llmRequests")).isTrue();
+            assertThat(usage.get("llmRequests").asInt()).isEqualTo(1);
 
             // Verify the LLM was called with the right prompt
             var requests = mockLlm.capturedRequests();

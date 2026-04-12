@@ -195,7 +195,8 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                         null,
                         System.currentTimeMillis() - stepStart,
                         usage.inputTokens(),
-                        usage.outputTokens());
+                        usage.outputTokens(),
+                        turn.llmRequestCount());
                 stepResults.add(result);
 
                 mutablePlan = mutablePlan.withStepStatus(step.stepId(), StepStatus.COMPLETED)
@@ -252,7 +253,8 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                                 null,
                                 System.currentTimeMillis() - stepStart,
                                 fbUsage.inputTokens(),
-                                fbUsage.outputTokens());
+                                fbUsage.outputTokens(),
+                                fallbackTurn.llmRequestCount());
                         stepResults.add(fallbackResult);
 
                         mutablePlan = mutablePlan.withStepStatus(step.stepId(), StepStatus.COMPLETED)

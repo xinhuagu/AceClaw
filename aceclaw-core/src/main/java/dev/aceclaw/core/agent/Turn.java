@@ -16,6 +16,7 @@ import java.util.List;
  * @param maxIterationsReached    whether the loop hit max-iterations guardrail
  * @param budgetExhausted         whether the turn was stopped by a watchdog budget limit
  * @param budgetExhaustionReason  the budget that was exhausted: {@code "turn_budget"}, {@code "time_budget"}, or null
+ * @param llmRequestCount  number of LLM API requests sent during this turn (attempts, including retries)
  */
 public record Turn(
         List<Message> newMessages,
@@ -24,34 +25,74 @@ public record Turn(
         CompactionResult compactionResult,
         boolean maxIterationsReached,
         boolean budgetExhausted,
-        String budgetExhaustionReason
+        String budgetExhaustionReason,
+        int llmRequestCount
 ) {
 
     public Turn {
         newMessages = newMessages != null ? List.copyOf(newMessages) : List.of();
+        llmRequestCount = Math.max(0, llmRequestCount);
     }
 
     /**
      * Creates a turn result without compaction info (backward-compatible).
      */
     public Turn(List<Message> newMessages, StopReason finalStopReason, Usage totalUsage) {
-        this(newMessages, finalStopReason, totalUsage, null, false, false, null);
+        this(newMessages, finalStopReason, totalUsage, null, false, false, null, 0);
     }
 
     /**
-     * Creates a turn result with optional compaction info (backward-compatible).
+     * Creates a turn result with an LLM request count.
+     */
+    public Turn(List<Message> newMessages, StopReason finalStopReason, Usage totalUsage,
+                int llmRequestCount) {
+        this(newMessages, finalStopReason, totalUsage, null, false, false, null, llmRequestCount);
+    }
+
+    /**
+     * Creates a turn result with optional compaction info.
      */
     public Turn(List<Message> newMessages, StopReason finalStopReason, Usage totalUsage,
                 CompactionResult compactionResult) {
-        this(newMessages, finalStopReason, totalUsage, compactionResult, false, false, null);
+        this(newMessages, finalStopReason, totalUsage, compactionResult, false, false, null, 0);
     }
 
     /**
-     * Creates a turn result with compaction and max-iterations info (backward-compatible).
+     * Creates a turn result with compaction info and an LLM request count.
+     */
+    public Turn(List<Message> newMessages, StopReason finalStopReason, Usage totalUsage,
+                CompactionResult compactionResult, int llmRequestCount) {
+        this(newMessages, finalStopReason, totalUsage, compactionResult, false, false, null,
+                llmRequestCount);
+    }
+
+    /**
+     * Creates a turn result with compaction and max-iterations info.
      */
     public Turn(List<Message> newMessages, StopReason finalStopReason, Usage totalUsage,
                 CompactionResult compactionResult, boolean maxIterationsReached) {
-        this(newMessages, finalStopReason, totalUsage, compactionResult, maxIterationsReached, false, null);
+        this(newMessages, finalStopReason, totalUsage, compactionResult, maxIterationsReached,
+                false, null, 0);
+    }
+
+    /**
+     * Creates a turn result with compaction, max-iterations info, and an LLM request count.
+     */
+    public Turn(List<Message> newMessages, StopReason finalStopReason, Usage totalUsage,
+                CompactionResult compactionResult, boolean maxIterationsReached,
+                int llmRequestCount) {
+        this(newMessages, finalStopReason, totalUsage, compactionResult, maxIterationsReached,
+                false, null, llmRequestCount);
+    }
+
+    /**
+     * Creates a turn result with full status info (budget exhaustion).
+     */
+    public Turn(List<Message> newMessages, StopReason finalStopReason, Usage totalUsage,
+                CompactionResult compactionResult, boolean maxIterationsReached,
+                boolean budgetExhausted, String budgetExhaustionReason) {
+        this(newMessages, finalStopReason, totalUsage, compactionResult, maxIterationsReached,
+                budgetExhausted, budgetExhaustionReason, 0);
     }
 
     /**
