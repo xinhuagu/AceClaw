@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.16] - 2026-04-17
+
+### Features
+
+- Foundation for LLM request attribution by execution path (#419)
+- Tag PLANNER, REPLAN, COMPACTION_SUMMARY, FALLBACK, CONTINUATION sources (#419)
+- Surface per-source breakdown on JSON-RPC + /status (PR B, #419)
+- Per-turn breakdown on turn summary + runtime metrics export (PR C, #419)
+- Tag runtime export with provider + model + Copilot multiplier
 ## [0.3.15] - 2026-04-17
 
 ### Bug Fixes
