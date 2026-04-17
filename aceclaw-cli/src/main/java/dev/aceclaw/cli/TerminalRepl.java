@@ -2413,6 +2413,18 @@ public final class TerminalRepl {
         }
     }
 
+    /**
+     * Friendly one-line labels for reason codes that describe a workspace-level condition
+     * rather than a per-draft defect. These dominate freshly-initialized projects (no replay
+     * benchmark yet) and displaying the raw code made them look like something was broken.
+     * Per-draft codes (STATIC_*, SAFETY_*, DRY_RUN_*) are intentionally absent here — the raw
+     * code is the fastest way for a user to find the offending frontmatter and fix it.
+     */
+    private static final Map<String, String> FRIENDLY_DRAFT_HOLD_LABEL = Map.of(
+            "REPLAY_REPORT_MISSING", "no replay data",
+            "REPLAY_GATE_FAILED", "replay gate failed"
+    );
+
     private String skillDraftStatusSummary(Path projectRoot) {
         Objects.requireNonNull(projectRoot, "projectRoot");
         var snapshot = getSkillDraftSnapshot(projectRoot);
@@ -2450,7 +2462,11 @@ public final class TerminalRepl {
                 .max(Map.Entry.comparingByValue())
                 .map(Map.Entry::getKey)
                 .orElse(null);
-        return dominantReason != null ? base + " [" + dominantReason + "]" : base;
+        if (dominantReason == null) {
+            return base;
+        }
+        String display = FRIENDLY_DRAFT_HOLD_LABEL.getOrDefault(dominantReason, dominantReason);
+        return base + " [" + display + "]";
     }
 
     private SkillDraftEvent parseSkillDraftEvent(JsonNode node) {
