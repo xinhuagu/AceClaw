@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Instant;
 import java.util.List;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.*;
 
 class AdaptiveReplannerTest {
@@ -104,6 +105,37 @@ class AdaptiveReplannerTest {
         assertInstanceOf(ReplanResult.Escalated.class, result);
         var escalated = (ReplanResult.Escalated) result;
         assertTrue(escalated.reason().contains("corrupted"));
+    }
+
+    @Test
+    void replan_attributesOneRequestAsReplan() throws LlmException {
+        // PR A.2: attribution builder passed into replan() must receive one REPLAN entry per
+        // successful LLM call. Pre-attempt escalation (max-attempts short-circuit) records
+        // nothing because no LLM call was made.
+        var client = new ReplanMockLlmClient();
+        client.setNextResponse("""
+                {"action": "escalate", "reason": "test"}
+                """);
+        var replanner = new AdaptiveReplanner(client, "mock-model");
+        var attribution = RequestAttribution.builder();
+
+        replanner.replan(createTrigger(1), attribution);
+
+        var snapshot = attribution.build();
+        assertThat(snapshot.total()).isEqualTo(1);
+        assertThat(snapshot.count(RequestSource.REPLAN)).isEqualTo(1);
+    }
+
+    @Test
+    void replan_maxAttemptsShortCircuitRecordsNothing() throws LlmException {
+        var client = new ReplanMockLlmClient();
+        var replanner = new AdaptiveReplanner(client, "mock-model");
+        var attribution = RequestAttribution.builder();
+
+        // Over the cap — no LLM call issued, attribution stays empty.
+        replanner.replan(createTrigger(AdaptiveReplanner.MAX_REPLAN_ATTEMPTS + 1), attribution);
+
+        assertThat(attribution.build()).isEqualTo(RequestAttribution.empty());
     }
 
     @Test

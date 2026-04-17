@@ -6,6 +6,7 @@ import dev.aceclaw.core.llm.LlmException;
 import dev.aceclaw.core.llm.LlmRequest;
 import dev.aceclaw.core.llm.LlmResponse;
 import dev.aceclaw.core.llm.Message;
+import dev.aceclaw.core.llm.RequestSource;
 import dev.aceclaw.core.llm.StopReason;
 import dev.aceclaw.core.llm.StreamEvent;
 import dev.aceclaw.core.llm.StreamEventHandler;
@@ -60,6 +61,27 @@ class StreamingAgentLoopRequestPruningTest {
         var originalToolResult = (Message.UserMessage) history.get(1);
         var originalBlock = (ContentBlock.ToolResult) originalToolResult.content().getFirst();
         assertThat(originalBlock.content()).isEqualTo(largeContent);
+    }
+
+    @Test
+    void streamingTurnAttributesAllRequestsToMainTurn() throws Exception {
+        // Parallel to the AgentLoop-side invariant test. StreamingAgentLoop has its own
+        // llmRequestCount++ site and several Turn-construction paths (END_TURN, max-iterations,
+        // multiple buildCancelledTurn overloads). All of them must populate requestAttribution
+        // with the same count, attributed to MAIN_TURN.
+        var llm = new CapturingStreamingLlmClient();
+        var config = new CompactionConfig(1_000, 100, 0.85, 0.60, 1);
+        var compactor = new MessageCompactor(llm, "model", config);
+        var loop = new StreamingAgentLoop(
+                llm, new ToolRegistry(), "model", null, 100, 0, 1_000, compactor,
+                AgentLoopConfig.EMPTY);
+
+        var turn = loop.runTurn("hi", List.of(), new StreamEventHandler() {});
+
+        assertThat(turn.llmRequestCount()).isEqualTo(1);
+        assertThat(turn.requestAttribution().total()).isEqualTo(turn.llmRequestCount());
+        assertThat(turn.requestAttribution().count(RequestSource.MAIN_TURN))
+                .isEqualTo(turn.llmRequestCount());
     }
 
     private static final class CapturingStreamingLlmClient implements LlmClient {

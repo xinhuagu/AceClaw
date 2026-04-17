@@ -139,7 +139,7 @@ public final class StreamingAgentLoop {
      */
     public Turn runTurn(String userPrompt, List<Message> conversationHistory, StreamEventHandler handler)
             throws LlmException {
-        return runTurn(userPrompt, conversationHistory, handler, null);
+        return runTurn(userPrompt, conversationHistory, handler, null, RequestSource.MAIN_TURN);
     }
 
     /**
@@ -147,6 +147,22 @@ public final class StreamingAgentLoop {
      */
     public Turn runTurn(String userPrompt, List<Message> conversationHistory,
                         StreamEventHandler handler, CancellationToken cancellationToken)
+            throws LlmException {
+        return runTurn(userPrompt, conversationHistory, handler, cancellationToken,
+                RequestSource.MAIN_TURN);
+    }
+
+    /**
+     * Runs a single agent turn with streaming, cancellation, and an explicit default
+     * {@link RequestSource} used to attribute every MAIN_TURN-style LLM request produced by
+     * this turn. Callers issuing a non-normal turn (e.g. SequentialPlanExecutor fallback
+     * steps attribute as FALLBACK) pass the appropriate source here; CONTINUATION and
+     * COMPACTION_SUMMARY are still set internally based on loop state, overriding the
+     * caller-provided default only for those specific requests.
+     */
+    public Turn runTurn(String userPrompt, List<Message> conversationHistory,
+                        StreamEventHandler handler, CancellationToken cancellationToken,
+                        RequestSource defaultSource)
             throws LlmException {
         var eventHandler = handler != null ? handler : new StreamEventHandler() {};
         this.activeCancellationToken = cancellationToken;
@@ -168,6 +184,12 @@ public final class StreamingAgentLoop {
         int totalCacheCreationTokens = 0;
         int totalCacheReadTokens = 0;
         int llmRequestCount = 0;
+        var attributionBuilder = RequestAttribution.builder();
+        // Flipped true immediately after compaction mutates the message list. The next
+        // iteration's LLM call resumes on the compacted conversation with the injected
+        // "continuation instruction" user message, so that request is attributed as
+        // CONTINUATION rather than MAIN_TURN. Reset after the request is recorded.
+        boolean postCompaction = false;
 
         // Track actual input tokens from API for accurate compaction decisions
         int lastInputTokens = -1;
@@ -224,7 +246,7 @@ public final class StreamingAgentLoop {
                     log.info("Cancellation detected before LLM call (iteration {})", iteration + 1);
                     var turn = buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
                             totalCacheCreationTokens, totalCacheReadTokens, compactionResult,
-                            softBudgetStopped, llmRequestCount);
+                            softBudgetStopped, llmRequestCount, attributionBuilder.build());
                     publishTurnCompleted(turnNumber, turnStart);
                     return turn;
                 }
@@ -248,6 +270,16 @@ public final class StreamingAgentLoop {
                         // Compaction ran this iteration and mutated allMessages;
                         // use compacted version for the request.
                         requestMessages = allMessages;
+                        // Absorb the compaction's own LLM request(s) — currently at most one
+                        // COMPACTION_SUMMARY — into the turn totals. Without this, summaries
+                        // ran invisibly (not reflected in llmRequestCount or attribution).
+                        var compactionAttribution = compactionResult.requestAttribution();
+                        if (compactionAttribution.total() > 0) {
+                            attributionBuilder.merge(compactionAttribution);
+                            llmRequestCount += compactionAttribution.total();
+                        }
+                        // Next request resumes on the compacted conversation.
+                        postCompaction = true;
                     }
                 }
 
@@ -273,6 +305,11 @@ public final class StreamingAgentLoop {
                 for (int streamAttempt = 0; streamAttempt <= retryConfig.maxRetries(); streamAttempt++) {
                     accumulator = new StreamAccumulator(eventHandler);
                     llmRequestCount++;
+                    // CONTINUATION wins over defaultSource only for the first request after
+                    // compaction; MAIN_TURN / FALLBACK apply in normal iterations. Retries of
+                    // a single LLM call fold into the same source per the #419 decision.
+                    RequestSource source = postCompaction ? RequestSource.CONTINUATION : defaultSource;
+                    attributionBuilder.record(source);
                     var session = llmClient.streamMessage(request);
 
                     // Register the session with the cancellation token so cancel() propagates
@@ -306,6 +343,9 @@ public final class StreamingAgentLoop {
                         throw new LlmException("Stream retry interrupted", ie);
                     }
                 }
+                // This iteration's LLM call (plus any retries) is done; consume the flag so
+                // only the first post-compaction request is attributed as CONTINUATION.
+                postCompaction = false;
 
                 // Checkpoint 2: after stream completes
                 if (cancellationToken != null && cancellationToken.isCancelled()) {
@@ -340,7 +380,7 @@ public final class StreamingAgentLoop {
                     }
                     var turn = buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
                             totalCacheCreationTokens, totalCacheReadTokens, compactionResult,
-                            llmRequestCount);
+                            llmRequestCount, attributionBuilder.build());
                     publishTurnCompleted(turnNumber, turnStart);
                     return turn;
                 }
@@ -387,7 +427,7 @@ public final class StreamingAgentLoop {
                                 totalInputTokens, totalOutputTokens,
                                 totalCacheCreationTokens, totalCacheReadTokens);
                         var turn = new Turn(newMessages, stopReason, totalUsage, compactionResult,
-                                llmRequestCount);
+                                false, false, null, llmRequestCount, attributionBuilder.build());
                         publishTurnCompleted(turnNumber, turnStart);
                         return turn;
                     }
@@ -422,7 +462,7 @@ public final class StreamingAgentLoop {
                             log.info("Cancellation detected after tool execution (iteration {})", iteration + 1);
                             var turn = buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
                                     totalCacheCreationTokens, totalCacheReadTokens, compactionResult,
-                                    llmRequestCount);
+                                    llmRequestCount, attributionBuilder.build());
                             publishTurnCompleted(turnNumber, turnStart);
                             return turn;
                         }
@@ -436,7 +476,7 @@ public final class StreamingAgentLoop {
                     totalInputTokens, totalOutputTokens,
                     totalCacheCreationTokens, totalCacheReadTokens);
             var turn = new Turn(newMessages, StopReason.END_TURN, totalUsage, compactionResult,
-                    true, llmRequestCount);
+                    true, false, null, llmRequestCount, attributionBuilder.build());
             publishTurnCompleted(turnNumber, turnStart);
             return turn;
         } catch (LlmException e) {
@@ -461,10 +501,11 @@ public final class StreamingAgentLoop {
                                     int totalInputTokens, int totalOutputTokens,
                                     int totalCacheCreationTokens, int totalCacheReadTokens,
                                     CompactionResult compactionResult,
-                                    int llmRequestCount) {
+                                    int llmRequestCount,
+                                    RequestAttribution attribution) {
         return buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
                 totalCacheCreationTokens, totalCacheReadTokens, compactionResult, false,
-                llmRequestCount);
+                llmRequestCount, attribution);
     }
 
     /**
@@ -475,7 +516,8 @@ public final class StreamingAgentLoop {
                                     int totalCacheCreationTokens, int totalCacheReadTokens,
                                     CompactionResult compactionResult,
                                     boolean softBudgetStopped,
-                                    int llmRequestCount) {
+                                    int llmRequestCount,
+                                    RequestAttribution attribution) {
         var totalUsage = new Usage(totalInputTokens, totalOutputTokens,
                 totalCacheCreationTokens, totalCacheReadTokens);
         var watchdog = config.watchdog();
@@ -485,7 +527,8 @@ public final class StreamingAgentLoop {
             reason = "soft_budget_no_progress";
         }
         return new Turn(newMessages, StopReason.END_TURN, totalUsage, compactionResult,
-                false, budgetExhausted, reason, llmRequestCount);
+                false, budgetExhausted, reason, llmRequestCount,
+                attribution != null ? attribution : RequestAttribution.empty());
     }
 
     /**

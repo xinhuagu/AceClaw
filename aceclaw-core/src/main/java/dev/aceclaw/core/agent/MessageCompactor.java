@@ -197,10 +197,11 @@ public final class MessageCompactor {
         if (prunedEstimate <= config.pruneTargetTokens()) {
             return new CompactionResult(
                     pruned, originalEstimate, prunedEstimate,
-                    CompactionResult.Phase.PRUNED, extractedContext);
+                    CompactionResult.Phase.PRUNED, extractedContext,
+                    RequestAttribution.empty());
         }
 
-        // Phase 2: LLM summarization
+        // Phase 2: LLM summarization — issues one COMPACTION_SUMMARY request.
         var summarized = summarizeMessages(pruned, systemPrompt);
         int summarizedEstimate = ContextEstimator.estimateFullContext(
                 systemPrompt, List.of(), summarized);
@@ -210,9 +211,12 @@ public final class MessageCompactor {
                 prunedEstimate, summarizedEstimate, pruned.size(), summarized.size(),
                 String.format("%.1f", reduction));
 
+        var attribution = RequestAttribution.builder()
+                .record(RequestSource.COMPACTION_SUMMARY)
+                .build();
         return new CompactionResult(
                 summarized, originalEstimate, summarizedEstimate,
-                CompactionResult.Phase.SUMMARIZED, extractedContext);
+                CompactionResult.Phase.SUMMARIZED, extractedContext, attribution);
     }
 
     // -- Phase 0: Memory Flush -----------------------------------------------

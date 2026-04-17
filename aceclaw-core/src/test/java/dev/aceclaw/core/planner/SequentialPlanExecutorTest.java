@@ -149,6 +149,35 @@ class SequentialPlanExecutorTest {
     }
 
     @Test
+    void planExecutionAggregatesStepAttributionsAcrossSteps() throws LlmException {
+        // End-to-end attribution aggregation for the happy path: two successful steps produce
+        // two MAIN_TURN requests that sum up on PlanExecutionResult.requestAttribution().
+        // The planner request is NOT in this total — it's issued before the executor runs,
+        // and the caller (StreamingAgentHandler) merges its own planner count on top.
+        //
+        // The FALLBACK / REPLAN paths are covered by unit tests at AgentLoop / AdaptiveReplanner;
+        // duplicating them here would require reasoning about streaming retry semantics that
+        // aren't the concern of plan-level aggregation.
+        var client = new SimpleMockLlmClient();
+        client.enqueueTextResponse("step 1 ok");
+        client.enqueueTextResponse("step 2 ok");
+
+        var plan = createTestPlan(2);
+        var loop = createLoop(client);
+        var executor = new SequentialPlanExecutor();
+
+        var result = executor.execute(plan, loop, new ArrayList<>(), noOpHandler, null);
+
+        assertTrue(result.success());
+        var attribution = result.requestAttribution();
+        assertEquals(2, attribution.total());
+        assertEquals(2, attribution.count(dev.aceclaw.core.llm.RequestSource.MAIN_TURN));
+        // Invariant: plan total equals sum of step llmRequestCounts (plus replans, here 0).
+        int stepSum = result.stepResults().stream().mapToInt(StepResult::llmRequestCount).sum();
+        assertEquals(stepSum, attribution.total());
+    }
+
+    @Test
     void stepFailsNoFallback() throws LlmException {
         var client = new SimpleMockLlmClient();
         client.enqueueError(); // step 1 fails

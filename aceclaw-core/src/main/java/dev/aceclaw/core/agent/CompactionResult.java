@@ -1,6 +1,7 @@
 package dev.aceclaw.core.agent;
 
 import dev.aceclaw.core.llm.Message;
+import dev.aceclaw.core.llm.RequestAttribution;
 
 import java.util.List;
 
@@ -12,18 +13,34 @@ import java.util.List;
  * @param compactedTokenEstimate estimated tokens after compaction
  * @param phaseReached          the deepest compaction phase that was executed
  * @param extractedContext      key context items extracted during Phase 0 (memory flush)
+ * @param requestAttribution    LLM requests this compaction made — empty for phase NONE/PRUNED,
+ *                              one COMPACTION_SUMMARY request for phase SUMMARIZED. Callers fold
+ *                              this into the parent turn's attribution so the summary call is
+ *                              counted and categorised separately from the main turn
  */
 public record CompactionResult(
         List<Message> compactedMessages,
         int originalTokenEstimate,
         int compactedTokenEstimate,
         Phase phaseReached,
-        List<String> extractedContext
+        List<String> extractedContext,
+        RequestAttribution requestAttribution
 ) {
 
     public CompactionResult {
         compactedMessages = List.copyOf(compactedMessages);
         extractedContext = List.copyOf(extractedContext);
+        requestAttribution = requestAttribution != null ? requestAttribution : RequestAttribution.empty();
+    }
+
+    /** Backward-compatible constructor used by callers that predate request attribution. */
+    public CompactionResult(List<Message> compactedMessages,
+                            int originalTokenEstimate,
+                            int compactedTokenEstimate,
+                            Phase phaseReached,
+                            List<String> extractedContext) {
+        this(compactedMessages, originalTokenEstimate, compactedTokenEstimate, phaseReached,
+                extractedContext, RequestAttribution.empty());
     }
 
     /**
