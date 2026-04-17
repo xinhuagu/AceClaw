@@ -691,7 +691,9 @@ public final class StreamingAgentHandler {
         });
     }
 
-    private void runPostRequestLearning(String sessionId,
+    // Package-private for testing: locks the caller-side contract that persist() is invoked
+    // on every post-request cycle, including when insights is empty. See #411.
+    void runPostRequestLearning(String sessionId,
                                         Path projectPath,
                                         dev.aceclaw.core.agent.Turn turn,
                                         List<AgentSession.ConversationMessage> sessionHistory,
@@ -701,8 +703,13 @@ public final class StreamingAgentHandler {
         if (selfImprovementEngine != null) {
             try {
                 insights = selfImprovementEngine.analyze(turn, sessionHistory, metricsSnapshot);
+                // Always call persist(), even with an empty insights list. persist() carries the
+                // draft re-evaluation trigger that refreshes the validation snapshot and reruns
+                // the release pipeline. Skipping persist on empty insights meant trivial turns
+                // (e.g. a "hi" with no extractable insights) left the validation snapshot stale,
+                // which silently blocked promotion indicators from advancing.
+                int persisted = selfImprovementEngine.persist(insights, sessionId, projectPath);
                 if (!insights.isEmpty()) {
-                    int persisted = selfImprovementEngine.persist(insights, sessionId, projectPath);
                     log.debug("Self-improvement: {} insights analyzed, {} persisted (session={})",
                             insights.size(), persisted, sessionId);
                 }
