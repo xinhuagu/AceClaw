@@ -542,6 +542,63 @@ class TerminalReplTest {
     }
 
     @Test
+    void skillDraftStatusSummary_dominantReasonOnlyReflectsHoldDrafts() throws Exception {
+        // Two drafts: one HOLD (replay gate failed), one BLOCK (missing description).
+        // The bracketed dominant-reason indicator is meant to diagnose stuck HOLD state, not
+        // BLOCK (which is a draft-file defect visible from `b:N` and inspected separately).
+        var statusRepl = newReplForProject(tempDir);
+        Path holdDraft = tempDir.resolve(".aceclaw/skills-drafts/hold-one/SKILL.md");
+        Path blockDraft = tempDir.resolve(".aceclaw/skills-drafts/block-one/SKILL.md");
+        Files.createDirectories(holdDraft.getParent());
+        Files.createDirectories(blockDraft.getParent());
+        Files.writeString(holdDraft, """
+                ---
+                name: "hold-one"
+                description: "Held by replay"
+                disable-model-invocation: true
+                ---
+                # Hold
+                """);
+        Files.writeString(blockDraft, """
+                ---
+                name: "block-one"
+                description: "Blocked by missing model field override policy"
+                disable-model-invocation: true
+                ---
+                # Block
+                """);
+        Path snapshot = tempDir.resolve(".aceclaw/metrics/continuous-learning/skill-draft-validation-snapshot.json");
+        Files.createDirectories(snapshot.getParent());
+        Files.writeString(snapshot, """
+                {
+                  "updatedAt": "2026-04-17T12:00:00Z",
+                  "trigger": "auto-promotion",
+                  "drafts": [
+                    {
+                      "draftPath": ".aceclaw/skills-drafts/hold-one/SKILL.md",
+                      "verdict": "hold",
+                      "reasons": [
+                        {"gate":"replay","code":"REPLAY_GATE_FAILED","outcome":"hold","message":"token_err exceeds threshold"}
+                      ]
+                    },
+                    {
+                      "draftPath": ".aceclaw/skills-drafts/block-one/SKILL.md",
+                      "verdict": "block",
+                      "reasons": [
+                        {"gate":"static","code":"STATIC_FRONTMATTER_MISSING","outcome":"block","message":"missing frontmatter"}
+                      ]
+                    }
+                  ]
+                }
+                """);
+
+        String summary = (String) invokePrivate(statusRepl, "skillDraftStatusSummary",
+                new Class<?>[]{Path.class}, tempDir);
+        // BLOCK reason must not leak into the bracketed hint.
+        assertThat(summary).isEqualTo("2(p:0,h:1,b:1,n:0) [REPLAY_GATE_FAILED]");
+    }
+
+    @Test
     void skillDraftStatusSummary_prefersSnapshotOverStaleAudit() throws Exception {
         var statusRepl = newReplForProject(tempDir);
         writeSkillDraftArtifacts(tempDir);

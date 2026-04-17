@@ -266,6 +266,42 @@ class ValidationGateEngineTest {
         assertThat(root.path("drafts").size()).isEqualTo(2);
     }
 
+    @Test
+    void validateAllClearsSnapshotWhenDraftsDirectoryDisappears() throws Exception {
+        // Seed a snapshot as if a previous run had produced HOLD decisions.
+        writeDraft("""
+                ---
+                name: "retry-safe"
+                description: "Retry with bounded timeout"
+                allowed-tools: [bash]
+                disable-model-invocation: true
+                ---
+                # Draft Skill
+                """);
+        var engine = new ValidationGateEngine(
+                fixedClock(), false, true,
+                Path.of(".aceclaw/metrics/continuous-learning/replay-latest.json"),
+                0.65);
+        engine.validateAll(tempDir, "first-run");
+
+        // User wipes the drafts directory. Next validateAll must clear the snapshot so
+        // downstream consumers don't keep serving the stale HOLD entries.
+        Path draftsDir = tempDir.resolve(".aceclaw/skills-drafts");
+        Files.walk(draftsDir)
+                .sorted(java.util.Comparator.reverseOrder())
+                .forEach(p -> { try { Files.delete(p); } catch (Exception ignored) {} });
+
+        engine.validateAll(tempDir, "post-wipe");
+
+        Path snapshotPath = tempDir.resolve(
+                ".aceclaw/metrics/continuous-learning/skill-draft-validation-snapshot.json");
+        assertThat(snapshotPath).isRegularFile();
+        var root = new ObjectMapper().readTree(snapshotPath.toFile());
+        assertThat(root.path("trigger").asText()).isEqualTo("post-wipe");
+        assertThat(root.path("drafts").isArray()).isTrue();
+        assertThat(root.path("drafts").size()).isZero();
+    }
+
     private static Clock fixedClock() {
         return Clock.fixed(Instant.parse("2026-02-24T00:00:00Z"), ZoneOffset.UTC);
     }

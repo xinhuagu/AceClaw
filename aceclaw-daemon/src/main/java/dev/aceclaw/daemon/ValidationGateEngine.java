@@ -79,6 +79,9 @@ public final class ValidationGateEngine {
 
         Path draftsRoot = projectRoot.resolve(DRAFTS_DIR);
         if (!Files.isDirectory(draftsRoot)) {
+            // No drafts directory is a valid current state. Clear the snapshot so consumers
+            // don't keep seeing stale entries after the last draft (or the whole dir) is removed.
+            writeSnapshot(projectRoot, List.of(), normalizedTrigger);
             return new ValidationSummary(
                     0, 0, 0, 0, List.of(), List.of(), projectRoot.resolve(AUDIT_DIR).resolve(AUDIT_FILE));
         }

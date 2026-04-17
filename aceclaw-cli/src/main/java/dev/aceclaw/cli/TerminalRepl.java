@@ -2421,8 +2421,11 @@ public final class TerminalRepl {
                 case "block" -> block++;
                 default -> pending++;
             }
-            if (!"pass".equals(draft.validationVerdict())) {
-                // First reason is the primary gate failure; collapsed into a count for the status line.
+            if ("hold".equals(draft.validationVerdict())) {
+                // Only HOLD drafts feed the dominant-reason indicator. BLOCK issues are already
+                // visible as `b:N` in the counts and have different remediation paths (edit the
+                // draft file); the status line's bracketed hint is specifically for diagnosing
+                // why otherwise-valid drafts are stuck short of release.
                 draft.validationReasons().stream().findFirst().ifPresent(reason -> {
                     String code = reason.split(":", 2)[0].trim();
                     if (!code.isBlank()) {
