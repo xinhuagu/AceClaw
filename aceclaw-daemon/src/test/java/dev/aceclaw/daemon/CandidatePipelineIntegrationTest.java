@@ -247,6 +247,26 @@ class CandidatePipelineIntegrationTest {
     }
 
     @Test
+    void triggerFiresEvenWithEmptyInsights() {
+        // Regression guard: trivial turns that produce no extractable insights (e.g. "hi")
+        // must still fire the draft re-evaluation trigger. Otherwise the validation snapshot
+        // goes stale on every no-insight turn, and promotion indicators don't advance.
+        // The StreamingAgentHandler caller-side must also call persist() unconditionally for
+        // this to hold end-to-end; this test locks the engine-side contract.
+        var triggerCalled = new java.util.concurrent.atomic.AtomicBoolean(false);
+        var errorDetector = new ErrorDetector(memoryStore);
+        var patternDetector = new PatternDetector(memoryStore);
+        var engineWithTrigger = new SelfImprovementEngine(
+                errorDetector, patternDetector, new FailureSignalDetector(),
+                memoryStore, null, candidateStore, true,
+                projectPath -> triggerCalled.set(true));
+
+        engineWithTrigger.persist(List.of(), "test-session", tempDir);
+
+        assertThat(triggerCalled.get()).isTrue();
+    }
+
+    @Test
     void triggerAlwaysFiresEvenWithoutNewPromotions() {
         // Trigger should always fire after persist() for idempotent re-evaluation,
         // regardless of whether new promotions occurred in this turn.
