@@ -1224,6 +1224,7 @@ public final class TerminalRepl {
             // If no streaming usage was received, keep the monitor's existing per-call value (0 means "no update").
             long perCallContext = handle.liveInputTokens();
             contextMonitor.recordTurnComplete(turnIn, turnOut, perCallContext);
+            contextMonitor.recordLlmRequests(llmRequests);
             contextMonitor.checkThresholds(log);
 
             // For display, use the monitor's authoritative value which handles the
@@ -1516,8 +1517,10 @@ public final class TerminalRepl {
                     var bgUsage = bgUsageResult.get("usage");
                     int bgTurnIn = bgUsage.path("inputTokens").asInt(0);
                     int bgTurnOut = bgUsage.path("outputTokens").asInt(0);
+                    int bgLlmRequests = bgUsage.path("llmRequests").asInt(0);
                     long bgPerCall = handle.liveInputTokens();
                     contextMonitor.recordTurnComplete(bgTurnIn, bgTurnOut, bgPerCall);
+                    contextMonitor.recordLlmRequests(bgLlmRequests);
                     contextMonitor.checkThresholds(log);
                 }
             }
@@ -3006,6 +3009,8 @@ public final class TerminalRepl {
                 out.printf("  %sTotal usage:%s %s in / %s out%n", MUTED, RESET,
                         formatTokenCount(contextMonitor.totalInput()),
                         formatTokenCount(contextMonitor.totalOutput()));
+                out.printf("  %sLLM requests:%s %d%n", MUTED, RESET,
+                        contextMonitor.totalLlmRequests());
                 out.printf("  %sTasks:%s       %d running%n", MUTED, RESET,
                         taskManager.runningCount());
                 out.println();

@@ -24,6 +24,30 @@ class ContextMonitorTest {
     }
 
     @Test
+    void recordLlmRequestsAccumulatesAcrossTurns() {
+        var monitor = new ContextMonitor(200_000);
+
+        monitor.recordLlmRequests(1);
+        monitor.recordLlmRequests(3);
+        monitor.recordLlmRequests(2);
+
+        assertThat(monitor.totalLlmRequests()).isEqualTo(6);
+    }
+
+    @Test
+    void recordLlmRequestsIgnoresZeroAndNegativeValues() {
+        // A turn with no LLM call (e.g. cancelled before send) reports llmRequests=0 in the
+        // usage payload. The counter must not advance on those, and must never go backward.
+        var monitor = new ContextMonitor(200_000);
+
+        monitor.recordLlmRequests(2);
+        monitor.recordLlmRequests(0);
+        monitor.recordLlmRequests(-1);
+
+        assertThat(monitor.totalLlmRequests()).isEqualTo(2);
+    }
+
+    @Test
     void recentTrendCanFallAndThenStabilize() {
         var monitor = new ContextMonitor(100_000);
 
