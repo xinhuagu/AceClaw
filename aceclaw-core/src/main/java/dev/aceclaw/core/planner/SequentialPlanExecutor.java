@@ -5,6 +5,8 @@ import dev.aceclaw.core.agent.StreamingAgentLoop;
 import dev.aceclaw.core.agent.WatchdogTimer;
 import dev.aceclaw.core.llm.LlmException;
 import dev.aceclaw.core.llm.Message;
+import dev.aceclaw.core.llm.RequestAttribution;
+import dev.aceclaw.core.llm.RequestSource;
 import dev.aceclaw.core.llm.StreamEventHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -121,6 +123,10 @@ public final class SequentialPlanExecutor implements PlanExecutor {
         // Global replan budget for the entire plan execution (not per-step).
         // This prevents runaway replanning across multiple failing steps.
         int replanAttempt = 0;
+        // Aggregated attribution across step turns + replan LLM calls. Upfront PLANNER
+        // requests happen before the executor is invoked so they're not in this total;
+        // the caller (StreamingAgentHandler) merges its own planner count on top.
+        var replanAttribution = RequestAttribution.builder();
 
         stepLoop:
         for (int i = 0; i < plan.steps().size(); i++) {
@@ -184,7 +190,8 @@ public final class SequentialPlanExecutor implements PlanExecutor {
             String stepPrompt = buildStepPrompt(step, i, plan, stepResults);
 
             try {
-                var turn = agentLoop.runTurn(stepPrompt, allMessages, handler, cancellationToken);
+                var turn = agentLoop.runTurn(stepPrompt, allMessages, handler, cancellationToken,
+                        RequestSource.MAIN_TURN);
                 allMessages.addAll(turn.newMessages());
                 generatedMessages.addAll(turn.newMessages());
 
@@ -196,7 +203,8 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                         System.currentTimeMillis() - stepStart,
                         usage.inputTokens(),
                         usage.outputTokens(),
-                        turn.llmRequestCount());
+                        turn.llmRequestCount(),
+                        turn.requestAttribution());
                 stepResults.add(result);
 
                 mutablePlan = mutablePlan.withStepStatus(step.stepId(), StepStatus.COMPLETED)
@@ -242,7 +250,8 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                     try {
                         String fallbackPrompt = buildFallbackPrompt(step, e.getMessage());
                         var fallbackTurn = agentLoop.runTurn(
-                                fallbackPrompt, allMessages, handler, cancellationToken);
+                                fallbackPrompt, allMessages, handler, cancellationToken,
+                                RequestSource.FALLBACK);
                         allMessages.addAll(fallbackTurn.newMessages());
                         generatedMessages.addAll(fallbackTurn.newMessages());
 
@@ -254,7 +263,8 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                                 System.currentTimeMillis() - stepStart,
                                 fbUsage.inputTokens(),
                                 fbUsage.outputTokens(),
-                                fallbackTurn.llmRequestCount());
+                                fallbackTurn.llmRequestCount(),
+                                fallbackTurn.requestAttribution());
                         stepResults.add(fallbackResult);
 
                         mutablePlan = mutablePlan.withStepStatus(step.stepId(), StepStatus.COMPLETED)
@@ -317,7 +327,7 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                             stepFailureMessage, completedSummaries, remaining, replanAttempt);
 
                     try {
-                        var replanResult = replanner.replan(trigger);
+                        var replanResult = replanner.replan(trigger, replanAttribution);
                         switch (replanResult) {
                             case ReplanResult.Revised revised -> {
                                 var oldPlan = mutablePlan;
@@ -401,13 +411,22 @@ public final class SequentialPlanExecutor implements PlanExecutor {
         log.info("Plan execution finished: success={}, steps={}/{}, duration={}ms, tokens={}",
                 allSuccess, stepResults.size(), plan.steps().size(), totalDuration, totalTokens);
 
+        // Fold per-step turn attributions into the plan-level total, on top of any REPLAN
+        // requests the executor made directly. The PLANNER request that produced `plan`
+        // itself happens one level up in the caller and is merged there.
+        var planAttribution = replanAttribution;
+        for (var step : stepResults) {
+            planAttribution.merge(step.requestAttribution());
+        }
+
         return new PlanExecutionResult(
                 mutablePlan,
                 stepResults,
                 generatedMessages,
                 totalDuration,
                 allSuccess,
-                totalTokens);
+                totalTokens,
+                planAttribution.build());
     }
 
     /**

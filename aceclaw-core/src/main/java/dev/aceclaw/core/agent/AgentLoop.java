@@ -77,6 +77,18 @@ public final class AgentLoop {
      * @throws LlmException if the LLM call fails
      */
     public Turn runTurn(String userPrompt, List<Message> conversationHistory) throws LlmException {
+        return runTurn(userPrompt, conversationHistory, RequestSource.MAIN_TURN);
+    }
+
+    /**
+     * Runs a single agent turn attributing every LLM request to an explicit
+     * {@link RequestSource}. Callers that issue a turn outside the normal interactive path
+     * (e.g. SequentialPlanExecutor fallback paths attribute as FALLBACK) pass the relevant
+     * source here so the resulting Turn's requestAttribution reflects what actually produced
+     * the work.
+     */
+    public Turn runTurn(String userPrompt, List<Message> conversationHistory,
+                        RequestSource defaultSource) throws LlmException {
         long turnStart = System.currentTimeMillis();
         int turnNumber = (int) conversationHistory.stream()
                 .filter(m -> m instanceof Message.UserMessage).count() + 1;
@@ -95,6 +107,7 @@ public final class AgentLoop {
         int totalCacheCreationTokens = 0;
         int totalCacheReadTokens = 0;
         int llmRequestCount = 0;
+        var attributionBuilder = RequestAttribution.builder();
         int maxIterations = config.effectiveMaxIterations();
 
         try {
@@ -104,6 +117,7 @@ public final class AgentLoop {
                 // Build and send the LLM request
                 var request = buildRequest(allMessages);
                 llmRequestCount++;
+                attributionBuilder.record(defaultSource);
                 var response = llmClient.sendMessage(request);
 
                 // Accumulate usage
@@ -127,7 +141,8 @@ public final class AgentLoop {
                                 totalInputTokens, totalOutputTokens,
                                 totalCacheCreationTokens, totalCacheReadTokens);
                         var turn = new Turn(newMessages, response.stopReason(), totalUsage,
-                                llmRequestCount);
+                                null, false, false, null, llmRequestCount,
+                                attributionBuilder.build());
                         long durationMs = System.currentTimeMillis() - turnStart;
                         publishEvent(new AgentEvent.TurnCompleted(
                                 config.sessionId(), turnNumber, durationMs, Instant.now()));
@@ -164,7 +179,7 @@ public final class AgentLoop {
                     totalInputTokens, totalOutputTokens,
                     totalCacheCreationTokens, totalCacheReadTokens);
             var turn = new Turn(newMessages, StopReason.END_TURN, totalUsage, null, true,
-                    llmRequestCount);
+                    false, null, llmRequestCount, attributionBuilder.build());
             long durationMs = System.currentTimeMillis() - turnStart;
             publishEvent(new AgentEvent.TurnCompleted(
                     config.sessionId(), turnNumber, durationMs, Instant.now()));

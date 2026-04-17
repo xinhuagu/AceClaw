@@ -6,6 +6,8 @@ import dev.aceclaw.core.llm.LlmClient;
 import dev.aceclaw.core.llm.LlmException;
 import dev.aceclaw.core.llm.LlmRequest;
 import dev.aceclaw.core.llm.Message;
+import dev.aceclaw.core.llm.RequestAttribution;
+import dev.aceclaw.core.llm.RequestSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -83,6 +85,17 @@ public final class AdaptiveReplanner {
      * @throws LlmException if the LLM call fails
      */
     public ReplanResult replan(ReplanTrigger trigger) throws LlmException {
+        return replan(trigger, null);
+    }
+
+    /**
+     * Attribution-aware variant. Records one {@link RequestSource#REPLAN} entry per LLM
+     * request on the supplied builder if non-null. Pre-attempt escalations (e.g. hitting
+     * the attempt cap) return without issuing an LLM call, so nothing is recorded in that
+     * path — the attribution total matches actual API cost.
+     */
+    public ReplanResult replan(ReplanTrigger trigger, RequestAttribution.Builder attribution)
+            throws LlmException {
         Objects.requireNonNull(trigger, "trigger");
 
         if (trigger.replanAttempt() > MAX_REPLAN_ATTEMPTS) {
@@ -103,6 +116,9 @@ public final class AdaptiveReplanner {
                 .build();
 
         var response = llmClient.sendMessage(request);
+        if (attribution != null) {
+            attribution.record(RequestSource.REPLAN);
+        }
         var text = response.text();
 
         if (text == null || text.isBlank()) {
