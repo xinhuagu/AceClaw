@@ -96,17 +96,31 @@ DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/$ARCHIVE_NA
 TMP_DIR=$(mktemp -d)
 
 info "Downloading $ARCHIVE_NAME..."
+# Show progress only when stderr is attached to a real terminal — curl's
+# --progress-bar and wget's --show-progress do NOT auto-gate on TTY, they
+# will pollute stderr-capture and log-collection scenarios otherwise.
+if [ -t 2 ]; then
+    CURL_FLAGS="-fL --progress-bar"
+    WGET_FLAGS="-q --show-progress"
+else
+    CURL_FLAGS="-fsSL"
+    WGET_FLAGS="-q"
+fi
 if command -v curl >/dev/null 2>&1; then
-    curl -fsSL -o "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || {
+    # shellcheck disable=SC2086 # intentional word-splitting of flag string
+    curl $CURL_FLAGS -o "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || {
         ARCHIVE_NAME="aceclaw-cli-${LATEST_VERSION}.zip"
         DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/$ARCHIVE_NAME"
-        curl -fsSL -o "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || fail "Download failed"
+        # shellcheck disable=SC2086
+        curl $CURL_FLAGS -o "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || fail "Download failed"
     }
 else
-    wget -q -O "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || {
+    # shellcheck disable=SC2086
+    wget $WGET_FLAGS -O "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || {
         ARCHIVE_NAME="aceclaw-cli-${LATEST_VERSION}.zip"
         DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/$ARCHIVE_NAME"
-        wget -q -O "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || fail "Download failed"
+        # shellcheck disable=SC2086
+        wget $WGET_FLAGS -O "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || fail "Download failed"
     }
 fi
 
