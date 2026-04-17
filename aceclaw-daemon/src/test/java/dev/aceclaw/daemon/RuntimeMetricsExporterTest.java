@@ -84,6 +84,62 @@ class RuntimeMetricsExporterTest {
     }
 
     @Test
+    void recordLlmRequests_accumulatesTotalAndPerSource() throws Exception {
+        // PR C: runtime-latest.json gains absolute-count metrics for LLM requests by source
+        // so offline tools can build a Copilot-usage baseline. Each per-source count lands
+        // in a metric named llm_requests_<source>; the grand total lands in llm_requests_total.
+        var exporter = new RuntimeMetricsExporter();
+
+        // Turn 1: two main-turn + one planner.
+        exporter.recordLlmRequests(dev.aceclaw.core.llm.RequestAttribution.builder()
+                .record(dev.aceclaw.core.llm.RequestSource.MAIN_TURN, 2)
+                .record(dev.aceclaw.core.llm.RequestSource.PLANNER, 1)
+                .build());
+        // Turn 2: one main-turn + one continuation.
+        exporter.recordLlmRequests(dev.aceclaw.core.llm.RequestAttribution.builder()
+                .record(dev.aceclaw.core.llm.RequestSource.MAIN_TURN)
+                .record(dev.aceclaw.core.llm.RequestSource.CONTINUATION)
+                .build());
+        // Empty / null are ignored.
+        exporter.recordLlmRequests(null);
+        exporter.recordLlmRequests(dev.aceclaw.core.llm.RequestAttribution.empty());
+
+        exporter.export(tempDir, null);
+
+        Path output = tempDir.resolve(".aceclaw/metrics/continuous-learning/runtime-latest.json");
+        JsonNode metrics = new ObjectMapper().readTree(output.toFile()).get("metrics");
+
+        assertThat(metrics.get("llm_requests_total").get("value").asLong()).isEqualTo(5);
+        assertThat(metrics.get("llm_requests_total").get("status").asText()).isEqualTo("measured");
+        assertThat(metrics.get("llm_requests_main_turn").get("value").asLong()).isEqualTo(3);
+        assertThat(metrics.get("llm_requests_planner").get("value").asLong()).isEqualTo(1);
+        assertThat(metrics.get("llm_requests_continuation").get("value").asLong()).isEqualTo(1);
+        // Sample size is the grand total so downstream scripts can compute ratios
+        // without having to re-sum every per-source metric.
+        assertThat(metrics.get("llm_requests_main_turn").get("sample_size").asLong()).isEqualTo(5);
+        // Sources that never fired are NOT emitted — keeps the metrics file compact.
+        assertThat(metrics.has("llm_requests_replan")).isFalse();
+        assertThat(metrics.has("llm_requests_fallback")).isFalse();
+    }
+
+    @Test
+    void export_withNoLlmRequests_omitsPerSourceMetrics() throws Exception {
+        // A daemon lifetime with no LLM requests at all (only task or tool metrics) should
+        // emit the total metric with pending_instrumentation status but no per-source
+        // clutter — otherwise fresh baselines look noisy.
+        var exporter = new RuntimeMetricsExporter();
+        exporter.recordTurn();
+        exporter.export(tempDir, null);
+
+        Path output = tempDir.resolve(".aceclaw/metrics/continuous-learning/runtime-latest.json");
+        JsonNode metrics = new ObjectMapper().readTree(output.toFile()).get("metrics");
+
+        assertThat(metrics.get("llm_requests_total").get("status").asText())
+                .isEqualTo("pending_instrumentation");
+        assertThat(metrics.has("llm_requests_main_turn")).isFalse();
+    }
+
+    @Test
     void export_withNoData_marksPendingInstrumentation() throws Exception {
         var exporter = new RuntimeMetricsExporter();
         exporter.export(tempDir, null);
