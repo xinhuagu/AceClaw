@@ -180,8 +180,13 @@ public final class ContextMonitor {
     public synchronized void recordLlmRequestsBySource(Map<String, Integer> turnBySource) {
         if (turnBySource == null || turnBySource.isEmpty()) return;
         turnBySource.forEach((source, count) -> {
-            if (source == null || source.isBlank() || count == null || count <= 0) return;
-            totalLlmRequestsBySource.merge(source, (long) count, Long::sum);
+            if (source == null || count == null || count <= 0) return;
+            // Normalize the key so a future daemon sending mixed case doesn't split a
+            // logical source across two buckets on /status. The current daemon already
+            // lowercases, so this is defense-in-depth rather than a known gap.
+            String normalized = source.trim().toLowerCase(Locale.ROOT);
+            if (normalized.isEmpty()) return;
+            totalLlmRequestsBySource.merge(normalized, (long) count, Long::sum);
         });
     }
 

@@ -92,6 +92,21 @@ class ContextMonitorTest {
     }
 
     @Test
+    void recordLlmRequestsBySourceNormalizesKeyCase() {
+        // Defense against a future daemon (or a protocol accident) shipping mixed-case keys.
+        // Two records for "MAIN_TURN" + "main_turn" must collapse to a single logical source.
+        var monitor = new ContextMonitor(200_000);
+
+        monitor.recordLlmRequestsBySource(java.util.Map.of("MAIN_TURN", 3));
+        monitor.recordLlmRequestsBySource(java.util.Map.of(" main_turn ", 2));
+        monitor.recordLlmRequestsBySource(java.util.Map.of("Main_Turn", 1));
+
+        var totals = monitor.totalLlmRequestsBySource();
+        assertThat(totals).hasSize(1);
+        assertThat(totals).containsEntry("main_turn", 6L);
+    }
+
+    @Test
     void totalLlmRequestsBySourceReturnsUnmodifiableSnapshot() {
         // Callers shouldn't be able to mutate the monitor's state through the returned map.
         var monitor = new ContextMonitor(200_000);

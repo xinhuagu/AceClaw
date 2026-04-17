@@ -224,6 +224,21 @@ class TerminalReplTest {
     }
 
     @Test
+    void formatLlmRequestsBreakdown_sanitizesControlCharsInUnknownKeys() {
+        // Defensive: an unknown source key flows through from the wire. If some future or
+        // corrupt daemon shipped a key with ANSI escape sequences, we must not paint them
+        // into the status line. sanitizeTerminalText strips them; blank-after-sanitize
+        // falls back to a safe placeholder.
+        var src = new java.util.LinkedHashMap<String, Long>();
+        src.put("\u001B[31mdanger\u001B[0m", 1L); // ANSI red
+        src.put("\u001B[0m", 1L);                  // entirely escape sequences
+        String out = TerminalRepl.formatLlmRequestsBreakdown(src);
+        assertThat(out).doesNotContain("\u001B");
+        // The all-escape key collapses to the "unknown" placeholder.
+        assertThat(out).contains("unknown=1");
+    }
+
+    @Test
     void formatLlmRequestsBreakdown_unknownSourcePassesThroughAsRawKey() {
         // Future-proofing: if the daemon adds a new source, the CLI shouldn't swallow it.
         // The key gets rendered as-is until a display mapping is added in a later release.

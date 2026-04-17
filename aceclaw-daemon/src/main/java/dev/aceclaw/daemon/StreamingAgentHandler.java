@@ -1046,6 +1046,12 @@ public final class StreamingAgentHandler {
         int totalCacheCreate = 0;
         int totalCacheRead = 0;
         int totalLlmRequests = 0;
+        // Accumulate per-source attribution across segments so the merged Turn carries a
+        // faithful breakdown. Without this, writeLlmRequestsBySource at the buildTurnResult
+        // boundary would see empty attribution on any multi-segment turn, dropping the
+        // whole point of the per-source map on /status for exactly the turns that ran long
+        // enough to need it. See #419 PR B review.
+        var totalAttribution = RequestAttribution.builder();
         String reason = "single_segment";
         int segments = 0;
         int continuationCount = 0;
@@ -1080,6 +1086,7 @@ public final class StreamingAgentHandler {
             totalCacheCreate += turn.totalUsage().cacheCreationInputTokens();
             totalCacheRead += turn.totalUsage().cacheReadInputTokens();
             totalLlmRequests += turn.llmRequestCount();
+            totalAttribution.merge(turn.requestAttribution());
             conversation.addAll(turn.newMessages());
 
             if (turn.budgetExhausted()) {
@@ -1142,7 +1149,8 @@ public final class StreamingAgentHandler {
         var usage = new dev.aceclaw.core.llm.Usage(totalInput, totalOutput, totalCacheCreate, totalCacheRead);
         var mergedTurn = new dev.aceclaw.core.agent.Turn(
                 mergedMessages, lastStopReason, usage, lastCompaction, maxIterationsReached,
-                budgetExhausted, budgetExhaustionReason, totalLlmRequests);
+                budgetExhausted, budgetExhaustionReason, totalLlmRequests,
+                totalAttribution.build());
         return new AdaptiveTurnResult(
                 mergedTurn,
                 segments <= 0 ? 1 : segments,

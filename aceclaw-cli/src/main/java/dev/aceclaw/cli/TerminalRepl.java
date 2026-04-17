@@ -1236,7 +1236,13 @@ public final class TerminalRepl {
         for (var entry : bySource.entrySet()) {
             long count = entry.getValue() == null ? 0 : entry.getValue();
             if (count <= 0) continue;
-            String label = LLM_REQUEST_SOURCE_DISPLAY.getOrDefault(entry.getKey(), entry.getKey());
+            String raw = LLM_REQUEST_SOURCE_DISPLAY.getOrDefault(entry.getKey(), entry.getKey());
+            // Sanitize before interpolating: an unknown source falls through from the wire,
+            // and we shouldn't inject ANSI / control chars into the status line if a future
+            // daemon ever shipped a malformed key. Known display labels are already clean
+            // but go through the same path for consistency.
+            String label = sanitizeTerminalText(raw == null ? "" : raw);
+            if (label.isBlank()) label = "unknown";
             parts.add(label + "=" + count);
         }
         if (parts.isEmpty()) return "";
