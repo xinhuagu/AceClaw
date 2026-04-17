@@ -612,7 +612,66 @@ class TerminalReplTest {
         String summary = (String) invokePrivate(statusRepl, "skillDraftStatusSummary",
                 new Class<?>[]{Path.class}, tempDir);
         // BLOCK reason must not leak into the bracketed hint.
-        assertThat(summary).isEqualTo("2(p:0,h:1,b:1,n:0) [REPLAY_GATE_FAILED]");
+        assertThat(summary).isEqualTo("2(p:0,h:1,b:1,n:0) [replay gate failed]");
+    }
+
+    @Test
+    void skillDraftStatusSummary_replayReportMissingRendersAsFriendlyLabel() throws Exception {
+        // On a fresh workspace that has never generated replay-latest.json, every draft holds
+        // for REPLAY_REPORT_MISSING — which is a workspace-level "not set up" state, not a
+        // draft-level defect. The status line replaces the raw code with a softer label so
+        // the user sees "nothing to do here" instead of something that looks like a bug.
+        var statusRepl = newReplForProject(tempDir);
+        writeSkillDraftArtifacts(tempDir);
+        Path snapshot = tempDir.resolve(".aceclaw/metrics/continuous-learning/skill-draft-validation-snapshot.json");
+        Files.writeString(snapshot, """
+                {
+                  "updatedAt": "2026-04-17T12:00:00Z",
+                  "trigger": "auto-promotion",
+                  "drafts": [
+                    {
+                      "draftPath": ".aceclaw/skills-drafts/retry-safe/SKILL.md",
+                      "verdict": "hold",
+                      "reasons": [
+                        {"gate":"replay","code":"REPLAY_REPORT_MISSING","outcome":"hold","message":"Replay report not found"}
+                      ]
+                    }
+                  ]
+                }
+                """);
+
+        String summary = (String) invokePrivate(statusRepl, "skillDraftStatusSummary",
+                new Class<?>[]{Path.class}, tempDir);
+        assertThat(summary).isEqualTo("1(p:0,h:1,b:0,n:0) [no replay data]");
+    }
+
+    @Test
+    void skillDraftStatusSummary_perDraftReasonsKeepRawCode() throws Exception {
+        // Per-draft defects (STATIC_*, SAFETY_*, DRY_RUN_*) point at a specific frontmatter
+        // fix. The raw code is the fastest path to grep the audit log and find the offending
+        // draft, so we deliberately do NOT map them to friendly labels.
+        var statusRepl = newReplForProject(tempDir);
+        writeSkillDraftArtifacts(tempDir);
+        Path snapshot = tempDir.resolve(".aceclaw/metrics/continuous-learning/skill-draft-validation-snapshot.json");
+        Files.writeString(snapshot, """
+                {
+                  "updatedAt": "2026-04-17T12:00:00Z",
+                  "trigger": "auto-promotion",
+                  "drafts": [
+                    {
+                      "draftPath": ".aceclaw/skills-drafts/retry-safe/SKILL.md",
+                      "verdict": "hold",
+                      "reasons": [
+                        {"gate":"static","code":"STATIC_ALLOWED_TOOLS_POLICY_VIOLATION","outcome":"hold","message":"allowed-tools includes unsafe entries"}
+                      ]
+                    }
+                  ]
+                }
+                """);
+
+        String summary = (String) invokePrivate(statusRepl, "skillDraftStatusSummary",
+                new Class<?>[]{Path.class}, tempDir);
+        assertThat(summary).isEqualTo("1(p:0,h:1,b:0,n:0) [STATIC_ALLOWED_TOOLS_POLICY_VIOLATION]");
     }
 
     @Test
@@ -640,7 +699,7 @@ class TerminalReplTest {
 
         String summary = (String) invokePrivate(statusRepl, "skillDraftStatusSummary",
                 new Class<?>[]{Path.class}, tempDir);
-        assertThat(summary).isEqualTo("1(p:0,h:1,b:0,n:0) [REPLAY_GATE_FAILED]");
+        assertThat(summary).isEqualTo("1(p:0,h:1,b:0,n:0) [replay gate failed]");
     }
 
     @Test
