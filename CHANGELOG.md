@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.14] - 2026-04-17
+
+### Bug Fixes
+
+- Write current-state snapshot so TUI reflects live verdict (#408)
+- Always call persist() so draft trigger fires on empty insights
 ## [0.3.13] - 2026-04-12
 
 ### Bug Fixes
