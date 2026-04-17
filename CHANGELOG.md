@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.15] - 2026-04-17
+
+### Bug Fixes
+
+- Show download progress bar for the release archive (#416)
+
+### Features
+
+- Surface cumulative LLM request count in /status (#412)
+- Soften workspace-level HOLD reasons in /status drafts bracket (#414)
 ## [0.3.14] - 2026-04-17
 
 ### Bug Fixes
