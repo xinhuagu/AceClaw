@@ -1207,6 +1207,74 @@ public final class TerminalRepl {
     /**
      * Renders the token usage summary after a task completes.
      */
+    /**
+     * Short display name per wire source, for the {@code /status} inline breakdown.
+     * Only the short label is user-facing; the raw key stays on the wire + in the monitor
+     * for telemetry consumers that want to correlate with the daemon's enum exactly.
+     */
+    private static final Map<String, String> LLM_REQUEST_SOURCE_DISPLAY = Map.of(
+            "main_turn", "main",
+            "planner", "planner",
+            "continuation", "cont",
+            "fallback", "fallback",
+            "replan", "replan",
+            "compaction_summary", "compact"
+    );
+
+    /**
+     * Formats the per-source breakdown as an inline suffix on the {@code LLM requests} line.
+     * Returns an empty string when the map has no positive counts so users talking to old
+     * daemons or on fresh sessions see the scalar alone (no trailing parens).
+     *
+     * <p>Keys are mapped through {@link #LLM_REQUEST_SOURCE_DISPLAY} to short forms; any
+     * unmapped key is shown as-is so a daemon that adds a new source ships through the
+     * upgrade gracefully.
+     */
+    static String formatLlmRequestsBreakdown(Map<String, Long> bySource) {
+        if (bySource == null || bySource.isEmpty()) return "";
+        var parts = new ArrayList<String>();
+        for (var entry : bySource.entrySet()) {
+            long count = entry.getValue() == null ? 0 : entry.getValue();
+            if (count <= 0) continue;
+            String raw = LLM_REQUEST_SOURCE_DISPLAY.getOrDefault(entry.getKey(), entry.getKey());
+            // Sanitize before interpolating: an unknown source falls through from the wire,
+            // and we shouldn't inject ANSI / control chars into the status line if a future
+            // daemon ever shipped a malformed key. Known display labels are already clean
+            // but go through the same path for consistency.
+            String label = sanitizeTerminalText(raw == null ? "" : raw);
+            if (label.isBlank()) label = "unknown";
+            parts.add(label + "=" + count);
+        }
+        if (parts.isEmpty()) return "";
+        return " (" + String.join(" ", parts) + ")";
+    }
+
+    /**
+     * Parses the optional {@code llmRequestsBySource} map from a JSON-RPC {@code usage}
+     * object. Returns an empty map when the field is absent (older daemon, or a daemon
+     * with no requests recorded this turn), allowing the caller to feed the result
+     * directly to {@link ContextMonitor#recordLlmRequestsBySource}.
+     *
+     * <p>Skips any entry whose source key is blank or whose count is non-positive — the
+     * daemon shouldn't send these, but the CLI shouldn't trust its input implicitly.
+     */
+    private static Map<String, Integer> parseLlmRequestsBySource(JsonNode usage) {
+        if (usage == null) return Map.of();
+        JsonNode bySource = usage.path("llmRequestsBySource");
+        if (!bySource.isObject()) return Map.of();
+        var parsed = new LinkedHashMap<String, Integer>();
+        bySource.fields().forEachRemaining(entry -> {
+            String key = entry.getKey();
+            if (key == null || key.isBlank()) return;
+            JsonNode valueNode = entry.getValue();
+            if (valueNode == null || !valueNode.canConvertToInt()) return;
+            int count = valueNode.asInt();
+            if (count <= 0) return;
+            parsed.put(key, count);
+        });
+        return parsed;
+    }
+
     private void renderTaskCompletion(PrintWriter out, TaskHandle handle) {
         JsonNode message = handle.result();
         if (message == null) return;
@@ -1229,6 +1297,7 @@ public final class TerminalRepl {
             if (handle.markUsageAccounted()) {
                 contextMonitor.recordTurnComplete(turnIn, turnOut, perCallContext);
                 contextMonitor.recordLlmRequests(llmRequests);
+                contextMonitor.recordLlmRequestsBySource(parseLlmRequestsBySource(usage));
                 contextMonitor.checkThresholds(log);
             }
 
@@ -1528,6 +1597,7 @@ public final class TerminalRepl {
                     long bgPerCall = handle.liveInputTokens();
                     contextMonitor.recordTurnComplete(bgTurnIn, bgTurnOut, bgPerCall);
                     contextMonitor.recordLlmRequests(bgLlmRequests);
+                    contextMonitor.recordLlmRequestsBySource(parseLlmRequestsBySource(bgUsage));
                     contextMonitor.checkThresholds(log);
                 }
             }
@@ -3032,8 +3102,9 @@ public final class TerminalRepl {
                 out.printf("  %sTotal usage:%s %s in / %s out%n", MUTED, RESET,
                         formatTokenCount(contextMonitor.totalInput()),
                         formatTokenCount(contextMonitor.totalOutput()));
-                out.printf("  %sLLM requests:%s %d%n", MUTED, RESET,
-                        contextMonitor.totalLlmRequests());
+                out.printf("  %sLLM requests:%s %d%s%n", MUTED, RESET,
+                        contextMonitor.totalLlmRequests(),
+                        formatLlmRequestsBreakdown(contextMonitor.totalLlmRequestsBySource()));
                 out.printf("  %sTasks:%s       %d running%n", MUTED, RESET,
                         taskManager.runningCount());
                 out.println();

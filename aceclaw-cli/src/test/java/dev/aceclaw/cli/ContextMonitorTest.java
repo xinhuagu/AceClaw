@@ -60,6 +60,66 @@ class ContextMonitorTest {
     }
 
     @Test
+    void recordLlmRequestsBySourceAccumulatesPerSource() {
+        // PR B: daemon sends a per-source map in the JSON-RPC usage payload; the monitor
+        // folds it into a session-wide total keyed by lowercase source name.
+        var monitor = new ContextMonitor(200_000);
+
+        monitor.recordLlmRequestsBySource(java.util.Map.of("main_turn", 3, "planner", 1));
+        monitor.recordLlmRequestsBySource(java.util.Map.of("main_turn", 2, "replan", 1));
+
+        var totals = monitor.totalLlmRequestsBySource();
+        assertThat(totals).containsEntry("main_turn", 5L);
+        assertThat(totals).containsEntry("planner", 1L);
+        assertThat(totals).containsEntry("replan", 1L);
+    }
+
+    @Test
+    void recordLlmRequestsBySourceIgnoresNullEmptyAndInvalidValues() {
+        // Tolerant of absent / malformed payloads. An old daemon sends nothing; a new daemon
+        // on an empty turn sends an empty map; either path must keep the counters at zero.
+        var monitor = new ContextMonitor(200_000);
+
+        monitor.recordLlmRequestsBySource(null);
+        monitor.recordLlmRequestsBySource(java.util.Map.of());
+        monitor.recordLlmRequestsBySource(new java.util.HashMap<>() {{
+            put("", 5);        // blank key
+            put("planner", 0); // non-positive value
+            put("main_turn", -1); // negative value
+        }});
+
+        assertThat(monitor.totalLlmRequestsBySource()).isEmpty();
+    }
+
+    @Test
+    void recordLlmRequestsBySourceNormalizesKeyCase() {
+        // Defense against a future daemon (or a protocol accident) shipping mixed-case keys.
+        // Two records for "MAIN_TURN" + "main_turn" must collapse to a single logical source.
+        var monitor = new ContextMonitor(200_000);
+
+        monitor.recordLlmRequestsBySource(java.util.Map.of("MAIN_TURN", 3));
+        monitor.recordLlmRequestsBySource(java.util.Map.of(" main_turn ", 2));
+        monitor.recordLlmRequestsBySource(java.util.Map.of("Main_Turn", 1));
+
+        var totals = monitor.totalLlmRequestsBySource();
+        assertThat(totals).hasSize(1);
+        assertThat(totals).containsEntry("main_turn", 6L);
+    }
+
+    @Test
+    void totalLlmRequestsBySourceReturnsUnmodifiableSnapshot() {
+        // Callers shouldn't be able to mutate the monitor's state through the returned map.
+        var monitor = new ContextMonitor(200_000);
+        monitor.recordLlmRequestsBySource(java.util.Map.of("main_turn", 3));
+
+        var snapshot = monitor.totalLlmRequestsBySource();
+
+        assertThat(snapshot).containsEntry("main_turn", 3L);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> snapshot.put("x", 1L))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
     void recordLlmRequestsIgnoresZeroAndNegativeValues() {
         // A turn with no LLM call (e.g. cancelled before send) reports llmRequests=0 in the
         // usage payload. The counter must not advance on those, and must never go backward.

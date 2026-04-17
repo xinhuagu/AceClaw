@@ -153,6 +153,102 @@ class TerminalReplTest {
     }
 
     @Test
+    void status_renderBreakdownOnlyWhenDaemonSuppliedPerSourceMap() throws Exception {
+        // Old daemon (or fresh session): scalar only, no parenthetical suffix.
+        ContextMonitor monitor = (ContextMonitor) getPrivateField(repl, "contextMonitor");
+        monitor.recordLlmRequests(5);
+
+        repl.handleSlashCommand(out, "/status", null);
+        String stripped = outputBuffer.toString().replaceAll("\u001B\\[[0-9;]*m", "");
+
+        assertThat(stripped).contains("LLM requests: 5");
+        // Spot-check: the LLM requests line doesn't include a breakdown when no per-source
+        // data is available. Scope the assertion to a single line to avoid matching other
+        // content in /status (e.g. context window numbers).
+        String llmLine = stripped.lines()
+                .filter(line -> line.contains("LLM requests:"))
+                .findFirst().orElse("");
+        assertThat(llmLine).doesNotContain("(");
+    }
+
+    @Test
+    void status_rendersInlineBreakdownFromPerSourceMap() throws Exception {
+        // New daemon path: monitor has been fed llmRequestsBySource from JSON-RPC usage.
+        // /status renders the breakdown with short display names in insertion order.
+        ContextMonitor monitor = (ContextMonitor) getPrivateField(repl, "contextMonitor");
+        monitor.recordLlmRequests(8);
+        monitor.recordLlmRequestsBySource(java.util.Map.of(
+                "main_turn", 5,
+                "planner", 2,
+                "continuation", 1));
+
+        repl.handleSlashCommand(out, "/status", null);
+        String stripped = outputBuffer.toString().replaceAll("\u001B\\[[0-9;]*m", "");
+        String llmLine = stripped.lines()
+                .filter(line -> line.contains("LLM requests:"))
+                .findFirst().orElse("");
+
+        assertThat(llmLine).contains("LLM requests: 8");
+        // Short display labels: main_turn -> main, continuation -> cont.
+        assertThat(llmLine).contains("main=5");
+        assertThat(llmLine).contains("planner=2");
+        assertThat(llmLine).contains("cont=1");
+    }
+
+    @Test
+    void formatLlmRequestsBreakdown_roundTripsKnownSources() {
+        // Direct unit test on the pure formatter — the /status integration tests above rely
+        // on Java 21 Map.of() which does not preserve insertion order, so ordering of the
+        // parenthetical is validated here on a LinkedHashMap with a stable sequence.
+        var src = new java.util.LinkedHashMap<String, Long>();
+        src.put("main_turn", 5L);
+        src.put("planner", 2L);
+        src.put("continuation", 1L);
+        src.put("fallback", 3L);
+        src.put("replan", 1L);
+        src.put("compaction_summary", 1L);
+
+        String out = TerminalRepl.formatLlmRequestsBreakdown(src);
+
+        assertThat(out).isEqualTo(" (main=5 planner=2 cont=1 fallback=3 replan=1 compact=1)");
+    }
+
+    @Test
+    void formatLlmRequestsBreakdown_emptyOrZeroReturnsEmpty() {
+        assertThat(TerminalRepl.formatLlmRequestsBreakdown(null)).isEmpty();
+        assertThat(TerminalRepl.formatLlmRequestsBreakdown(java.util.Map.of())).isEmpty();
+        // All-zero map collapses to empty, not to an awkward "()" suffix.
+        var zeroMap = new java.util.LinkedHashMap<String, Long>();
+        zeroMap.put("main_turn", 0L);
+        assertThat(TerminalRepl.formatLlmRequestsBreakdown(zeroMap)).isEmpty();
+    }
+
+    @Test
+    void formatLlmRequestsBreakdown_sanitizesControlCharsInUnknownKeys() {
+        // Defensive: an unknown source key flows through from the wire. If some future or
+        // corrupt daemon shipped a key with ANSI escape sequences, we must not paint them
+        // into the status line. sanitizeTerminalText strips them; blank-after-sanitize
+        // falls back to a safe placeholder.
+        var src = new java.util.LinkedHashMap<String, Long>();
+        src.put("\u001B[31mdanger\u001B[0m", 1L); // ANSI red
+        src.put("\u001B[0m", 1L);                  // entirely escape sequences
+        String out = TerminalRepl.formatLlmRequestsBreakdown(src);
+        assertThat(out).doesNotContain("\u001B");
+        // The all-escape key collapses to the "unknown" placeholder.
+        assertThat(out).contains("unknown=1");
+    }
+
+    @Test
+    void formatLlmRequestsBreakdown_unknownSourcePassesThroughAsRawKey() {
+        // Future-proofing: if the daemon adds a new source, the CLI shouldn't swallow it.
+        // The key gets rendered as-is until a display mapping is added in a later release.
+        var src = new java.util.LinkedHashMap<String, Long>();
+        src.put("future_source", 2L);
+        assertThat(TerminalRepl.formatLlmRequestsBreakdown(src))
+                .isEqualTo(" (future_source=2)");
+    }
+
+    @Test
     void contextWithNoClient_showsNotConnectedWhenNullClient() {
         boolean shouldExit = repl.handleSlashCommand(out, "/context list", null);
         assertThat(shouldExit).isFalse();

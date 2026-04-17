@@ -27,6 +27,7 @@ import dev.aceclaw.core.agent.ToolRegistry;
 import dev.aceclaw.core.llm.ContentBlock;
 import dev.aceclaw.core.llm.LlmException;
 import dev.aceclaw.core.llm.Message;
+import dev.aceclaw.core.llm.RequestAttribution;
 import dev.aceclaw.core.llm.StopReason;
 import dev.aceclaw.core.llm.StreamEvent;
 import dev.aceclaw.core.llm.StreamEventHandler;
@@ -362,9 +363,14 @@ public final class StreamingAgentHandler {
         var planner = new LLMTaskPlanner(getLlmClient(), getModelForSession(sessionId));
         var toolDefs = toolRegistry.toDefinitions();
 
+        // Capture the planner's own LLM request separately from step/replan attribution so
+        // the final /usage payload can report PLANNER vs MAIN_TURN vs REPLAN distinctly.
+        // PlanExecutionResult.requestAttribution() does NOT include this — it's issued
+        // before the executor runs. See #419 PR A.2.
+        var plannerAttribution = RequestAttribution.builder();
         TaskPlan plan;
         try {
-            plan = planner.plan(prompt, toolDefs);
+            plan = planner.plan(prompt, toolDefs, plannerAttribution);
         } catch (Exception e) {
             log.warn("Plan generation failed, falling back to direct execution: {}", e.getMessage());
             // Fall back to direct execution
@@ -559,12 +565,20 @@ public final class StreamingAgentHandler {
 
         int totalInput = planResult.stepResults().stream().mapToInt(StepResult::inputTokens).sum();
         int totalOutput = planResult.stepResults().stream().mapToInt(StepResult::outputTokens).sum();
-        int totalLlmRequests = planResult.stepResults().stream().mapToInt(StepResult::llmRequestCount).sum();
+        // Fold the upfront PLANNER request into the plan's aggregated attribution before
+        // reporting: planResult.requestAttribution() covers step turns + REPLAN calls; the
+        // initial planner call happens above and must be merged in here so the per-source
+        // map and the llmRequests scalar stay consistent.
+        var planUsage = RequestAttribution.builder()
+                .merge(planResult.requestAttribution())
+                .merge(plannerAttribution.build())
+                .build();
         var usageNode = objectMapper.createObjectNode();
         usageNode.put("inputTokens", totalInput);
         usageNode.put("outputTokens", totalOutput);
         usageNode.put("totalTokens", planResult.totalTokensUsed());
-        usageNode.put("llmRequests", totalLlmRequests);
+        usageNode.put("llmRequests", planUsage.total());
+        writeLlmRequestsBySource(usageNode, planUsage);
         result.set("usage", usageNode);
 
         log.info("Planned task complete: sessionId={}, success={}, steps={}/{}, tokens={}",
@@ -572,6 +586,27 @@ public final class StreamingAgentHandler {
                 planResult.plan().steps().size(), planResult.totalTokensUsed());
 
         return result;
+    }
+
+    /**
+     * Writes the per-source breakdown of LLM requests onto the JSON-RPC usage node.
+     *
+     * <p>Keyed by the lowercase {@link dev.aceclaw.core.llm.RequestSource} name
+     * ({@code "main_turn"}, {@code "planner"}, ...). Omitted when the attribution has
+     * no recorded requests so old CLIs and empty payloads don't see a needless field.
+     *
+     * <p>Invariant: {@code sum(llmRequestsBySource.values()) == llmRequests}. The CLI can
+     * rely on this when reconciling the scalar with the map.
+     */
+    private void writeLlmRequestsBySource(com.fasterxml.jackson.databind.node.ObjectNode usageNode,
+                                          RequestAttribution attribution) {
+        if (attribution == null || attribution.total() == 0) {
+            return;
+        }
+        var bySourceNode = objectMapper.createObjectNode();
+        attribution.bySource().forEach((source, count) ->
+                bySourceNode.put(source.name().toLowerCase(Locale.ROOT), count));
+        usageNode.set("llmRequestsBySource", bySourceNode);
     }
 
     /**
@@ -635,6 +670,7 @@ public final class StreamingAgentHandler {
         usageNode.put("outputTokens", turn.totalUsage().outputTokens());
         usageNode.put("totalTokens", turn.totalUsage().totalTokens());
         usageNode.put("llmRequests", turn.llmRequestCount());
+        writeLlmRequestsBySource(usageNode, turn.requestAttribution());
         result.set("usage", usageNode);
 
         if (turn.wasCompacted()) {
@@ -1010,6 +1046,12 @@ public final class StreamingAgentHandler {
         int totalCacheCreate = 0;
         int totalCacheRead = 0;
         int totalLlmRequests = 0;
+        // Accumulate per-source attribution across segments so the merged Turn carries a
+        // faithful breakdown. Without this, writeLlmRequestsBySource at the buildTurnResult
+        // boundary would see empty attribution on any multi-segment turn, dropping the
+        // whole point of the per-source map on /status for exactly the turns that ran long
+        // enough to need it. See #419 PR B review.
+        var totalAttribution = RequestAttribution.builder();
         String reason = "single_segment";
         int segments = 0;
         int continuationCount = 0;
@@ -1044,6 +1086,7 @@ public final class StreamingAgentHandler {
             totalCacheCreate += turn.totalUsage().cacheCreationInputTokens();
             totalCacheRead += turn.totalUsage().cacheReadInputTokens();
             totalLlmRequests += turn.llmRequestCount();
+            totalAttribution.merge(turn.requestAttribution());
             conversation.addAll(turn.newMessages());
 
             if (turn.budgetExhausted()) {
@@ -1106,7 +1149,8 @@ public final class StreamingAgentHandler {
         var usage = new dev.aceclaw.core.llm.Usage(totalInput, totalOutput, totalCacheCreate, totalCacheRead);
         var mergedTurn = new dev.aceclaw.core.agent.Turn(
                 mergedMessages, lastStopReason, usage, lastCompaction, maxIterationsReached,
-                budgetExhausted, budgetExhaustionReason, totalLlmRequests);
+                budgetExhausted, budgetExhaustionReason, totalLlmRequests,
+                totalAttribution.build());
         return new AdaptiveTurnResult(
                 mergedTurn,
                 segments <= 0 ? 1 : segments,
@@ -2620,12 +2664,16 @@ public final class StreamingAgentHandler {
 
         int totalInput = planResult.stepResults().stream().mapToInt(StepResult::inputTokens).sum();
         int totalOutput = planResult.stepResults().stream().mapToInt(StepResult::outputTokens).sum();
-        int totalLlmRequests = planResult.stepResults().stream().mapToInt(StepResult::llmRequestCount).sum();
+        // Resumed plans don't re-run the planner (plan was already generated + checkpointed),
+        // so planResult.requestAttribution() is the full picture: step turns + any replans
+        // during resumption.
+        var resumedUsage = planResult.requestAttribution();
         var usageNode = objectMapper.createObjectNode();
         usageNode.put("inputTokens", totalInput);
         usageNode.put("outputTokens", totalOutput);
         usageNode.put("totalTokens", planResult.totalTokensUsed());
-        usageNode.put("llmRequests", totalLlmRequests);
+        usageNode.put("llmRequests", resumedUsage.total());
+        writeLlmRequestsBySource(usageNode, resumedUsage);
         result.set("usage", usageNode);
 
         log.info("Resumed plan complete: sessionId={}, success={}, steps={}/{}, tokens={}",
