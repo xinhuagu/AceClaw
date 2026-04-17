@@ -95,7 +95,7 @@ public final class AgentLoop {
         int totalCacheCreationTokens = 0;
         int totalCacheReadTokens = 0;
         int llmRequestCount = 0;
-        var attributionBuilder = dev.aceclaw.core.llm.RequestAttribution.builder();
+        var attributionBuilder = RequestAttribution.builder();
         int maxIterations = config.effectiveMaxIterations();
 
         try {
@@ -105,7 +105,7 @@ public final class AgentLoop {
                 // Build and send the LLM request
                 var request = buildRequest(allMessages);
                 llmRequestCount++;
-                attributionBuilder.record(dev.aceclaw.core.llm.RequestSource.MAIN_TURN);
+                attributionBuilder.record(RequestSource.MAIN_TURN);
                 var response = llmClient.sendMessage(request);
 
                 // Accumulate usage

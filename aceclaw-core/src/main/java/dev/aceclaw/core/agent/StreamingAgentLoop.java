@@ -168,7 +168,7 @@ public final class StreamingAgentLoop {
         int totalCacheCreationTokens = 0;
         int totalCacheReadTokens = 0;
         int llmRequestCount = 0;
-        var attributionBuilder = dev.aceclaw.core.llm.RequestAttribution.builder();
+        var attributionBuilder = RequestAttribution.builder();
 
         // Track actual input tokens from API for accurate compaction decisions
         int lastInputTokens = -1;
@@ -274,7 +274,7 @@ public final class StreamingAgentLoop {
                 for (int streamAttempt = 0; streamAttempt <= retryConfig.maxRetries(); streamAttempt++) {
                     accumulator = new StreamAccumulator(eventHandler);
                     llmRequestCount++;
-                    attributionBuilder.record(dev.aceclaw.core.llm.RequestSource.MAIN_TURN);
+                    attributionBuilder.record(RequestSource.MAIN_TURN);
                     var session = llmClient.streamMessage(request);
 
                     // Register the session with the cancellation token so cancel() propagates
@@ -464,7 +464,7 @@ public final class StreamingAgentLoop {
                                     int totalCacheCreationTokens, int totalCacheReadTokens,
                                     CompactionResult compactionResult,
                                     int llmRequestCount,
-                                    dev.aceclaw.core.llm.RequestAttribution attribution) {
+                                    RequestAttribution attribution) {
         return buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
                 totalCacheCreationTokens, totalCacheReadTokens, compactionResult, false,
                 llmRequestCount, attribution);
@@ -479,7 +479,7 @@ public final class StreamingAgentLoop {
                                     CompactionResult compactionResult,
                                     boolean softBudgetStopped,
                                     int llmRequestCount,
-                                    dev.aceclaw.core.llm.RequestAttribution attribution) {
+                                    RequestAttribution attribution) {
         var totalUsage = new Usage(totalInputTokens, totalOutputTokens,
                 totalCacheCreationTokens, totalCacheReadTokens);
         var watchdog = config.watchdog();
@@ -490,7 +490,7 @@ public final class StreamingAgentLoop {
         }
         return new Turn(newMessages, StopReason.END_TURN, totalUsage, compactionResult,
                 false, budgetExhausted, reason, llmRequestCount,
-                attribution != null ? attribution : dev.aceclaw.core.llm.RequestAttribution.empty());
+                attribution != null ? attribution : RequestAttribution.empty());
     }
 
     /**
