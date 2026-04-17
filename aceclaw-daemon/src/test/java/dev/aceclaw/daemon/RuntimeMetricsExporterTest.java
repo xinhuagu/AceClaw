@@ -84,59 +84,111 @@ class RuntimeMetricsExporterTest {
     }
 
     @Test
-    void recordLlmRequests_accumulatesTotalAndPerSource() throws Exception {
-        // PR C: runtime-latest.json gains absolute-count metrics for LLM requests by source
-        // so offline tools can build a Copilot-usage baseline. Each per-source count lands
-        // in a metric named llm_requests_<source>; the grand total lands in llm_requests_total.
+    void recordLlmRequests_bucketsByProviderAndModel() throws Exception {
+        // Per-(provider, model) partitioning: a mid-session /model switch must not cross-
+        // contaminate the per-model baseline. Two recordings against different buckets
+        // produce two entries in llm_requests_by_model, each carrying its own total +
+        // by_source breakdown.
         var exporter = new RuntimeMetricsExporter();
 
-        // Turn 1: two main-turn + one planner.
         exporter.recordLlmRequests(dev.aceclaw.core.llm.RequestAttribution.builder()
                 .record(dev.aceclaw.core.llm.RequestSource.MAIN_TURN, 2)
                 .record(dev.aceclaw.core.llm.RequestSource.PLANNER, 1)
-                .build());
-        // Turn 2: one main-turn + one continuation.
+                .build(), "copilot", "claude-opus-4.6");
         exporter.recordLlmRequests(dev.aceclaw.core.llm.RequestAttribution.builder()
                 .record(dev.aceclaw.core.llm.RequestSource.MAIN_TURN)
-                .record(dev.aceclaw.core.llm.RequestSource.CONTINUATION)
-                .build());
-        // Empty / null are ignored.
-        exporter.recordLlmRequests(null);
-        exporter.recordLlmRequests(dev.aceclaw.core.llm.RequestAttribution.empty());
+                .build(), "copilot", "claude-sonnet-4.5");
+        // Null / empty attribution is ignored on every path.
+        exporter.recordLlmRequests(null, "copilot", "claude-opus-4.6");
+        exporter.recordLlmRequests(dev.aceclaw.core.llm.RequestAttribution.empty(),
+                "copilot", "claude-opus-4.6");
 
         exporter.export(tempDir, null);
 
         Path output = tempDir.resolve(".aceclaw/metrics/continuous-learning/runtime-latest.json");
-        JsonNode metrics = new ObjectMapper().readTree(output.toFile()).get("metrics");
+        JsonNode root = new ObjectMapper().readTree(output.toFile());
+        assertThat(root.get("rate_card_date").asText()).isEqualTo(CopilotRequestMultipliers.RATE_CARD_DATE);
 
-        assertThat(metrics.get("llm_requests_total").get("value").asLong()).isEqualTo(5);
-        assertThat(metrics.get("llm_requests_total").get("status").asText()).isEqualTo("measured");
-        assertThat(metrics.get("llm_requests_main_turn").get("value").asLong()).isEqualTo(3);
-        assertThat(metrics.get("llm_requests_planner").get("value").asLong()).isEqualTo(1);
-        assertThat(metrics.get("llm_requests_continuation").get("value").asLong()).isEqualTo(1);
-        // Sample size is the grand total so downstream scripts can compute ratios
-        // without having to re-sum every per-source metric.
-        assertThat(metrics.get("llm_requests_main_turn").get("sample_size").asLong()).isEqualTo(5);
-        // Sources that never fired are NOT emitted — keeps the metrics file compact.
-        assertThat(metrics.has("llm_requests_replan")).isFalse();
-        assertThat(metrics.has("llm_requests_fallback")).isFalse();
+        JsonNode byModel = root.get("llm_requests_by_model");
+        assertThat(byModel.isArray()).isTrue();
+        assertThat(byModel.size()).isEqualTo(2);
+
+        JsonNode opus = byModel.get(0);
+        assertThat(opus.get("provider").asText()).isEqualTo("copilot");
+        assertThat(opus.get("model").asText()).isEqualTo("claude-opus-4.6");
+        assertThat(opus.get("multiplier").asDouble()).isEqualTo(3.0);
+        assertThat(opus.get("total").asLong()).isEqualTo(3);
+        assertThat(opus.get("by_source").get("main_turn").asLong()).isEqualTo(2);
+        assertThat(opus.get("by_source").get("planner").asLong()).isEqualTo(1);
+
+        JsonNode sonnet = byModel.get(1);
+        assertThat(sonnet.get("model").asText()).isEqualTo("claude-sonnet-4.5");
+        assertThat(sonnet.get("multiplier").asDouble()).isEqualTo(1.0);
+        assertThat(sonnet.get("total").asLong()).isEqualTo(1);
+
+        // Grand total is the sum across buckets.
+        assertThat(root.get("metrics").get("llm_requests_total").get("value").asLong())
+                .isEqualTo(4);
     }
 
     @Test
-    void export_withNoLlmRequests_omitsPerSourceMetrics() throws Exception {
-        // A daemon lifetime with no LLM requests at all (only task or tool metrics) should
-        // emit the total metric with pending_instrumentation status but no per-source
-        // clutter — otherwise fresh baselines look noisy.
+    void recordLlmRequests_preservesHistoryAcrossModelSwitch() throws Exception {
+        // The bug the reviewer called out: /model mid-session used to relabel prior history
+        // as the new model. Now an Opus-then-Sonnet sequence keeps both buckets intact and
+        // no count is misattributed.
+        var exporter = new RuntimeMetricsExporter();
+        exporter.recordLlmRequests(dev.aceclaw.core.llm.RequestAttribution.builder()
+                .record(dev.aceclaw.core.llm.RequestSource.MAIN_TURN, 10).build(),
+                "copilot", "claude-opus-4.6");
+        exporter.recordLlmRequests(dev.aceclaw.core.llm.RequestAttribution.builder()
+                .record(dev.aceclaw.core.llm.RequestSource.MAIN_TURN, 5).build(),
+                "copilot", "claude-sonnet-4.5");
+
+        exporter.export(tempDir, null);
+        JsonNode root = new ObjectMapper().readTree(
+                tempDir.resolve(".aceclaw/metrics/continuous-learning/runtime-latest.json").toFile());
+
+        JsonNode byModel = root.get("llm_requests_by_model");
+        // Opus bucket kept its 10, Sonnet bucket has 5. No cross-contamination.
+        assertThat(byModel.get(0).get("model").asText()).isEqualTo("claude-opus-4.6");
+        assertThat(byModel.get(0).get("total").asLong()).isEqualTo(10);
+        assertThat(byModel.get(1).get("model").asText()).isEqualTo("claude-sonnet-4.5");
+        assertThat(byModel.get(1).get("total").asLong()).isEqualTo(5);
+    }
+
+    @Test
+    void recordLlmRequests_omitsMultiplierForNonCopilotProvider() throws Exception {
+        // Token-priced providers don't carry a request multiplier — the field is absent
+        // from the bucket, and analysts can tell "not applicable" from "1.0".
+        var exporter = new RuntimeMetricsExporter();
+        exporter.recordLlmRequests(dev.aceclaw.core.llm.RequestAttribution.builder()
+                .record(dev.aceclaw.core.llm.RequestSource.MAIN_TURN).build(),
+                "anthropic", "claude-opus-4-6");
+
+        exporter.export(tempDir, null);
+        JsonNode root = new ObjectMapper().readTree(
+                tempDir.resolve(".aceclaw/metrics/continuous-learning/runtime-latest.json").toFile());
+
+        JsonNode bucket = root.get("llm_requests_by_model").get(0);
+        assertThat(bucket.get("provider").asText()).isEqualTo("anthropic");
+        assertThat(bucket.has("multiplier")).isFalse();
+    }
+
+    @Test
+    void export_withNoLlmRequests_emitsEmptyBuckets() throws Exception {
+        // Fresh baseline: no LLM requests at all. Top-level array is empty; scalar total
+        // metric is pending_instrumentation.
         var exporter = new RuntimeMetricsExporter();
         exporter.recordTurn();
         exporter.export(tempDir, null);
 
-        Path output = tempDir.resolve(".aceclaw/metrics/continuous-learning/runtime-latest.json");
-        JsonNode metrics = new ObjectMapper().readTree(output.toFile()).get("metrics");
+        JsonNode root = new ObjectMapper().readTree(
+                tempDir.resolve(".aceclaw/metrics/continuous-learning/runtime-latest.json").toFile());
 
-        assertThat(metrics.get("llm_requests_total").get("status").asText())
+        assertThat(root.get("llm_requests_by_model").isArray()).isTrue();
+        assertThat(root.get("llm_requests_by_model").size()).isZero();
+        assertThat(root.get("metrics").get("llm_requests_total").get("status").asText())
                 .isEqualTo("pending_instrumentation");
-        assertThat(metrics.has("llm_requests_main_turn")).isFalse();
     }
 
     @Test

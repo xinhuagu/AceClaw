@@ -2089,7 +2089,13 @@ public final class StreamingAgentHandler {
         try {
             exporter.recordTaskOutcome(success, firstTry, retryCount);
             exporter.recordTurn();
-            exporter.recordLlmRequests(requestAttribution);
+            // Provider + model live at the level of the INDIVIDUAL request batch, not the
+            // daemon-lifetime aggregate, so they flow into the counter here rather than at
+            // export time. A /model switch mid-session produces new (provider, model)
+            // buckets for subsequent turns while leaving earlier history correctly tagged.
+            String provider = getLlmClient() != null ? getLlmClient().provider() : null;
+            String model = getModelForSession(sessionId);
+            exporter.recordLlmRequests(requestAttribution, provider, model);
             if (stopReason == StopReason.MAX_TOKENS) {
                 exporter.recordTimeout();
             }
