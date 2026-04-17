@@ -276,6 +276,30 @@ class AgentLoopIntegrationTest {
     }
 
     @Test
+    void turnAttributionMatchesLlmRequestCountAsMainTurn() throws Exception {
+        // Invariant from #419: sum(requestAttribution.bySource().values()) == llmRequestCount.
+        // All requests from AgentLoop attribute to MAIN_TURN; other sources (PLANNER, REPLAN,
+        // COMPACTION_SUMMARY, FALLBACK, CONTINUATION) are wired in follow-up slices.
+        var toolUse = new ContentBlock.ToolUse("t1", "echo", "{}");
+        var llm = new FakeLlmClient(List.of(
+                new LlmResponse("id", "model", List.of(toolUse),
+                        StopReason.TOOL_USE, new Usage(10, 5, 0, 0)),
+                new LlmResponse("id", "model", List.of(new ContentBlock.Text("Done")),
+                        StopReason.END_TURN, new Usage(10, 5, 0, 0))
+        ));
+        var registry = new ToolRegistry();
+        registry.register(new StubTool("echo", "echoed"));
+        var loop = new AgentLoop(llm, registry, "model", null);
+
+        var turn = loop.runTurn("do something", List.of());
+
+        assertThat(turn.llmRequestCount()).isEqualTo(2);
+        assertThat(turn.requestAttribution().total()).isEqualTo(turn.llmRequestCount());
+        assertThat(turn.requestAttribution().count(RequestSource.MAIN_TURN))
+                .isEqualTo(turn.llmRequestCount());
+    }
+
+    @Test
     void multiIterationToolUseCountsAllLlmRequests() throws Exception {
         var toolUse = new ContentBlock.ToolUse("t1", "echo", "{}");
         var llm = new FakeLlmClient(List.of(

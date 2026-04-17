@@ -168,6 +168,7 @@ public final class StreamingAgentLoop {
         int totalCacheCreationTokens = 0;
         int totalCacheReadTokens = 0;
         int llmRequestCount = 0;
+        var attributionBuilder = dev.aceclaw.core.llm.RequestAttribution.builder();
 
         // Track actual input tokens from API for accurate compaction decisions
         int lastInputTokens = -1;
@@ -224,7 +225,7 @@ public final class StreamingAgentLoop {
                     log.info("Cancellation detected before LLM call (iteration {})", iteration + 1);
                     var turn = buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
                             totalCacheCreationTokens, totalCacheReadTokens, compactionResult,
-                            softBudgetStopped, llmRequestCount);
+                            softBudgetStopped, llmRequestCount, attributionBuilder.build());
                     publishTurnCompleted(turnNumber, turnStart);
                     return turn;
                 }
@@ -273,6 +274,7 @@ public final class StreamingAgentLoop {
                 for (int streamAttempt = 0; streamAttempt <= retryConfig.maxRetries(); streamAttempt++) {
                     accumulator = new StreamAccumulator(eventHandler);
                     llmRequestCount++;
+                    attributionBuilder.record(dev.aceclaw.core.llm.RequestSource.MAIN_TURN);
                     var session = llmClient.streamMessage(request);
 
                     // Register the session with the cancellation token so cancel() propagates
@@ -340,7 +342,7 @@ public final class StreamingAgentLoop {
                     }
                     var turn = buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
                             totalCacheCreationTokens, totalCacheReadTokens, compactionResult,
-                            llmRequestCount);
+                            llmRequestCount, attributionBuilder.build());
                     publishTurnCompleted(turnNumber, turnStart);
                     return turn;
                 }
@@ -387,7 +389,7 @@ public final class StreamingAgentLoop {
                                 totalInputTokens, totalOutputTokens,
                                 totalCacheCreationTokens, totalCacheReadTokens);
                         var turn = new Turn(newMessages, stopReason, totalUsage, compactionResult,
-                                llmRequestCount);
+                                false, false, null, llmRequestCount, attributionBuilder.build());
                         publishTurnCompleted(turnNumber, turnStart);
                         return turn;
                     }
@@ -422,7 +424,7 @@ public final class StreamingAgentLoop {
                             log.info("Cancellation detected after tool execution (iteration {})", iteration + 1);
                             var turn = buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
                                     totalCacheCreationTokens, totalCacheReadTokens, compactionResult,
-                                    llmRequestCount);
+                                    llmRequestCount, attributionBuilder.build());
                             publishTurnCompleted(turnNumber, turnStart);
                             return turn;
                         }
@@ -436,7 +438,7 @@ public final class StreamingAgentLoop {
                     totalInputTokens, totalOutputTokens,
                     totalCacheCreationTokens, totalCacheReadTokens);
             var turn = new Turn(newMessages, StopReason.END_TURN, totalUsage, compactionResult,
-                    true, llmRequestCount);
+                    true, false, null, llmRequestCount, attributionBuilder.build());
             publishTurnCompleted(turnNumber, turnStart);
             return turn;
         } catch (LlmException e) {
@@ -461,10 +463,11 @@ public final class StreamingAgentLoop {
                                     int totalInputTokens, int totalOutputTokens,
                                     int totalCacheCreationTokens, int totalCacheReadTokens,
                                     CompactionResult compactionResult,
-                                    int llmRequestCount) {
+                                    int llmRequestCount,
+                                    dev.aceclaw.core.llm.RequestAttribution attribution) {
         return buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
                 totalCacheCreationTokens, totalCacheReadTokens, compactionResult, false,
-                llmRequestCount);
+                llmRequestCount, attribution);
     }
 
     /**
@@ -475,7 +478,8 @@ public final class StreamingAgentLoop {
                                     int totalCacheCreationTokens, int totalCacheReadTokens,
                                     CompactionResult compactionResult,
                                     boolean softBudgetStopped,
-                                    int llmRequestCount) {
+                                    int llmRequestCount,
+                                    dev.aceclaw.core.llm.RequestAttribution attribution) {
         var totalUsage = new Usage(totalInputTokens, totalOutputTokens,
                 totalCacheCreationTokens, totalCacheReadTokens);
         var watchdog = config.watchdog();
@@ -485,7 +489,8 @@ public final class StreamingAgentLoop {
             reason = "soft_budget_no_progress";
         }
         return new Turn(newMessages, StopReason.END_TURN, totalUsage, compactionResult,
-                false, budgetExhausted, reason, llmRequestCount);
+                false, budgetExhausted, reason, llmRequestCount,
+                attribution != null ? attribution : dev.aceclaw.core.llm.RequestAttribution.empty());
     }
 
     /**
