@@ -2,12 +2,18 @@ package dev.aceclaw.daemon;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -30,6 +36,8 @@ import java.util.Objects;
  * </ul>
  */
 public final class ValidationGateEngine {
+
+    private static final Logger log = LoggerFactory.getLogger(ValidationGateEngine.class);
 
     private static final String DRAFTS_DIR = ".aceclaw/skills-drafts";
     private static final String AUDIT_DIR = ".aceclaw/metrics/continuous-learning";
@@ -301,10 +309,7 @@ public final class ValidationGateEngine {
             arr.add(draftDecisionToJson(d));
         }
         root.set("drafts", arr);
-        Files.writeString(
-                snapshotPath,
-                mapper.writerWithDefaultPrettyPrinter().writeValueAsString(root),
-                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+        atomicWriteJson(snapshotPath, root);
     }
 
     /**
@@ -314,7 +319,7 @@ public final class ValidationGateEngine {
     private void mergeSnapshot(Path projectRoot, List<DraftDecision> decisions, String trigger) throws IOException {
         Path snapshotPath = projectRoot.resolve(AUDIT_DIR).resolve(SNAPSHOT_FILE);
         Files.createDirectories(snapshotPath.getParent());
-        var merged = new LinkedHashMap<String, com.fasterxml.jackson.databind.JsonNode>();
+        var merged = new LinkedHashMap<String, JsonNode>();
         if (Files.isRegularFile(snapshotPath)) {
             try {
                 JsonNode existing = mapper.readTree(snapshotPath.toFile());
@@ -324,8 +329,9 @@ public final class ValidationGateEngine {
                         if (!key.isBlank()) merged.put(key, node);
                     }
                 }
-            } catch (Exception ignored) {
-                // corrupt snapshot: rebuild from supplied decisions
+            } catch (Exception e) {
+                log.debug("Corrupt validation snapshot at {}; rebuilding from supplied decisions: {}",
+                        snapshotPath, e.getMessage());
             }
         }
         for (var d : decisions) {
@@ -337,13 +343,28 @@ public final class ValidationGateEngine {
         var arr = mapper.createArrayNode();
         merged.values().forEach(arr::add);
         root.set("drafts", arr);
-        Files.writeString(
-                snapshotPath,
-                mapper.writerWithDefaultPrettyPrinter().writeValueAsString(root),
-                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+        atomicWriteJson(snapshotPath, root);
     }
 
-    private com.fasterxml.jackson.databind.node.ObjectNode draftDecisionToJson(DraftDecision d) {
+    /**
+     * Writes JSON to a temp sibling and atomically renames over the target. Guarantees readers
+     * either see the prior snapshot or the new one, never a half-written truncated file.
+     */
+    private void atomicWriteJson(Path target, JsonNode root) throws IOException {
+        String content = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(root);
+        Path tmp = target.resolveSibling(target.getFileName().toString() + ".tmp");
+        Files.writeString(tmp, content,
+                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+        try {
+            Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException e) {
+            // Rare — some filesystems (e.g. cross-device) can't do atomic rename. Fall back to
+            // a non-atomic replace; the window is shorter than truncate-in-place.
+            Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    private ObjectNode draftDecisionToJson(DraftDecision d) {
         var node = mapper.createObjectNode();
         node.put("draftPath", d.draftPath());
         node.put("verdict", d.verdict().name().toLowerCase(Locale.ROOT));

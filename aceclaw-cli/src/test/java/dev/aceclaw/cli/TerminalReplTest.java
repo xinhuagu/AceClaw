@@ -527,6 +527,21 @@ class TerminalReplTest {
     }
 
     @Test
+    void skillDraftStatusSummary_corruptSnapshotFallsBackToAudit() throws Exception {
+        var statusRepl = newReplForProject(tempDir);
+        writeSkillDraftArtifacts(tempDir);
+        // Snapshot file exists but contains unparseable JSON. Loader logs and returns empty;
+        // Files.isRegularFile is still true so we stay on snapshot path — verdict becomes pending.
+        // (Treating a corrupt snapshot as "no current state" is safer than silently serving stale audit.)
+        Path snapshot = tempDir.resolve(".aceclaw/metrics/continuous-learning/skill-draft-validation-snapshot.json");
+        Files.writeString(snapshot, "{ not json");
+
+        String summary = (String) invokePrivate(statusRepl, "skillDraftStatusSummary",
+                new Class<?>[]{Path.class}, tempDir);
+        assertThat(summary).isEqualTo("1(p:0,h:0,b:0,n:1)");
+    }
+
+    @Test
     void skillDraftStatusSummary_prefersSnapshotOverStaleAudit() throws Exception {
         var statusRepl = newReplForProject(tempDir);
         writeSkillDraftArtifacts(tempDir);

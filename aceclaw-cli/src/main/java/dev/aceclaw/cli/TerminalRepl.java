@@ -2551,9 +2551,11 @@ public final class TerminalRepl {
     }
 
     private Map<String, SkillValidationStatus> loadSkillValidationStatuses(Path snapshotPath, Path auditPath) {
-        var fromSnapshot = loadSkillValidationSnapshot(snapshotPath);
-        if (!fromSnapshot.isEmpty()) {
-            return fromSnapshot;
+        // Snapshot is the authoritative current-state view. If the file exists we trust it even
+        // when the drafts array is empty — "no drafts right now" is a valid current state and
+        // must not be masked by stale HOLD entries from the append-only audit tail.
+        if (Files.isRegularFile(snapshotPath)) {
+            return loadSkillValidationSnapshot(snapshotPath);
         }
         return loadSkillValidationStatuses(auditPath);
     }
