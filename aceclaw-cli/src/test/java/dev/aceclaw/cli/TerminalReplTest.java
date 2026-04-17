@@ -527,12 +527,12 @@ class TerminalReplTest {
     }
 
     @Test
-    void skillDraftStatusSummary_corruptSnapshotFallsBackToAudit() throws Exception {
+    void skillDraftStatusSummary_corruptSnapshotYieldsPendingNotStaleAudit() throws Exception {
         var statusRepl = newReplForProject(tempDir);
         writeSkillDraftArtifacts(tempDir);
-        // Snapshot file exists but contains unparseable JSON. Loader logs and returns empty;
-        // Files.isRegularFile is still true so we stay on snapshot path — verdict becomes pending.
-        // (Treating a corrupt snapshot as "no current state" is safer than silently serving stale audit.)
+        // Snapshot file exists but is unparseable. We deliberately DO NOT fall back to the
+        // audit tail — that would silently serve stale verdicts, the exact bug this PR fixes.
+        // Instead drafts read as "pending", signaling to the user that current state is unknown.
         Path snapshot = tempDir.resolve(".aceclaw/metrics/continuous-learning/skill-draft-validation-snapshot.json");
         Files.writeString(snapshot, "{ not json");
 
