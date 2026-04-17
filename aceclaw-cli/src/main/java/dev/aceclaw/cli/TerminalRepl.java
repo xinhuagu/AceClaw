@@ -1223,8 +1223,14 @@ public final class TerminalRepl {
             // NOT the per-call value — using it would cause erratic usage % jumps.
             // If no streaming usage was received, keep the monitor's existing per-call value (0 means "no update").
             long perCallContext = handle.liveInputTokens();
-            contextMonitor.recordTurnComplete(turnIn, turnOut, perCallContext);
-            contextMonitor.checkThresholds(log);
+            // Guarded: same handle can reach renderTaskCompletion through multiple paths
+            // (foreground completion, /fg rendezvous, fallback notify). Only the first render
+            // should feed session totals or the user-visible counters double-count.
+            if (handle.markUsageAccounted()) {
+                contextMonitor.recordTurnComplete(turnIn, turnOut, perCallContext);
+                contextMonitor.recordLlmRequests(llmRequests);
+                contextMonitor.checkThresholds(log);
+            }
 
             // For display, use the monitor's authoritative value which handles the
             // perCallContext=0 case by preserving the last known streaming value.
@@ -1508,16 +1514,20 @@ public final class TerminalRepl {
         if (!handle.markNotified()) return;
 
         try {
-            // Record turn usage in ContextMonitor (background tasks skip renderTaskCompletion)
+            // Record turn usage in ContextMonitor (background tasks skip renderTaskCompletion).
+            // Guarded: a subsequent /fg on this already-completed handle would re-enter
+            // renderTaskCompletion and try to account again; see markUsageAccounted contract.
             JsonNode bgResult = handle.result();
-            if (bgResult != null) {
+            if (bgResult != null && handle.markUsageAccounted()) {
                 JsonNode bgUsageResult = bgResult.get("result");
                 if (bgUsageResult != null && bgUsageResult.has("usage")) {
                     var bgUsage = bgUsageResult.get("usage");
                     int bgTurnIn = bgUsage.path("inputTokens").asInt(0);
                     int bgTurnOut = bgUsage.path("outputTokens").asInt(0);
+                    int bgLlmRequests = bgUsage.path("llmRequests").asInt(0);
                     long bgPerCall = handle.liveInputTokens();
                     contextMonitor.recordTurnComplete(bgTurnIn, bgTurnOut, bgPerCall);
+                    contextMonitor.recordLlmRequests(bgLlmRequests);
                     contextMonitor.checkThresholds(log);
                 }
             }
@@ -3006,6 +3016,8 @@ public final class TerminalRepl {
                 out.printf("  %sTotal usage:%s %s in / %s out%n", MUTED, RESET,
                         formatTokenCount(contextMonitor.totalInput()),
                         formatTokenCount(contextMonitor.totalOutput()));
+                out.printf("  %sLLM requests:%s %d%n", MUTED, RESET,
+                        contextMonitor.totalLlmRequests());
                 out.printf("  %sTasks:%s       %d running%n", MUTED, RESET,
                         taskManager.runningCount());
                 out.println();

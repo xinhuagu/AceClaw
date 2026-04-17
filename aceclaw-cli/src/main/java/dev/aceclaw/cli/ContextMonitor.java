@@ -42,6 +42,8 @@ public final class ContextMonitor {
 
     /** Cumulative output tokens across all turns in the session. */
     private long totalOutputTokens;
+    /** Cumulative LLM API request count across all turns in the session. */
+    private long totalLlmRequests;
     /** Number of compaction events observed in the session. */
     private int compactionCount;
     /** Number of compaction events that stopped after phase 1 pruning. */
@@ -142,6 +144,24 @@ public final class ContextMonitor {
      */
     public synchronized long totalOutput() {
         return totalOutputTokens;
+    }
+
+    /**
+     * Accumulates the LLM API request count from a completed turn. Tracked separately from
+     * token totals because requests and tokens are independent axes: a retry-heavy turn can
+     * burn many requests on few tokens, and a large-context turn can use many tokens in one
+     * request. Displayed on {@code /status}; the per-turn count is already shown inline.
+     */
+    public synchronized void recordLlmRequests(int turnLlmRequests) {
+        if (turnLlmRequests <= 0) return;
+        this.totalLlmRequests += turnLlmRequests;
+    }
+
+    /**
+     * Returns cumulative LLM API request count across all turns.
+     */
+    public synchronized long totalLlmRequests() {
+        return totalLlmRequests;
     }
 
     /**
