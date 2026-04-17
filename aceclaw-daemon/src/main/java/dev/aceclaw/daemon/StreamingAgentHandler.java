@@ -691,7 +691,9 @@ public final class StreamingAgentHandler {
         });
     }
 
-    private void runPostRequestLearning(String sessionId,
+    // Package-private for testing: locks the caller-side contract that persist() is invoked
+    // on every post-request cycle, including when insights is empty. See #411.
+    void runPostRequestLearning(String sessionId,
                                         Path projectPath,
                                         dev.aceclaw.core.agent.Turn turn,
                                         List<AgentSession.ConversationMessage> sessionHistory,
