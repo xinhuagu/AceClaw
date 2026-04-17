@@ -1,6 +1,7 @@
 package dev.aceclaw.daemon;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.aceclaw.core.agent.ToolMetrics;
 import dev.aceclaw.core.agent.ToolMetricsCollector;
@@ -14,6 +15,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -26,8 +28,11 @@ import java.util.concurrent.locks.ReentrantLock;
  *
  * <p>Output: {@code .aceclaw/metrics/continuous-learning/runtime-latest.json}
  *
- * <p>Counters are accumulated across daemon lifetime (reset on restart).
- * Each metric includes {@code value}, {@code sample_size}, and {@code status}.
+ * <p>Counters are accumulated across daemon lifetime (reset on restart). LLM
+ * request counts are additionally partitioned by {@code (provider, model)} so a
+ * mid-session {@code /model} switch doesn't misattribute prior history to the new
+ * model. Each per-(provider, model) bucket carries its own total + per-source
+ * breakdown + Copilot-normalised cost multiplier.
  *
  * <p>Thread-safety: all counter mutations and snapshot reads are protected
  * by a single lock to ensure consistent ratios (e.g., success &lt;= total).
@@ -55,12 +60,11 @@ public final class RuntimeMetricsExporter {
     private int turnTotal;
     private int timeoutCount;
 
-    // LLM request counters — guarded by lock. Total stays consistent with
-    // llmRequestsBySource — the sum of the map values always equals llmRequestsTotal.
-    // Insertion-ordered for deterministic JSON output; sources appear in the order the
-    // daemon first observed them during this lifetime.
-    private long llmRequestsTotal;
-    private final LinkedHashMap<String, Long> llmRequestsBySource = new LinkedHashMap<>();
+    // LLM request counters — guarded by lock. Keyed by (provider, model) so /model
+    // switches don't cross-contaminate the per-model baseline. Per-bucket totals +
+    // per-source breakdowns are self-consistent within their bucket; a grand total
+    // across all buckets is derived at export time for convenience.
+    private final LinkedHashMap<ModelKey, ModelCounts> llmRequestsByModel = new LinkedHashMap<>();
 
     public RuntimeMetricsExporter() {
         this.mapper = new ObjectMapper();
@@ -119,20 +123,30 @@ public final class RuntimeMetricsExporter {
     }
 
     /**
-     * Folds a turn or plan's {@link RequestAttribution} into cumulative per-source LLM
-     * request counters. Used by {@link StreamingAgentHandler} to persist baseline data
-     * for Copilot premium-request tuning (epic #418, issue #419). Silently accepts
-     * empty or null attribution — callers on older code paths don't have to thread
-     * attribution through to get the rest of the runtime metrics.
+     * Folds a turn or plan's {@link RequestAttribution} into the cumulative per-source
+     * LLM request counters for the given provider + model bucket. Each distinct
+     * {@code (provider, model)} observed during a daemon lifetime gets its own bucket,
+     * so a mid-session {@code /model} switch doesn't re-label history.
+     *
+     * <p>Silently accepts {@code null} or empty attribution — callers on older code paths
+     * don't have to thread attribution through to get the rest of the runtime metrics.
+     *
+     * @param attribution the per-source request counts from this turn or plan
+     * @param provider    the LLM provider identifier for these requests; may be {@code null}
+     *                    (recorded under an {@code unknown} provider bucket)
+     * @param model       the model identifier for these requests; may be {@code null}
+     *                    (recorded under an {@code unknown} model bucket)
      */
-    public void recordLlmRequests(RequestAttribution attribution) {
+    public void recordLlmRequests(RequestAttribution attribution, String provider, String model) {
         if (attribution == null || attribution.total() == 0) return;
         lock.lock();
         try {
-            llmRequestsTotal += attribution.total();
+            var key = ModelKey.of(provider, model);
+            var bucket = llmRequestsByModel.computeIfAbsent(key, k -> new ModelCounts());
             attribution.bySource().forEach((source, count) -> {
-                String key = source.name().toLowerCase(Locale.ROOT);
-                llmRequestsBySource.merge(key, (long) count, Long::sum);
+                String sourceKey = source.name().toLowerCase(Locale.ROOT);
+                bucket.bySource.merge(sourceKey, (long) count, Long::sum);
+                bucket.total += count;
             });
         } finally {
             lock.unlock();
@@ -158,64 +172,26 @@ public final class RuntimeMetricsExporter {
      * @param toolMetrics the session tool metrics collector (may be null)
      */
     public void export(Path projectRoot, ToolMetricsCollector toolMetrics) {
-        export(projectRoot, toolMetrics, null, null);
-    }
-
-    /**
-     * Exports all accumulated metrics to the runtime-latest.json file, tagging the
-     * snapshot with the current provider + model so downstream baseline analysis can
-     * segment Copilot data by pricing tier. When provider is Copilot, a normalized
-     * {@code model_multiplier} is derived from {@link CopilotRequestMultipliers} so
-     * raw request counts can be converted to cost units without a second lookup.
-     *
-     * @param projectRoot the project root directory (must not be null)
-     * @param toolMetrics the session tool metrics collector (may be null)
-     * @param provider    the LLM provider identifier (e.g. {@code "copilot"}, {@code "anthropic"});
-     *                    {@code null} omits the field
-     * @param model       the active model identifier; {@code null} omits the field
-     */
-    public void export(Path projectRoot, ToolMetricsCollector toolMetrics,
-                       String provider, String model) {
         Objects.requireNonNull(projectRoot, "projectRoot");
         try {
-            // Take a consistent snapshot under lock
             Snapshot snap = snapshot();
 
             ObjectNode root = mapper.createObjectNode();
             root.put("exported_at", Instant.now().toString());
-            if (provider != null && !provider.isBlank()) {
-                root.put("provider", provider);
-            }
-            if (model != null && !model.isBlank()) {
-                root.put("model", model);
-            }
-            Double multiplier = CopilotRequestMultipliers.forProviderAndModel(provider, model);
-            if (multiplier != null) {
-                // Only populated for Copilot. Non-Copilot providers charge per-token, not
-                // per-request, so a request multiplier is not meaningful and the field is
-                // omitted rather than set to a misleading 1.0.
-                root.put("model_multiplier", multiplier);
-                root.put("model_multiplier_rate_card_date", CopilotRequestMultipliers.RATE_CARD_DATE);
-            }
+            root.put("rate_card_date", CopilotRequestMultipliers.RATE_CARD_DATE);
 
             ObjectNode metrics = root.putObject("metrics");
 
-            // Task success rate
             addMetric(metrics, "task_success_rate",
                     snap.taskTotal > 0 ? (double) snap.taskSuccess / snap.taskTotal : Double.NaN,
                     snap.taskTotal);
-
-            // First try success rate
             addMetric(metrics, "first_try_success_rate",
                     snap.taskTotal > 0 ? (double) snap.taskFirstTrySuccess / snap.taskTotal : Double.NaN,
                     snap.taskTotal);
-
-            // Retry count per task (average)
             addMetric(metrics, "retry_count_per_task",
                     snap.taskTotal > 0 ? (double) snap.retryCountTotal / snap.taskTotal : Double.NaN,
                     snap.taskTotal);
 
-            // Tool execution metrics (from ToolMetricsCollector)
             if (toolMetrics != null) {
                 Map<String, ToolMetrics> allTools = toolMetrics.allMetrics();
                 int totalToolInvocations = 0;
@@ -237,27 +213,35 @@ public final class RuntimeMetricsExporter {
                 addMetric(metrics, "tool_error_rate", Double.NaN, 0);
             }
 
-            // Permission block rate
             addMetric(metrics, "permission_block_rate",
                     snap.permissionRequests > 0
                             ? (double) snap.permissionBlocks / snap.permissionRequests : Double.NaN,
                     snap.permissionRequests);
-
-            // Timeout rate
             addMetric(metrics, "timeout_rate",
                     snap.turnTotal > 0 ? (double) snap.timeoutCount / snap.turnTotal : Double.NaN,
                     snap.turnTotal);
 
-            // LLM request totals + per-source breakdown. Each emitted as an absolute count
-            // (value = count, sample_size = grand total so downstream scripts can derive
-            // ratios without re-summing). Sources with zero counts are omitted.
-            addRequestCountMetric(metrics, "llm_requests_total",
-                    snap.llmRequestsTotal, snap.llmRequestsTotal);
-            snap.llmRequestsBySource.forEach((source, count) ->
-                    addRequestCountMetric(metrics, "llm_requests_" + source,
-                            count, snap.llmRequestsTotal));
+            // Per-(provider, model) breakdown. Each bucket carries its own total + per-source
+            // distribution + Copilot multiplier so downstream analysis can compute normalized
+            // cost units without re-labeling history after a /model switch.
+            long grandTotal = snap.llmRequestsByModel.values().stream()
+                    .mapToLong(ModelCounts::total).sum();
+            ArrayNode perModel = root.putArray("llm_requests_by_model");
+            snap.llmRequestsByModel.forEach((key, counts) -> {
+                ObjectNode bucket = perModel.addObject();
+                bucket.put("provider", key.provider());
+                bucket.put("model", key.model());
+                Double multiplier = CopilotRequestMultipliers.forProviderAndModel(
+                        key.provider(), key.model());
+                if (multiplier != null) {
+                    bucket.put("multiplier", multiplier);
+                }
+                bucket.put("total", counts.total());
+                ObjectNode bySource = bucket.putObject("by_source");
+                counts.bySource().forEach(bySource::put);
+            });
+            addRequestCountMetric(metrics, "llm_requests_total", grandTotal, grandTotal);
 
-            // Write atomically
             Path metricsDir = projectRoot.resolve(METRICS_DIR);
             Files.createDirectories(metricsDir);
             Path target = metricsDir.resolve(RUNTIME_FILE);
@@ -309,30 +293,60 @@ public final class RuntimeMetricsExporter {
     public Snapshot snapshot() {
         lock.lock();
         try {
+            var copied = new LinkedHashMap<ModelKey, ModelCounts>();
+            llmRequestsByModel.forEach((k, v) -> copied.put(k, v.copy()));
             return new Snapshot(
                     taskTotal, taskSuccess, taskFirstTrySuccess,
                     retryCountTotal, permissionRequests, permissionBlocks,
                     turnTotal, timeoutCount,
-                    llmRequestsTotal, new LinkedHashMap<>(llmRequestsBySource));
+                    copied);
         } finally {
             lock.unlock();
         }
+    }
+
+    /** Identifies a distinct {@code (provider, model)} pair for bucketing request counts. */
+    public record ModelKey(String provider, String model) {
+        public ModelKey {
+            provider = (provider == null || provider.isBlank()) ? "unknown" : provider;
+            model = (model == null || model.isBlank()) ? "unknown" : model;
+        }
+
+        static ModelKey of(String provider, String model) {
+            return new ModelKey(provider, model);
+        }
+    }
+
+    /** Mutable per-bucket counters. Copied on snapshot; never leaked outside the lock. */
+    static final class ModelCounts {
+        long total;
+        final LinkedHashMap<String, Long> bySource = new LinkedHashMap<>();
+
+        ModelCounts copy() {
+            var c = new ModelCounts();
+            c.total = this.total;
+            c.bySource.putAll(this.bySource);
+            return c;
+        }
+
+        long total() { return total; }
+        Map<String, Long> bySource() { return Collections.unmodifiableMap(bySource); }
     }
 
     public record Snapshot(
             int taskTotal, int taskSuccess, int taskFirstTrySuccess,
             long retryCountTotal, int permissionRequests, int permissionBlocks,
             int turnTotal, int timeoutCount,
-            long llmRequestsTotal, Map<String, Long> llmRequestsBySource
+            Map<ModelKey, ModelCounts> llmRequestsByModel
     ) {
         public Snapshot {
-            // Preserve insertion order so JSON output lists sources in a stable sequence
+            // Preserve insertion order so JSON output lists models in a stable sequence
             // (Map.copyOf offers no order guarantee; LinkedHashMap via unmodifiableMap does).
-            if (llmRequestsBySource == null) {
-                llmRequestsBySource = Map.of();
+            if (llmRequestsByModel == null) {
+                llmRequestsByModel = Map.of();
             } else {
-                llmRequestsBySource = java.util.Collections.unmodifiableMap(
-                        new LinkedHashMap<>(llmRequestsBySource));
+                llmRequestsByModel = Collections.unmodifiableMap(
+                        new LinkedHashMap<>(llmRequestsByModel));
             }
         }
     }
