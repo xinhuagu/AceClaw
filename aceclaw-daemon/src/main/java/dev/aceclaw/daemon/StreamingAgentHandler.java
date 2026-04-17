@@ -546,8 +546,17 @@ public final class StreamingAgentHandler {
                 null);
         int failedSteps = (int) planResult.stepResults().stream().filter(s -> !s.success()).count();
         boolean planFirstTry = planResult.success() && failedSteps == 0;
+        // Fold the upfront PLANNER request into the plan's aggregated attribution before
+        // reporting: planResult.requestAttribution() covers step turns + REPLAN calls; the
+        // initial planner call happens above and must be merged in here so the per-source
+        // map, the llmRequests scalar, and runtime metrics all stay consistent.
+        var planUsage = RequestAttribution.builder()
+                .merge(planResult.requestAttribution())
+                .merge(plannerAttribution.build())
+                .build();
         recordRuntimeMetrics(sessionId, planResult.success(), planFirstTry,
-                failedSteps, plannedStopReason, metricsCollector, session.projectPath());
+                failedSteps, plannedStopReason, metricsCollector, session.projectPath(),
+                planUsage);
 
         // 6. Build result
         var result = objectMapper.createObjectNode();
@@ -565,14 +574,6 @@ public final class StreamingAgentHandler {
 
         int totalInput = planResult.stepResults().stream().mapToInt(StepResult::inputTokens).sum();
         int totalOutput = planResult.stepResults().stream().mapToInt(StepResult::outputTokens).sum();
-        // Fold the upfront PLANNER request into the plan's aggregated attribution before
-        // reporting: planResult.requestAttribution() covers step turns + REPLAN calls; the
-        // initial planner call happens above and must be merged in here so the per-source
-        // map and the llmRequests scalar stay consistent.
-        var planUsage = RequestAttribution.builder()
-                .merge(planResult.requestAttribution())
-                .merge(plannerAttribution.build())
-                .build();
         var usageNode = objectMapper.createObjectNode();
         usageNode.put("inputTokens", totalInput);
         usageNode.put("outputTokens", totalOutput);
@@ -653,7 +654,8 @@ public final class StreamingAgentHandler {
         boolean directFirstTry = turnSuccess && (adaptive == null || adaptive.continuationCount() == 0);
         int directRetryCount = adaptive != null ? adaptive.continuationCount() : 0;
         recordRuntimeMetrics(sessionId, turnSuccess, directFirstTry,
-                directRetryCount, turn.finalStopReason(), metricsCollector, session.projectPath());
+                directRetryCount, turn.finalStopReason(), metricsCollector, session.projectPath(),
+                turn.requestAttribution());
 
         // Build result
         var result = objectMapper.createObjectNode();
@@ -2080,12 +2082,14 @@ public final class StreamingAgentHandler {
      */
     private void recordRuntimeMetrics(String sessionId, boolean success, boolean firstTry,
                                        int retryCount, StopReason stopReason,
-                                       ToolMetricsCollector metricsCollector, Path projectPath) {
+                                       ToolMetricsCollector metricsCollector, Path projectPath,
+                                       RequestAttribution requestAttribution) {
         var exporter = this.runtimeMetricsExporter;
         if (exporter == null) return;
         try {
             exporter.recordTaskOutcome(success, firstTry, retryCount);
             exporter.recordTurn();
+            exporter.recordLlmRequests(requestAttribution);
             if (stopReason == StopReason.MAX_TOKENS) {
                 exporter.recordTimeout();
             }
@@ -2644,8 +2648,13 @@ public final class StreamingAgentHandler {
                 null);
         int resumeFailedSteps = (int) planResult.stepResults().stream().filter(s -> !s.success()).count();
         boolean resumeFirstTry = planResult.success() && resumeFailedSteps == 0;
+        // Resumed plans don't re-run the planner (plan was already generated + checkpointed),
+        // so planResult.requestAttribution() is the full picture: step turns + any replans
+        // during resumption. Same attribution goes to both runtime metrics and the payload.
+        var resumedUsage = planResult.requestAttribution();
         recordRuntimeMetrics(sessionId, planResult.success(), resumeFirstTry,
-                resumeFailedSteps, plannedStopReason, metricsCollector, session.projectPath());
+                resumeFailedSteps, plannedStopReason, metricsCollector, session.projectPath(),
+                resumedUsage);
 
         var result = objectMapper.createObjectNode();
         result.put("sessionId", sessionId);
@@ -2664,10 +2673,6 @@ public final class StreamingAgentHandler {
 
         int totalInput = planResult.stepResults().stream().mapToInt(StepResult::inputTokens).sum();
         int totalOutput = planResult.stepResults().stream().mapToInt(StepResult::outputTokens).sum();
-        // Resumed plans don't re-run the planner (plan was already generated + checkpointed),
-        // so planResult.requestAttribution() is the full picture: step turns + any replans
-        // during resumption.
-        var resumedUsage = planResult.requestAttribution();
         var usageNode = objectMapper.createObjectNode();
         usageNode.put("inputTokens", totalInput);
         usageNode.put("outputTokens", totalOutput);

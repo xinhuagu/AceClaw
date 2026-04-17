@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.aceclaw.core.agent.ToolMetrics;
 import dev.aceclaw.core.agent.ToolMetricsCollector;
+import dev.aceclaw.core.llm.RequestAttribution;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -13,6 +14,8 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.locks.ReentrantLock;
@@ -51,6 +54,13 @@ public final class RuntimeMetricsExporter {
     // Timeout counters — guarded by lock
     private int turnTotal;
     private int timeoutCount;
+
+    // LLM request counters — guarded by lock. Total stays consistent with
+    // llmRequestsBySource — the sum of the map values always equals llmRequestsTotal.
+    // Insertion-ordered for deterministic JSON output; sources appear in the order the
+    // daemon first observed them during this lifetime.
+    private long llmRequestsTotal;
+    private final LinkedHashMap<String, Long> llmRequestsBySource = new LinkedHashMap<>();
 
     public RuntimeMetricsExporter() {
         this.mapper = new ObjectMapper();
@@ -103,6 +113,27 @@ public final class RuntimeMetricsExporter {
         lock.lock();
         try {
             timeoutCount++;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Folds a turn or plan's {@link RequestAttribution} into cumulative per-source LLM
+     * request counters. Used by {@link StreamingAgentHandler} to persist baseline data
+     * for Copilot premium-request tuning (epic #418, issue #419). Silently accepts
+     * empty or null attribution — callers on older code paths don't have to thread
+     * attribution through to get the rest of the runtime metrics.
+     */
+    public void recordLlmRequests(RequestAttribution attribution) {
+        if (attribution == null || attribution.total() == 0) return;
+        lock.lock();
+        try {
+            llmRequestsTotal += attribution.total();
+            attribution.bySource().forEach((source, count) -> {
+                String key = source.name().toLowerCase(Locale.ROOT);
+                llmRequestsBySource.merge(key, (long) count, Long::sum);
+            });
         } finally {
             lock.unlock();
         }
@@ -185,6 +216,15 @@ public final class RuntimeMetricsExporter {
                     snap.turnTotal > 0 ? (double) snap.timeoutCount / snap.turnTotal : Double.NaN,
                     snap.turnTotal);
 
+            // LLM request totals + per-source breakdown. Each emitted as an absolute count
+            // (value = count, sample_size = grand total so downstream scripts can derive
+            // ratios without re-summing). Sources with zero counts are omitted.
+            addRequestCountMetric(metrics, "llm_requests_total",
+                    snap.llmRequestsTotal, snap.llmRequestsTotal);
+            snap.llmRequestsBySource.forEach((source, count) ->
+                    addRequestCountMetric(metrics, "llm_requests_" + source,
+                            count, snap.llmRequestsTotal));
+
             // Write atomically
             Path metricsDir = projectRoot.resolve(METRICS_DIR);
             Files.createDirectories(metricsDir);
@@ -197,6 +237,24 @@ public final class RuntimeMetricsExporter {
             log.debug("Exported runtime metrics to {}", target);
         } catch (IOException e) {
             log.warn("Failed to export runtime metrics: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Variant of {@link #addMetric} for absolute counts (not ratios). Emits the raw value
+     * as an integer so downstream parsers don't see a trailing {@code .0} from double
+     * rounding, and marks the metric measured as long as the sample size is non-zero.
+     */
+    private void addRequestCountMetric(ObjectNode parent, String name, long value, long sampleSize) {
+        ObjectNode metric = parent.putObject(name);
+        if (sampleSize <= 0) {
+            metric.putNull("value");
+            metric.put("sample_size", 0);
+            metric.put("status", "pending_instrumentation");
+        } else {
+            metric.put("value", value);
+            metric.put("sample_size", sampleSize);
+            metric.put("status", "measured");
         }
     }
 
@@ -222,7 +280,8 @@ public final class RuntimeMetricsExporter {
             return new Snapshot(
                     taskTotal, taskSuccess, taskFirstTrySuccess,
                     retryCountTotal, permissionRequests, permissionBlocks,
-                    turnTotal, timeoutCount);
+                    turnTotal, timeoutCount,
+                    llmRequestsTotal, new LinkedHashMap<>(llmRequestsBySource));
         } finally {
             lock.unlock();
         }
@@ -231,6 +290,18 @@ public final class RuntimeMetricsExporter {
     public record Snapshot(
             int taskTotal, int taskSuccess, int taskFirstTrySuccess,
             long retryCountTotal, int permissionRequests, int permissionBlocks,
-            int turnTotal, int timeoutCount
-    ) {}
+            int turnTotal, int timeoutCount,
+            long llmRequestsTotal, Map<String, Long> llmRequestsBySource
+    ) {
+        public Snapshot {
+            // Preserve insertion order so JSON output lists sources in a stable sequence
+            // (Map.copyOf offers no order guarantee; LinkedHashMap via unmodifiableMap does).
+            if (llmRequestsBySource == null) {
+                llmRequestsBySource = Map.of();
+            } else {
+                llmRequestsBySource = java.util.Collections.unmodifiableMap(
+                        new LinkedHashMap<>(llmRequestsBySource));
+            }
+        }
+    }
 }
