@@ -120,18 +120,21 @@ download_release() {
     TMP_DIR=$(mktemp -d)
 
     info "Downloading $ARCHIVE_NAME..."
+    # --progress-bar / --show-progress render only when stderr is a tty, so
+    # curl | sh workflows still get an interactive progress indicator for the
+    # ~210MB archive but piped / logged installs stay quiet.
     if [ "$DOWNLOAD_CMD" = "curl" ]; then
-        curl -fsSL -o "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || {
+        curl -fL --progress-bar -o "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || {
             # Try .zip if .tar not found
             ARCHIVE_NAME="aceclaw-cli-${VERSION}.zip"
             DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/$ARCHIVE_NAME"
-            curl -fsSL -o "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || fail "Download failed: $DOWNLOAD_URL"
+            curl -fL --progress-bar -o "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || fail "Download failed: $DOWNLOAD_URL"
         }
     else
-        wget -q -O "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || {
+        wget -q --show-progress -O "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || {
             ARCHIVE_NAME="aceclaw-cli-${VERSION}.zip"
             DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/$ARCHIVE_NAME"
-            wget -q -O "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || fail "Download failed: $DOWNLOAD_URL"
+            wget -q --show-progress -O "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || fail "Download failed: $DOWNLOAD_URL"
         }
     fi
     ok "Downloaded"

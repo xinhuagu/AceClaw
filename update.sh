@@ -96,17 +96,20 @@ DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/$ARCHIVE_NA
 TMP_DIR=$(mktemp -d)
 
 info "Downloading $ARCHIVE_NAME..."
+# Use --progress-bar / --show-progress so users see a live indicator on the ~210MB
+# archive; both flags render only when stderr is a tty, so piped / scripted use
+# (e.g. install.sh over curl | sh) still gets silent output.
 if command -v curl >/dev/null 2>&1; then
-    curl -fsSL -o "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || {
+    curl -fL --progress-bar -o "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || {
         ARCHIVE_NAME="aceclaw-cli-${LATEST_VERSION}.zip"
         DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/$ARCHIVE_NAME"
-        curl -fsSL -o "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || fail "Download failed"
+        curl -fL --progress-bar -o "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || fail "Download failed"
     }
 else
-    wget -q -O "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || {
+    wget -q --show-progress -O "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || {
         ARCHIVE_NAME="aceclaw-cli-${LATEST_VERSION}.zip"
         DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/$ARCHIVE_NAME"
-        wget -q -O "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || fail "Download failed"
+        wget -q --show-progress -O "$TMP_DIR/$ARCHIVE_NAME" "$DOWNLOAD_URL" || fail "Download failed"
     }
 fi
 
