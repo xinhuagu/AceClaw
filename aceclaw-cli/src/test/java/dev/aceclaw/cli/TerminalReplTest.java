@@ -133,6 +133,23 @@ class TerminalReplTest {
         assertThat(output).contains("Peak:");
         assertThat(output).contains("Pruning:");
         assertThat(output).contains("trend=");
+        assertThat(output).contains("LLM requests:");
+    }
+
+    @Test
+    void status_reflectsCumulativeLlmRequestCount() throws Exception {
+        // Simulate two completed turns that each consumed multiple LLM calls (e.g. tool use
+        // loops) by pushing the counts directly into the monitor; /status must surface the sum.
+        ContextMonitor monitor = (ContextMonitor) getPrivateField(repl, "contextMonitor");
+        monitor.recordLlmRequests(3);
+        monitor.recordLlmRequests(2);
+
+        repl.handleSlashCommand(out, "/status", null);
+
+        // Label and value are separated by an ANSI reset sequence in the rendered output,
+        // so match each segment independently rather than as a concatenated substring.
+        String stripped = outputBuffer.toString().replaceAll("\u001B\\[[0-9;]*m", "");
+        assertThat(stripped).contains("LLM requests: 5");
     }
 
     @Test

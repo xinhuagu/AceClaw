@@ -43,6 +43,14 @@ public final class TaskHandle {
     /** Whether background completion has been displayed to the user. */
     private final AtomicBoolean completionNotified = new AtomicBoolean(false);
 
+    /**
+     * Whether this task's usage (tokens, LLM requests) has been accumulated into session
+     * totals. Kept separate from {@link #completionNotified} because display and accounting
+     * have different idempotency requirements — a task can be rendered multiple times (e.g.
+     * /fg after auto-display, or a /fg path not marking notified) but must be counted once.
+     */
+    private final AtomicBoolean usageAccounted = new AtomicBoolean(false);
+
     /** When the task was submitted. */
     private final Instant startedAt;
 
@@ -127,6 +135,14 @@ public final class TaskHandle {
      * (i.e., the notification hasn't been shown yet).
      */
     public boolean markNotified() { return completionNotified.compareAndSet(false, true); }
+
+    /**
+     * Marks this task's usage as accounted into session-level totals. Returns true if this
+     * is the first call — callers should accumulate tokens / LLM request counts only when
+     * this returns true, so renders through different paths (/fg, auto-display, fallback
+     * notify) don't inflate the counters.
+     */
+    public boolean markUsageAccounted() { return usageAccounted.compareAndSet(false, true); }
 
     public Thread streamThread() { return streamThread; }
     public void setStreamThread(Thread thread) { this.streamThread = thread; }

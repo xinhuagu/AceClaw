@@ -24,6 +24,55 @@ class ContextMonitorTest {
     }
 
     @Test
+    void recordLlmRequestsAccumulatesAcrossTurns() {
+        var monitor = new ContextMonitor(200_000);
+
+        monitor.recordLlmRequests(1);
+        monitor.recordLlmRequests(3);
+        monitor.recordLlmRequests(2);
+
+        assertThat(monitor.totalLlmRequests()).isEqualTo(6);
+    }
+
+    @Test
+    void guardedAccountingSkipsSecondRenderOfSameTask() {
+        // Models the scenario that motivated TaskHandle.markUsageAccounted: a completed task
+        // can reach renderTaskCompletion through multiple paths in TerminalRepl (e.g. /fg
+        // rendering the result, then notifyCompletedBackgroundTasks picking up the same
+        // unmarked handle). The guard ensures the ContextMonitor is incremented only once.
+        var monitor = new ContextMonitor(200_000);
+        var accounted = new java.util.concurrent.atomic.AtomicBoolean(false);
+
+        // First render path acquires the guard and accounts.
+        if (accounted.compareAndSet(false, true)) {
+            monitor.recordTurnComplete(1_000, 400, 0);
+            monitor.recordLlmRequests(3);
+        }
+        // Second render path for the same task finds the guard already set.
+        if (accounted.compareAndSet(false, true)) {
+            monitor.recordTurnComplete(1_000, 400, 0);
+            monitor.recordLlmRequests(3);
+        }
+
+        assertThat(monitor.totalInput()).isEqualTo(1_000);
+        assertThat(monitor.totalOutput()).isEqualTo(400);
+        assertThat(monitor.totalLlmRequests()).isEqualTo(3);
+    }
+
+    @Test
+    void recordLlmRequestsIgnoresZeroAndNegativeValues() {
+        // A turn with no LLM call (e.g. cancelled before send) reports llmRequests=0 in the
+        // usage payload. The counter must not advance on those, and must never go backward.
+        var monitor = new ContextMonitor(200_000);
+
+        monitor.recordLlmRequests(2);
+        monitor.recordLlmRequests(0);
+        monitor.recordLlmRequests(-1);
+
+        assertThat(monitor.totalLlmRequests()).isEqualTo(2);
+    }
+
+    @Test
     void recentTrendCanFallAndThenStabilize() {
         var monitor = new ContextMonitor(100_000);
 
