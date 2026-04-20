@@ -80,6 +80,25 @@ public final class AnthropicClient implements LlmClient {
     /** Pluggable credential reader for testability. */
     private final java.util.function.Supplier<KeychainCredentialReader.Credential> credentialSupplier;
 
+    /**
+     * Called after a successful OAuth token refresh when the client is isolated
+     * (allowKeychainFallback=false). Carries the new access token, refresh token,
+     * and expiry so the caller can persist them to the profile's config file.
+     */
+    public record TokenUpdate(String accessToken, String refreshToken, long expiresAt) {}
+
+    /** Callback invoked after a successful isolated OAuth refresh. */
+    private volatile java.util.function.Consumer<TokenUpdate> tokenPersistCallback;
+
+    /**
+     * When false, the client is isolated from Claude CLI's shared credential
+     * store: 401 recovery does not read Keychain/credentials.json, and
+     * successful OAuth refresh does not write the new token back to it.
+     * Set to false when credentials came from an explicit profile/env so one
+     * account's daemon cannot corrupt another account's CLI login.
+     */
+    private final boolean allowKeychainFallback;
+
     /** Guards OAuth token mutations without blocking concurrent API calls. */
     private final ReentrantLock tokenLock = new ReentrantLock();
 
@@ -126,8 +145,21 @@ public final class AnthropicClient implements LlmClient {
      */
     public AnthropicClient(String accessToken, String refreshToken, String baseUrl,
                            Duration requestTimeout, boolean context1m, List<String> extraBetas) {
+        this(accessToken, refreshToken, baseUrl, requestTimeout, context1m, extraBetas, true);
+    }
+
+    /**
+     * Creates a client with explicit control over Claude CLI credential sharing.
+     *
+     * @param allowKeychainFallback when false, 401 recovery will not read from
+     *     Claude CLI's Keychain/credentials.json, and OAuth refresh will not
+     *     write the refreshed token back to that shared store.
+     */
+    public AnthropicClient(String accessToken, String refreshToken, String baseUrl,
+                           Duration requestTimeout, boolean context1m, List<String> extraBetas,
+                           boolean allowKeychainFallback) {
         this(accessToken, refreshToken, baseUrl, requestTimeout, context1m, extraBetas,
-                KeychainCredentialReader::read);
+                KeychainCredentialReader::read, allowKeychainFallback);
     }
 
     /**
@@ -136,6 +168,18 @@ public final class AnthropicClient implements LlmClient {
     AnthropicClient(String accessToken, String refreshToken, String baseUrl,
                     Duration requestTimeout, boolean context1m, List<String> extraBetas,
                     java.util.function.Supplier<KeychainCredentialReader.Credential> credentialSupplier) {
+        this(accessToken, refreshToken, baseUrl, requestTimeout, context1m, extraBetas,
+                credentialSupplier, true);
+    }
+
+    /**
+     * Full package-private constructor for tests that need to exercise the
+     * isolation flag together with a pluggable credential supplier.
+     */
+    AnthropicClient(String accessToken, String refreshToken, String baseUrl,
+                    Duration requestTimeout, boolean context1m, List<String> extraBetas,
+                    java.util.function.Supplier<KeychainCredentialReader.Credential> credentialSupplier,
+                    boolean allowKeychainFallback) {
         if (accessToken == null || accessToken.isBlank()) {
             throw new IllegalArgumentException("API key / access token must not be null or blank");
         }
@@ -147,6 +191,7 @@ public final class AnthropicClient implements LlmClient {
         this.context1m = context1m;
         this.configuredModel = null; // set via setConfiguredModel() after construction
         this.extraBetas = extraBetas != null ? List.copyOf(extraBetas) : List.of();
+        this.allowKeychainFallback = allowKeychainFallback;
         this.credentialSupplier = credentialSupplier != null ? credentialSupplier : KeychainCredentialReader::read;
 
         this.httpClient = HttpClient.newBuilder()
@@ -159,21 +204,29 @@ public final class AnthropicClient implements LlmClient {
         this.mapper = new AnthropicMapper(jsonMapper, isOAuth);
 
         if (isOAuth) {
-            // Load initial token expiry from credential store
-            try {
-                var cred = this.credentialSupplier.get();
-                if (cred != null && cred.expiresAt() > 0) {
-                    this.tokenExpiresAt = cred.expiresAt();
-                    log.info("Using OAuth authentication (token refresh {}, expires at {})",
-                            refreshToken != null ? "enabled" : "disabled",
-                            java.time.Instant.ofEpochMilli(cred.expiresAt()));
-                } else {
-                    log.info("Using OAuth authentication (token refresh {}, expiry unknown)",
-                            refreshToken != null ? "enabled" : "disabled");
+            // Load initial token expiry from the Claude CLI shared store only
+            // when fallback is allowed. Isolated clients must not consult that
+            // store — otherwise another account's expiry would drive this
+            // client's proactive refresh.
+            if (!allowKeychainFallback) {
+                log.info("Using OAuth authentication (isolated from Claude CLI store, token refresh {}, expiry unknown)",
+                        refreshToken != null ? "enabled" : "disabled");
+            } else {
+                try {
+                    var cred = this.credentialSupplier.get();
+                    if (cred != null && cred.expiresAt() > 0) {
+                        this.tokenExpiresAt = cred.expiresAt();
+                        log.info("Using OAuth authentication (token refresh {}, expires at {})",
+                                refreshToken != null ? "enabled" : "disabled",
+                                java.time.Instant.ofEpochMilli(cred.expiresAt()));
+                    } else {
+                        log.info("Using OAuth authentication (token refresh {}, expiry unknown)",
+                                refreshToken != null ? "enabled" : "disabled");
+                    }
+                } catch (Exception e) {
+                    log.info("Using OAuth authentication (token refresh {}, could not read expiry: {})",
+                            refreshToken != null ? "enabled" : "disabled", e.getMessage());
                 }
-            } catch (Exception e) {
-                log.info("Using OAuth authentication (token refresh {}, could not read expiry: {})",
-                        refreshToken != null ? "enabled" : "disabled", e.getMessage());
             }
         }
     }
@@ -606,26 +659,30 @@ public final class AnthropicClient implements LlmClient {
     /** Internal credential recovery — caller must hold {@link #tokenLock}. */
     private CredentialRecovery recoverCredentials0() {
         String previousAccessToken = this.accessToken;
-        try {
-            var cred = credentialSupplier.get();
-            if (cred != null) {
-                // Pick up fresher access token independently of refresh token availability
-                if (cred.accessToken() != null && !cred.isExpired()) {
-                    this.accessToken = cred.accessToken();
-                    log.debug("Updated access token from credential store");
+        // Skip the credential store entirely for isolated clients so a
+        // profile-scoped 401 cannot silently adopt another account's token.
+        if (allowKeychainFallback) {
+            try {
+                var cred = credentialSupplier.get();
+                if (cred != null) {
+                    // Pick up fresher access token independently of refresh token availability
+                    if (cred.accessToken() != null && !cred.isExpired()) {
+                        this.accessToken = cred.accessToken();
+                        log.debug("Updated access token from credential store");
+                    }
+                    // Pick up refresh token if available
+                    if (cred.refreshToken() != null) {
+                        this.refreshToken = cred.refreshToken();
+                        log.info("Loaded refresh token from credential store on 401 recovery");
+                    }
+                    // Pick up expiry if available
+                    if (cred.expiresAt() > 0) {
+                        this.tokenExpiresAt = cred.expiresAt();
+                    }
                 }
-                // Pick up refresh token if available
-                if (cred.refreshToken() != null) {
-                    this.refreshToken = cred.refreshToken();
-                    log.info("Loaded refresh token from credential store on 401 recovery");
-                }
-                // Pick up expiry if available
-                if (cred.expiresAt() > 0) {
-                    this.tokenExpiresAt = cred.expiresAt();
-                }
+            } catch (Exception e) {
+                log.warn("Failed to read credentials on 401 recovery: {}", e.getMessage());
             }
-        } catch (Exception e) {
-            log.warn("Failed to read credentials on 401 recovery: {}", e.getMessage());
         }
 
         // If access token changed, we can retry immediately without full refresh
@@ -647,6 +704,11 @@ public final class AnthropicClient implements LlmClient {
         this.configuredModel = model;
     }
 
+    /** Registers a callback invoked after a successful OAuth refresh in isolated mode. */
+    public void setTokenPersistCallback(java.util.function.Consumer<TokenUpdate> callback) {
+        this.tokenPersistCallback = callback;
+    }
+
     /** Package-private: current access token for testing. */
     String accessTokenForTest() { return accessToken; }
 
@@ -664,8 +726,19 @@ public final class AnthropicClient implements LlmClient {
 
     /**
      * Writes refreshed credentials back to the original source (Keychain or file).
+     * No-op when the client is isolated from Claude CLI's shared credential store,
+     * so a profile-scoped OAuth refresh cannot overwrite another account's login.
      */
     private void writeBackCredentials(String newAccessToken, String newRefreshToken, long newExpiresAt) {
+        if (!allowKeychainFallback) {
+            var cb = tokenPersistCallback;
+            if (cb != null) {
+                cb.accept(new TokenUpdate(newAccessToken, newRefreshToken, newExpiresAt));
+            } else {
+                log.debug("Skipping credential write-back: client is isolated from Claude CLI store");
+            }
+            return;
+        }
         try {
             boolean written = KeychainCredentialReader.writeToKeychain(
                     newAccessToken, newRefreshToken, newExpiresAt);
