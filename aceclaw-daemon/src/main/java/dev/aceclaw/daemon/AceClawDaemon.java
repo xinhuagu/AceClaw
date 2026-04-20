@@ -847,6 +847,7 @@ public final class AceClawDaemon {
         // Expose model name, provider info, and health monitor to status endpoint
         router.setModelName(effectiveModel);
         router.setProviderInfo(config.provider(), contextWindow);
+        router.setActiveProfile(config.activeProfileName());
         router.setHealthMonitor(healthMonitor);
         router.setMcpStatusSupplier(() -> {
             var node = objectMapper.createObjectNode();
