@@ -51,10 +51,17 @@ public final class AceClawMain implements Runnable {
             // Fetch health status to get model info and context window size
             String model = "unknown";
             int contextWindowTokens = 0;
+            String profile = null;
             try {
                 JsonNode health = client.sendRequest("health.status", null);
                 model = health.path("model").asText("unknown");
                 contextWindowTokens = health.path("contextWindowTokens").asInt(0);
+                if (health.hasNonNull("profile")) {
+                    String p = health.path("profile").asText("");
+                    if (!p.isBlank()) {
+                        profile = p;
+                    }
+                }
             } catch (Exception e) {
                 // Non-fatal; banner will show "unknown" model
             }
@@ -83,7 +90,7 @@ public final class AceClawMain implements Runnable {
 
             // Enter REPL with session info
             var sessionInfo = new TerminalRepl.SessionInfo(
-                    VERSION, model, effectiveProject, contextWindowTokens, gitBranch, benchMode);
+                    VERSION, model, effectiveProject, contextWindowTokens, gitBranch, benchMode, profile);
             var repl = new TerminalRepl(client, sessionId, sessionInfo);
             repl.run();
 

@@ -314,15 +314,21 @@ public final class TerminalRepl {
      */
     public record SessionInfo(String version, String model, String project,
                               int contextWindowTokens, String gitBranch,
-                              String benchMode) {
+                              String benchMode, String profile) {
+        public SessionInfo(String version, String model, String project,
+                           int contextWindowTokens, String gitBranch,
+                           String benchMode) {
+            this(version, model, project, contextWindowTokens, gitBranch, benchMode, null);
+        }
+
         public SessionInfo(String version, String model, String project,
                            int contextWindowTokens, String gitBranch) {
-            this(version, model, project, contextWindowTokens, gitBranch, null);
+            this(version, model, project, contextWindowTokens, gitBranch, null, null);
         }
 
         public SessionInfo(String version, String model, String project,
                            int contextWindowTokens) {
-            this(version, model, project, contextWindowTokens, null, null);
+            this(version, model, project, contextWindowTokens, null, null, null);
         }
     }
 
@@ -1720,11 +1726,18 @@ public final class TerminalRepl {
         String modelLine = "  Model: " + modelDisplay;
         String projectLine = "  Project: " + projectDisplay;
         String sessionLine = "  Session: " + sessionShort;
+        String profile = sessionInfo.profile();
+        String profileLine = (profile != null && !profile.isBlank())
+                ? "  Profile: " + fitWidth(profile, innerWidth - 14)
+                : null;
 
         out.println();
         out.println(ACCENT + BOX_TOP_LEFT + hline(innerWidth) + BOX_TOP_RIGHT + RESET);
         out.println(ACCENT + BOX_VERTICAL + RESET + BOLD + padRight(titleLine, innerWidth) + ACCENT + BOX_VERTICAL + RESET);
         out.println(ACCENT + BOX_VERTICAL + RESET + MUTED + padRight(modelLine, innerWidth) + ACCENT + BOX_VERTICAL + RESET);
+        if (profileLine != null) {
+            out.println(ACCENT + BOX_VERTICAL + RESET + MUTED + padRight(profileLine, innerWidth) + ACCENT + BOX_VERTICAL + RESET);
+        }
         out.println(ACCENT + BOX_VERTICAL + RESET + MUTED + padRight(projectLine, innerWidth) + ACCENT + BOX_VERTICAL + RESET);
         out.println(ACCENT + BOX_VERTICAL + RESET + MUTED + padRight(sessionLine, innerWidth) + ACCENT + BOX_VERTICAL + RESET);
         out.println(ACCENT + BOX_BOTTOM_LEFT + hline(innerWidth) + BOX_BOTTOM_RIGHT + RESET);
@@ -3083,6 +3096,9 @@ public final class TerminalRepl {
                 out.println();
                 out.println(BOLD + "Session Status" + RESET);
                 out.printf("  %sModel:%s       %s%n", MUTED, RESET, effectiveModel);
+                if (sessionInfo.profile() != null && !sessionInfo.profile().isBlank()) {
+                    out.printf("  %sProfile:%s     %s%n", MUTED, RESET, sessionInfo.profile());
+                }
                 out.printf("  %sProject:%s     %s%n", MUTED, RESET, sessionInfo.project());
                 String statusBranch = currentGitBranch();
                 if (statusBranch != null) {

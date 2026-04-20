@@ -57,6 +57,7 @@ public final class RequestRouter {
 
     private volatile String modelName;
     private volatile String providerName;
+    private volatile String activeProfile;
     private volatile int contextWindowTokens;
     private volatile HealthMonitor healthMonitor;
     private volatile Supplier<JsonNode> mcpStatusSupplier;
@@ -96,6 +97,14 @@ public final class RequestRouter {
     public void setProviderInfo(String provider, int contextWindowTokens) {
         this.providerName = provider;
         this.contextWindowTokens = contextWindowTokens;
+    }
+
+    /**
+     * Sets the active config profile name reported by the health status endpoint.
+     * May be null when no profile is applied.
+     */
+    public void setActiveProfile(String activeProfile) {
+        this.activeProfile = activeProfile;
     }
 
     /**
@@ -406,6 +415,10 @@ public final class RequestRouter {
         var p = providerName;
         if (p != null) {
             result.put("provider", p);
+        }
+        var profile = activeProfile;
+        if (profile != null && !profile.isBlank()) {
+            result.put("profile", profile);
         }
         if (contextWindowTokens > 0) {
             result.put("contextWindowTokens", contextWindowTokens);
