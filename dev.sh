@@ -126,7 +126,7 @@ fi
 if [ -n "$PROVIDER" ]; then
     case " $VALID_PROVIDERS " in
         *" $PROVIDER "*) export ACECLAW_PROVIDER="$PROVIDER"; echo "Provider: $PROVIDER" ;;
-        *) export ACECLAW_PROFILE="$PROVIDER"; echo "Profile: $PROVIDER" ;;
+        *) export ACECLAW_PROFILE="$PROVIDER"; echo "Profile: $PROVIDER (not a built-in provider, treating as profile name)" ;;
     esac
 fi
 

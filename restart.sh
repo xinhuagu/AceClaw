@@ -63,8 +63,8 @@ fi
 # Validate and set provider or profile via env if specified
 if [ -n "$PROVIDER" ]; then
     case " $VALID_PROVIDERS " in
-        *" $PROVIDER "*) export ACECLAW_PROVIDER="$PROVIDER" ;;
-        *) export ACECLAW_PROFILE="$PROVIDER" ;;
+        *" $PROVIDER "*) export ACECLAW_PROVIDER="$PROVIDER"; echo ">> Provider: $PROVIDER" ;;
+        *) export ACECLAW_PROFILE="$PROVIDER"; echo ">> Profile: $PROVIDER" ;;
     esac
 fi
 

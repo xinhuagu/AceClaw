@@ -3,7 +3,7 @@
   "profiles": {
     "claude": {
       "provider": "anthropic",
-      "model": "claude-opus-4-6",
+      "model": "claude-sonnet-4-6",
       "maxTokens": 16384,
       "thinkingBudget": 10240,
       "contextWindowTokens": 1000000,
@@ -23,7 +23,7 @@
     },
     "copilot-sonnet": {
       "provider": "copilot",
-      "model": "claude-sonnet-4.5",
+      "model": "claude-sonnet-4.6",
       "maxTokens": 16384,
       "thinkingBudget": 0,
       "contextWindowTokens": 200000
