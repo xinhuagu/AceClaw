@@ -218,9 +218,13 @@ public final class AceClawDaemon {
         String model = config.resolvedModel();
         LlmClient rawLlmClient;
         if ("anthropic".equals(config.provider())) {
+            // Only allow Keychain fallback when the credentials actually came
+            // from Claude CLI's shared store. Profile-supplied apiKeys stay
+            // isolated from that store to prevent cross-account contamination.
             rawLlmClient = LlmClientFactory.createAnthropicClient(
                     apiKey, config.refreshToken(), config.baseUrl(),
-                    config.context1m(), config.extraAnthropicBetas());
+                    config.context1m(), config.extraAnthropicBetas(),
+                    config.credentialsFromKeychain());
             // Tell the client which model is configured so capabilities() can detect 4.6 → 1M
             if (rawLlmClient instanceof dev.aceclaw.llm.anthropic.AnthropicClient ac) {
                 ac.setConfiguredModel(model);

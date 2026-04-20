@@ -145,6 +145,13 @@ public final class AceClawConfig {
     private String heartbeatActiveHours;
     private String defaultProfile;
     private Map<String, ConfigFileFormat> profiles;
+    /**
+     * Whether credentials (apiKey/refreshToken) were loaded from Claude CLI's
+     * shared store (Keychain or ~/.claude/.credentials) rather than an explicit
+     * profile/env value. When false, the Anthropic client must stay isolated
+     * from that store: no read on 401, no write-back on refresh.
+     */
+    private boolean credentialsFromKeychain;
     private Map<String, String> providerModels;
     private boolean plannerEnabled;
     private int plannerThreshold;
@@ -192,6 +199,16 @@ public final class AceClawConfig {
     private long retryInitialBackoffMs;
     private long retryMaxBackoffMs;
     private double retryJitterFactor;
+
+    /**
+     * Returns a default-valued config without touching {@code ~/.aceclaw/config.json}
+     * or the environment. Package-private for unit tests that need a truly
+     * blank starting point (the public {@link #load} would pick up whatever
+     * apiKey the developer's machine has configured).
+     */
+    static AceClawConfig blankForTesting() {
+        return new AceClawConfig();
+    }
 
     private AceClawConfig() {
         this.provider = "anthropic";
@@ -640,10 +657,19 @@ public final class AceClawConfig {
         }
 
         // 6. For Anthropic provider: try Keychain/credential file discovery
-        //    if no API key is set, or if we have an OAuth token but no refresh token.
-        if ("anthropic".equals(config.provider)) {
+        //    ONLY when the profile/env did not supply an apiKey. An explicit
+        //    apiKey (OAuth or standard) pins the profile to its own account —
+        //    we must never silently replace it with Claude CLI's stored token,
+        //    which would cross accounts (e.g., company profile using personal
+        //    Max credentials) and write the refreshed token back into the
+        //    shared Keychain, corrupting the other account's Claude CLI login.
+        if ("anthropic".equals(config.provider)
+                && (config.apiKey == null || config.apiKey.isBlank())) {
             config.loadClaudeCliCredentialsWithKeychain();
-        } else if (config.apiKey != null && config.apiKey.startsWith("sk-ant-oat")
+            config.credentialsFromKeychain =
+                    config.apiKey != null && !config.apiKey.isBlank();
+        } else if (!"anthropic".equals(config.provider)
+                && config.apiKey != null && config.apiKey.startsWith("sk-ant-oat")
                 && config.refreshToken == null) {
             // Non-Anthropic provider with OAuth token still needs refresh token
             config.loadClaudeCliCredentials();
@@ -767,6 +793,16 @@ public final class AceClawConfig {
      */
     public String refreshToken() {
         return refreshToken;
+    }
+
+    /**
+     * Returns true when the current apiKey/refreshToken were loaded from Claude
+     * CLI's shared store (Keychain or ~/.claude/.credentials). False when the
+     * credentials came from an explicit profile / env var, in which case the
+     * Anthropic client must remain isolated from that shared store.
+     */
+    public boolean credentialsFromKeychain() {
+        return credentialsFromKeychain;
     }
 
     /**
@@ -1221,24 +1257,26 @@ public final class AceClawConfig {
     }
 
     /**
-     * Applies a Keychain credential to this config, setting apiKey and refreshToken as appropriate.
-     * For OAuth tokens: always prefer Keychain's fresher token over config.json's stale one.
-     * Always sets the access token even if expired, relying on AnthropicClient's proactive refresh.
+     * Applies a Keychain credential to this config — only when the profile/env
+     * did not already supply an apiKey. An explicit apiKey (OAuth or standard)
+     * is treated as an authoritative pin to that account and is never
+     * overwritten from Claude CLI's shared store.
      *
      * <p>Package-private for testing.
      */
     void applyKeychainCredential(dev.aceclaw.llm.anthropic.KeychainCredentialReader.Credential cred) {
-        boolean configHasOAuth = this.apiKey != null && this.apiKey.startsWith("sk-ant-oat");
-        if (this.apiKey == null || this.apiKey.isBlank() || configHasOAuth) {
-            // Always set the access token so AnthropicClient can be constructed.
-            // If expired, the client's refreshProactivelyIfNeeded() will refresh it
-            // before the first API call using the refresh token loaded below.
-            this.apiKey = cred.accessToken();
-            if (!cred.isExpired()) {
-                log.info("Loaded OAuth access token from Claude CLI credentials (Keychain)");
-            } else {
-                log.info("Loaded expired OAuth access token from Keychain, will refresh before first request");
-            }
+        if (this.apiKey != null && !this.apiKey.isBlank()) {
+            // Profile supplied its own apiKey — do not cross-contaminate from
+            // Claude CLI's shared credential store. The refresh token also stays
+            // as supplied by the profile (possibly null, in which case expired
+            // OAuth tokens simply cannot be refreshed).
+            return;
+        }
+        this.apiKey = cred.accessToken();
+        if (!cred.isExpired()) {
+            log.info("Loaded OAuth access token from Claude CLI credentials (Keychain)");
+        } else {
+            log.info("Loaded expired OAuth access token from Keychain, will refresh before first request");
         }
         if (cred.refreshToken() != null) {
             this.refreshToken = cred.refreshToken();

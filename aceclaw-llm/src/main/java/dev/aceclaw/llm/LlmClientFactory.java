@@ -209,9 +209,21 @@ public final class LlmClientFactory {
      */
     public static LlmClient createAnthropicClient(String apiKey, String refreshToken, String baseUrl,
                                                     boolean context1m, java.util.List<String> extraBetas) {
+        return createAnthropicClient(apiKey, refreshToken, baseUrl, context1m, extraBetas, true);
+    }
+
+    /**
+     * @param allowKeychainFallback when false, the Anthropic client will not
+     *     read from or write to Claude CLI's shared credential store. Use
+     *     false for any profile that supplied its own apiKey so it cannot
+     *     cross-contaminate another account's Claude CLI login.
+     */
+    public static LlmClient createAnthropicClient(String apiKey, String refreshToken, String baseUrl,
+                                                    boolean context1m, java.util.List<String> extraBetas,
+                                                    boolean allowKeychainFallback) {
         String resolvedBaseUrl = baseUrl != null ? baseUrl : "https://api.anthropic.com";
         return new AnthropicClient(apiKey, refreshToken, resolvedBaseUrl,
-                java.time.Duration.ofSeconds(120), context1m, extraBetas);
+                java.time.Duration.ofSeconds(120), context1m, extraBetas, allowKeychainFallback);
     }
 
     private static LlmClient createAnthropicClient(String apiKey, String refreshToken, String baseUrl) {
