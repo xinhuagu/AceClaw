@@ -40,6 +40,7 @@ distributions {
             from(rootProject.file("tui.sh")) { into("") }
             from(rootProject.file("restart.sh")) { into("") }
             from(rootProject.file("update.sh")) { into("") }
+            from(rootProject.file("config.default.json")) { into("") }
             from(provider {
                 val versionFile = layout.buildDirectory.file("VERSION").get().asFile
                 versionFile.parentFile.mkdirs()
