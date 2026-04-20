@@ -169,6 +169,12 @@ download_release() {
     chmod +x "$INSTALL_DIR/bin/"* 2>/dev/null || true
     chmod +x "$INSTALL_DIR/"*.sh 2>/dev/null || true
 
+    # Seed default config on first install (never overwrite existing config)
+    if [ ! -f "$INSTALL_DIR/config.json" ] && [ -f "$INSTALL_DIR/config.default.json" ]; then
+        cp "$INSTALL_DIR/config.default.json" "$INSTALL_DIR/config.json"
+        ok "Created default config at $INSTALL_DIR/config.json"
+    fi
+
     ok "Extracted to $INSTALL_DIR"
 }
 
