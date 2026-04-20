@@ -211,8 +211,9 @@ CMDEOF
     cat > "$BIN_DIR/aceclaw-restart.cmd" <<'CMDEOF'
 @echo off
 set ACECLAW_BENCH_MODE=none
+if not "%~1"=="" set "ACECLAW_PROFILE=%~1"
 call "%USERPROFILE%\.aceclaw\bin\aceclaw-cli.bat" daemon stop 2>nul
-call "%USERPROFILE%\.aceclaw\bin\aceclaw-cli.bat" %*
+call "%USERPROFILE%\.aceclaw\bin\aceclaw-cli.bat"
 CMDEOF
 
     cat > "$BIN_DIR/aceclaw-update.cmd" <<'CMDEOF'
