@@ -392,9 +392,59 @@ class AnthropicClientTokenRefreshTest {
 
     // -- Helper --
 
+    // -- Isolation: allowKeychainFallback=false --
+
+    @Test
+    void isolatedClient_recoverCredentials_doesNotReadSupplier_returnsNoRecovery() {
+        // A profile-supplied credential must never pick up fresher tokens from
+        // the Claude CLI shared store, even if the supplier has them — that is
+        // exactly the cross-account leak the isolation flag prevents.
+        var crossAccountCred = new KeychainCredentialReader.Credential(
+                "sk-ant-oat01-other-account", "sk-ant-ort01-other-account",
+                System.currentTimeMillis() + 3600_000L);
+        var supplierCalled = new AtomicInteger(0);
+
+        var client = createIsolatedClient(OAUTH_TOKEN, REFRESH_TOKEN, () -> {
+            supplierCalled.incrementAndGet();
+            return crossAccountCred;
+        });
+
+        var result = client.recoverCredentials();
+
+        // No foreign credentials were picked up, so only the profile's own
+        // refresh token (still loaded) is available for the OAuth HTTP refresh.
+        assertThat(result).isEqualTo(AnthropicClient.CredentialRecovery.REFRESH_AVAILABLE);
+        assertThat(client.accessTokenForTest()).isEqualTo(OAUTH_TOKEN);
+        assertThat(client.refreshTokenForTest()).isEqualTo(REFRESH_TOKEN);
+        // The isolation shield replaces the real supplier with () -> null, so
+        // the caller's supplier must never be invoked.
+        assertThat(supplierCalled.get()).isZero();
+    }
+
+    @Test
+    void isolatedClient_noRefreshToken_recoverCredentials_returnsNoRecovery() {
+        var client = createIsolatedClient(OAUTH_TOKEN, null, () -> {
+            throw new AssertionError("supplier must not be invoked when isolated");
+        });
+
+        var result = client.recoverCredentials();
+
+        assertThat(result).isEqualTo(AnthropicClient.CredentialRecovery.NO_RECOVERY);
+        assertThat(client.accessTokenForTest()).isEqualTo(OAUTH_TOKEN);
+    }
+
     private static AnthropicClient createClient(
             String accessToken, String refreshToken,
             java.util.function.Supplier<KeychainCredentialReader.Credential> credSupplier) {
         return new AnthropicClient(accessToken, refreshToken, BASE_URL, TIMEOUT, false, null, credSupplier);
+    }
+
+    /** Builds a client with {@code allowKeychainFallback=false} so tests can
+     *  verify that the Claude CLI shared store is neither read nor written. */
+    private static AnthropicClient createIsolatedClient(
+            String accessToken, String refreshToken,
+            java.util.function.Supplier<KeychainCredentialReader.Credential> credSupplier) {
+        return new AnthropicClient(accessToken, refreshToken, BASE_URL, TIMEOUT, false, null,
+                credSupplier, false);
     }
 }

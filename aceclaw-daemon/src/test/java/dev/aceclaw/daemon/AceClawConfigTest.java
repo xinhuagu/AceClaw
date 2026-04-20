@@ -1,7 +1,12 @@
 package dev.aceclaw.daemon;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.llm.anthropic.KeychainCredentialReader;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -24,11 +29,11 @@ class AceClawConfigTest {
     // -- applyKeychainCredential tests --
 
     /**
-     * Creates a config with a dummy provider so that load() does NOT trigger
-     * real Keychain credential discovery. We test applyKeychainCredential() in isolation.
+     * Returns a truly blank config — bypasses {@code ~/.aceclaw/config.json}
+     * and env vars so the developer's machine state can't leak into assertions.
      */
     private static AceClawConfig blankConfig() {
-        return AceClawConfig.load(null, "test-dummy");
+        return AceClawConfig.blankForTesting();
     }
 
     private static KeychainCredentialReader.Credential freshCredential(
@@ -84,31 +89,73 @@ class AceClawConfigTest {
         var config = blankConfig();
         // Simulate config.json already having a regular API key
         config.applyKeychainCredential(freshCredential("sk-ant-api03-existing", null));
-        // Now the config has a non-OAuth key set; clear refresh token to isolate
         String existingKey = config.apiKey();
 
-        // Apply a Keychain credential — should NOT overwrite a non-OAuth key
+        // Apply a Keychain credential — any profile-supplied apiKey pins the
+        // account, so neither the key nor the refresh token should be replaced
+        // from Claude CLI's shared store.
         var keychainCred = freshCredential("sk-ant-oat01-keychain", "sk-ant-ort01-refresh");
         config.applyKeychainCredential(keychainCred);
 
-        // The non-OAuth key doesn't start with "sk-ant-oat", and is not null/blank,
-        // so the condition (apiKey == null || isBlank || configHasOAuth) is false.
         assertThat(config.apiKey()).isEqualTo(existingKey);
-        // But refresh token is still loaded
-        assertThat(config.refreshToken()).isEqualTo("sk-ant-ort01-refresh");
+        assertThat(config.refreshToken()).isNull();
+    }
+
+    // -- persistProfileCredentials --
+
+    @Test
+    void persistProfileCredentials_updatesApiKeyAndRefreshToken(@TempDir Path tmp) throws Exception {
+        Path configFile = tmp.resolve("config.json");
+        Files.writeString(configFile, """
+                {"profiles":{"my-profile":{"apiKey":"old-key","refreshToken":"old-rt","model":"claude-sonnet"}}}
+                """);
+
+        AceClawConfig.persistProfileCredentials("my-profile", "new-access", "new-rt", configFile);
+
+        var mapper = new ObjectMapper();
+        var root = mapper.readTree(configFile.toFile());
+        assertThat(root.path("profiles").path("my-profile").path("apiKey").asText()).isEqualTo("new-access");
+        assertThat(root.path("profiles").path("my-profile").path("refreshToken").asText()).isEqualTo("new-rt");
+        assertThat(root.path("profiles").path("my-profile").path("model").asText())
+                .isEqualTo("claude-sonnet"); // other fields preserved
     }
 
     @Test
-    void applyKeychainCredential_configHasStaleOAuthToken_overwritesWithKeychain() {
+    void persistProfileCredentials_profileNotFound_noOp(@TempDir Path tmp) throws Exception {
+        Path configFile = tmp.resolve("config.json");
+        String original = """
+                {"profiles":{"other":{"apiKey":"untouched"}}}
+                """;
+        Files.writeString(configFile, original);
+
+        AceClawConfig.persistProfileCredentials("missing-profile", "new-key", "new-rt", configFile);
+
+        // File should be unchanged
+        var mapper = new ObjectMapper();
+        var root = mapper.readTree(configFile.toFile());
+        assertThat(root.path("profiles").path("other").path("apiKey").asText()).isEqualTo("untouched");
+    }
+
+    @Test
+    void persistProfileCredentials_fileNotFound_noOp(@TempDir Path tmp) {
+        Path configFile = tmp.resolve("nonexistent.json");
+        // Should not throw even when the file does not exist
+        AceClawConfig.persistProfileCredentials("my-profile", "new-key", "new-rt", configFile);
+    }
+
+    @Test
+    void applyKeychainCredential_configHasOAuthToken_doesNotOverwrite() {
+        // Regression guard: a profile-supplied OAuth token (even an expired one)
+        // must pin the account. Previously applyKeychainCredential overwrote
+        // OAuth tokens from Keychain, so a company profile would silently start
+        // using the personal Claude CLI login after the first Keychain read.
         var config = blankConfig();
-        // Simulate config.json having a stale OAuth token
-        config.applyKeychainCredential(expiredCredential("sk-ant-oat01-stale-from-config", null));
+        config.applyKeychainCredential(expiredCredential("sk-ant-oat01-from-profile", "sk-ant-ort01-from-profile"));
 
-        // Now apply a fresh Keychain credential — should overwrite the stale OAuth token
-        var freshCred = freshCredential("sk-ant-oat01-fresh-keychain", "sk-ant-ort01-refresh");
-        config.applyKeychainCredential(freshCred);
+        var keychainCred = freshCredential("sk-ant-oat01-personal-claude-cli", "sk-ant-ort01-personal");
+        config.applyKeychainCredential(keychainCred);
 
-        assertThat(config.apiKey()).isEqualTo("sk-ant-oat01-fresh-keychain");
-        assertThat(config.refreshToken()).isEqualTo("sk-ant-ort01-refresh");
+        assertThat(config.apiKey()).isEqualTo("sk-ant-oat01-from-profile");
+        assertThat(config.refreshToken()).isEqualTo("sk-ant-ort01-from-profile");
     }
 }

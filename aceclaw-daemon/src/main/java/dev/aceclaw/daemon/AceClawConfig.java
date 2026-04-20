@@ -145,6 +145,15 @@ public final class AceClawConfig {
     private String heartbeatActiveHours;
     private String defaultProfile;
     private Map<String, ConfigFileFormat> profiles;
+    /**
+     * Whether credentials (apiKey/refreshToken) were loaded from Claude CLI's
+     * shared store (Keychain or ~/.claude/.credentials) rather than an explicit
+     * profile/env value. When false, the Anthropic client must stay isolated
+     * from that store: no read on 401, no write-back on refresh.
+     */
+    private boolean credentialsFromKeychain;
+    /** Name of the profile applied during {@link #load}, or null if no profile was used. */
+    private String activeProfileName;
     private Map<String, String> providerModels;
     private boolean plannerEnabled;
     private int plannerThreshold;
@@ -192,6 +201,16 @@ public final class AceClawConfig {
     private long retryInitialBackoffMs;
     private long retryMaxBackoffMs;
     private double retryJitterFactor;
+
+    /**
+     * Returns a default-valued config without touching {@code ~/.aceclaw/config.json}
+     * or the environment. Package-private for unit tests that need a truly
+     * blank starting point (the public {@link #load} would pick up whatever
+     * apiKey the developer's machine has configured).
+     */
+    static AceClawConfig blankForTesting() {
+        return new AceClawConfig();
+    }
 
     private AceClawConfig() {
         this.provider = "anthropic";
@@ -640,10 +659,19 @@ public final class AceClawConfig {
         }
 
         // 6. For Anthropic provider: try Keychain/credential file discovery
-        //    if no API key is set, or if we have an OAuth token but no refresh token.
-        if ("anthropic".equals(config.provider)) {
+        //    ONLY when the profile/env did not supply an apiKey. An explicit
+        //    apiKey (OAuth or standard) pins the profile to its own account —
+        //    we must never silently replace it with Claude CLI's stored token,
+        //    which would cross accounts (e.g., company profile using personal
+        //    Max credentials) and write the refreshed token back into the
+        //    shared Keychain, corrupting the other account's Claude CLI login.
+        if ("anthropic".equals(config.provider)
+                && (config.apiKey == null || config.apiKey.isBlank())) {
             config.loadClaudeCliCredentialsWithKeychain();
-        } else if (config.apiKey != null && config.apiKey.startsWith("sk-ant-oat")
+            config.credentialsFromKeychain =
+                    config.apiKey != null && !config.apiKey.isBlank();
+        } else if (!"anthropic".equals(config.provider)
+                && config.apiKey != null && config.apiKey.startsWith("sk-ant-oat")
                 && config.refreshToken == null) {
             // Non-Anthropic provider with OAuth token still needs refresh token
             config.loadClaudeCliCredentials();
@@ -767,6 +795,72 @@ public final class AceClawConfig {
      */
     public String refreshToken() {
         return refreshToken;
+    }
+
+    /**
+     * Returns true when the current apiKey/refreshToken were loaded from Claude
+     * CLI's shared store (Keychain or ~/.claude/.credentials). False when the
+     * credentials came from an explicit profile / env var, in which case the
+     * Anthropic client must remain isolated from that shared store.
+     */
+    public boolean credentialsFromKeychain() {
+        return credentialsFromKeychain;
+    }
+
+    /** Returns the profile name applied during load, or null if no profile was active. */
+    public String activeProfileName() {
+        return activeProfileName;
+    }
+
+    /**
+     * Atomically updates a profile's {@code apiKey} and {@code refreshToken} in the
+     * global config file ({@code ~/.aceclaw/config.json}).  Called after a successful
+     * isolated OAuth refresh so the rotated tokens survive a daemon restart.
+     *
+     * <p>No-op (with a warning) if the profile does not exist in the file.
+     */
+    public static void persistProfileCredentials(String profileName,
+                                                  String newAccessToken,
+                                                  String newRefreshToken) {
+        persistProfileCredentials(profileName, newAccessToken, newRefreshToken,
+                GLOBAL_CONFIG_DIR.resolve(CONFIG_FILE_NAME));
+    }
+
+    /** Package-private overload that accepts an explicit config file path for testing. */
+    static void persistProfileCredentials(String profileName,
+                                          String newAccessToken,
+                                          String newRefreshToken,
+                                          Path configFile) {
+        if (profileName == null || profileName.isBlank()) return;
+        try {
+            var mapper = new ObjectMapper();
+            ObjectNode root;
+            if (Files.isRegularFile(configFile)) {
+                var tree = mapper.readTree(configFile.toFile());
+                root = tree instanceof ObjectNode on ? on : mapper.createObjectNode();
+            } else {
+                log.warn("persistProfileCredentials: config file not found at {}", configFile);
+                return;
+            }
+            var profilesNode = root.path("profiles");
+            if (!profilesNode.isObject() || !profilesNode.has(profileName)) {
+                log.warn("persistProfileCredentials: profile '{}' not found in {}", profileName, configFile);
+                return;
+            }
+            var profileNode = (ObjectNode) profilesNode.get(profileName);
+            profileNode.put("apiKey", newAccessToken);
+            if (newRefreshToken != null) {
+                profileNode.put("refreshToken", newRefreshToken);
+            }
+            Path tmp = configFile.resolveSibling(configFile.getFileName() + ".tmp");
+            Files.writeString(tmp,
+                    mapper.writerWithDefaultPrettyPrinter().writeValueAsString(root) + "\n",
+                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            Files.move(tmp, configFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            log.info("Persisted refreshed credentials for profile '{}' to {}", profileName, configFile);
+        } catch (Exception e) {
+            log.warn("Failed to persist credentials for profile '{}': {}", profileName, e.getMessage());
+        }
     }
 
     /**
@@ -1180,6 +1274,7 @@ public final class AceClawConfig {
         }
         log.info("Applying config profile: {}", profileName);
         mergeFromFormat(profile);
+        this.activeProfileName = profileName;
     }
 
     /**
@@ -1221,24 +1316,26 @@ public final class AceClawConfig {
     }
 
     /**
-     * Applies a Keychain credential to this config, setting apiKey and refreshToken as appropriate.
-     * For OAuth tokens: always prefer Keychain's fresher token over config.json's stale one.
-     * Always sets the access token even if expired, relying on AnthropicClient's proactive refresh.
+     * Applies a Keychain credential to this config — only when the profile/env
+     * did not already supply an apiKey. An explicit apiKey (OAuth or standard)
+     * is treated as an authoritative pin to that account and is never
+     * overwritten from Claude CLI's shared store.
      *
      * <p>Package-private for testing.
      */
     void applyKeychainCredential(dev.aceclaw.llm.anthropic.KeychainCredentialReader.Credential cred) {
-        boolean configHasOAuth = this.apiKey != null && this.apiKey.startsWith("sk-ant-oat");
-        if (this.apiKey == null || this.apiKey.isBlank() || configHasOAuth) {
-            // Always set the access token so AnthropicClient can be constructed.
-            // If expired, the client's refreshProactivelyIfNeeded() will refresh it
-            // before the first API call using the refresh token loaded below.
-            this.apiKey = cred.accessToken();
-            if (!cred.isExpired()) {
-                log.info("Loaded OAuth access token from Claude CLI credentials (Keychain)");
-            } else {
-                log.info("Loaded expired OAuth access token from Keychain, will refresh before first request");
-            }
+        if (this.apiKey != null && !this.apiKey.isBlank()) {
+            // Profile supplied its own apiKey — do not cross-contaminate from
+            // Claude CLI's shared credential store. The refresh token also stays
+            // as supplied by the profile (possibly null, in which case expired
+            // OAuth tokens simply cannot be refreshed).
+            return;
+        }
+        this.apiKey = cred.accessToken();
+        if (!cred.isExpired()) {
+            log.info("Loaded OAuth access token from Claude CLI credentials (Keychain)");
+        } else {
+            log.info("Loaded expired OAuth access token from Keychain, will refresh before first request");
         }
         if (cred.refreshToken() != null) {
             this.refreshToken = cred.refreshToken();
