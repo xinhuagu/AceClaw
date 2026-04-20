@@ -1,0 +1,39 @@
+{
+  "defaultProfile": "claude",
+  "profiles": {
+    "claude": {
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "maxTokens": 16384,
+      "thinkingBudget": 10240,
+      "contextWindowTokens": 1000000,
+      "retry": {
+        "maxRetries": 8,
+        "initialBackoffMs": 500,
+        "maxBackoffMs": 30000,
+        "jitterFactor": 0.25
+      }
+    },
+    "copilot": {
+      "provider": "copilot",
+      "model": "gpt-4.1",
+      "maxTokens": 16384,
+      "thinkingBudget": 0,
+      "contextWindowTokens": 1000000
+    },
+    "copilot-sonnet": {
+      "provider": "copilot",
+      "model": "claude-sonnet-4.6",
+      "maxTokens": 16384,
+      "thinkingBudget": 0,
+      "contextWindowTokens": 200000
+    },
+    "copilot-haiku": {
+      "provider": "copilot",
+      "model": "claude-haiku-4.5",
+      "maxTokens": 16384,
+      "thinkingBudget": 0,
+      "contextWindowTokens": 128000
+    }
+  }
+}

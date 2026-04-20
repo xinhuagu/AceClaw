@@ -60,13 +60,12 @@ if [ -f ~/.aceclaw/aceclaw.pid ]; then
     sleep 0.3
 fi
 
-# Validate and set provider via env if specified
+# Validate and set provider or profile via env if specified
 if [ -n "$PROVIDER" ]; then
     case " $VALID_PROVIDERS " in
-        *" $PROVIDER "*) ;;
-        *) echo "Invalid provider: $PROVIDER"; echo "Valid: $VALID_PROVIDERS"; exit 1 ;;
+        *" $PROVIDER "*) export ACECLAW_PROVIDER="$PROVIDER"; echo ">> Provider: $PROVIDER" ;;
+        *) export ACECLAW_PROFILE="$PROVIDER"; echo ">> Profile: $PROVIDER" ;;
     esac
-    export ACECLAW_PROVIDER="$PROVIDER"
 fi
 
 # No benchmarks

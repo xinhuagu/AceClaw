@@ -169,6 +169,12 @@ download_release() {
     chmod +x "$INSTALL_DIR/bin/"* 2>/dev/null || true
     chmod +x "$INSTALL_DIR/"*.sh 2>/dev/null || true
 
+    # Seed default config on first install (never overwrite existing config)
+    if [ ! -f "$INSTALL_DIR/config.json" ] && [ -f "$INSTALL_DIR/config.default.json" ]; then
+        cp "$INSTALL_DIR/config.default.json" "$INSTALL_DIR/config.json"
+        ok "Created default config at $INSTALL_DIR/config.json"
+    fi
+
     ok "Extracted to $INSTALL_DIR"
 }
 
@@ -211,8 +217,9 @@ CMDEOF
     cat > "$BIN_DIR/aceclaw-restart.cmd" <<'CMDEOF'
 @echo off
 set ACECLAW_BENCH_MODE=none
+if not "%~1"=="" set "ACECLAW_PROFILE=%~1"
 call "%USERPROFILE%\.aceclaw\bin\aceclaw-cli.bat" daemon stop 2>nul
-call "%USERPROFILE%\.aceclaw\bin\aceclaw-cli.bat" %*
+call "%USERPROFILE%\.aceclaw\bin\aceclaw-cli.bat"
 CMDEOF
 
     cat > "$BIN_DIR/aceclaw-update.cmd" <<'CMDEOF'
@@ -278,8 +285,27 @@ main() {
     echo "  Commands available:"
     echo "    aceclaw          Start AceClaw (auto-starts daemon)"
     echo "    aceclaw-tui      Open another TUI window (non-destructive)"
-    echo "    aceclaw-restart  Restart daemon (rebuilds in dev mode)"
+    echo "    aceclaw-restart  Restart daemon"
     echo "    aceclaw-update   Update to latest release"
+    echo ""
+    echo "  Getting started:"
+    echo ""
+    echo "    Option A — Claude CLI (recommended):"
+    echo "      claude /login        # log in once; AceClaw auto-discovers credentials"
+    echo "      aceclaw"
+    echo ""
+    echo "    Option B — API key:"
+    echo "      Add to ~/.aceclaw/config.json under the \"claude\" profile:"
+    echo "        \"apiKey\": \"sk-ant-api03-...\""
+    echo "      aceclaw"
+    echo ""
+    echo "    Option C — GitHub Copilot:"
+    echo "      aceclaw-restart copilot"
+    echo ""
+    echo "  Switch accounts anytime:"
+    echo "    aceclaw-restart claude          # personal Claude (default)"
+    echo "    aceclaw-restart copilot         # GitHub Copilot"
+    echo "    aceclaw-restart copilot-sonnet  # Copilot + Claude Sonnet"
     echo ""
 }
 
