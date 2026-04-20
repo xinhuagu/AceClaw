@@ -152,6 +152,8 @@ public final class AceClawConfig {
      * from that store: no read on 401, no write-back on refresh.
      */
     private boolean credentialsFromKeychain;
+    /** Name of the profile applied during {@link #load}, or null if no profile was used. */
+    private String activeProfileName;
     private Map<String, String> providerModels;
     private boolean plannerEnabled;
     private int plannerThreshold;
@@ -805,6 +807,62 @@ public final class AceClawConfig {
         return credentialsFromKeychain;
     }
 
+    /** Returns the profile name applied during load, or null if no profile was active. */
+    public String activeProfileName() {
+        return activeProfileName;
+    }
+
+    /**
+     * Atomically updates a profile's {@code apiKey} and {@code refreshToken} in the
+     * global config file ({@code ~/.aceclaw/config.json}).  Called after a successful
+     * isolated OAuth refresh so the rotated tokens survive a daemon restart.
+     *
+     * <p>No-op (with a warning) if the profile does not exist in the file.
+     */
+    public static void persistProfileCredentials(String profileName,
+                                                  String newAccessToken,
+                                                  String newRefreshToken) {
+        persistProfileCredentials(profileName, newAccessToken, newRefreshToken,
+                GLOBAL_CONFIG_DIR.resolve(CONFIG_FILE_NAME));
+    }
+
+    /** Package-private overload that accepts an explicit config file path for testing. */
+    static void persistProfileCredentials(String profileName,
+                                          String newAccessToken,
+                                          String newRefreshToken,
+                                          Path configFile) {
+        if (profileName == null || profileName.isBlank()) return;
+        try {
+            var mapper = new ObjectMapper();
+            ObjectNode root;
+            if (Files.isRegularFile(configFile)) {
+                var tree = mapper.readTree(configFile.toFile());
+                root = tree instanceof ObjectNode on ? on : mapper.createObjectNode();
+            } else {
+                log.warn("persistProfileCredentials: config file not found at {}", configFile);
+                return;
+            }
+            var profilesNode = root.path("profiles");
+            if (!profilesNode.isObject() || !profilesNode.has(profileName)) {
+                log.warn("persistProfileCredentials: profile '{}' not found in {}", profileName, configFile);
+                return;
+            }
+            var profileNode = (ObjectNode) profilesNode.get(profileName);
+            profileNode.put("apiKey", newAccessToken);
+            if (newRefreshToken != null) {
+                profileNode.put("refreshToken", newRefreshToken);
+            }
+            Path tmp = configFile.resolveSibling(configFile.getFileName() + ".tmp");
+            Files.writeString(tmp,
+                    mapper.writerWithDefaultPrettyPrinter().writeValueAsString(root) + "\n",
+                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            Files.move(tmp, configFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            log.info("Persisted refreshed credentials for profile '{}' to {}", profileName, configFile);
+        } catch (Exception e) {
+            log.warn("Failed to persist credentials for profile '{}': {}", profileName, e.getMessage());
+        }
+    }
+
     /**
      * Returns the Brave Search API key, or null if not configured.
      */
@@ -1216,6 +1274,7 @@ public final class AceClawConfig {
         }
         log.info("Applying config profile: {}", profileName);
         mergeFromFormat(profile);
+        this.activeProfileName = profileName;
     }
 
     /**

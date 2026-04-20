@@ -1,7 +1,12 @@
 package dev.aceclaw.daemon;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.llm.anthropic.KeychainCredentialReader;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -94,6 +99,48 @@ class AceClawConfigTest {
 
         assertThat(config.apiKey()).isEqualTo(existingKey);
         assertThat(config.refreshToken()).isNull();
+    }
+
+    // -- persistProfileCredentials --
+
+    @Test
+    void persistProfileCredentials_updatesApiKeyAndRefreshToken(@TempDir Path tmp) throws Exception {
+        Path configFile = tmp.resolve("config.json");
+        Files.writeString(configFile, """
+                {"profiles":{"my-profile":{"apiKey":"old-key","refreshToken":"old-rt","model":"claude-sonnet"}}}
+                """);
+
+        AceClawConfig.persistProfileCredentials("my-profile", "new-access", "new-rt", configFile);
+
+        var mapper = new ObjectMapper();
+        var root = mapper.readTree(configFile.toFile());
+        assertThat(root.path("profiles").path("my-profile").path("apiKey").asText()).isEqualTo("new-access");
+        assertThat(root.path("profiles").path("my-profile").path("refreshToken").asText()).isEqualTo("new-rt");
+        assertThat(root.path("profiles").path("my-profile").path("model").asText())
+                .isEqualTo("claude-sonnet"); // other fields preserved
+    }
+
+    @Test
+    void persistProfileCredentials_profileNotFound_noOp(@TempDir Path tmp) throws Exception {
+        Path configFile = tmp.resolve("config.json");
+        String original = """
+                {"profiles":{"other":{"apiKey":"untouched"}}}
+                """;
+        Files.writeString(configFile, original);
+
+        AceClawConfig.persistProfileCredentials("missing-profile", "new-key", "new-rt", configFile);
+
+        // File should be unchanged
+        var mapper = new ObjectMapper();
+        var root = mapper.readTree(configFile.toFile());
+        assertThat(root.path("profiles").path("other").path("apiKey").asText()).isEqualTo("untouched");
+    }
+
+    @Test
+    void persistProfileCredentials_fileNotFound_noOp(@TempDir Path tmp) {
+        Path configFile = tmp.resolve("nonexistent.json");
+        // Should not throw even when the file does not exist
+        AceClawConfig.persistProfileCredentials("my-profile", "new-key", "new-rt", configFile);
     }
 
     @Test

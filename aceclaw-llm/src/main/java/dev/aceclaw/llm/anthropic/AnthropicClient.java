@@ -81,6 +81,16 @@ public final class AnthropicClient implements LlmClient {
     private final java.util.function.Supplier<KeychainCredentialReader.Credential> credentialSupplier;
 
     /**
+     * Called after a successful OAuth token refresh when the client is isolated
+     * (allowKeychainFallback=false). Carries the new access token, refresh token,
+     * and expiry so the caller can persist them to the profile's config file.
+     */
+    public record TokenUpdate(String accessToken, String refreshToken, long expiresAt) {}
+
+    /** Callback invoked after a successful isolated OAuth refresh. */
+    private volatile java.util.function.Consumer<TokenUpdate> tokenPersistCallback;
+
+    /**
      * When false, the client is isolated from Claude CLI's shared credential
      * store: 401 recovery does not read Keychain/credentials.json, and
      * successful OAuth refresh does not write the new token back to it.
@@ -694,6 +704,11 @@ public final class AnthropicClient implements LlmClient {
         this.configuredModel = model;
     }
 
+    /** Registers a callback invoked after a successful OAuth refresh in isolated mode. */
+    public void setTokenPersistCallback(java.util.function.Consumer<TokenUpdate> callback) {
+        this.tokenPersistCallback = callback;
+    }
+
     /** Package-private: current access token for testing. */
     String accessTokenForTest() { return accessToken; }
 
@@ -716,7 +731,12 @@ public final class AnthropicClient implements LlmClient {
      */
     private void writeBackCredentials(String newAccessToken, String newRefreshToken, long newExpiresAt) {
         if (!allowKeychainFallback) {
-            log.debug("Skipping credential write-back: client is isolated from Claude CLI store");
+            var cb = tokenPersistCallback;
+            if (cb != null) {
+                cb.accept(new TokenUpdate(newAccessToken, newRefreshToken, newExpiresAt));
+            } else {
+                log.debug("Skipping credential write-back: client is isolated from Claude CLI store");
+            }
             return;
         }
         try {

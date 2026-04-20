@@ -225,9 +225,17 @@ public final class AceClawDaemon {
                     apiKey, config.refreshToken(), config.baseUrl(),
                     config.context1m(), config.extraAnthropicBetas(),
                     config.credentialsFromKeychain());
-            // Tell the client which model is configured so capabilities() can detect 4.6 → 1M
             if (rawLlmClient instanceof dev.aceclaw.llm.anthropic.AnthropicClient ac) {
+                // Tell the client which model is configured so capabilities() can detect 4.6 → 1M
                 ac.setConfiguredModel(model);
+                // In isolated mode (profile-supplied credentials), persist refreshed tokens
+                // back to the profile in config.json so they survive a daemon restart.
+                String profileName = config.activeProfileName();
+                if (!config.credentialsFromKeychain() && profileName != null) {
+                    ac.setTokenPersistCallback(update ->
+                            AceClawConfig.persistProfileCredentials(
+                                    profileName, update.accessToken(), update.refreshToken()));
+                }
             }
         } else {
             rawLlmClient = LlmClientFactory.create(
