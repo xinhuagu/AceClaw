@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.18] - 2026-04-20
+
+### Bug Fixes
+
+- Isolate profile credentials from Claude CLI shared store (#427)
+
+### Features
+
+- Show active profile in startup banner and /status (#428)
 ## [0.3.17] - 2026-04-20
 
 ### Bug Fixes
