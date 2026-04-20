@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.17] - 2026-04-20
+
+### Bug Fixes
+
+- Address review findings on #426
+
+### Features
+
+- Accept profile name as argument to restart/dev scripts
+- Seed default config.json on first install
+- Add getting-started guidance to post-install message
+- Profile name as arg, default config, getting-started guide
 ## [0.3.16] - 2026-04-17
 
 ### Features
