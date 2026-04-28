@@ -228,13 +228,15 @@ public final class StreamingAgentHandler {
         // Set workspace context for tools (e.g. CronTool) that need to know the current workspace.
         // Cleared in the finally block below to cover all exit paths (success, plan, resume, error).
         //
-        // Lifecycle-notification state (issue #431) is declared HERE — outside the
-        // try block — so the outer finally is the single source of truth for
-        // emitting stream.turn_completed: it pairs every turn_started with
-        // exactly one turn_completed regardless of which exit path the request
-        // takes. Both emissions are gated by requestId != null, which is only
-        // assigned once the per-session turnLock is held (preventing the
-        // turnNumber race when two clients hit the same session concurrently).
+        // Lifecycle-notification state (issue #431): turn_started + turn_completed
+        // both fire INSIDE the per-session turnLock (so concurrent prompts on
+        // the same session see correctly ordered events and no interleaving).
+        // requestId / turnNumber / turnStartMillis are declared here only because
+        // turn_completed lives in the inner finally and Java needs the variables
+        // in scope across the try/finally pair; the actual assignment happens
+        // under the lock and the inner-finally emission is gated by
+        // requestId != null so a throw before reaching the assignment (e.g. a
+        // startMonitor failure) emits neither side.
         CronTool.setWorkspaceContext(session.projectPath().toString());
         CancelAwareStreamContext cancelContext = null;
         String requestId = null;
@@ -411,27 +413,18 @@ public final class StreamingAgentHandler {
             String userMessage = formatLlmError(e);
             throw new IllegalStateException(userMessage);
         } finally {
-            if (watchdog != null) {
-                watchdog.close();
-            }
-            cancelContext.stopMonitor();
-            turnLock.unlock();
-
-        }
-
-        } finally {
-            // Emit stream.turn_completed in the OUTER finally so every code path
-            // through the request pairs a turn_started with exactly one
-            // turn_completed: success returns, the LlmException catch+rethrow,
-            // and any unexpected throw inside the inner turnLock block all run
-            // through here. Guarded by requestId != null so we never emit a
-            // closer for a Turn we never opened — assignment happens inside the
-            // turnLock try, so any exception before reaching it leaves requestId
-            // null and no notification fires. stopMonitor in the inner finally
-            // only stops the read pump; the underlying channel remains writable
-            // until the request response is dispatched, so this late notification
-            // still reaches the client.
-            if (cancelContext != null && requestId != null) {
+            // Emit stream.turn_completed BEFORE releasing the lock so the
+            // start→end window is fully serialised against other prompts on
+            // the same session. If we unlocked first, a concurrent agent.prompt
+            // on the same session could grab the lock and emit its own
+            // turn_started between this request's unlock and turn_completed,
+            // garbling event ordering on the browser dashboard.
+            //
+            // Guarded by requestId != null so we never emit a closer for a Turn
+            // we never opened — the assignment lives inside this try block,
+            // so anything thrown before reaching it (e.g. startMonitor failure)
+            // leaves requestId null and no notification fires.
+            if (requestId != null) {
                 try {
                     var tcp = objectMapper.createObjectNode();
                     tcp.put("sessionId", sessionId);
@@ -445,6 +438,15 @@ public final class StreamingAgentHandler {
                     log.debug("Failed to send stream.turn_completed: {}", e.getMessage());
                 }
             }
+            if (watchdog != null) {
+                watchdog.close();
+            }
+            cancelContext.stopMonitor();
+            turnLock.unlock();
+
+        }
+
+        } finally {
             CronTool.clearWorkspaceContext();
         }
     }
