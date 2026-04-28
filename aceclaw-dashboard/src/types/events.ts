@@ -174,6 +174,10 @@ export interface PlanCreatedParams {
   stepCount: number;
   goal: string;
   steps: PlanStepDescriptor[];
+  /** True when this plan was rebuilt from a resume checkpoint. Absent on fresh plans. */
+  resumed?: boolean;
+  /** 1-based index of the first remaining step, present iff `resumed === true`. */
+  resumedFromStep?: number;
 }
 
 export interface PlanStepDescriptor {
@@ -222,6 +226,8 @@ export interface PlanReplannedParams {
   replanAttempt: number;
   newStepCount: number;
   rationale: string;
+  /** True when emitted from a resume-path planner. Absent on fresh-plan replanning. */
+  resumed?: boolean;
 }
 
 /** stream.plan_completed — entire plan finished (success or failure). */
@@ -231,6 +237,8 @@ export interface PlanCompletedParams {
   totalDurationMs: number;
   stepsCompleted: number;
   totalSteps: number;
+  /** True when this completion belongs to a resumed plan. Absent on fresh plans. */
+  resumed?: boolean;
 }
 
 /** stream.plan_escalated — planner gave up; control returned to ReAct loop. */
@@ -239,10 +247,18 @@ export interface PlanEscalatedParams {
   reason: string;
 }
 
-// --- Permission (bidirectional) ---
+// --- Permission — split direction ---
+//
+// The protocol is bidirectional, but the schema is one-directional per side:
+//   permission.request  → inbound  (DaemonEvent)
+//   permission.response → outbound (ClientCommand, see below)
+//
+// Keeping these on different unions means DaemonEventEnvelope (with eventId /
+// receivedAt set by the bridge) only ever wraps messages the daemon actually
+// emits, and DAEMON_EMISSION_MAP stays a true daemon-emission source of truth.
 
 /**
- * permission.request — daemon → client.
+ * permission.request — daemon → client (inbound DaemonEvent).
  *
  * The browser correlates request/response by `requestId`. With the WebSocket
  * bridge enabled, both CLI and Browser may receive the same request; the
@@ -255,10 +271,12 @@ export interface PermissionRequestParams {
 }
 
 /**
- * permission.response — client → daemon.
+ * permission.response — client → daemon (outbound ClientCommand).
  *
- * Included here for completeness so reducers and bridge code share a single
- * source of truth. Browsers send this back over WebSocket (#433).
+ * Lives on the {@link ClientCommand} union, NOT {@link DaemonEvent}, because
+ * it is browser-originated and is never broadcast as a daemon notification.
+ * Therefore it is also absent from {@link DaemonEventEnvelope} and from
+ * {@link DAEMON_EMISSION_MAP}.
  */
 export interface PermissionResponseParams {
   requestId: string;
@@ -307,13 +325,33 @@ export type DaemonEvent =
   | { method: 'stream.plan_replanned'; params: PlanReplannedParams }
   | { method: 'stream.plan_completed'; params: PlanCompletedParams }
   | { method: 'stream.plan_escalated'; params: PlanEscalatedParams }
-  // Permission (bidirectional)
-  | { method: 'permission.request'; params: PermissionRequestParams }
-  | { method: 'permission.response'; params: PermissionResponseParams };
+  // Permission (inbound only — see ClientCommand for the response)
+  | { method: 'permission.request'; params: PermissionRequestParams };
 
 /** Extracts the params type for a given event method (compile-time helper). */
 export type EventParams<M extends DaemonEvent['method']> = Extract<
   DaemonEvent,
+  { method: M }
+>['params'];
+
+// ---------------------------------------------------------------------------
+// ClientCommand — outbound (browser → daemon)
+// ---------------------------------------------------------------------------
+
+/**
+ * Discriminated union of messages the browser sends back to the daemon over
+ * the WebSocket bridge (#433). Discriminator: `method`.
+ *
+ * These are never wrapped in {@link DaemonEventEnvelope}; the bridge does not
+ * assign `eventId` to outbound traffic. Tier 1 only ships permission.response;
+ * future client commands (cancel, resume.accept, etc.) extend this union.
+ */
+export type ClientCommand =
+  | { method: 'permission.response'; params: PermissionResponseParams };
+
+/** Extracts the params type for a given client command (compile-time helper). */
+export type CommandParams<M extends ClientCommand['method']> = Extract<
+  ClientCommand,
   { method: M }
 >['params'];
 
@@ -388,5 +426,5 @@ export const DAEMON_EMISSION_MAP = {
   'stream.plan_completed': { status: 'existing', emitter: 'PlanEventListener#onPlanCompleted' },
   'stream.plan_escalated': { status: 'existing', emitter: 'PlanEventListener#onPlanEscalated' },
   'permission.request': { status: 'existing', emitter: 'StreamingAgentHandler permission gate' },
-  'permission.response': { status: 'existing', emitter: '(client → daemon)' },
+  // permission.response is a ClientCommand (browser → daemon), not a daemon emission — intentionally absent.
 } as const satisfies Record<DaemonEvent['method'], { status: 'existing' | 'new'; emitter: string }>;
