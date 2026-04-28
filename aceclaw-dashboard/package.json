@@ -1,0 +1,13 @@
+{
+  "name": "@aceclaw/dashboard",
+  "version": "0.0.0",
+  "private": true,
+  "description": "AceClaw real-time execution dashboard (epic #430). Currently scaffolded for issue #439 — wire-format event schema only.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}
