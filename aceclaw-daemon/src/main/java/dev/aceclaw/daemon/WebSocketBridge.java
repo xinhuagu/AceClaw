@@ -6,9 +6,12 @@ import io.javalin.websocket.WsContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Consumer;
 
 /**
  * WebSocket bridge that fans out daemon JSON-RPC notifications to browser
@@ -42,6 +45,13 @@ public final class WebSocketBridge {
     private final int port;
     private final ObjectMapper objectMapper;
     private final Set<WsContext> clients = ConcurrentHashMap.newKeySet();
+    /**
+     * Connection listeners. Snapshot pushers (#432) and per-client routers (#433)
+     * subscribe here; tests use them to wait on a {@link java.util.concurrent.CountDownLatch}
+     * instead of polling {@link #clientCount()}.
+     */
+    private final List<Consumer<WsContext>> connectListeners = new CopyOnWriteArrayList<>();
+    private final List<Consumer<WsContext>> disconnectListeners = new CopyOnWriteArrayList<>();
 
     private volatile Javalin app;
     private volatile InboundHandler inboundHandler = (ctx, message) -> { /* default: drop */ };
@@ -67,16 +77,21 @@ public final class WebSocketBridge {
             ws.onConnect(ctx -> {
                 clients.add(ctx);
                 log.info("WS client connected: {} (total={})", ctx.sessionId(), clients.size());
+                fire(connectListeners, ctx);
             });
             ws.onClose(ctx -> {
                 clients.remove(ctx);
                 log.info("WS client closed: {} (total={})", ctx.sessionId(), clients.size());
+                fire(disconnectListeners, ctx);
             });
             ws.onError(ctx -> {
-                clients.remove(ctx);
+                boolean removed = clients.remove(ctx);
                 Throwable err = ctx.error();
                 log.warn("WS client error: {} ({})", ctx.sessionId(),
                         err != null ? err.getMessage() : "unknown");
+                if (removed) {
+                    fire(disconnectListeners, ctx);
+                }
             });
             ws.onMessage(ctx -> {
                 try {
@@ -159,6 +174,35 @@ public final class WebSocketBridge {
      */
     public void setInboundHandler(InboundHandler handler) {
         this.inboundHandler = Objects.requireNonNull(handler, "handler");
+    }
+
+    /**
+     * Registers a listener invoked synchronously on Jetty's WS thread when a new
+     * client establishes a connection. Useful for #432 (push the latest snapshot
+     * to a freshly-connected tab) and for tests waiting on a {@link
+     * java.util.concurrent.CountDownLatch} rather than polling {@link #clientCount()}.
+     */
+    public void addConnectionListener(Consumer<WsContext> listener) {
+        connectListeners.add(Objects.requireNonNull(listener, "listener"));
+    }
+
+    /**
+     * Registers a listener invoked when a client disconnects (clean close OR
+     * error after the client was added to the active set). Mirrors
+     * {@link #addConnectionListener} for cleanup symmetry.
+     */
+    public void addDisconnectionListener(Consumer<WsContext> listener) {
+        disconnectListeners.add(Objects.requireNonNull(listener, "listener"));
+    }
+
+    private static void fire(List<Consumer<WsContext>> listeners, WsContext ctx) {
+        for (var l : listeners) {
+            try {
+                l.accept(ctx);
+            } catch (Exception e) {
+                log.warn("WS listener threw: {}", e.toString(), e);
+            }
+        }
     }
 
     /** Returns the number of currently connected browser clients. */

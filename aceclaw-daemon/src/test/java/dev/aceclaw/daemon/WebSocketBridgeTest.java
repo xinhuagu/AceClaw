@@ -8,21 +8,29 @@ import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.WebSocket;
-import java.util.ArrayList;
 import java.util.Map;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
-import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Smoke tests for {@link WebSocketBridge} — issue #431 acceptance criteria
  * (port binds, multiple clients, broadcast fan-out, clean disconnect).
+ *
+ * <p>All synchronisation is done with proper wait/notify primitives —
+ * {@link BlockingQueue#poll(long, TimeUnit)} for messages and
+ * {@link CountDownLatch#await(long, TimeUnit)} for connect / disconnect events
+ * (via {@link WebSocketBridge#addConnectionListener}). No spin-polling, no
+ * {@code Thread.sleep}: every wait blocks until either the event fires or the
+ * 5-second timeout expires.
  */
 final class WebSocketBridgeTest {
 
-    private static final long POLL_TIMEOUT_MS = 5_000;
+    private static final long AWAIT_TIMEOUT_MS = 5_000;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private WebSocketBridge bridge;
@@ -38,25 +46,35 @@ final class WebSocketBridgeTest {
     void broadcastsJsonRpcNotificationToAllConnectedClients() throws Exception {
         bridge = startOnRandomPort();
 
-        var received1 = new ArrayList<String>();
-        var received2 = new ArrayList<String>();
-        var ws1 = connect(received1::add);
-        var ws2 = connect(received2::add);
+        var connected = new CountDownLatch(2);
+        bridge.addConnectionListener(_ -> connected.countDown());
 
-        pollUntil(() -> bridge.clientCount() == 2);
+        var queue1 = new LinkedBlockingQueue<String>();
+        var queue2 = new LinkedBlockingQueue<String>();
+        var ws1 = connect(queue1::add);
+        var ws2 = connect(queue2::add);
+
+        // Block until both server-side onConnect callbacks have fired.
+        assertThat(connected.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS))
+                .as("both clients must connect within %dms", AWAIT_TIMEOUT_MS)
+                .isTrue();
+        assertThat(bridge.clientCount()).isEqualTo(2);
 
         bridge.broadcast("stream.text", Map.of("delta", "hello"));
 
-        pollUntil(() -> received1.size() == 1 && received2.size() == 1);
+        var msg1 = queue1.poll(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        var msg2 = queue2.poll(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        assertThat(msg1).isNotNull();
+        assertThat(msg2).isNotNull();
 
-        var node = objectMapper.readTree(received1.get(0));
+        var node = objectMapper.readTree(msg1);
         assertThat(node.get("jsonrpc").asText()).isEqualTo("2.0");
         assertThat(node.get("method").asText()).isEqualTo("stream.text");
         assertThat(node.get("params").get("delta").asText()).isEqualTo("hello");
-        assertThat(received2.get(0)).isEqualTo(received1.get(0));
+        assertThat(msg2).isEqualTo(msg1);
 
-        ws1.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(POLL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-        ws2.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(POLL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        ws1.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        ws2.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     }
 
     @Test
@@ -69,11 +87,18 @@ final class WebSocketBridgeTest {
     @Test
     void clientDisconnectDoesNotBlockSubsequentBroadcasts() throws Exception {
         bridge = startOnRandomPort();
-        var ws = connect(_ -> { });
-        pollUntil(() -> bridge.clientCount() == 1);
+        var connected = new CountDownLatch(1);
+        var disconnected = new CountDownLatch(1);
+        bridge.addConnectionListener(_ -> connected.countDown());
+        bridge.addDisconnectionListener(_ -> disconnected.countDown());
 
-        ws.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(POLL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-        pollUntil(() -> bridge.clientCount() == 0);
+        var queue = new LinkedBlockingQueue<String>();
+        var ws = connect(queue::add);
+        assertThat(connected.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)).isTrue();
+
+        ws.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        assertThat(disconnected.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)).isTrue();
+        assertThat(bridge.clientCount()).isZero();
 
         // The daemon must not crash or hang when broadcasting after a disconnect.
         bridge.broadcast("stream.text", Map.of("delta", "after-close"));
@@ -86,16 +111,20 @@ final class WebSocketBridgeTest {
         var inbound = new CompletableFuture<String>();
         bridge.setInboundHandler((ctx, message) -> inbound.complete(message.toString()));
 
-        var ws = connect(_ -> { });
-        pollUntil(() -> bridge.clientCount() == 1);
+        var connected = new CountDownLatch(1);
+        bridge.addConnectionListener(_ -> connected.countDown());
+
+        var queue = new LinkedBlockingQueue<String>();
+        var ws = connect(queue::add);
+        assertThat(connected.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)).isTrue();
 
         ws.sendText("{\"method\":\"permission.response\",\"params\":{\"requestId\":\"r1\",\"approved\":true}}", true)
-                .get(POLL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                .get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
 
-        var payload = inbound.get(POLL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        var payload = inbound.get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
         assertThat(payload).contains("permission.response").contains("\"r1\"");
 
-        ws.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(POLL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        ws.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     }
 
     private WebSocketBridge startOnRandomPort() throws Exception {
@@ -108,22 +137,13 @@ final class WebSocketBridgeTest {
         return HttpClient.newHttpClient().newWebSocketBuilder()
                 .buildAsync(URI.create("ws://127.0.0.1:" + bridge.port() + "/ws"),
                         new BufferingListener(onText))
-                .get(POLL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                .get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     }
 
     private static int freePort() throws Exception {
         try (var s = new ServerSocket(0)) {
             return s.getLocalPort();
         }
-    }
-
-    private static void pollUntil(BooleanSupplier condition) throws InterruptedException {
-        long deadline = System.currentTimeMillis() + POLL_TIMEOUT_MS;
-        while (System.currentTimeMillis() < deadline) {
-            if (condition.getAsBoolean()) return;
-            Thread.sleep(20);
-        }
-        throw new AssertionError("Timed out waiting for condition");
     }
 
     private static final class BufferingListener implements WebSocket.Listener {
