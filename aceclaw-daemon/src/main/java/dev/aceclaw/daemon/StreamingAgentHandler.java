@@ -229,9 +229,12 @@ public final class StreamingAgentHandler {
         // Cleared in the finally block below to cover all exit paths (success, plan, resume, error).
         //
         // Lifecycle-notification state (issue #431) is declared HERE — outside the
-        // try block — so the outer finally can emit stream.turn_completed even
-        // when one of the ~60 lines of setup work below throws between the
-        // turn_started emission and the inner turnLock try.
+        // try block — so the outer finally is the single source of truth for
+        // emitting stream.turn_completed: it pairs every turn_started with
+        // exactly one turn_completed regardless of which exit path the request
+        // takes. Both emissions are gated by requestId != null, which is only
+        // assigned once the per-session turnLock is held (preventing the
+        // turnNumber race when two clients hit the same session concurrently).
         CronTool.setWorkspaceContext(session.projectPath().toString());
         CancelAwareStreamContext cancelContext = null;
         String requestId = null;
@@ -260,38 +263,6 @@ public final class StreamingAgentHandler {
                         context, new EventMultiplexer(context, bridge),
                         cancellationToken, objectMapper)
                 : new CancelAwareStreamContext(context, cancellationToken, objectMapper);
-
-        // ---- Lifecycle notifications (issue #439 + #431) ----------------------
-        // These three events fire per agent.prompt request; they let browser
-        // dashboards anchor a Turn-level node and render session boundaries
-        // without inferring them from text-delta gaps. The CLI ignores them.
-        turnStartMillis = System.currentTimeMillis();
-        requestId = "turn-" + UUID.randomUUID();
-        // turnNumber = Nth user message in this session, matching the existing
-        // AgentEvent.TurnStarted semantics in StreamingAgentLoop.
-        turnNumber = (int) session.messages().stream()
-                .filter(m -> m instanceof AgentSession.ConversationMessage.User).count() + 1;
-        if (sessionsStartedSignaled.add(sessionId)) {
-            try {
-                var p = objectMapper.createObjectNode();
-                p.put("sessionId", sessionId);
-                p.put("model", getModelForSession(sessionId));
-                p.put("timestamp", Instant.now().toString());
-                cancelContext.sendNotification("stream.session_started", p);
-            } catch (IOException e) {
-                log.debug("Failed to send stream.session_started: {}", e.getMessage());
-            }
-        }
-        try {
-            var p = objectMapper.createObjectNode();
-            p.put("sessionId", sessionId);
-            p.put("requestId", requestId);
-            p.put("turnNumber", turnNumber);
-            p.put("timestamp", Instant.now().toString());
-            cancelContext.sendNotification("stream.turn_started", p);
-        } catch (IOException e) {
-            log.debug("Failed to send stream.turn_started: {}", e.getMessage());
-        }
 
         // Create a StreamEventHandler that forwards events via the cancel-aware context
         var eventHandler = new StreamingNotificationHandler(cancelContext, objectMapper);
@@ -354,6 +325,45 @@ public final class StreamingAgentHandler {
             // Start the cancel monitor thread to read from the socket
             cancelContext.startMonitor();
 
+            // ---- Lifecycle notifications (issue #439 + #431) ------------------
+            // These fire per agent.prompt request and let browser dashboards
+            // anchor a Turn-level node + render session boundaries without
+            // inferring them from text-delta gaps. The CLI ignores them.
+            //
+            // Computed UNDER turnLock so concurrent agent.prompt calls on the
+            // same session (e.g. two attached clients) see correctly ordered
+            // turnNumbers — the lock serialises both the read of
+            // session.messages() and the resulting emission. session_started
+            // could safely emit outside (atomic CHM gate), but is kept here
+            // for symmetry — there is one place that opens the turn.
+            turnStartMillis = System.currentTimeMillis();
+            requestId = "turn-" + UUID.randomUUID();
+            // turnNumber = Nth user message in this session, matching the existing
+            // AgentEvent.TurnStarted semantics in StreamingAgentLoop.
+            turnNumber = (int) session.messages().stream()
+                    .filter(m -> m instanceof AgentSession.ConversationMessage.User).count() + 1;
+            if (sessionsStartedSignaled.add(sessionId)) {
+                try {
+                    var p = objectMapper.createObjectNode();
+                    p.put("sessionId", sessionId);
+                    p.put("model", getModelForSession(sessionId));
+                    p.put("timestamp", Instant.now().toString());
+                    cancelContext.sendNotification("stream.session_started", p);
+                } catch (IOException e) {
+                    log.debug("Failed to send stream.session_started: {}", e.getMessage());
+                }
+            }
+            try {
+                var p = objectMapper.createObjectNode();
+                p.put("sessionId", sessionId);
+                p.put("requestId", requestId);
+                p.put("turnNumber", turnNumber);
+                p.put("timestamp", Instant.now().toString());
+                cancelContext.sendNotification("stream.turn_started", p);
+            } catch (IOException e) {
+                log.debug("Failed to send stream.turn_started: {}", e.getMessage());
+            }
+
             // Check for resumable plan checkpoint before planning or execution
             if (planCheckpointStore != null) {
                 var resumeResult = tryResumeFromCheckpoint(
@@ -410,15 +420,17 @@ public final class StreamingAgentHandler {
         }
 
         } finally {
-            // Emit stream.turn_completed in the OUTER finally so it fires on every
-            // exit path — including exceptions thrown by the ~60 lines of setup
-            // between the turn_started emission and the inner turnLock try.
-            // Guard with requestId != null so we never emit a closer for a Turn
-            // we never opened (e.g. CancelAwareStreamContext construction itself
-            // threw, or we exited before reaching the turn_started block).
-            // stopMonitor (above) only stops the read pump; the underlying channel
-            // remains writable until the request response is dispatched, so this
-            // late notification still reaches the client.
+            // Emit stream.turn_completed in the OUTER finally so every code path
+            // through the request pairs a turn_started with exactly one
+            // turn_completed: success returns, the LlmException catch+rethrow,
+            // and any unexpected throw inside the inner turnLock block all run
+            // through here. Guarded by requestId != null so we never emit a
+            // closer for a Turn we never opened — assignment happens inside the
+            // turnLock try, so any exception before reaching it leaves requestId
+            // null and no notification fires. stopMonitor in the inner finally
+            // only stops the read pump; the underlying channel remains writable
+            // until the request response is dispatched, so this late notification
+            // still reaches the client.
             if (cancelContext != null && requestId != null) {
                 try {
                     var tcp = objectMapper.createObjectNode();
