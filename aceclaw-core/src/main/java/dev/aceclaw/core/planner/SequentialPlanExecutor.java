@@ -48,6 +48,19 @@ public final class SequentialPlanExecutor implements PlanExecutor {
 
         /** Called when replanning determines recovery is impossible. */
         default void onPlanEscalated(TaskPlan plan, String reason) {}
+
+        /**
+         * Called when a step's primary attempt failed and the executor is about
+         * to run its fallback approach. Surfaces the fallback as an explicit
+         * stream event for browser dashboards (issue #439, epic #430).
+         *
+         * @param step             the step whose primary attempt failed
+         * @param stepIndex        zero-based index of the step in the plan
+         * @param fallbackApproach the step's declared fallback approach text
+         * @param attempt          1-based fallback attempt counter
+         */
+        default void onStepFallback(PlannedStep step, int stepIndex,
+                                    String fallbackApproach, int attempt) {}
     }
 
     private final PlanEventListener listener;
@@ -246,6 +259,10 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                 // Attempt fallback if available
                 if (step.fallbackApproach() != null) {
                     log.info("Attempting fallback for step {}: {}", i + 1, step.fallbackApproach());
+
+                    if (listener != null) {
+                        listener.onStepFallback(step, i, step.fallbackApproach(), 1);
+                    }
 
                     try {
                         String fallbackPrompt = buildFallbackPrompt(step, e.getMessage());

@@ -12,5 +12,6 @@ dependencies {
     implementation("com.fasterxml.jackson.core:jackson-databind")
     implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310")
     implementation("org.slf4j:slf4j-api")
+    implementation("io.javalin:javalin")
     runtimeOnly("ch.qos.logback:logback-classic")
 }

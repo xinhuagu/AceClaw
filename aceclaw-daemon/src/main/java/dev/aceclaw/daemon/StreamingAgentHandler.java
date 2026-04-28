@@ -162,6 +162,13 @@ public final class StreamingAgentHandler {
     private final SkillMetricsStore skillMetricsStore = new SkillMetricsStore();
     private volatile RuntimeMetricsExporter runtimeMetricsExporter;
     private volatile dev.aceclaw.memory.InjectionAuditLog injectionAuditLog;
+    /**
+     * WebSocket bridge for browser dashboard (issue #431). Null when disabled —
+     * the per-request context falls back to direct CLI delivery in that case.
+     */
+    private volatile WebSocketBridge webSocketBridge;
+    /** Sessions for which {@code stream.session_started} has already been emitted. */
+    private final Set<String> sessionsStartedSignaled = ConcurrentHashMap.newKeySet();
 
     /** Per-session turn locks for serializing main turns within a session. */
     private final ConcurrentHashMap<String, ReentrantLock> sessionTurnLocks =
@@ -197,6 +204,15 @@ public final class StreamingAgentHandler {
         router.registerStreaming("agent.prompt", this::handlePrompt);
     }
 
+    /**
+     * Wires the WebSocket bridge for browser-facing event fan-out (issue #431).
+     * Pass {@code null} to disable; once set, every JSON-RPC notification emitted
+     * during {@code agent.prompt} is also broadcast to all connected WS clients.
+     */
+    public void setWebSocketBridge(WebSocketBridge bridge) {
+        this.webSocketBridge = bridge;
+    }
+
     private Object handlePrompt(JsonNode params, StreamContext context) throws Exception {
         var sessionId = requireString(params, "sessionId");
         var prompt = requireString(params, "prompt");
@@ -224,8 +240,49 @@ public final class StreamingAgentHandler {
         // Set up cancellation support: the CancelAwareStreamContext runs a monitor
         // thread that reads from the socket and dispatches agent.cancel and
         // permission.response messages accordingly.
+        //
+        // When the WebSocket bridge is enabled (issue #431), wrap the raw context
+        // with an EventMultiplexer so every JSON-RPC notification fans out to all
+        // connected browser clients in addition to the per-request CLI socket.
         var cancellationToken = new CancellationToken();
-        var cancelContext = new CancelAwareStreamContext(context, cancellationToken, objectMapper);
+        var bridge = this.webSocketBridge;
+        var cancelContext = bridge != null
+                ? new CancelAwareStreamContext(
+                        context, new EventMultiplexer(context, bridge),
+                        cancellationToken, objectMapper)
+                : new CancelAwareStreamContext(context, cancellationToken, objectMapper);
+
+        // ---- Lifecycle notifications (issue #439 + #431) ----------------------
+        // These three events fire per agent.prompt request; they let browser
+        // dashboards anchor a Turn-level node and render session boundaries
+        // without inferring them from text-delta gaps. The CLI ignores them.
+        long turnStartMillis = System.currentTimeMillis();
+        String requestId = "turn-" + UUID.randomUUID();
+        // turnNumber = Nth user message in this session, matching the existing
+        // AgentEvent.TurnStarted semantics in StreamingAgentLoop.
+        int turnNumber = (int) session.messages().stream()
+                .filter(m -> m instanceof AgentSession.ConversationMessage.User).count() + 1;
+        if (sessionsStartedSignaled.add(sessionId)) {
+            try {
+                var p = objectMapper.createObjectNode();
+                p.put("sessionId", sessionId);
+                p.put("model", getModelForSession(sessionId));
+                p.put("timestamp", Instant.now().toString());
+                cancelContext.sendNotification("stream.session_started", p);
+            } catch (IOException e) {
+                log.debug("Failed to send stream.session_started: {}", e.getMessage());
+            }
+        }
+        try {
+            var p = objectMapper.createObjectNode();
+            p.put("sessionId", sessionId);
+            p.put("requestId", requestId);
+            p.put("turnNumber", turnNumber);
+            p.put("timestamp", Instant.now().toString());
+            cancelContext.sendNotification("stream.turn_started", p);
+        } catch (IOException e) {
+            log.debug("Failed to send stream.turn_started: {}", e.getMessage());
+        }
 
         // Create a StreamEventHandler that forwards events via the cancel-aware context
         var eventHandler = new StreamingNotificationHandler(cancelContext, objectMapper);
@@ -335,6 +392,22 @@ public final class StreamingAgentHandler {
             String userMessage = formatLlmError(e);
             throw new IllegalStateException(userMessage);
         } finally {
+            // Emit stream.turn_completed BEFORE stopMonitor so the channel still
+            // accepts writes. Fires on all exit paths (success returns, exception
+            // catch+rethrow, unexpected throws) so the browser tree always closes
+            // its Turn node.
+            try {
+                var tcp = objectMapper.createObjectNode();
+                tcp.put("sessionId", sessionId);
+                tcp.put("requestId", requestId);
+                tcp.put("turnNumber", turnNumber);
+                tcp.put("durationMs", System.currentTimeMillis() - turnStartMillis);
+                tcp.put("toolCount", cancelContext.toolUseCount());
+                tcp.put("timestamp", Instant.now().toString());
+                cancelContext.sendNotification("stream.turn_completed", tcp);
+            } catch (Exception e) {
+                log.debug("Failed to send stream.turn_completed: {}", e.getMessage());
+            }
             if (watchdog != null) {
                 watchdog.close();
             }
@@ -479,6 +552,23 @@ public final class StreamingAgentHandler {
                     cancelContext.sendNotification("stream.plan_escalated", p);
                 } catch (IOException e) {
                     log.warn("Failed to send plan_escalated notification: {}", e.getMessage());
+                }
+            }
+
+            @Override
+            public void onStepFallback(PlannedStep step, int stepIndex,
+                                       String fallbackApproach, int attempt) {
+                try {
+                    var p = objectMapper.createObjectNode();
+                    p.put("sessionId", sessionId);
+                    p.put("planId", plan.planId());
+                    p.put("stepId", step.stepId());
+                    p.put("stepIndex", stepIndex + 1);
+                    p.put("fallbackApproach", fallbackApproach);
+                    p.put("attempt", attempt);
+                    cancelContext.sendNotification("stream.plan_step_fallback", p);
+                } catch (IOException e) {
+                    log.warn("Failed to send plan_step_fallback notification: {}", e.getMessage());
                 }
             }
         };
@@ -2590,6 +2680,25 @@ public final class StreamingAgentHandler {
                     log.warn("Failed to send plan_escalated notification: {}", e.getMessage());
                 }
             }
+
+            @Override
+            public void onStepFallback(PlannedStep step, int stepIndex,
+                                       String fallbackApproach, int attempt) {
+                try {
+                    var p = objectMapper.createObjectNode();
+                    p.put("sessionId", sessionId);
+                    p.put("planId", resumedPlanId);
+                    p.put("stepId", step.stepId());
+                    // Resume path: stepIndex is local to the remaining-steps slice,
+                    // so offset by cp.nextStepIndex() to match the original plan's 1-based index.
+                    p.put("stepIndex", cp.nextStepIndex() + stepIndex + 1);
+                    p.put("fallbackApproach", fallbackApproach);
+                    p.put("attempt", attempt);
+                    cancelContext.sendNotification("stream.plan_step_fallback", p);
+                } catch (IOException e) {
+                    log.warn("Failed to send plan_step_fallback notification: {}", e.getMessage());
+                }
+            }
         };
 
         // 9. Wrap with checkpointing listener
@@ -2853,6 +2962,12 @@ public final class StreamingAgentHandler {
             }
         }
 
+        @Override
+        public void onStepFallback(PlannedStep step, int stepIndex,
+                                   String fallbackApproach, int attempt) {
+            delegate.onStepFallback(step, stepIndex, fallbackApproach, attempt);
+        }
+
         private static List<String> serializeSessionMessages(AgentSession session) {
             // Simple serialization: role:content for each message
             var result = new ArrayList<String>();
@@ -3102,24 +3217,42 @@ public final class StreamingAgentHandler {
         private final ConcurrentHashMap<String, CompletableFuture<JsonNode>> pendingPermissions = new ConcurrentHashMap<>();
         private final BlockingQueue<JsonNode> unmatchedResponses = new LinkedBlockingQueue<>();
         private final Object permissionLifecycleLock = new Object();
+        private final java.util.concurrent.atomic.AtomicInteger toolUseCount =
+                new java.util.concurrent.atomic.AtomicInteger();
         private volatile boolean stopped = false;
         private volatile Thread monitorThread;
         private volatile Selector selector;
 
         CancelAwareStreamContext(StreamContext delegate, CancellationToken cancellationToken,
                                  ObjectMapper objectMapper) {
-            this.delegate = delegate;
+            this(delegate, delegate, cancellationToken, objectMapper);
+        }
+
+        /**
+         * Two-context overload: {@code rawContext} is the original socket-backed
+         * context used for cancel-monitor channel extraction; {@code outboundContext}
+         * is what {@link #sendNotification} delegates to and is typically an
+         * {@link EventMultiplexer} that tees to the WebSocket bridge.
+         */
+        CancelAwareStreamContext(StreamContext rawContext, StreamContext outboundContext,
+                                 CancellationToken cancellationToken, ObjectMapper objectMapper) {
+            this.delegate = outboundContext;
             this.cancellationToken = cancellationToken;
             this.objectMapper = objectMapper;
 
             // Extract the channel and lineBuilder from the underlying ChannelStreamContext
-            if (delegate instanceof ConnectionBridge.ChannelStreamContext channelCtx) {
+            if (rawContext instanceof ConnectionBridge.ChannelStreamContext channelCtx) {
                 this.channel = channelCtx.channel();
                 this.lineBuilder = channelCtx.lineBuilder();
             } else {
                 this.channel = null;
                 this.lineBuilder = null;
             }
+        }
+
+        /** Number of {@code stream.tool_use} notifications observed during this request. */
+        int toolUseCount() {
+            return toolUseCount.get();
         }
 
         /**
@@ -3292,6 +3425,9 @@ public final class StreamingAgentHandler {
 
         @Override
         public void sendNotification(String method, Object params) throws IOException {
+            if ("stream.tool_use".equals(method)) {
+                toolUseCount.incrementAndGet();
+            }
             delegate.sendNotification(method, params);
         }
 
