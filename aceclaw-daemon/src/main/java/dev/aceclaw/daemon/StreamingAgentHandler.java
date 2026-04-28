@@ -213,6 +213,33 @@ public final class StreamingAgentHandler {
         this.webSocketBridge = bridge;
     }
 
+    /**
+     * Emits a notification that should reach BROWSER clients only — never the
+     * CLI's Unix-domain socket protocol. Used for the lifecycle events added in
+     * #431 ({@code stream.session_started}, {@code stream.turn_started},
+     * {@code stream.turn_completed}, {@code stream.plan_step_fallback}) which
+     * the existing CLI does not consume and should not have to tolerate.
+     *
+     * <p>The boundary lives at the emission site rather than in
+     * {@link EventMultiplexer}: that keeps {@code sendNotification()} faithful
+     * to the original CLI protocol and {@code broadcast()} the browser
+     * projection, instead of pushing per-method routing policy into transport.
+     *
+     * <p>No-op when the bridge is disabled — these events are not emitted at
+     * all in that case, so the CLI never sees them and there is no CLI
+     * compatibility concern.
+     *
+     * <p>Package-private for unit tests; production callers are inside this
+     * class.
+     */
+    void emitBrowserOnly(String sessionId, String method, Object params) {
+        var bridge = this.webSocketBridge;
+        if (bridge == null) {
+            return;
+        }
+        bridge.broadcast(sessionId, method, params);
+    }
+
     private Object handlePrompt(JsonNode params, StreamContext context) throws Exception {
         var sessionId = requireString(params, "sessionId");
         var prompt = requireString(params, "prompt");
@@ -344,27 +371,22 @@ public final class StreamingAgentHandler {
             // AgentEvent.TurnStarted semantics in StreamingAgentLoop.
             turnNumber = (int) session.messages().stream()
                     .filter(m -> m instanceof AgentSession.ConversationMessage.User).count() + 1;
+            // Browser-only: bypass cancelContext entirely so the CLI's UDS
+            // protocol stays unchanged. emitBrowserOnly is a no-op when the
+            // bridge is off, so disabled deployments emit nothing at all.
             if (sessionsStartedSignaled.add(sessionId)) {
-                try {
-                    var p = objectMapper.createObjectNode();
-                    p.put("sessionId", sessionId);
-                    p.put("model", getModelForSession(sessionId));
-                    p.put("timestamp", Instant.now().toString());
-                    cancelContext.sendNotification("stream.session_started", p);
-                } catch (IOException e) {
-                    log.debug("Failed to send stream.session_started: {}", e.getMessage());
-                }
-            }
-            try {
                 var p = objectMapper.createObjectNode();
                 p.put("sessionId", sessionId);
-                p.put("requestId", requestId);
-                p.put("turnNumber", turnNumber);
+                p.put("model", getModelForSession(sessionId));
                 p.put("timestamp", Instant.now().toString());
-                cancelContext.sendNotification("stream.turn_started", p);
-            } catch (IOException e) {
-                log.debug("Failed to send stream.turn_started: {}", e.getMessage());
+                emitBrowserOnly(sessionId, "stream.session_started", p);
             }
+            var ts = objectMapper.createObjectNode();
+            ts.put("sessionId", sessionId);
+            ts.put("requestId", requestId);
+            ts.put("turnNumber", turnNumber);
+            ts.put("timestamp", Instant.now().toString());
+            emitBrowserOnly(sessionId, "stream.turn_started", ts);
 
             // Check for resumable plan checkpoint before planning or execution
             if (planCheckpointStore != null) {
@@ -420,23 +442,21 @@ public final class StreamingAgentHandler {
             // turn_started between this request's unlock and turn_completed,
             // garbling event ordering on the browser dashboard.
             //
-            // Guarded by requestId != null so we never emit a closer for a Turn
-            // we never opened — the assignment lives inside this try block,
-            // so anything thrown before reaching it (e.g. startMonitor failure)
-            // leaves requestId null and no notification fires.
+            // Browser-only: bypasses cancelContext, so the CLI never sees
+            // turn_completed. Guarded by requestId != null so we never emit a
+            // closer for a Turn we never opened — the assignment lives inside
+            // this try block, so anything thrown before reaching it (e.g.
+            // startMonitor failure) leaves requestId null and no notification
+            // fires.
             if (requestId != null) {
-                try {
-                    var tcp = objectMapper.createObjectNode();
-                    tcp.put("sessionId", sessionId);
-                    tcp.put("requestId", requestId);
-                    tcp.put("turnNumber", turnNumber);
-                    tcp.put("durationMs", System.currentTimeMillis() - turnStartMillis);
-                    tcp.put("toolCount", cancelContext.toolUseCount());
-                    tcp.put("timestamp", Instant.now().toString());
-                    cancelContext.sendNotification("stream.turn_completed", tcp);
-                } catch (Exception e) {
-                    log.debug("Failed to send stream.turn_completed: {}", e.getMessage());
-                }
+                var tcp = objectMapper.createObjectNode();
+                tcp.put("sessionId", sessionId);
+                tcp.put("requestId", requestId);
+                tcp.put("turnNumber", turnNumber);
+                tcp.put("durationMs", System.currentTimeMillis() - turnStartMillis);
+                tcp.put("toolCount", cancelContext.toolUseCount());
+                tcp.put("timestamp", Instant.now().toString());
+                emitBrowserOnly(sessionId, "stream.turn_completed", tcp);
             }
             if (watchdog != null) {
                 watchdog.close();
@@ -588,18 +608,17 @@ public final class StreamingAgentHandler {
             @Override
             public void onStepFallback(PlannedStep step, int stepIndex,
                                        String fallbackApproach, int attempt) {
-                try {
-                    var p = objectMapper.createObjectNode();
-                    p.put("sessionId", sessionId);
-                    p.put("planId", plan.planId());
-                    p.put("stepId", step.stepId());
-                    p.put("stepIndex", stepIndex + 1);
-                    p.put("fallbackApproach", fallbackApproach);
-                    p.put("attempt", attempt);
-                    cancelContext.sendNotification("stream.plan_step_fallback", p);
-                } catch (IOException e) {
-                    log.warn("Failed to send plan_step_fallback notification: {}", e.getMessage());
-                }
+                // Browser-only: CLI does not consume plan_step_fallback today,
+                // so route directly to the WS bridge instead of through
+                // cancelContext.sendNotification.
+                var p = objectMapper.createObjectNode();
+                p.put("sessionId", sessionId);
+                p.put("planId", plan.planId());
+                p.put("stepId", step.stepId());
+                p.put("stepIndex", stepIndex + 1);
+                p.put("fallbackApproach", fallbackApproach);
+                p.put("attempt", attempt);
+                emitBrowserOnly(sessionId, "stream.plan_step_fallback", p);
             }
         };
 
@@ -2715,20 +2734,17 @@ public final class StreamingAgentHandler {
             @Override
             public void onStepFallback(PlannedStep step, int stepIndex,
                                        String fallbackApproach, int attempt) {
-                try {
-                    var p = objectMapper.createObjectNode();
-                    p.put("sessionId", sessionId);
-                    p.put("planId", resumedPlanId);
-                    p.put("stepId", step.stepId());
-                    // Resume path: stepIndex is local to the remaining-steps slice,
-                    // so offset by cp.nextStepIndex() to match the original plan's 1-based index.
-                    p.put("stepIndex", cp.nextStepIndex() + stepIndex + 1);
-                    p.put("fallbackApproach", fallbackApproach);
-                    p.put("attempt", attempt);
-                    cancelContext.sendNotification("stream.plan_step_fallback", p);
-                } catch (IOException e) {
-                    log.warn("Failed to send plan_step_fallback notification: {}", e.getMessage());
-                }
+                // Browser-only — see planned-prompt path above for rationale.
+                var p = objectMapper.createObjectNode();
+                p.put("sessionId", sessionId);
+                p.put("planId", resumedPlanId);
+                p.put("stepId", step.stepId());
+                // Resume path: stepIndex is local to the remaining-steps slice,
+                // so offset by cp.nextStepIndex() to match the original plan's 1-based index.
+                p.put("stepIndex", cp.nextStepIndex() + stepIndex + 1);
+                p.put("fallbackApproach", fallbackApproach);
+                p.put("attempt", attempt);
+                emitBrowserOnly(sessionId, "stream.plan_step_fallback", p);
             }
         };
 
