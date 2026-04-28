@@ -8,6 +8,7 @@ import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.WebSocket;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
@@ -141,6 +142,55 @@ final class WebSocketBridgeTest {
     }
 
     @Test
+    void rejectsHandshakeWithDisallowedOrigin() throws Exception {
+        // Empty allowedOrigins (the secure default) ⇒ any browser Origin is rejected.
+        bridge = startOnRandomPort(List.of());
+
+        var queue = new LinkedBlockingQueue<String>();
+        var listener = new BufferingListener(queue::add);
+        // Java HttpClient lets us forge an Origin header — same surface a malicious
+        // page would see when calling new WebSocket('ws://localhost:3141/ws').
+        HttpClient.newHttpClient().newWebSocketBuilder()
+                .header("Origin", "https://evil.example")
+                .buildAsync(URI.create("ws://127.0.0.1:" + bridge.port() + "/ws"), listener)
+                .get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+
+        // Server closes immediately with 1008 (policy violation). The client-side
+        // onClose latch is the proper signal; no polling.
+        assertThat(listener.closed.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS))
+                .as("server should close handshake from disallowed origin")
+                .isTrue();
+        assertThat(listener.closeStatusCode).isEqualTo(1008);
+        assertThat(bridge.clientCount()).as("rejected client must NOT enter the active set").isZero();
+
+        // Subsequent broadcast must not be visible to the rejected client.
+        bridge.broadcast("sess-1", "stream.text", Map.of("delta", "should-not-arrive"));
+        // poll(short) returns null because the client never received anything.
+        assertThat(queue.poll(200, TimeUnit.MILLISECONDS)).isNull();
+    }
+
+    @Test
+    void acceptsHandshakeWithAllowedOrigin() throws Exception {
+        bridge = startOnRandomPort(List.of("https://dashboard.local"));
+
+        var connected = new CountDownLatch(1);
+        bridge.addConnectionListener(_ -> connected.countDown());
+
+        var queue = new LinkedBlockingQueue<String>();
+        var listener = new BufferingListener(queue::add);
+        var ws = HttpClient.newHttpClient().newWebSocketBuilder()
+                .header("Origin", "https://dashboard.local")
+                .buildAsync(URI.create("ws://127.0.0.1:" + bridge.port() + "/ws"), listener)
+                .get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+
+        assertThat(connected.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)).isTrue();
+        bridge.broadcast("sess-1", "stream.text", Map.of("delta", "hello"));
+        assertThat(queue.poll(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)).isNotNull();
+
+        ws.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    }
+
+    @Test
     void inboundHandlerReceivesParsedClientMessages() throws Exception {
         bridge = startOnRandomPort();
         var inbound = new CompletableFuture<String>();
@@ -163,7 +213,11 @@ final class WebSocketBridgeTest {
     }
 
     private WebSocketBridge startOnRandomPort() throws Exception {
-        var b = new WebSocketBridge("127.0.0.1", freePort(), objectMapper);
+        return startOnRandomPort(List.of());
+    }
+
+    private WebSocketBridge startOnRandomPort(List<String> allowedOrigins) throws Exception {
+        var b = new WebSocketBridge("127.0.0.1", freePort(), objectMapper, allowedOrigins);
         b.start();
         return b;
     }
@@ -184,6 +238,9 @@ final class WebSocketBridgeTest {
     private static final class BufferingListener implements WebSocket.Listener {
         private final java.util.function.Consumer<String> onText;
         private final StringBuilder partial = new StringBuilder();
+        /** Counts down on onClose, letting tests await close without polling. */
+        final CountDownLatch closed = new CountDownLatch(1);
+        volatile int closeStatusCode = -1;
 
         BufferingListener(java.util.function.Consumer<String> onText) {
             this.onText = onText;
@@ -197,6 +254,13 @@ final class WebSocketBridgeTest {
                 partial.setLength(0);
             }
             webSocket.request(1);
+            return null;
+        }
+
+        @Override
+        public CompletableFuture<?> onClose(WebSocket webSocket, int statusCode, String reason) {
+            closeStatusCode = statusCode;
+            closed.countDown();
             return null;
         }
     }

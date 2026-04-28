@@ -201,6 +201,14 @@ public final class AceClawConfig {
     private boolean webSocketEnabled;
     private int webSocketPort;
     private String webSocketHost;
+    /**
+     * Allowlist of {@code Origin} headers permitted to open a WebSocket.
+     * Default empty — browsers cannot connect until the user explicitly opts in
+     * by listing the dashboard's origin (e.g. {@code http://localhost:5173}).
+     * Tools that send no {@code Origin} (curl, Java HttpClient) are always
+     * allowed because cross-site browser attacks cannot suppress the header.
+     */
+    private List<String> webSocketAllowedOrigins;
     private List<String> subAgentAutoApproveTools;
     private Map<String, List<HookMatcherFormat>> hooks;
     private boolean context1m;
@@ -282,6 +290,7 @@ public final class AceClawConfig {
         this.webSocketEnabled = DEFAULT_WEBSOCKET_ENABLED;
         this.webSocketPort = DEFAULT_WEBSOCKET_PORT;
         this.webSocketHost = DEFAULT_WEBSOCKET_HOST;
+        this.webSocketAllowedOrigins = List.of();
         this.subAgentAutoApproveTools = List.of();
         this.providerModels = new java.util.HashMap<>();
         this.context1m = DEFAULT_CONTEXT_1M;
@@ -1209,6 +1218,15 @@ public final class AceClawConfig {
     }
 
     /**
+     * Returns the allowlist of browser {@code Origin} headers permitted to open
+     * a WebSocket connection. Empty list = no browser may connect; tools with
+     * no {@code Origin} header are always allowed.
+     */
+    public List<String> webSocketAllowedOrigins() {
+        return webSocketAllowedOrigins;
+    }
+
+    /**
      * Returns extra tool names to auto-approve for sub-agents, configured via
      * {@code subAgentAutoApproveTools} in config.json. These are merged with
      * the built-in read-only tool whitelist.
@@ -1719,6 +1737,11 @@ public final class AceClawConfig {
             if (fileConfig.webSocket.host != null && !fileConfig.webSocket.host.isBlank()) {
                 this.webSocketHost = fileConfig.webSocket.host;
             }
+            if (fileConfig.webSocket.allowedOrigins != null) {
+                this.webSocketAllowedOrigins = fileConfig.webSocket.allowedOrigins.stream()
+                        .filter(o -> o != null && !o.isBlank())
+                        .toList();
+            }
         }
         if (fileConfig.context1m != null) {
             this.context1m = fileConfig.context1m;
@@ -1846,12 +1869,18 @@ public final class AceClawConfig {
 
     /**
      * JSON structure for the WebSocket bridge section (issue #431).
-     * <pre>{ "enabled": true, "port": 3141, "host": "localhost" }</pre>
+     * <pre>{
+     *   "enabled": true,
+     *   "port": 3141,
+     *   "host": "localhost",
+     *   "allowedOrigins": ["http://localhost:5173"]
+     * }</pre>
      */
     public static class WebSocketConfigFormat {
         public Boolean enabled;
         public Integer port;
         public String host;
+        public List<String> allowedOrigins;
     }
 
     /**

@@ -59,6 +59,13 @@ public final class WebSocketBridge {
     private final String host;
     private final int port;
     private final ObjectMapper objectMapper;
+    /**
+     * Browser {@code Origin} headers allowed to open a WS handshake. Empty =
+     * reject any browser connection; tools that send no {@code Origin} (curl,
+     * Java {@code HttpClient} default) are always accepted because cross-site
+     * browser attacks cannot suppress the header.
+     */
+    private final List<String> allowedOrigins;
     private final Set<WsContext> clients = ConcurrentHashMap.newKeySet();
     /**
      * Connection listeners. Snapshot pushers (#432) and per-client routers (#433)
@@ -79,9 +86,15 @@ public final class WebSocketBridge {
     private volatile InboundHandler inboundHandler = (ctx, message) -> { /* default: drop */ };
 
     public WebSocketBridge(String host, int port, ObjectMapper objectMapper) {
+        this(host, port, objectMapper, List.of());
+    }
+
+    public WebSocketBridge(String host, int port, ObjectMapper objectMapper,
+                           List<String> allowedOrigins) {
         this.host = Objects.requireNonNull(host, "host");
         this.port = port;
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
+        this.allowedOrigins = List.copyOf(Objects.requireNonNull(allowedOrigins, "allowedOrigins"));
     }
 
     /**
@@ -97,6 +110,15 @@ public final class WebSocketBridge {
             cfg.jetty.defaultHost = host;
         }).ws("/ws", ws -> {
             ws.onConnect(ctx -> {
+                if (!isOriginAllowed(ctx)) {
+                    log.warn("WS: rejecting connection from disallowed origin '{}' (sessionId={})",
+                            ctx.header("Origin"), ctx.sessionId());
+                    // 1008 = Policy Violation. Closing here aborts the WS upgrade
+                    // before the client is added to {@link #clients}, so it never
+                    // receives any broadcast.
+                    ctx.closeSession(1008, "origin not allowed");
+                    return;
+                }
                 clients.add(ctx);
                 log.info("WS client connected: {} (total={})", ctx.sessionId(), clients.size());
                 fire(connectListeners, ctx);
@@ -251,6 +273,28 @@ public final class WebSocketBridge {
                 log.warn("WS listener threw: {}", e.toString(), e);
             }
         }
+    }
+
+    /**
+     * Origin policy:
+     * <ul>
+     *   <li>No {@code Origin} header (curl, Java {@code HttpClient} default,
+     *       native Jetty client): always allowed. Browsers cannot suppress the
+     *       header, so absence means a non-browser caller and there is no
+     *       cross-site exposure.</li>
+     *   <li>{@code Origin} present and listed in {@link #allowedOrigins}: allowed.</li>
+     *   <li>{@code Origin} present but not listed (or list is empty): rejected.
+     *       This closes the cross-site exfiltration vector that any malicious
+     *       webpage could otherwise exploit by opening
+     *       {@code new WebSocket('ws://localhost:...')}.</li>
+     * </ul>
+     */
+    private boolean isOriginAllowed(WsContext ctx) {
+        String origin = ctx.header("Origin");
+        if (origin == null) {
+            return true;
+        }
+        return allowedOrigins.contains(origin);
     }
 
     /** Returns the number of currently connected browser clients. */

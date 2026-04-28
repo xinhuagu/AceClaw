@@ -475,10 +475,14 @@ public final class AceClawDaemon {
         // port is held only while the daemon is accepting clients.
         if (config.webSocketEnabled()) {
             this.webSocketBridge = new WebSocketBridge(
-                    config.webSocketHost(), config.webSocketPort(), objectMapper);
+                    config.webSocketHost(), config.webSocketPort(), objectMapper,
+                    config.webSocketAllowedOrigins());
             agentHandler.setWebSocketBridge(this.webSocketBridge);
-            log.info("WebSocket bridge configured: {}:{}",
-                    config.webSocketHost(), config.webSocketPort());
+            log.info("WebSocket bridge configured: {}:{} (allowed browser origins: {})",
+                    config.webSocketHost(), config.webSocketPort(),
+                    config.webSocketAllowedOrigins().isEmpty()
+                            ? "(none — browsers blocked)"
+                            : config.webSocketAllowedOrigins());
         }
         // Use config model for anthropic (user's choice), client's resolved model for other providers
         // (factory may translate or fall back, e.g. copilot ignores anthropic model names)
