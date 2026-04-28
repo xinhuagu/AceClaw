@@ -145,6 +145,12 @@ final class WebSocketBridgeTest {
         // Empty allowedOrigins (the secure default) ⇒ any browser Origin is rejected.
         bridge = startOnRandomPort(List.of());
 
+        // Wire a disconnect listener; it MUST NOT fire for connections that
+        // were never added to the active set — otherwise consumers tracking
+        // connect/disconnect parity would underflow on rejected handshakes.
+        var disconnectFires = new java.util.concurrent.atomic.AtomicInteger();
+        bridge.addDisconnectionListener(_ -> disconnectFires.incrementAndGet());
+
         var queue = new LinkedBlockingQueue<String>();
         var listener = new BufferingListener(queue::add);
         // Java HttpClient lets us forge an Origin header — same surface a malicious
@@ -166,6 +172,9 @@ final class WebSocketBridgeTest {
         bridge.broadcast("sess-1", "stream.text", Map.of("delta", "should-not-arrive"));
         // poll(short) returns null because the client never received anything.
         assertThat(queue.poll(200, TimeUnit.MILLISECONDS)).isNull();
+        assertThat(disconnectFires.get())
+                .as("disconnect listener must NOT fire for handshakes that never joined")
+                .isZero();
     }
 
     @Test

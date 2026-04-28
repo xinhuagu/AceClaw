@@ -133,9 +133,19 @@ public final class WebSocketBridge {
                 fire(connectListeners, ctx);
             });
             ws.onClose(ctx -> {
-                clients.remove(ctx);
-                log.info("WS client closed: {} (total={})", ctx.sessionId(), clients.size());
-                fire(disconnectListeners, ctx);
+                // Gate listener notification on whether this client was ever
+                // an active member: disallowed-origin handshakes are closed in
+                // onConnect BEFORE clients.add, and onError may have already
+                // removed-and-notified the same socket. Either case would
+                // otherwise corrupt listener state (underflowed counts, double
+                // cleanup) for any consumer maintaining connect/disconnect
+                // parity.
+                boolean removed = clients.remove(ctx);
+                log.info("WS client closed: {} (total={}, wasActive={})",
+                        ctx.sessionId(), clients.size(), removed);
+                if (removed) {
+                    fire(disconnectListeners, ctx);
+                }
             });
             ws.onError(ctx -> {
                 boolean removed = clients.remove(ctx);
