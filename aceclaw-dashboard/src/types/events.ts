@@ -31,8 +31,14 @@
  *
  * `eventId` is added by the bridge and is NOT part of the daemon's existing
  * JSON-RPC notification payload. It lives on the envelope, not in `params`.
+ *
+ * The `E` parameter accepts {@link UnknownDaemonEvent} as well as the canonical
+ * {@link DaemonEvent} union, so forward-compatible methods (e.g. Tier 3
+ * `stream.swarm_*`) can be wrapped by the bridge without unsafe casts.
  */
-export interface DaemonEventEnvelope<E extends DaemonEvent = DaemonEvent> {
+export interface DaemonEventEnvelope<
+  E extends DaemonEvent | UnknownDaemonEvent = DaemonEvent,
+> {
   eventId: number;
   sessionId: string;
   receivedAt: string; // ISO-8601, set by bridge
