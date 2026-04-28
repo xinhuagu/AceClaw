@@ -57,7 +57,12 @@ public final class WebSocketBridge {
     private static final Logger log = LoggerFactory.getLogger(WebSocketBridge.class);
 
     private final String host;
-    private final int port;
+    /**
+     * Configured port. {@code 0} means "let Jetty pick an ephemeral port"; in
+     * that case {@link #start()} replaces this with the actually-bound port so
+     * {@link #port()} is always correct after the bridge is running.
+     */
+    private volatile int port;
     private final ObjectMapper objectMapper;
     /**
      * Browser {@code Origin} headers allowed to open a WS handshake. Empty =
@@ -91,6 +96,10 @@ public final class WebSocketBridge {
 
     public WebSocketBridge(String host, int port, ObjectMapper objectMapper,
                            List<String> allowedOrigins) {
+        if (port < 0 || port > 65_535) {
+            throw new IllegalArgumentException(
+                    "port must be in [0, 65535] (0 = ephemeral); got " + port);
+        }
         this.host = Objects.requireNonNull(host, "host");
         this.port = port;
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
@@ -149,8 +158,15 @@ public final class WebSocketBridge {
             });
         });
         instance.start(port);
+        // Replace a 0 (ephemeral) port with the port Jetty actually bound. Tests
+        // rely on this to avoid the TOCTOU race that {@code ServerSocket(0)} +
+        // close-and-rebind would otherwise expose: another process can grab the
+        // port between probe and bridge bind.
+        if (this.port == 0) {
+            this.port = instance.port();
+        }
         this.app = instance;
-        log.info("WebSocket bridge listening on ws://{}:{}/ws", host, port);
+        log.info("WebSocket bridge listening on ws://{}:{}/ws", host, this.port);
     }
 
     /**
@@ -307,7 +323,11 @@ public final class WebSocketBridge {
         return app != null;
     }
 
-    /** Returns the port the bridge was configured to bind to. */
+    /**
+     * Returns the bridge's port. Before {@link #start()} this is the configured
+     * port (which may be {@code 0} when the caller asked for an ephemeral
+     * port); after {@code start()} it is always the actually-bound port.
+     */
     public int port() {
         return port;
     }

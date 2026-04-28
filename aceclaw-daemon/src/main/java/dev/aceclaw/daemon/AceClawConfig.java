@@ -1731,8 +1731,18 @@ public final class AceClawConfig {
             if (fileConfig.webSocket.enabled != null) {
                 this.webSocketEnabled = fileConfig.webSocket.enabled;
             }
-            if (fileConfig.webSocket.port != null && fileConfig.webSocket.port > 0) {
-                this.webSocketPort = fileConfig.webSocket.port;
+            if (fileConfig.webSocket.port != null) {
+                int p = fileConfig.webSocket.port;
+                // Reject out-of-range ports here so a misconfiguration surfaces
+                // at config-parsing time, not later when the bridge tries to
+                // bind. Port 0 ("ephemeral") is intentionally not allowed in
+                // user-facing config — production deployments need a stable
+                // port; tests construct WebSocketBridge directly with port=0.
+                if (p >= 1 && p <= 65_535) {
+                    this.webSocketPort = p;
+                } else {
+                    log.warn("Ignoring invalid webSocket.port {} (must be 1..65535)", p);
+                }
             }
             if (fileConfig.webSocket.host != null && !fileConfig.webSocket.host.isBlank()) {
                 this.webSocketHost = fileConfig.webSocket.host;

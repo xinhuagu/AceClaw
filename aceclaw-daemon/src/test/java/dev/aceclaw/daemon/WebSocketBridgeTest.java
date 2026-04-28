@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.WebSocket;
@@ -216,8 +215,15 @@ final class WebSocketBridgeTest {
         return startOnRandomPort(List.of());
     }
 
+    /**
+     * Asks Jetty to bind an ephemeral port (port=0) and lets the bridge read
+     * back the actually-bound port via {@link WebSocketBridge#port()}. This
+     * avoids the TOCTOU race that {@code ServerSocket(0).close()} +
+     * later-rebind would expose: another process can grab the port in the
+     * window between probe and bind.
+     */
     private WebSocketBridge startOnRandomPort(List<String> allowedOrigins) throws Exception {
-        var b = new WebSocketBridge("127.0.0.1", freePort(), objectMapper, allowedOrigins);
+        var b = new WebSocketBridge("127.0.0.1", 0, objectMapper, allowedOrigins);
         b.start();
         return b;
     }
@@ -227,12 +233,6 @@ final class WebSocketBridgeTest {
                 .buildAsync(URI.create("ws://127.0.0.1:" + bridge.port() + "/ws"),
                         new BufferingListener(onText))
                 .get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-    }
-
-    private static int freePort() throws Exception {
-        try (var s = new ServerSocket(0)) {
-            return s.getLocalPort();
-        }
     }
 
     private static final class BufferingListener implements WebSocket.Listener {
