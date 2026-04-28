@@ -2,10 +2,14 @@
 
 ## A High-Performance, Secure, Self-Learning AI Coding Agent for Java
 
-**Version**: 1.0
-**Date**: 2026-02-16
+**Version**: 1.2
+**Date**: 2026-04-28
 **Status**: Draft
 **Team**: AceClaw PRD Team (Architect, OpenClaw Expert, PO, Security Expert, Engineer, Frontend Developer)
+**Change Log**:
+- v1.2 (2026-04-28): Explicit swarm trigger (`/swarm`, `/team`), DAG-only-at-swarm-tier architecture decision, three-tier execution model (§4.9.3), auto-escalation from Plan to Swarm
+- v1.1 (2026-04-28): Added research-backed Multi-Agent Swarm Architecture (§4.9.2–4.9.6), Meta-Agent concept, Worker lifecycle, real-time Swarm Dashboard, updated Roadmap Phase 4–5
+- v1.0 (2026-02-16): Initial PRD
 
 ---
 
@@ -29,6 +33,7 @@
 11. [MVP Scope](#11-mvp-scope)
 12. [Success Metrics](#12-success-metrics)
 13. [Risks and Mitigations](#13-risks-and-mitigations)
+14. [Research Foundation — Multi-Agent Swarm](#14-research-foundation--multi-agent-swarm)
 
 ---
 
@@ -333,6 +338,384 @@ Agent Teams enable multiple AceClaw agent instances to work collaboratively on c
 
 **Coordination Patterns**: Delegate mode, plan approval, self-claiming, quality gates (hooks), parallel specialists, pipeline, competing hypotheses
 
+### 4.9.2 Multi-Agent Swarm Architecture (Research-Backed)
+
+> Based on synthesis of 7 core papers on Multi-Agent Systems (2025-2026): Multi-Agent Collaboration Survey (arXiv:2501.06322), SwarmAgentic (arXiv:2506.15672), LLM Swarm Intelligence (arXiv:2503.03800), SwarmSys (arXiv:2510.10047), Beyond Frameworks — ACL 2025 (arXiv:2505.12467), LLM-based MAS Survey (arXiv:2412.17481), IEEE SMC MAS×LLM (June 2025).
+
+The current Agent Teams design (§4.9.1) covers in-process collaborative execution. This section extends it with **research-validated swarm intelligence patterns** for large-scale, observable, self-organizing multi-agent systems.
+
+**Core Research Findings Driving This Design**:
+
+| # | Finding | Confidence | Source | Design Impact |
+|---|---------|------------|--------|---------------|
+| 1 | Collaboration > Model Capability | 7/7 consensus | All papers | Invest in coordination architecture, not larger models |
+| 2 | Architecture is task-dependent | 7/7 consensus | P1, P4, P5 | Hybrid: centralized planning + decentralized execution |
+| 3 | Agent count saturates at 8-14 for reasoning | Strong | P4 (SwarmSys) | Cap worker count; parallelize I/O tasks, not reasoning |
+| 4 | Fully automated agent team design is possible | Emerging | P2 (SwarmAgentic) | Meta-Agent auto-designs teams from goals |
+| 5 | Centralized + instructor summarization = best cost/quality | Strong | P5 (ACL 2025) | Meta-Agent as instructor/summarizer |
+| 6 | Adaptive profiles (memory units) enable specialization | Strong | P4 (SwarmSys) | Workers evolve profiles through task history |
+
+### 4.9.3 Meta-Agent Architecture
+
+The **Meta-Agent** is the central coordination intelligence that replaces static orchestration with **dynamic, research-informed swarm management**. It operates within the existing daemon process.
+
+**Key Distinction**: Traditional Agent Teams (§4.9.1) use a Team Lead that is itself an agent running a ReAct loop. The Meta-Agent is a **coordination-only controller** — it does not execute tools directly; it plans, delegates, monitors, and adapts.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        AceClaw Daemon                           │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │                     Meta-Agent                            │  │
+│  │                                                           │  │
+│  │  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐  │  │
+│  │  │ Goal Decomp  │  │ Team Designer │  │ Cost Optimizer │  │  │
+│  │  │ (Task DAG)   │  │ (SwarmAgentic │  │ (P5 patterns)  │  │  │
+│  │  │              │  │  inspired)    │  │                │  │  │
+│  │  └──────────────┘  └──────────────┘  └────────────────┘  │  │
+│  │  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐  │  │
+│  │  │ Worker Pool  │  │ Progress     │  │ Replan Engine  │  │  │
+│  │  │ Manager      │  │ Monitor      │  │                │  │  │
+│  │  └──────────────┘  └──────────────┘  └────────────────┘  │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐      │
+│  │ Worker 1 │  │ Worker 2 │  │ Worker 3 │  │ Worker N │      │
+│  │ (VThread)│  │ (VThread)│  │ (VThread)│  │ (VThread)│      │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘      │
+│       │              │              │              │            │
+│  ┌─────────────────────────────────────────────────────────┐  │
+│  │               Shared State (JSON on Filesystem)          │  │
+│  │  swarm-state.json:  worker profiles, task assignments,   │  │
+│  │                     progress, metrics                    │  │
+│  └─────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+         │
+         ▼ WebSocket (localhost:PORT)
+┌─────────────────────────────────────────────────────────────────┐
+│                    Swarm Dashboard (Web)                         │
+│  Real-time: Task DAG → Progress → Worker Status → Cost          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Meta-Agent Responsibilities**:
+
+| Responsibility | Implementation | Research Basis |
+|----------------|----------------|----------------|
+| **Goal Decomposition** | Parse user goal → generate Task DAG with dependencies | P1: structured decomposition |
+| **Team Design** | Auto-select worker count, roles, and models based on task complexity | P2: SwarmAgentic joint optimization |
+| **Cost Optimization** | Apply instructor-summarization pattern: Meta-Agent filters context for each worker, reducing tokens by up to 93% | P5: ACL 2025 pattern |
+| **Worker Dispatch** | Spawn virtual-thread workers, assign tasks, manage lifecycle | P4: embedding-based matching |
+| **Progress Monitoring** | Track task status, detect stalls, trigger replanning | P4: pheromone reinforcement |
+| **Adaptive Replanning** | When workers fail, reassign or decompose further; max 3 replans | P4: Explorer/Worker/Validator cycle |
+
+**Decision Flow — Three-Tier Execution Model**:
+
+> **Architecture Decision**: DAG parallel execution is **only** implemented at the Swarm tier (Tier 3). The Plan tier (Tier 2) remains strictly linear. This is a deliberate design choice — see §4.9.7 for rationale.
+
+```
+User Input
+  │
+  ├── Explicit swarm trigger? ────────────────────────────→ Tier 3: Swarm Mode
+  │   (/swarm, /team prefix, or                                │
+  │    "agent team"/"agent swarm" in text)                     ▼
+  │                                                    Meta-Agent (§4.9.3)
+  │                                                    DAG parallel execution
+  │
+  ├── plannerEnabled && score ≥ 5? ───────────────────→ Tier 2: Plan Mode
+  │   (ComplexityEstimator regex heuristic)                    │
+  │                                                            ▼
+  │                                                    SequentialPlanExecutor
+  │                                                    Linear steps + fallback + replan
+  │                                                            │
+  │                                                    Plan fails 2+ times?
+  │                                                    ──→ Auto-escalate to Tier 3 ↑
+  │
+  └── Default ────────────────────────────────────────→ Tier 1: ReAct Mode
+                                                               │
+                                                               ▼
+                                                       AgentLoop (single agent)
+                                                       Tool-level parallel only
+```
+
+**Explicit Swarm Trigger**:
+
+The primary entry to Swarm Mode is **user-initiated**, not automatic score-based routing. This is a deliberate UX decision:
+
+| Trigger | Syntax | Example |
+|---------|--------|---------|
+| **Slash command** (primary) | `/swarm <goal>` or `/team <goal>` | `/swarm refactor the auth module, add tests, deploy` |
+| **Natural language** (fallback) | Include "agent team" or "agent swarm" in prompt | `用 agent team 帮我重构 auth 模块` |
+| **Auto-escalation** | Plan Mode fails 2+ consecutive replans | *(automatic, notifies user)* |
+
+Why explicit > automatic:
+- `ComplexityEstimator` is English-only regex — **Chinese prompts always score 0**, making automatic triggering impossible for CJK users
+- Short prompts for complex tasks (e.g., "重构整个项目") get low scores despite high actual complexity
+- User intent is **transparent** — you know exactly which execution tier you're in
+- Zero false positives — no accidental swarm spawning on simple tasks
+
+**Swarm command options** (v1 = minimal, future = extended):
+
+```bash
+# v1 (Phase 5 launch)
+/swarm <goal>              # Meta-Agent decides workers, roles, DAG
+/team <goal>               # Alias for /swarm
+
+# Future extensions
+/swarm --workers=3 <goal>          # Hint: max 3 workers
+/swarm --strategy=parallel <goal>  # Hint: prefer parallel branches
+/swarm --model=haiku <goal>        # Force cheap model for workers
+/swarm --dry-run <goal>            # Show plan without executing
+```
+
+**Routing implementation** (in `StreamingAgentHandler`):
+
+```java
+// Priority-ordered routing
+if (SwarmCommandParser.isSwarmTrigger(prompt)) {        // /swarm, /team, "agent team"
+    String goal = SwarmCommandParser.extractGoal(prompt);
+    return swarmMode(goal, session);
+    
+} else if (plannerEnabled) {
+    var score = complexityEstimator.estimate(prompt);
+    if (score.shouldPlan()) {                            // score ≥ 5
+        return planMode(prompt, session);                // linear, may auto-escalate
+    }
+}
+return reactMode(prompt, session);                       // default
+```
+
+### 4.9.4 Worker Lifecycle and Spawning
+
+**Critical Design Decision**: Workers are **in-process virtual threads** within the daemon JVM, not separate terminal sessions or processes. This directly addresses the observability problem — all workers share the daemon's event bus, state, and monitoring infrastructure.
+
+```java
+// Worker spawning — all within the same daemon JVM
+try (var scope = StructuredTaskScope.open()) {
+    for (PlannedTask task : readyTasks) {
+        scope.fork(() -> {
+            var worker = WorkerAgent.create(task, workerProfile, llmClient);
+            worker.execute();  // Runs ReAct loop on virtual thread
+            return worker.result();
+        });
+    }
+    scope.join();
+}
+```
+
+**Worker Profile Evolution** (inspired by P4 SwarmSys Adaptive Profiles):
+
+| Profile Field | Description | Update Trigger |
+|---------------|-------------|----------------|
+| `role` | Specialized role (coder, reviewer, researcher, tester) | Assigned by Meta-Agent |
+| `capabilities` | Tool/language/framework strengths | Updated after task outcomes |
+| `performance` | Success rate, avg completion time, token efficiency | Updated per task |
+| `workload` | Current task count, estimated remaining work | Real-time |
+| `history` | Recent task IDs + outcomes | Append per task |
+
+Over time, Worker Profiles enable **intelligent task assignment**: the Meta-Agent routes code generation tasks to workers with high coding success rates, and review tasks to workers with strong validation track records.
+
+**Worker Communication**:
+- Workers communicate **only through shared state** (JSON files or in-memory `ConcurrentHashMap`)
+- No direct worker-to-worker messaging (avoids N² communication complexity)
+- Meta-Agent summarizes and distributes relevant context to each worker (instructor pattern, P5)
+- Workers emit structured events via the daemon's EventBus for real-time monitoring
+
+### 4.9.5 Swarm Dashboard (Real-Time Observability)
+
+**Problem Statement**: Agent swarms are opaque — the user has one console but N workers executing in parallel. Without observability, the user cannot understand, control, or trust the swarm.
+
+**Solution**: A lightweight web-based dashboard served by the daemon, rendering the Task DAG and worker status in real-time.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  AceClaw Swarm Dashboard                    [Stop] [Pause]   │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│  Goal: "Refactor auth module to use OAuth2 + add tests"      │
+│                                                              │
+│  ┌─────────────────── Task DAG ───────────────────┐         │
+│  │                                                 │         │
+│  │  [✅ Research OAuth2 libs]                       │         │
+│  │       │                                         │         │
+│  │       ├── [🔄 Implement OAuth2 client] W1       │         │
+│  │       │         │                               │         │
+│  │       │         ├── [⏳ Write unit tests] W3     │         │
+│  │       │         └── [⏳ Update API routes] W4    │         │
+│  │       │                                         │         │
+│  │       └── [🔄 Refactor auth middleware] W2      │         │
+│  │                 │                               │         │
+│  │                 └── [⏳ Integration tests] W5    │         │
+│  │                                                 │         │
+│  └─────────────────────────────────────────────────┘         │
+│                                                              │
+│  Workers                                                     │
+│  ┌──────────┬──────────┬───────────┬──────────┬──────────┐  │
+│  │ W1:Coder │ W2:Coder │ W3:Tester │ W4:Coder │ W5:Test  │  │
+│  │ Haiku    │ Haiku    │ Haiku     │ Haiku    │ Sonnet   │  │
+│  │ ●Active  │ ●Active  │ ○Waiting  │ ○Waiting │ ○Waiting │  │
+│  │ 12/15tok │ 8/15tok  │ —         │ —        │ —        │  │
+│  └──────────┴──────────┴───────────┴──────────┴──────────┘  │
+│                                                              │
+│  Cost: $0.12 | Tokens: 24.3k | Elapsed: 1m 32s | ETA: ~2m   │
+│                                                              │
+├──────────────────────────────────────────────────────────────┤
+│  Event Log                                                   │
+│  19:23:15  W1  Edit: src/auth/oauth2-client.java (+142 -0)   │
+│  19:23:08  W2  Read: src/middleware/auth.java                 │
+│  19:22:54  META Spawned W1(Coder), W2(Coder)                 │
+│  19:22:51  META Plan approved (5 tasks, 2 parallel branches)  │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**Dashboard Technical Design**:
+
+| Component | Technology | Rationale |
+|-----------|-----------|-----------|
+| Server | Javalin (embedded in daemon) | Lightweight, virtual-thread native, ~100KB |
+| Protocol | WebSocket (Server-Sent Events fallback) | Real-time push, low overhead |
+| Frontend | Vanilla HTML/JS + D3.js (for DAG rendering) | No build step, no framework dependency |
+| State Source | Daemon EventBus → WebSocket bridge | Workers emit events, dashboard renders |
+
+**Dashboard Endpoints**:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `GET /dashboard` | HTTP | Serve the single-page dashboard HTML |
+| `WS /ws/swarm` | WebSocket | Real-time event stream (task status, worker events, cost) |
+| `POST /api/swarm/pause` | HTTP | Pause all workers |
+| `POST /api/swarm/stop` | HTTP | Graceful stop of swarm execution |
+| `POST /api/swarm/approve/{taskId}` | HTTP | Approve a pending task |
+| `GET /api/swarm/state` | HTTP | Current swarm state snapshot (JSON) |
+
+**Key Feature**: The plan is shown **before execution** — since AceClaw pre-plans via the Task Planner (§4.5.2), the full Task DAG is visible in the dashboard the moment it's created, before any worker starts. The user sees the complete workflow upfront and can approve, modify, or reject it.
+
+### 4.9.6 Swarm Cost Model and Scaling Rules
+
+Based on research findings, AceClaw enforces the following swarm scaling rules:
+
+| Rule | Value | Source | Rationale |
+|------|-------|--------|-----------|
+| Max reasoning workers | 14 | P4 SwarmSys | Performance saturates beyond this for reasoning tasks |
+| Max parallel I/O workers | 50 | P6 survey | I/O tasks (file search, web fetch) scale linearly |
+| Default worker model | Haiku (fast) | Cost | Workers use cheapest model; Meta-Agent uses Sonnet/Opus for planning |
+| Token budget per worker | Configurable | P5 | Instructor-summarization reduces per-worker context |
+| Cost guard | Configurable $/swarm | Safety | Auto-pause if total swarm cost exceeds threshold |
+| Replan limit | 3 per swarm | P4 | Avoid infinite replan loops |
+
+**Cost Optimization via Instructor-Summarization (P5 Pattern)**:
+
+```
+Traditional approach:
+  Each worker gets full context → N × full_context_tokens → expensive
+
+Meta-Agent as Instructor (P5 pattern):
+  Meta-Agent reads full context once
+  → Summarizes relevant subset for each worker
+  → Each worker gets only its task-relevant context
+  → Up to 93% token reduction (measured by P5)
+```
+
+This is AceClaw's **primary competitive advantage** over naive multi-agent systems: the Meta-Agent acts as an intelligent context filter, not just a task router.
+
+### 4.9.7 Architecture Decision: DAG Only at Swarm Tier
+
+> **Decision**: DAG parallel execution is implemented **exclusively** at the Swarm tier (Tier 3). The Plan tier (Tier 2, `SequentialPlanExecutor`) remains strictly **linear**. This is a deliberate architectural choice, not a missing feature.
+
+**Rationale — why DAG at Plan tier is the wrong abstraction**:
+
+| Issue | Plan Tier (Tier 2) | Swarm Tier (Tier 3) |
+|-------|-------------------|---------------------|
+| **Context model** | All steps share one `allMessages` conversation history. Parallel branches would require merging two divergent conversation streams — non-deterministic, high token cost | Each Worker has an **isolated** `AgentLoop` with independent conversation history. No merge needed |
+| **Failure propagation** | One step failure in a DAG branch affects the entire plan's shared context | One Worker failure is contained — Meta-Agent reassigns or decomposes |
+| **Replan complexity** | Replanning mid-DAG requires re-wiring dependency graph while preserving partial shared context | Meta-Agent simply re-decomposes remaining goals from scratch |
+| **Cost control** | Shared context accumulates across all branches — context window bloat | Instructor-summarization (P5) gives each Worker only its relevant subset — up to 93% token savings |
+| **Observability** | Parallel branches in a single console = interleaved output, unreadable | Swarm Dashboard renders DAG visually with per-Worker status |
+
+**What Tier 2 already provides without DAG**:
+
+```
+Scenario: "Read 3 files, fix each one, run tests"
+
+Tier 2 (Linear Plan):
+  Step 1: "Read and understand files a, b, c"
+    └─ AgentLoop turn: read_file(a) ┐
+                       read_file(b) ├─ StructuredTaskScope ← tool-level parallel!
+                       read_file(c) ┘
+  Step 2: "Fix file a"  → AgentLoop
+  Step 3: "Fix file b"  → AgentLoop
+  Step 4: "Fix file c"  → AgentLoop
+  Step 5: "Run tests"   → AgentLoop
+
+Steps 2-4 are sequential, but for score 3-6 tasks this is acceptable.
+Tool-level parallelism (Tier 1's StructuredTaskScope) already handles
+the most common "read multiple files" pattern within a single step.
+```
+
+**Only genuinely parallel workloads need Swarm**:
+
+```
+Scenario: "Refactor auth, add tests, update docs — all independently"
+
+Tier 3 (Swarm DAG):
+  Worker 1: Refactor auth  ─┐
+  Worker 2: Write tests     ├─ parallel, isolated AgentLoops
+  Worker 3: Update docs     ─┘
+                             │
+                    Meta-Agent joins results
+```
+
+**Three-tier summary**:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                       AceClaw Execution Tiers                       │
+├──────────────┬────────────────────────┬─────────────────────────────┤
+│   Tier 1     │   Tier 2               │   Tier 3                    │
+│   ReAct      │   Linear Plan          │   Swarm (DAG)               │
+├──────────────┼────────────────────────┼─────────────────────────────┤
+│              │                        │                             │
+│  Trigger:    │  Trigger:              │  Trigger:                   │
+│  Default     │  score ≥ 5 (auto)      │  /swarm or /team (explicit) │
+│              │  or /plan (explicit)   │  or auto-escalation         │
+│              │                        │                             │
+│  Execution:  │  Execution:            │  Execution:                 │
+│  Single      │  Sequential steps      │  DAG with parallel branches │
+│  ReAct loop  │  Shared context        │  Isolated Workers           │
+│              │  fallback + replan     │  Meta-Agent coordination    │
+│              │                        │                             │
+│  Parallel:   │  Parallel:             │  Parallel:                  │
+│  Tool-level  │  Tool-level (per step) │  Task-level (Worker DAG)    │
+│  (same turn) │  Steps are linear      │  + tool-level (per Worker)  │
+│              │                        │                             │
+│  Context:    │  Context:              │  Context:                   │
+│  Shared      │  Shared (allMessages)  │  Isolated per Worker        │
+│  (cumulative)│  (cumulative)          │  (instructor-summarized)    │
+│              │                        │                             │
+│  Status: ✅   │  Status: ✅             │  Status: Phase 5            │
+└──────────────┴────────────────────────┴─────────────────────────────┘
+```
+
+**Auto-escalation** (Plan → Swarm):
+
+When the Plan tier fails repeatedly, the system can automatically escalate to Swarm mode:
+
+```java
+// In SequentialPlanExecutor — after replan also fails
+if (replanAttempt >= MAX_REPLAN_ATTEMPTS) {
+    var escalation = AdaptiveReplanner.Escalated("Plan exhausted 3 replans");
+    
+    if (swarmEnabled && SwarmEscalationPolicy.shouldEscalate(plan, failureHistory)) {
+        eventBus.publish(new PlanEvent.EscalatedToSwarm(plan.planId()));
+        notifyUser("Plan mode exhausted — escalating to swarm mode");
+        return swarmMode(plan.originalGoal(), session);  // hand off to Meta-Agent
+    }
+    return PlanResult.failed(escalation.reason());
+}
+```
+
+This creates a natural **safety net**: complex tasks that were misjudged as medium-complexity (score 3-6) will auto-recover by escalating to the more powerful Swarm tier.
+
 ### 4.10 Adaptive Skills and Slash Commands
 
 - **Skills**: Model-invoked capabilities auto-matched to user requests (`.aceclaw/skills/`), with **adaptive learning**:
@@ -504,6 +887,15 @@ aceclaw-cli ──> aceclaw-daemon (thin client connects via UDS)
 - `AgentTask`, `TaskStatus` (PENDING, IN_PROGRESS, COMPLETED, DELETED), `TaskStore`, `TaskUpdate`
 - `TeamConfig`, `TeamMember`, `TeammateConfig`, `TeammateBackend` (IN_PROCESS, EXTERNAL_PROCESS, TMUX)
 - `TeamContext` (ScopedValues: TEAM_NAME, AGENT_ID, AGENT_NAME, AGENT_TYPE, PLAN_MODE_REQUIRED)
+
+**Swarm interfaces** (aceclaw-core, Phase 5):
+- `SwarmCommandParser` (detects `/swarm`, `/team`, "agent team" triggers; extracts goal and options)
+- `SwarmEscalationPolicy` (decides when Plan tier auto-escalates to Swarm tier)
+- `MetaAgent`, `GoalDecomposer`, `TeamDesigner`, `CostOptimizer`, `ProgressMonitor`, `ReplanEngine`
+- `WorkerPool`, `WorkerAgent`, `WorkerProfile` (role, capabilities, performance, workload, history)
+- `SwarmState`, `SwarmConfig`, `SwarmCostGuard`
+- `SwarmEvent` (sealed: SwarmCreated, WorkerSpawned, TaskAssigned, TaskCompleted, TaskFailed, ReplanTriggered, SwarmCompleted, CostLimitReached, **EscalatedFromPlan**)
+- `SwarmDashboard`, `DashboardWebSocket`, `DashboardState`
 
 **Adaptive skills interfaces** (aceclaw-memory / aceclaw-core):
 - `SkillState` (sealed: Draft, Active, Deprecated, Disabled), `SkillDefinition`, `SkillMetadata`, `SkillMetrics`
@@ -887,6 +1279,9 @@ This ensures no insight is lost even if the agent did not actively call `memory 
 | Task Planner (basic, single-branch) | P1 | Autonomous planning for complex tasks |
 | Task Planner (full DAG, parallel execution) | P2 | Parallel branch execution + replanning |
 | Task Planner (Agent Teams bridge) | P3 | Auto-materialize plans into team TaskStore |
+| Swarm explicit trigger (`/swarm`, `/team`) | P3 | User-initiated swarm mode; language-agnostic routing |
+| Swarm auto-escalation (Plan → Swarm) | P3 | Safety net for misjudged complexity; SwarmEscalationPolicy |
+| DAG parallel execution (Swarm tier only) | P3 | Task-level parallelism via isolated Worker AgentLoops |
 | Skills system (basic) | P2 | Model-invoked extensibility |
 | Adaptive skills (learning loop, metrics) | P2 | Self-improving skill system |
 | Auto-generated skills | P3 | Pattern-based skill proposal |
@@ -904,9 +1299,10 @@ This ensures no insight is lost even if the agent did not actively call `memory 
 
 | Feature | Rationale |
 |---------|----------|
-| Multi-agent team orchestration | Phase 4 (Weeks 13-18); infrastructure (event bus, message queue, scheduler) laid in v1.0-v2.0; design faithfully ports Claude Code's agent team model (sealed TeamMessage, TaskStore, TeamMessageRouter with dual-mode transport) |
+| Multi-agent team orchestration | Phase 4 (Weeks 13-18); infrastructure ready in v1.0-v2.0 |
+| Multi-agent swarm intelligence | Phase 5 (Weeks 19-26); depends on Phase 4 Agent Teams |
 | Plugin distribution system | Needs stable core API |
-| Web dashboard | CLI-first approach |
+| Full web dashboard (project management) | CLI-first; Swarm Dashboard (Phase 5) is monitoring-only |
 | IDE plugins | Requires stable core API |
 | Enterprise SSO/RBAC | Needs organizational infrastructure |
 | MCP server mode | Client-first |
@@ -920,6 +1316,7 @@ This ensures no insight is lost even if the agent did not actively call `memory 
 | **Phase 2: Intelligence** | Weeks 5-8 | **Multi-session daemon, session persistence/resume, heartbeat runner (HEARTBEAT.md), cron scheduler, BOOT.md, background memory consolidation**, memory/compaction, OS-level sandbox, OpenAI/Ollama, hooks, health monitor, circuit breakers, LLM failover, Task Planner (ComplexityEstimator + basic single-branch plans) |
 | **Phase 3: Extensibility** | Weeks 9-12 | **WebSocket listener (IDE), JSON-RPC full method set, codebase indexing**, MCP client, plugin SPI, auto-memory, rich terminal UI, subagents, basic skills system, full event type hierarchy, message queue (point-to-point + pub/sub), adaptive skills (metrics tracking + learning loop), Task Planner (full DAG, parallel execution, replanning, PlanEvent) |
 | **Phase 4: Multi-Agent** | Weeks 13-18 | **`aceclaw daemon install` (launchd/systemd), Agent Teams persistence (survive client disconnect), file watchers, remote access (TLS + auth)**, agent teams (sealed TeamMessage, TeamManager, TaskStore, dual-mode transport, in-process/external teammates, plan approval), message queue (request-reply + DLQ + TTL), skill refinement engine, auto-generated skills, GraalVM native builds, Task Planner (Agent Teams bridge, adaptive plan templates) |
+| **Phase 5: Swarm Intelligence** | Weeks 19-26 | **Explicit swarm trigger (`/swarm`, `/team` commands + natural language detection), SwarmCommandParser, three-tier routing (ReAct → Plan → Swarm), auto-escalation from Plan to Swarm (SwarmEscalationPolicy)**, Meta-Agent controller, Worker Pool Manager, DAG-only-at-swarm-tier execution, Swarm Dashboard (Javalin + WebSocket + D3.js), Worker Profile evolution, instructor-summarization cost optimization, swarm cost guard, adaptive replanning, goal decomposition engine, swarm state persistence, dashboard controls (pause/stop/approve), multi-model worker assignment (Haiku workers + Sonnet/Opus planner), research-backed scaling rules (14-worker cap for reasoning) |
 
 ---
 
@@ -959,6 +1356,19 @@ This ensures no insight is lost even if the agent did not actively call `memory 
 | Resume binding accuracy (`continue`) | >= 95% (replay set) |
 | Cross-workspace auto-resume leakage | 0 |
 
+### Swarm (Phase 5)
+
+| Metric | Target |
+|--------|--------|
+| Meta-Agent plan generation | < 5 seconds |
+| Worker spawn latency | < 50ms per worker (virtual thread) |
+| Dashboard render latency | < 100ms (WebSocket push) |
+| Token cost reduction (vs naive broadcast) | > 80% (instructor-summarization) |
+| Swarm task completion rate | > 80% |
+| Adaptive replan success rate | > 60% (within 3 replans) |
+| Worker profile accuracy (task routing) | > 70% after 20 swarm runs |
+| Dashboard uptime during swarm | 100% |
+
 ### User Experience
 
 | Metric | Target |
@@ -996,6 +1406,11 @@ This ensures no insight is lost even if the agent did not actively call `memory 
 | **Auto-generated skill noise** | Medium | Low | Require 3+ matching patterns before proposing; user must approve all drafts; clear rejection path |
 | **Message queue ordering edge cases** | Low | Medium | FIFO guaranteed per queue; correlation IDs for request-reply; thorough testing with concurrent producers |
 | **Circuit breaker tuning** | Medium | Low | Conservative defaults (5 failures / 60s reset); configurable per provider; observability via event bus |
+| **Swarm cost explosion** | Medium | High | Cost guard with configurable $/swarm threshold; auto-pause on breach; instructor-summarization reduces baseline cost by ~93% |
+| **Worker coordination deadlock** | Low | High | Workers communicate only via shared state (no direct messaging); Meta-Agent detects stalls via progress monitoring; 5-minute timeout per task |
+| **Emergent deceptive coordination** | Low | Medium | All worker actions gated by existing permission system; Meta-Agent audits all state changes; replan limit of 3 prevents runaway loops |
+| **Dashboard as attack surface** | Low | Medium | Bind to localhost only; optional auth token; no external network access; read-only by default |
+| **Meta-Agent single point of failure** | Medium | High | Meta-Agent runs on daemon's main thread; daemon crash recovery preserves swarm state to disk; workers resume from last checkpoint |
 
 ---
 
@@ -1014,4 +1429,65 @@ All detailed research is available in the `research/` directory:
 
 ---
 
-*This PRD was compiled from research by the AceClaw PRD Team: Architect, OpenClaw Expert, Product Owner, Security Expert, Java Engineer, and Frontend Developer.*
+---
+
+## 14. Research Foundation — Multi-Agent Swarm
+
+The Swarm Architecture design (§4.9.2–4.9.6) is grounded in a systematic review of 7 core academic papers published between 2025-2026. This section maps each research finding to its corresponding AceClaw design decision.
+
+### 14.1 Source Papers
+
+| ID | Paper | Institution | Published | Key Contribution |
+|----|-------|-------------|-----------|------------------|
+| P1 | Multi-Agent Collaboration Mechanisms Survey | Univ. College Cork | arXiv:2501.06322 | 5-dimensional collaboration framework |
+| P2 | SwarmAgentic | LMU Munich | arXiv:2506.15672 | Fully automated agent system generation via PSO |
+| P3 | LLM-driven Swarm Intelligence | CY Cergy Paris | arXiv:2503.03800 | LLM replacing hard-coded swarm rules in NetLogo |
+| P4 | SwarmSys | HKUST-GZ, NYU | arXiv:2510.10047 | Decentralized pheromone-inspired reasoning (GPT-4o swarm → 70% of GPT-5) |
+| P5 | Beyond Frameworks (ACL 2025) | Harbin IT | arXiv:2505.12467 | Fine-grained collaboration experiments: centralized + instructor = 93% cost reduction |
+| P6 | LLM-based MAS Survey | Harbin IT | arXiv:2412.17481 | 125-paper application taxonomy |
+| P7 | IEEE SMC MAS×LLM | CNR Italy | June 2025 | Architecture fusion of MAS and LLM |
+
+### 14.2 Research → Design Mapping
+
+| Research Finding | Evidence | AceClaw Design Decision |
+|------------------|----------|-------------------------|
+| **Collaboration > Model Capability** (7/7 consensus) | P4: GPT-4o swarm closed 70% of gap to GPT-5 purely through coordination | Meta-Agent invests in coordination architecture; workers use cheap models (Haiku) |
+| **Centralized planning + decentralized execution = optimal hybrid** | P5: centralized + instructor → 93% token reduction; P4: decentralized execution → emergent specialization | Meta-Agent (centralized planning) + Worker Pool (decentralized execution) |
+| **Reasoning tasks saturate at 8-14 agents** | P4: SwarmSys ablation — gains plateau at 14 workers | `MAX_REASONING_WORKERS = 14` hard cap |
+| **Instructor-summarization is the best cost/quality pattern** | P5: ordered turns + instructor summarization = best token-to-accuracy ratio | Meta-Agent filters and summarizes context per worker (up to 93% token savings) |
+| **Adaptive profiles enable specialization** | P4: Worker profiles (role, capability, performance) evolve through task history | `WorkerProfile` with role, capabilities, performance, history fields |
+| **Automated agent team design is feasible** | P2: SwarmAgentic generates agents from scratch + self-optimizes | Meta-Agent Team Designer auto-selects worker count, roles, and models |
+| **Communication pattern matters more than message content** | P5: simultaneous broadcast = worst; sequential ordered = best quality | Workers communicate only through shared state; no direct worker-worker messaging |
+| **Memory must evolve from stateless to adaptive** | P4: stateless → three-layer → adaptive archive (frontier) | Worker Profiles are adaptive archives; Meta-Agent maintains swarm-level memory |
+
+### 14.3 Open Research Questions Tracked
+
+These unresolved questions from the literature will guide iterative improvements:
+
+| Question | Status | Action |
+|----------|--------|--------|
+| Optimal agent count given budget + task complexity | Unresolved | Meta-Agent uses heuristic; collect telemetry to build empirical model |
+| Standardized MAS benchmarks | Immature | Track SWE-bench, GAIA, TravelPlanner for swarm evaluation |
+| Safety in emergent coordination | Theoretical | Cost guard + replan limit + human approval gate |
+| Token cost prediction models | None exist | Instrument swarm runs; build regression model over time |
+| Human-in-the-loop optimal insertion points | Underexplored | Dashboard approval gates at plan creation + high-risk tasks |
+
+### 14.4 Competitive Positioning
+
+| Capability | Claude Code | OpenClaw | CrewAI | LangGraph | AceClaw (Phase 5) |
+|-----------|------------|---------|--------|-----------|-------------------|
+| Sub-agents | ✅ (basic) | ✅ | ❌ | ✅ | ✅ |
+| Multi-agent teams | ✅ (Team Lead) | ❌ | ✅ (static roles) | ✅ (graph) | ✅ (Meta-Agent + dynamic workers) |
+| **Explicit swarm trigger** | ❌ | ❌ | ❌ | ❌ | **✅ (`/swarm`, `/team`, natural language)** |
+| **Three-tier execution** | ❌ (ReAct only) | ❌ | ❌ | Partial | **✅ (ReAct → Plan → Swarm)** |
+| **Auto-escalation** | ❌ | ❌ | ❌ | ❌ | **✅ (Plan fails → Swarm)** |
+| Real-time dashboard | ❌ | ❌ | ❌ | ❌ | **✅ (Swarm Dashboard)** |
+| Pre-execution plan visibility | ❌ | ❌ | ❌ | Partial | **✅ (full DAG before execution)** |
+| Worker profile evolution | ❌ | ❌ | ❌ | ❌ | **✅ (adaptive profiles, P4)** |
+| Instructor-summarization | ❌ | ❌ | ❌ | ❌ | **✅ (93% token reduction, P5)** |
+| Automated team design | ❌ | ❌ | ❌ | ❌ | **✅ (SwarmAgentic-inspired, P2)** |
+| Research-backed scaling rules | ❌ | ❌ | ❌ | ❌ | **✅ (7-paper synthesis)** |
+
+---
+
+*This PRD was compiled from research by the AceClaw PRD Team: Architect, OpenClaw Expert, Product Owner, Security Expert, Java Engineer, and Frontend Developer. Swarm Architecture sections (§4.9.2–4.9.6, §14) are informed by systematic review of 7 academic papers (2025-2026).*
