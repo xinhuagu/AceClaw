@@ -260,7 +260,7 @@ public final class StreamingAgentHandler {
         var bridge = this.webSocketBridge;
         cancelContext = bridge != null
                 ? new CancelAwareStreamContext(
-                        context, new EventMultiplexer(context, bridge),
+                        context, new EventMultiplexer(context, bridge, sessionId),
                         cancellationToken, objectMapper)
                 : new CancelAwareStreamContext(context, cancellationToken, objectMapper);
 

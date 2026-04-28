@@ -43,7 +43,7 @@ final class WebSocketBridgeTest {
     }
 
     @Test
-    void broadcastsJsonRpcNotificationToAllConnectedClients() throws Exception {
+    void broadcastsDaemonEventEnvelopeToAllConnectedClients() throws Exception {
         bridge = startOnRandomPort();
 
         var connected = new CountDownLatch(2);
@@ -59,28 +59,63 @@ final class WebSocketBridgeTest {
                 .as("both clients must connect within %dms", AWAIT_TIMEOUT_MS)
                 .isTrue();
         assertThat(bridge.clientCount()).isEqualTo(2);
+        assertThat(bridge.currentEventId()).isZero();
 
-        bridge.broadcast("stream.text", Map.of("delta", "hello"));
+        bridge.broadcast("sess-1", "stream.text", Map.of("delta", "hello"));
 
         var msg1 = queue1.poll(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
         var msg2 = queue2.poll(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
         assertThat(msg1).isNotNull();
         assertThat(msg2).isNotNull();
 
+        // Wire format must match aceclaw-dashboard/src/types/events.ts
+        // DaemonEventEnvelope { eventId, sessionId, receivedAt, event:{method, params} }.
         var node = objectMapper.readTree(msg1);
-        assertThat(node.get("jsonrpc").asText()).isEqualTo("2.0");
-        assertThat(node.get("method").asText()).isEqualTo("stream.text");
-        assertThat(node.get("params").get("delta").asText()).isEqualTo("hello");
+        assertThat(node.get("eventId").asLong()).isEqualTo(1L);
+        assertThat(node.get("sessionId").asText()).isEqualTo("sess-1");
+        assertThat(node.get("receivedAt").asText()).isNotBlank();
+        assertThat(node.has("jsonrpc")).as("envelope must NOT be JSON-RPC framed").isFalse();
+        var event = node.get("event");
+        assertThat(event.get("method").asText()).isEqualTo("stream.text");
+        assertThat(event.get("params").get("delta").asText()).isEqualTo("hello");
         assertThat(msg2).isEqualTo(msg1);
+        assertThat(bridge.currentEventId()).isEqualTo(1L);
 
         ws1.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
         ws2.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     }
 
     @Test
+    void eventIdIsMonotonicAcrossSuccessiveBroadcasts() throws Exception {
+        bridge = startOnRandomPort();
+        var connected = new CountDownLatch(1);
+        bridge.addConnectionListener(_ -> connected.countDown());
+        var queue = new LinkedBlockingQueue<String>();
+        var ws = connect(queue::add);
+        assertThat(connected.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)).isTrue();
+
+        bridge.broadcast("sess-A", "stream.text", Map.of("delta", "1"));
+        bridge.broadcast("sess-A", "stream.text", Map.of("delta", "2"));
+        bridge.broadcast("sess-B", "stream.text", Map.of("delta", "3"));
+
+        long id1 = objectMapper.readTree(queue.poll(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS))
+                .get("eventId").asLong();
+        long id2 = objectMapper.readTree(queue.poll(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS))
+                .get("eventId").asLong();
+        long id3 = objectMapper.readTree(queue.poll(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS))
+                .get("eventId").asLong();
+        assertThat(id1).isEqualTo(1L);
+        assertThat(id2).isEqualTo(2L);
+        assertThat(id3).isEqualTo(3L);
+        assertThat(bridge.currentEventId()).isEqualTo(3L);
+
+        ws.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    }
+
+    @Test
     void broadcastBeforeAnyClientIsANoOp() throws Exception {
         bridge = startOnRandomPort();
-        bridge.broadcast("stream.heartbeat", Map.of("phase", "warmup"));
+        bridge.broadcast("sess-1", "stream.heartbeat", Map.of("phase", "warmup"));
         assertThat(bridge.clientCount()).isZero();
     }
 
@@ -101,7 +136,7 @@ final class WebSocketBridgeTest {
         assertThat(bridge.clientCount()).isZero();
 
         // The daemon must not crash or hang when broadcasting after a disconnect.
-        bridge.broadcast("stream.text", Map.of("delta", "after-close"));
+        bridge.broadcast("sess-1", "stream.text", Map.of("delta", "after-close"));
         assertThat(bridge.isRunning()).isTrue();
     }
 

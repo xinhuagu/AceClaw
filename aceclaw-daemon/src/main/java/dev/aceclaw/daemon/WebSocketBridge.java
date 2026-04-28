@@ -6,11 +6,13 @@ import io.javalin.websocket.WsContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 /**
@@ -28,11 +30,24 @@ import java.util.function.Consumer;
  * </pre>
  *
  * <p>The bridge is intentionally one-way fan-out for Tier 1: every
- * {@link #broadcast(String, Object)} call serialises a JSON-RPC notification
- * and sends it to every connected {@link WsContext}. Inbound messages from
- * browsers (e.g. {@code permission.response}) are accepted and parked on
+ * {@link #broadcast(String, String, Object)} call wraps the daemon event in the
+ * {@code DaemonEventEnvelope} contract frozen by issue #439 and sends it to
+ * every connected {@link WsContext}. Inbound messages from browsers (e.g.
+ * {@code permission.response}) are accepted and parked on
  * {@link #setInboundHandler(InboundHandler)} so issue #433 can wire them
  * into the permission flow without touching this class again.
+ *
+ * <p>Wire format (matches {@code aceclaw-dashboard/src/types/events.ts}):
+ * <pre>{@code
+ * {
+ *   "eventId":    <monotonic long>,        // bridge-assigned, used by #432 snapshot dedup
+ *   "sessionId":  <string>,                // session this event belongs to
+ *   "receivedAt": <ISO-8601>,              // bridge-assigned timestamp
+ *   "event":      { method, params }       // mirrors DaemonEvent union
+ * }
+ * }</pre>
+ * The {@code eventId} counter is monotonic per bridge instance and resets on
+ * bridge restart — re-connecting clients fetch a fresh snapshot watermark.
  *
  * <p>Security: always binds to {@code localhost} by default. Acceptance
  * criterion from #431.
@@ -52,6 +67,13 @@ public final class WebSocketBridge {
      */
     private final List<Consumer<WsContext>> connectListeners = new CopyOnWriteArrayList<>();
     private final List<Consumer<WsContext>> disconnectListeners = new CopyOnWriteArrayList<>();
+    /**
+     * Monotonic envelope id (issue #439). Pre-incremented on each broadcast so
+     * the first event gets {@code eventId = 1}; {@link #currentEventId()}
+     * returns the last id assigned, which #432's snapshot endpoint will use as
+     * the {@code lastEventId} watermark.
+     */
+    private final AtomicLong eventIdCounter = new AtomicLong();
 
     private volatile Javalin app;
     private volatile InboundHandler inboundHandler = (ctx, message) -> { /* default: drop */ };
@@ -129,7 +151,8 @@ public final class WebSocketBridge {
     }
 
     /**
-     * Broadcasts a JSON-RPC 2.0 notification to all connected clients.
+     * Broadcasts a daemon event to all connected clients, wrapped in the
+     * {@code DaemonEventEnvelope} shape frozen by issue #439.
      *
      * <p>{@link WsContext#send(String)} is non-blocking — Jetty queues the frame
      * and reports send failures asynchronously via {@code onError}, which is
@@ -137,19 +160,34 @@ public final class WebSocketBridge {
      * here is a fallback for the rare case where {@code send} throws inline
      * (e.g. session already closed); it does not catch async failures.
      *
-     * @param method JSON-RPC method (e.g. {@code "stream.text"})
-     * @param params notification parameters; serialised via Jackson
+     * <p>{@code sessionId} is required so the reducer can recover session
+     * identity for events whose {@code params} do not carry it (e.g.
+     * {@code stream.text}, {@code stream.tool_use}, {@code stream.tool_completed}).
+     *
+     * @param sessionId session this event belongs to (must not be null)
+     * @param method    daemon event method (e.g. {@code "stream.text"})
+     * @param params    event parameters; serialised via Jackson
      */
-    public void broadcast(String method, Object params) {
+    public void broadcast(String sessionId, String method, Object params) {
+        Objects.requireNonNull(sessionId, "sessionId");
         if (clients.isEmpty() || app == null) {
             return;
         }
+        // Always assign an envelope id even with no live clients so the counter
+        // remains a faithful monotonic record. The early-return above is purely
+        // an optimisation; if it is removed in future work the eventId stream
+        // still has no gaps.
+        long eventId = eventIdCounter.incrementAndGet();
         String message;
         try {
             var envelope = objectMapper.createObjectNode();
-            envelope.put("jsonrpc", "2.0");
-            envelope.put("method", method);
-            envelope.set("params", objectMapper.valueToTree(params));
+            envelope.put("eventId", eventId);
+            envelope.put("sessionId", sessionId);
+            envelope.put("receivedAt", Instant.now().toString());
+            var event = objectMapper.createObjectNode();
+            event.put("method", method);
+            event.set("params", objectMapper.valueToTree(params));
+            envelope.set("event", event);
             message = objectMapper.writeValueAsString(envelope);
         } catch (Exception e) {
             log.warn("Failed to serialise WS broadcast for {}: {}", method, e.getMessage());
@@ -165,6 +203,16 @@ public final class WebSocketBridge {
                 clients.remove(client);
             }
         }
+    }
+
+    /**
+     * Returns the last envelope id assigned by {@link #broadcast}; zero if no
+     * event has ever been broadcast on this bridge instance. Used by #432's
+     * snapshot endpoint as the {@code lastEventId} watermark a freshly-loaded
+     * browser sends back to deduplicate the live stream against the snapshot.
+     */
+    public long currentEventId() {
+        return eventIdCounter.get();
     }
 
     /**
