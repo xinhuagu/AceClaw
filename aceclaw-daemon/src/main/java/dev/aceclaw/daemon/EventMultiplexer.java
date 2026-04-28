@@ -21,9 +21,9 @@ import java.util.Objects;
  * </ul>
  *
  * <p>If the bridge is disabled (i.e. the daemon was started without the
- * WebSocket section), construction is skipped at the call site and the raw
- * {@link StreamContext} is used as before — zero overhead, zero behavioural
- * change for the CLI path.
+ * WebSocket section), the call site uses the raw {@link StreamContext} directly
+ * and does not instantiate this class — zero overhead, zero behavioural change
+ * for the CLI path.
  */
 public final class EventMultiplexer implements StreamContext {
 

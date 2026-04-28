@@ -83,7 +83,9 @@ public final class WebSocketBridge {
                     var node = objectMapper.readTree(ctx.message());
                     inboundHandler.handle(ctx, node);
                 } catch (Exception e) {
-                    log.warn("WS inbound parse failed: {}", e.getMessage());
+                    // Log full stack — debugging #433's permission-routing handler
+                    // is painful without it.
+                    log.warn("WS inbound parse failed", e);
                 }
             });
         });
@@ -114,8 +116,11 @@ public final class WebSocketBridge {
     /**
      * Broadcasts a JSON-RPC 2.0 notification to all connected clients.
      *
-     * <p>Failed sends to a single client are logged and that client is dropped;
-     * a slow/dead browser tab cannot block notifications to others.
+     * <p>{@link WsContext#send(String)} is non-blocking — Jetty queues the frame
+     * and reports send failures asynchronously via {@code onError}, which is
+     * already wired to remove the client. The synchronous {@code try/catch}
+     * here is a fallback for the rare case where {@code send} throws inline
+     * (e.g. session already closed); it does not catch async failures.
      *
      * @param method JSON-RPC method (e.g. {@code "stream.text"})
      * @param params notification parameters; serialised via Jackson
@@ -139,6 +144,8 @@ public final class WebSocketBridge {
             try {
                 client.send(message);
             } catch (Exception e) {
+                // Synchronous failure (e.g. session closed mid-iteration). Async
+                // failures land on onError above, which also removes the client.
                 log.warn("WS send failed for {}: {}", client.sessionId(), e.getMessage());
                 clients.remove(client);
             }
@@ -147,11 +154,11 @@ public final class WebSocketBridge {
 
     /**
      * Installs a handler for inbound client messages (e.g. permission.response).
-     * Default handler drops messages so issue #431 stays one-way; #433 will
+     * The default handler drops messages so issue #431 stays one-way; #433 will
      * register a real handler that routes into the permission flow.
      */
     public void setInboundHandler(InboundHandler handler) {
-        this.inboundHandler = handler != null ? handler : (ctx, message) -> { };
+        this.inboundHandler = Objects.requireNonNull(handler, "handler");
     }
 
     /** Returns the number of currently connected browser clients. */

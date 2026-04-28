@@ -227,7 +227,16 @@ public final class StreamingAgentHandler {
 
         // Set workspace context for tools (e.g. CronTool) that need to know the current workspace.
         // Cleared in the finally block below to cover all exit paths (success, plan, resume, error).
+        //
+        // Lifecycle-notification state (issue #431) is declared HERE — outside the
+        // try block — so the outer finally can emit stream.turn_completed even
+        // when one of the ~60 lines of setup work below throws between the
+        // turn_started emission and the inner turnLock try.
         CronTool.setWorkspaceContext(session.projectPath().toString());
+        CancelAwareStreamContext cancelContext = null;
+        String requestId = null;
+        int turnNumber = 0;
+        long turnStartMillis = 0L;
         try {
 
         log.info("Streaming agent prompt: sessionId={}, promptLength={}", sessionId, prompt.length());
@@ -246,7 +255,7 @@ public final class StreamingAgentHandler {
         // connected browser clients in addition to the per-request CLI socket.
         var cancellationToken = new CancellationToken();
         var bridge = this.webSocketBridge;
-        var cancelContext = bridge != null
+        cancelContext = bridge != null
                 ? new CancelAwareStreamContext(
                         context, new EventMultiplexer(context, bridge),
                         cancellationToken, objectMapper)
@@ -256,11 +265,11 @@ public final class StreamingAgentHandler {
         // These three events fire per agent.prompt request; they let browser
         // dashboards anchor a Turn-level node and render session boundaries
         // without inferring them from text-delta gaps. The CLI ignores them.
-        long turnStartMillis = System.currentTimeMillis();
-        String requestId = "turn-" + UUID.randomUUID();
+        turnStartMillis = System.currentTimeMillis();
+        requestId = "turn-" + UUID.randomUUID();
         // turnNumber = Nth user message in this session, matching the existing
         // AgentEvent.TurnStarted semantics in StreamingAgentLoop.
-        int turnNumber = (int) session.messages().stream()
+        turnNumber = (int) session.messages().stream()
                 .filter(m -> m instanceof AgentSession.ConversationMessage.User).count() + 1;
         if (sessionsStartedSignaled.add(sessionId)) {
             try {
@@ -392,22 +401,6 @@ public final class StreamingAgentHandler {
             String userMessage = formatLlmError(e);
             throw new IllegalStateException(userMessage);
         } finally {
-            // Emit stream.turn_completed BEFORE stopMonitor so the channel still
-            // accepts writes. Fires on all exit paths (success returns, exception
-            // catch+rethrow, unexpected throws) so the browser tree always closes
-            // its Turn node.
-            try {
-                var tcp = objectMapper.createObjectNode();
-                tcp.put("sessionId", sessionId);
-                tcp.put("requestId", requestId);
-                tcp.put("turnNumber", turnNumber);
-                tcp.put("durationMs", System.currentTimeMillis() - turnStartMillis);
-                tcp.put("toolCount", cancelContext.toolUseCount());
-                tcp.put("timestamp", Instant.now().toString());
-                cancelContext.sendNotification("stream.turn_completed", tcp);
-            } catch (Exception e) {
-                log.debug("Failed to send stream.turn_completed: {}", e.getMessage());
-            }
             if (watchdog != null) {
                 watchdog.close();
             }
@@ -417,6 +410,29 @@ public final class StreamingAgentHandler {
         }
 
         } finally {
+            // Emit stream.turn_completed in the OUTER finally so it fires on every
+            // exit path — including exceptions thrown by the ~60 lines of setup
+            // between the turn_started emission and the inner turnLock try.
+            // Guard with requestId != null so we never emit a closer for a Turn
+            // we never opened (e.g. CancelAwareStreamContext construction itself
+            // threw, or we exited before reaching the turn_started block).
+            // stopMonitor (above) only stops the read pump; the underlying channel
+            // remains writable until the request response is dispatched, so this
+            // late notification still reaches the client.
+            if (cancelContext != null && requestId != null) {
+                try {
+                    var tcp = objectMapper.createObjectNode();
+                    tcp.put("sessionId", sessionId);
+                    tcp.put("requestId", requestId);
+                    tcp.put("turnNumber", turnNumber);
+                    tcp.put("durationMs", System.currentTimeMillis() - turnStartMillis);
+                    tcp.put("toolCount", cancelContext.toolUseCount());
+                    tcp.put("timestamp", Instant.now().toString());
+                    cancelContext.sendNotification("stream.turn_completed", tcp);
+                } catch (Exception e) {
+                    log.debug("Failed to send stream.turn_completed: {}", e.getMessage());
+                }
+            }
             CronTool.clearWorkspaceContext();
         }
     }
@@ -1846,6 +1862,7 @@ public final class StreamingAgentHandler {
         sessionProgressDetectors.remove(sessionId);
         sessionPostProcessing.remove(sessionId);
         sessionRuntimePruneScheduled.remove(sessionId);
+        sessionsStartedSignaled.remove(sessionId);
     }
 
     public void awaitSessionPostProcessing(String sessionId) {
