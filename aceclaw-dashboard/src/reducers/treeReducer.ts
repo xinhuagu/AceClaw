@@ -283,6 +283,11 @@ function addTurnNode(
     ...state,
     rootNodes,
     activeNodeId: turn.id,
+    // A new turn always starts a fresh ReAct loop — clear the thinking
+    // anchor so the first tool of this turn doesn't accidentally graft
+    // itself onto the previous turn's last thinking node.
+    currentThinkingId: null,
+    thinkingSealed: false,
     stats: { ...state.stats, totalTurns: state.stats.totalTurns + 1 },
   };
 }
@@ -311,13 +316,18 @@ function addToolNode(
   state: ExecutionTree,
   params: ToolUseParams,
 ): ExecutionTree {
-  // Tools always nest under the nearest running turn. Without one, the event
-  // arrived out of order; surface it at root so the operator sees something.
+  // Tools attach to the most recent thinking anchor under the running turn
+  // when extended thinking is enabled — that captures the ReAct semantic of
+  // "thinking is the cause, tool calls are its effects" and groups parallel
+  // tools from one LLM response under one parent. With no thinking events
+  // (e.g. extended thinking disabled), tools fall back to attaching to the
+  // turn itself, preserving the pre-thinking-anchor behaviour.
   const turn = findNearestAncestor(
     state.rootNodes,
     state.activeNodeId,
     (n) => n.type === 'turn' && n.status === 'running',
   );
+  const anchorId = state.currentThinkingId ?? (turn ? turn.id : null);
 
   const tool: ExecutionNode = {
     id: params.id,
@@ -329,21 +339,26 @@ function addToolNode(
   };
 
   let rootNodes: ExecutionNode[];
-  if (turn) {
-    // Parallel-detection: if any sibling tool is already running, mark the
-    // turn as having executed parallel work. One-way flag — once true, stays.
-    const hasRunningSibling = turn.children.some(
-      (c) => c.type === 'tool' && c.status === 'running',
-    );
-    rootNodes = mapNode(state.rootNodes, turn.id, (t) => ({
-      ...t,
-      // One-way flag: once a turn has had parallel work, we keep that record
-      // even after every tool finishes. Conditional spread because
-      // exactOptionalPropertyTypes forbids assigning `undefined` to an
-      // optional property.
-      ...(hasRunningSibling || t.parallel ? { parallel: true } : {}),
-      children: [...t.children, tool],
+  if (anchorId) {
+    // Parallel detection: a running sibling tool under the same anchor (be
+    // that the thinking or the turn) means this is a parallel call from
+    // the same LLM response. One-way flag on the turn for sidebar stats.
+    const anchorPath = findPath(state.rootNodes, anchorId);
+    const anchorNode = anchorPath ? anchorPath[anchorPath.length - 1]! : null;
+    const hasRunningSibling = anchorNode
+      ? anchorNode.children.some(
+          (c) => c.type === 'tool' && c.status === 'running',
+        )
+      : false;
+    rootNodes = mapNode(state.rootNodes, anchorId, (a) => ({
+      ...a,
+      children: [...a.children, tool],
     }));
+    if (turn && (hasRunningSibling || turn.parallel)) {
+      // Conditional spread because exactOptionalPropertyTypes forbids
+      // assigning `undefined` to an optional property.
+      rootNodes = mapNode(rootNodes, turn.id, (t) => ({ ...t, parallel: true }));
+    }
   } else {
     rootNodes = [...state.rootNodes, tool];
   }
@@ -352,6 +367,12 @@ function addToolNode(
     ...state,
     rootNodes,
     activeNodeId: tool.id,
+    // Seal the current thinking anchor: any subsequent thinking delta is
+    // from a NEW LLM call (next ReAct iteration) and should mint a new
+    // thinking node rather than concatenate into this one. Parallel
+    // tool_use events that follow within the SAME LLM call don't get a
+    // thinking delta between them, so the anchor stays valid for them.
+    thinkingSealed: true,
     stats: { ...state.stats, totalTools: state.stats.totalTools + 1 },
   };
 }
@@ -405,38 +426,43 @@ function appendTextToCurrentTurn(
   if (!turn) return state;
 
   const existing = turn.children.find((c) => c.type === 'text');
+  let rootNodes: ExecutionNode[];
   if (existing) {
-    return {
-      ...state,
-      rootNodes: mapNode(state.rootNodes, existing.id, (t) => ({
-        ...t,
-        text: (t.text ?? '') + params.delta,
-      })),
+    rootNodes = mapNode(state.rootNodes, existing.id, (t) => ({
+      ...t,
+      text: (t.text ?? '') + params.delta,
+    }));
+  } else {
+    const textNode: ExecutionNode = {
+      id: textNodeId(turn.id),
+      type: 'text',
+      status: 'running',
+      label: 'response',
+      children: [],
+      text: params.delta,
     };
+    rootNodes = appendChild(state.rootNodes, turn.id, textNode);
   }
-  const textNode: ExecutionNode = {
-    id: textNodeId(turn.id),
-    type: 'text',
-    status: 'running',
-    label: 'response',
-    children: [],
-    text: params.delta,
-  };
-  return {
-    ...state,
-    rootNodes: appendChild(state.rootNodes, turn.id, textNode),
-  };
+  // Seal the thinking anchor: a text response means the model has decided
+  // to talk rather than tool-call, so any subsequent thinking is the next
+  // ReAct iteration (or — typically — there is no next iteration).
+  return { ...state, rootNodes, thinkingSealed: true };
 }
 
 function appendThinkingToCurrentTurn(
   state: ExecutionTree,
   params: ThinkingDeltaParams,
 ): ExecutionTree {
-  // Mirrors {@link appendTextToCurrentTurn} but rolls up extended-thinking
-  // deltas into a separate {@code thinking}-typed child. The reducer used
-  // to drop these — meaning a turn that only thought (no tools, no text
-  // yet) showed up as an empty parent in the tree, which left the user
-  // wondering what the agent was doing during the visible "running" pulse.
+  // Builds a {@code thinking}-typed node under the running turn. The
+  // reducer used to drop these — meaning a turn that only thought (no
+  // tools, no text yet) showed up as an empty parent. A turn can have
+  // MULTIPLE thinking nodes, one per ReAct iteration — each iteration is a
+  // separate LLM call, and the boundary is detected via {@link
+  // ExecutionTree#thinkingSealed}: a tool_use or text delta seals the
+  // current thinking node, so the next thinking delta starts a fresh one.
+  // Parallel tool_use events from a single LLM response don't seal the
+  // anchor between themselves (no thinking delta arrives between them), so
+  // they correctly attach to the same parent.
   const turn = findNearestAncestor(
     state.rootNodes,
     state.activeNodeId,
@@ -444,18 +470,28 @@ function appendThinkingToCurrentTurn(
   );
   if (!turn) return state;
 
-  const existing = turn.children.find((c) => c.type === 'thinking');
-  if (existing) {
+  // Same iteration: append the delta to the existing thinking node.
+  if (state.currentThinkingId && !state.thinkingSealed) {
     return {
       ...state,
-      rootNodes: mapNode(state.rootNodes, existing.id, (t) => ({
+      rootNodes: mapNode(state.rootNodes, state.currentThinkingId, (t) => ({
         ...t,
         text: (t.text ?? '') + params.delta,
       })),
     };
   }
+
+  // New iteration: mint a new thinking node. Use a synthetic id keyed on
+  // the turn + an index so multiple thinking nodes per turn each get a
+  // unique id (the first uses the existing `${turnId}:thinking` id; later
+  // iterations append a counter).
+  const existingThinkingCount = countDescendantsOfType(turn, 'thinking');
+  const id =
+    existingThinkingCount === 0
+      ? thinkingNodeId(turn.id)
+      : `${thinkingNodeId(turn.id)}:${existingThinkingCount}`;
   const thinkingNode: ExecutionNode = {
-    id: thinkingNodeId(turn.id),
+    id,
     type: 'thinking',
     status: 'running',
     label: 'thinking',
@@ -465,7 +501,28 @@ function appendThinkingToCurrentTurn(
   return {
     ...state,
     rootNodes: appendChild(state.rootNodes, turn.id, thinkingNode),
+    currentThinkingId: id,
+    thinkingSealed: false,
   };
+}
+
+/**
+ * Counts every descendant of {@code root} (any depth) whose type matches.
+ * Used to mint stable unique ids for repeated-per-turn synthetic nodes
+ * (e.g. multiple thinking blocks across ReAct iterations).
+ */
+function countDescendantsOfType(
+  root: ExecutionNode,
+  type: ExecutionNode['type'],
+): number {
+  let count = 0;
+  const stack: ExecutionNode[] = [...root.children];
+  while (stack.length > 0) {
+    const n = stack.pop()!;
+    if (n.type === type) count += 1;
+    if (n.children.length > 0) stack.push(...n.children);
+  }
+  return count;
 }
 
 function addPlanSkeleton(

@@ -610,6 +610,131 @@ describe('text accumulation', () => {
 });
 
 // ---------------------------------------------------------------------------
+// ReAct iteration grouping: thinking owns the tools it spawned
+// ---------------------------------------------------------------------------
+
+describe('thinking-anchored tool grouping (ReAct iterations)', () => {
+  function startedTurn(): ExecutionTree {
+    return runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+    );
+  }
+
+  it('attaches a tool_use under the most recent thinking node, not the turn', () => {
+    // ReAct semantic: thinking is the cause, the tool call is its effect.
+    // Without an anchor the tool would attach to the turn, making thinking
+    // and the tool look like unrelated siblings instead of cause→effect.
+    const state = runAll(
+      startedTurn(),
+      envelope('stream.thinking', { delta: 'I should run bash' }),
+      envelope('stream.tool_use', { id: 't1', name: 'bash' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    expect(turn.children).toHaveLength(1);
+    expect(turn.children[0]!.type).toBe('thinking');
+    const thinking = turn.children[0]!;
+    expect(thinking.children).toHaveLength(1);
+    expect(thinking.children[0]!.id).toBe('t1');
+    expect(thinking.children[0]!.type).toBe('tool');
+  });
+
+  it('places parallel tool_use calls from one LLM response under the same thinking', () => {
+    // No thinking delta arrives between two parallel tool_uses (they come
+    // from a single LLM streaming response), so the anchor stays valid for
+    // both — they end up as siblings under the same thinking node.
+    const state = runAll(
+      startedTurn(),
+      envelope('stream.thinking', { delta: 'parallel work' }),
+      envelope('stream.tool_use', { id: 't1', name: 'bash' }),
+      envelope('stream.tool_use', { id: 't2', name: 'read' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const thinking = turn.children[0]!;
+    expect(thinking.children).toHaveLength(2);
+    expect(thinking.children.map((c) => c.id).sort()).toEqual(['t1', 't2']);
+    // Turn still gets the parallel flag for sidebar stats.
+    expect(turn.parallel).toBe(true);
+  });
+
+  it('creates a new thinking node when a delta arrives after a tool_use (ReAct iteration boundary)', () => {
+    // After tool_use the anchor is sealed: the model has finished one LLM
+    // call. The next thinking delta is a new iteration and must mint a new
+    // thinking node rather than concatenate into the previous one.
+    const state = runAll(
+      startedTurn(),
+      envelope('stream.thinking', { delta: 'iter 1 thinking' }),
+      envelope('stream.tool_use', { id: 't1', name: 'bash' }),
+      envelope('stream.thinking', { delta: 'iter 2 thinking' }),
+      envelope('stream.tool_use', { id: 't2', name: 'read' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    // Two thinking siblings under the turn, each with one tool child.
+    const thinkingChildren = turn.children.filter((c) => c.type === 'thinking');
+    expect(thinkingChildren).toHaveLength(2);
+    expect(thinkingChildren[0]!.text).toBe('iter 1 thinking');
+    expect(thinkingChildren[0]!.children.map((c) => c.id)).toEqual(['t1']);
+    expect(thinkingChildren[1]!.text).toBe('iter 2 thinking');
+    expect(thinkingChildren[1]!.children.map((c) => c.id)).toEqual(['t2']);
+  });
+
+  it('falls back to attaching tools to the turn when no thinking has been emitted', () => {
+    // Extended thinking disabled: stream.thinking never fires, so tools
+    // attach to the turn directly (preserves the pre-anchor shape).
+    const state = runAll(
+      startedTurn(),
+      envelope('stream.tool_use', { id: 't1', name: 'bash' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    expect(turn.children).toHaveLength(1);
+    expect(turn.children[0]!.id).toBe('t1');
+  });
+
+  it('resets the anchor across turns so a new turn starts a fresh ReAct loop', () => {
+    // Without the reset, turn 2's first tool would graft onto turn 1's
+    // last thinking node — which is in a different subtree and not
+    // running.
+    const state = runAll(
+      startedTurn(),
+      envelope('stream.thinking', { delta: 'turn 1 thought' }),
+      envelope('stream.tool_use', { id: 't1', name: 'bash' }),
+      envelope('stream.turn_completed', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+        durationMs: 100,
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-2',
+        turnNumber: 2,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.tool_use', { id: 't2', name: 'read' }),
+    );
+    // currentThinkingId stays null because turn 2 had no thinking event
+    // before its tool_use — and addTurnNode wiped turn 1's anchor on entry.
+    // The tool fell back to the turn-as-anchor branch.
+    expect(state.currentThinkingId).toBeNull();
+    const turn2 = state.rootNodes[0]!.children[1]!;
+    expect(turn2.children).toHaveLength(1);
+    expect(turn2.children[0]!.id).toBe('t2');
+    expect(turn2.children[0]!.type).toBe('tool');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Sub-agent: completion matches the most-recent running entry by agentType
 // ---------------------------------------------------------------------------
 

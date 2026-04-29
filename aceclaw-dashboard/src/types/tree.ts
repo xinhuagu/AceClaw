@@ -84,6 +84,24 @@ export interface ExecutionTree {
    * same tree.
    */
   nextSyntheticId: number;
+  /**
+   * The thinking node that subsequent {@code stream.tool_use} events should
+   * attach to as a child. Captures the ReAct semantic: thinking is the
+   * cause, tool calls are its effects. Parallel tools from a single LLM
+   * call share the same anchor (no thinking delta arrives between them);
+   * the next iteration's thinking delta creates a fresh node and rotates
+   * the anchor. {@code null} when no thinking has been emitted yet (e.g.
+   * extended thinking disabled) — tools fall back to attaching to the turn.
+   */
+  currentThinkingId: string | null;
+  /**
+   * True when the current {@link #currentThinkingId} has been "sealed" by a
+   * subsequent {@code tool_use} or text delta. The next thinking delta
+   * creates a new thinking node instead of appending to the sealed one,
+   * so multi-iteration ReAct turns produce one thinking node per
+   * iteration rather than one fat concatenated node per turn.
+   */
+  thinkingSealed: boolean;
   /** Aggregate counters surfaced in the UI sidebar. */
   stats: TreeStats;
 }
@@ -105,6 +123,8 @@ export function emptyTree(sessionId: string): ExecutionTree {
     activeNodeId: null,
     lastEventId: 0,
     nextSyntheticId: 1,
+    currentThinkingId: null,
+    thinkingSealed: false,
     stats: {
       totalTools: 0,
       completedTools: 0,
