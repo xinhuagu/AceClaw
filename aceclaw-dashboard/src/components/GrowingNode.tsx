@@ -150,7 +150,7 @@ export function GrowingNode({ node }: GrowingNodeProps) {
         strokeWidth={1.5}
         {...pulseProps}
       />
-      <StatusIcon status={node.status} cx={left + 16} cy={node.y} />
+      <StatusIcon status={node.status} cx={left + 16} cy={node.y} color={accent} />
       <text
         x={left + 30}
         y={node.y + 4}
