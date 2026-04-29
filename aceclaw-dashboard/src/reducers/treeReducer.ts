@@ -27,6 +27,7 @@ import type {
   PlanReplannedParams,
   PlanCompletedParams,
   PlanEscalatedParams,
+  SessionEndedParams,
   SessionStartedParams,
   SubAgentEndParams,
   SubAgentStartParams,
@@ -212,6 +213,36 @@ function addSessionNode(
     ...state,
     rootNodes: [...state.rootNodes, node],
     activeNodeId: node.id,
+  };
+}
+
+function closeSessionNode(
+  state: ExecutionTree,
+  params: SessionEndedParams,
+): ExecutionTree {
+  // No-op when the ended session is not the one this tree is rendering —
+  // useExecutionTree's cross-session filter usually catches that, but the
+  // reducer is single-session by contract anyway.
+  if (params.sessionId !== state.sessionId) return state;
+  const session = state.rootNodes.find(
+    (n) => n.type === 'session' && n.id === params.sessionId,
+  );
+  if (!session) return state;
+  // Mark the session node completed; preserve any in-flight child status
+  // (the daemon already emitted turn_completed / tool_completed for those
+  // before tearing the session down).
+  return {
+    ...state,
+    rootNodes: mapNode(state.rootNodes, params.sessionId, (n) => ({
+      ...n,
+      status: 'completed' as const,
+      endTime: Date.parse(params.timestamp),
+      metadata: {
+        ...(n.metadata ?? {}),
+        endReason: params.reason,
+      },
+    })),
+    activeNodeId: null,
   };
 }
 
@@ -836,6 +867,9 @@ export function executionTreeReducer(
   switch (event.method) {
     case 'stream.session_started':
       next = addSessionNode(state, event.params);
+      break;
+    case 'stream.session_ended':
+      next = closeSessionNode(state, event.params);
       break;
     case 'stream.turn_started':
       next = addTurnNode(state, event.params);
