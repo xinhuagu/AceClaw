@@ -16,7 +16,7 @@
  * localhost connections are essentially free.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 /** One row in the sidebar — what the daemon's sessions.list reply carries. */
 export interface SessionInfo {
   sessionId: string;
@@ -50,8 +50,6 @@ const RECONNECT_MAX_MS = 30_000;
  */
 export function useSessions(wsUrl: string | null): SessionInfo[] {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
-  // Stable handler so the useEffect dep array doesn't churn.
-  const apply = useCallback((next: SessionInfo[]) => setSessions(next), []);
 
   useEffect(() => {
     if (!wsUrl) return;
@@ -89,10 +87,14 @@ export function useSessions(wsUrl: string | null): SessionInfo[] {
         if (!isPlainObject(data)) return;
 
         // sessions.list.result — non-enveloped one-shot reply. Snapshot of
-        // active sessions at the moment we asked.
+        // active sessions at the moment we asked. Merge into existing state
+        // rather than replacing wholesale: between the daemon capturing the
+        // snapshot and us receiving it, a stream.session_ended (or _started)
+        // may already have arrived on the wire. A blind replace would
+        // resurrect a just-ended session or drop one we just learned about.
         if (data['method'] === 'sessions.list.result') {
           const list = parseSessionsListResult(data);
-          if (list) apply(sortByCreatedDesc(list));
+          if (list) setSessions((prev) => mergeSnapshot(prev, list));
           return;
         }
 
@@ -166,7 +168,7 @@ export function useSessions(wsUrl: string | null): SessionInfo[] {
         ws.close();
       }
     };
-  }, [wsUrl, apply]);
+  }, [wsUrl]);
 
   return sessions;
 }
@@ -224,4 +226,39 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function sortByCreatedDesc(list: SessionInfo[]): SessionInfo[] {
   return [...list].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/**
+ * Merges a fresh sessions.list snapshot into the current state, keyed by
+ * sessionId, so live events that arrived before the snapshot is delivered
+ * aren't clobbered. Rules:
+ *
+ *   - Sessions only in the snapshot are added.
+ *   - Sessions only in local state are kept (they were observed via a live
+ *     event that the daemon's snapshot pre-dated).
+ *   - For overlaps, snapshot wins on immutable fields (projectPath, model,
+ *     createdAt) but a locally-observed terminal {@code active=false} is
+ *     preserved over a snapshot {@code active=true} — the end event is
+ *     newer than the snapshot capture even if it raced ahead of delivery.
+ *
+ * Exported for unit testing.
+ */
+export function mergeSnapshot(
+  prev: SessionInfo[],
+  snapshot: SessionInfo[],
+): SessionInfo[] {
+  const merged = new Map<string, SessionInfo>();
+  for (const s of snapshot) merged.set(s.sessionId, s);
+  for (const s of prev) {
+    const fromSnap = merged.get(s.sessionId);
+    if (!fromSnap) {
+      merged.set(s.sessionId, s);
+      continue;
+    }
+    // Locally-observed end event beats snapshot's stale active=true.
+    if (!s.active && fromSnap.active) {
+      merged.set(s.sessionId, { ...fromSnap, active: false });
+    }
+  }
+  return sortByCreatedDesc([...merged.values()]);
 }

@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { parseSessionsListResult } from '../src/hooks/useSessions';
+import { mergeSnapshot, parseSessionsListResult } from '../src/hooks/useSessions';
+import type { SessionInfo } from '../src/hooks/useSessions';
+
+const session = (overrides: Partial<SessionInfo> & { sessionId: string }): SessionInfo => ({
+  sessionId: overrides.sessionId,
+  projectPath: overrides.projectPath ?? '/p',
+  createdAt: overrides.createdAt ?? '2026-04-29T08:00:00.000Z',
+  active: overrides.active ?? true,
+  ...(overrides.model !== undefined ? { model: overrides.model } : {}),
+});
 
 /**
  * Tests for the sessions.list result parser. Hook behaviour (the WebSocket
@@ -104,5 +113,63 @@ describe('parseSessionsListResult', () => {
     expect(result).toHaveLength(2);
     expect(result?.[0]!.model).toBeUndefined();
     expect(result?.[1]!.model).toBeUndefined();
+  });
+});
+
+describe('mergeSnapshot', () => {
+  it('returns the snapshot unchanged when local state is empty', () => {
+    const snap = [session({ sessionId: 's1' }), session({ sessionId: 's2' })];
+    const merged = mergeSnapshot([], snap);
+    expect(merged.map((s) => s.sessionId).sort()).toEqual(['s1', 's2']);
+  });
+
+  it('keeps locally-observed sessions that the snapshot pre-dated', () => {
+    // Live session_started arrived for s2 between snapshot capture and delivery.
+    const local = [session({ sessionId: 's2', createdAt: '2026-04-29T09:00:00.000Z' })];
+    const snap = [session({ sessionId: 's1', createdAt: '2026-04-29T08:00:00.000Z' })];
+    const merged = mergeSnapshot(local, snap);
+    expect(merged).toHaveLength(2);
+    expect(merged.map((s) => s.sessionId)).toEqual(['s2', 's1']); // sorted by createdAt desc
+  });
+
+  it("preserves a locally-observed end (active=false) over a stale snapshot active=true", () => {
+    // Race: session_ended for s1 arrived locally before sessions.list reply.
+    const local = [session({ sessionId: 's1', active: false })];
+    const snap = [session({ sessionId: 's1', active: true })];
+    const merged = mergeSnapshot(local, snap);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]!.active).toBe(false);
+  });
+
+  it('lets the snapshot resolve a stale local active=true (snapshot says ended)', () => {
+    // Inverse race — local thinks active, snapshot is authoritative on ended.
+    const local = [session({ sessionId: 's1', active: true })];
+    const snap = [session({ sessionId: 's1', active: false })];
+    const merged = mergeSnapshot(local, snap);
+    expect(merged[0]!.active).toBe(false);
+  });
+
+  it('uses snapshot for immutable fields (projectPath, model, createdAt) on overlap', () => {
+    const local = [
+      session({
+        sessionId: 's1',
+        projectPath: '(unknown)', // session_started fallback
+        createdAt: '2026-04-29T09:00:00.000Z', // client clock
+        active: true,
+      }),
+    ];
+    const snap = [
+      session({
+        sessionId: 's1',
+        projectPath: '/real/path',
+        createdAt: '2026-04-29T08:59:59.000Z',
+        active: true,
+        model: 'claude-opus-4-7',
+      }),
+    ];
+    const merged = mergeSnapshot(local, snap);
+    expect(merged[0]!.projectPath).toBe('/real/path');
+    expect(merged[0]!.model).toBe('claude-opus-4-7');
+    expect(merged[0]!.createdAt).toBe('2026-04-29T08:59:59.000Z');
   });
 });
