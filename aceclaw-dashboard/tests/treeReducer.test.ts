@@ -503,12 +503,17 @@ describe('replan → next step', () => {
       }),
     );
     const plan = state.rootNodes[0]!.children[0]!.children[0]!;
+    // The new step takes the composed id because stepIndex=99 doesn't collide
+    // with the cancelled tombstones (which sit at composed indices 1..3).
     const newStep = plan.children.find(
-      (c) => c.metadata?.['createdByReplan'] === true,
+      (c) => c.id === stepNodeId('plan-1', 99) && c.status === 'running',
     );
     expect(newStep).toBeDefined();
-    expect(newStep?.status).toBe('running');
     expect(newStep?.label).toBe('s3 (replanned)');
+    // createdByReplan flag is only set when we needed to mint a synthetic id
+    // (= cancelled tombstone existed at the composed slot). Index 99 had no
+    // tombstone, so the flag stays false.
+    expect(newStep?.metadata?.['createdByReplan']).toBe(false);
     expect(state.activeNodeId).toBe(newStep?.id);
   });
 });
@@ -605,6 +610,169 @@ describe('subagent completion', () => {
     expect(after.stats).toEqual(before.stats);
     expect(after.nextSyntheticId).toBe(before.nextSyntheticId);
     expect(after.lastEventId).toBeGreaterThan(before.lastEventId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Replan with colliding stepIndex — cancelled tombstone must NOT be resurrected
+// ---------------------------------------------------------------------------
+
+describe('replan with colliding stepIndex', () => {
+  it('mints a synthetic step instead of flipping the cancelled tombstone', () => {
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 2,
+        goal: 'g',
+        steps: [
+          { index: 1, name: 'old-1', description: '' },
+          { index: 2, name: 'old-2', description: '' },
+        ],
+      }),
+      // Replan immediately — both pending steps become cancelled tombstones.
+      envelope('stream.plan_replanned', {
+        planId: 'plan-1',
+        replanAttempt: 1,
+        newStepCount: 1,
+        rationale: 'detour',
+      }),
+    );
+    // Daemon now resets stepIndex and emits 1 again for the NEW first step.
+    state = runAll(
+      state,
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 'new-1',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 'new-1',
+      }),
+    );
+    const plan = state.rootNodes[0]!.children[0]!.children[0]!;
+    // Three children: two cancelled tombstones (old-1, old-2) + one new running.
+    expect(plan.children).toHaveLength(3);
+    const tombstone = plan.children.find(
+      (c) => c.id === stepNodeId('plan-1', 1) && c.status === 'cancelled',
+    );
+    const replacement = plan.children.find(
+      (c) => c.metadata?.['createdByReplan'] === true && c.status === 'running',
+    );
+    expect(tombstone).toBeDefined();
+    expect(tombstone?.label).toBe('old-1');
+    expect(replacement).toBeDefined();
+    expect(replacement?.label).toBe('new-1');
+    expect(state.activeNodeId).toBe(replacement?.id);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step events arriving before plan_created — don't dangle activeNodeId
+// ---------------------------------------------------------------------------
+
+describe('plan/step events without plan skeleton', () => {
+  it('plan_step_started without a plan is a state no-op', () => {
+    const before = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+    );
+    const after = runAll(
+      before,
+      envelope('stream.plan_step_started', {
+        planId: 'never-existed',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 's1',
+      }),
+    );
+    expect(after.rootNodes).toEqual(before.rootNodes);
+    expect(after.activeNodeId).toBe(before.activeNodeId);
+    expect(after.lastEventId).toBeGreaterThan(before.lastEventId);
+  });
+
+  it('plan_step_completed without a matching step is a no-op', () => {
+    const before = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+    );
+    const after = runAll(
+      before,
+      envelope('stream.plan_step_completed', {
+        planId: 'never',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 1,
+        tokensUsed: 1,
+      }),
+    );
+    expect(after.activeNodeId).toBe(before.activeNodeId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Subagent.end LIFO: highest synthetic-id counter wins
+// ---------------------------------------------------------------------------
+
+describe('subagent.end LIFO resolution', () => {
+  it('completes the most-recently-started subagent of matching agentType', () => {
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.subagent.start', {
+        agentType: 'skill:foo',
+        prompt: 'first',
+      }),
+      envelope('stream.subagent.start', {
+        agentType: 'skill:foo',
+        prompt: 'second',
+      }),
+    );
+    state = runAll(
+      state,
+      envelope('stream.subagent.end', { agentType: 'skill:foo' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const subs = turn.children.filter((c) => c.type === 'subagent');
+    expect(subs).toHaveLength(2);
+    // First-started ('first') stays running; second-started ('second')
+    // completes — LIFO via highest synthetic counter, deterministic regardless
+    // of DFS order.
+    expect(subs[0]!.status).toBe('running');
+    expect(subs[0]!.metadata?.['prompt']).toBe('first');
+    expect(subs[1]!.status).toBe('completed');
+    expect(subs[1]!.metadata?.['prompt']).toBe('second');
   });
 });
 

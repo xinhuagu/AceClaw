@@ -79,25 +79,41 @@ const KNOWN_METHODS = new Set<DaemonEvent['method']>([
 ]);
 
 /**
- * Per-method critical-field allow-list. The reducer copes with most missing
- * params (numeric fields default to 0, optional strings stay undefined), but
- * a handful of events drive flow-control decisions and would silently corrupt
- * downstream state if a key field were missing — e.g. a {@code permission.request}
- * without {@code requestId} would orphan the response future. This map is
- * NOT exhaustive on purpose; it only guards the events whose handlers can't
- * recover from a malformed param shape.
+ * Per-method type-guard validators. Presence-only checks let payloads like
+ * {@code stream.plan_created} with {@code steps: {}} slip through to
+ * {@code addPlanSkeleton}, which then crashes on {@code params.steps.map(...)}
+ * — one bad bridge frame would take down the whole hook. These validators
+ * assert actual shapes rather than mere key existence.
+ *
+ * Not exhaustive on purpose — only events whose handlers can't recover from
+ * a malformed param shape need a guard. Events without an entry pass through
+ * once they're inside {@link KNOWN_METHODS}.
  */
-const CRITICAL_FIELDS: Partial<Record<DaemonEvent['method'], readonly string[]>> = {
-  'permission.request': ['requestId', 'description', 'tool'],
-  'stream.tool_use': ['id', 'name'],
-  'stream.tool_completed': ['id', 'name'],
-  'stream.turn_started': ['requestId', 'turnNumber'],
-  'stream.turn_completed': ['requestId', 'turnNumber'],
-  'stream.session_started': ['sessionId', 'model'],
-  'stream.plan_created': ['planId', 'steps'],
-  'stream.plan_step_started': ['planId', 'stepIndex'],
-  'stream.plan_step_completed': ['planId', 'stepIndex'],
-  'stream.subagent.start': ['agentType'],
+type ParamGuard = (p: Record<string, unknown>) => boolean;
+
+const isString = (v: unknown): v is string => typeof v === 'string';
+const isNumber = (v: unknown): v is number => typeof v === 'number';
+
+const VALIDATORS: Partial<Record<DaemonEvent['method'], ParamGuard>> = {
+  'permission.request': (p) =>
+    isString(p['requestId']) && isString(p['description']) && isString(p['tool']),
+  'stream.tool_use': (p) => isString(p['id']) && isString(p['name']),
+  'stream.tool_completed': (p) =>
+    isString(p['id']) && isString(p['name']) && typeof p['durationMs'] === 'number',
+  'stream.turn_started': (p) => isString(p['requestId']) && isNumber(p['turnNumber']),
+  'stream.turn_completed': (p) =>
+    isString(p['requestId']) && isNumber(p['turnNumber']) && isNumber(p['durationMs']),
+  'stream.session_started': (p) => isString(p['sessionId']) && isString(p['model']),
+  // Critical: addPlanSkeleton calls steps.map — must be Array, not just present.
+  'stream.plan_created': (p) =>
+    isString(p['planId']) && Array.isArray(p['steps']),
+  'stream.plan_step_started': (p) =>
+    isString(p['planId']) && isNumber(p['stepIndex']) && isString(p['stepName']),
+  'stream.plan_step_completed': (p) =>
+    isString(p['planId']) &&
+    isNumber(p['stepIndex']) &&
+    typeof p['success'] === 'boolean',
+  'stream.subagent.start': (p) => isString(p['agentType']),
 };
 
 const RECONNECT_INITIAL_MS = 500;
@@ -166,13 +182,25 @@ export function useExecutionTree(
       };
 
       ws.onmessage = (e: MessageEvent<string>) => {
-        const envelope = parseEnvelope(e.data);
-        if (!envelope) return;
+        const result = parseEnvelope(e.data);
+        if (!result) return;
         // Cross-session filter: the bridge broadcasts every session's events
         // to every connected client. A multi-tenant browser tab on its own
         // session would otherwise mix two sessions' trees together.
-        if (envelope.sessionId !== sessionId) return;
-        dispatch(envelope);
+        if (result.sessionId !== sessionId) return;
+        if (result.kind === 'unknown') {
+          // Forward-compat (Tier 2/3) methods bypass the reducer but still
+          // bump the watermark — without this, #432's snapshot replay would
+          // re-deliver them indefinitely whenever they're the newest events
+          // the browser saw.
+          setTree((prev) =>
+            prev.lastEventId >= result.eventId
+              ? prev
+              : { ...prev, lastEventId: result.eventId },
+          );
+          return;
+        }
+        dispatch(result.envelope);
       };
 
       ws.onerror = () => {
@@ -212,11 +240,37 @@ export function useExecutionTree(
 // ---------------------------------------------------------------------------
 
 /**
- * Parses a raw WS frame into a typed envelope, or returns null if the frame
- * is malformed, carries an event method outside {@link DaemonEvent}, or is
- * missing a critical field for its method (see {@link CRITICAL_FIELDS}).
+ * Discriminated parse result. {@code known} envelopes flow through the
+ * reducer; {@code unknown} ones bypass it but still need to advance the
+ * watermark so reconnect/replay (#432) doesn't re-deliver them forever.
+ * {@code null} means malformed or invalid for its method — drop entirely.
  */
-function parseEnvelope(raw: string): DaemonEventEnvelope<DaemonEvent> | null {
+export type ParseResult =
+  | {
+      kind: 'known';
+      eventId: number;
+      sessionId: string;
+      envelope: DaemonEventEnvelope<DaemonEvent>;
+    }
+  | { kind: 'unknown'; eventId: number; sessionId: string }
+  | null;
+
+/**
+ * Parses a raw WS frame into a discriminated {@link ParseResult}.
+ *
+ * - Returns {@code null} for any malformed top-level shape (bad JSON,
+ *   missing eventId / sessionId / event / method / params), and for any
+ *   known method whose params don't pass the per-method type guard
+ *   (see {@link VALIDATORS}).
+ * - Returns {@code kind: 'unknown'} for methods outside {@link KNOWN_METHODS} —
+ *   the caller is expected to bump the watermark and skip dispatch.
+ * - Returns {@code kind: 'known'} for everything else, with the envelope
+ *   narrowed to {@link DaemonEvent}.
+ *
+ * Exported so unit tests can exercise the boundary without spinning up a
+ * mock WebSocket.
+ */
+export function parseEnvelope(raw: string): ParseResult {
   let data: unknown;
   try {
     data = JSON.parse(raw);
@@ -239,25 +293,33 @@ function parseEnvelope(raw: string): DaemonEventEnvelope<DaemonEvent> | null {
   const method = event['method'];
   const params = event['params'];
   if (typeof method !== 'string' || !isPlainObject(params)) return null;
+
   if (!KNOWN_METHODS.has(method as DaemonEvent['method'])) {
-    // Forward-compat: unknown methods are reserved for Tier 2/3 expansion;
-    // dropping them at the boundary keeps the reducer's switch type-safe.
+    // Forward-compat (Tier 2/3): the caller bumps the watermark before
+    // returning to keep the dedup gate accurate across reconnects.
+    return { kind: 'unknown', eventId, sessionId };
+  }
+
+  const guard = VALIDATORS[method as DaemonEvent['method']];
+  if (guard && !guard(params)) {
+    // Malformed payload that would crash a downstream handler — drop the
+    // event entirely. Watermark NOT advanced so the daemon can retry.
     return null;
   }
-  // Per-method critical-field check. Most methods don't have entries here
-  // and pass through; the ones that do cannot recover from a missing field.
-  const required = CRITICAL_FIELDS[method as DaemonEvent['method']];
-  if (required && !required.every((k) => k in params)) {
-    return null;
-  }
-  // Trust the schema once method + critical fields are validated. Cast goes
-  // through `unknown` because `{method: string, params: Record<string, unknown>}`
+
+  // Trust the schema once method + per-method type guard pass. Cast goes
+  // through `unknown` because {method: string, params: Record<string, unknown>}
   // doesn't structurally overlap with the discriminated DaemonEvent union.
   return {
+    kind: 'known',
     eventId,
     sessionId,
-    receivedAt,
-    event: { method, params } as unknown as DaemonEvent,
+    envelope: {
+      eventId,
+      sessionId,
+      receivedAt,
+      event: { method, params } as unknown as DaemonEvent,
+    },
   };
 }
 

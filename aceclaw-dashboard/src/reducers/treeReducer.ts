@@ -447,58 +447,110 @@ function activateStep(
   state: ExecutionTree,
   params: PlanStepStartedParams,
 ): ExecutionTree {
-  const stepId = stepNodeId(params.planId, params.stepIndex);
-  const existing = findNode(state.rootNodes, stepId);
-  let rootNodes: ExecutionNode[];
+  const composedId = stepNodeId(params.planId, params.stepIndex);
+  const existing = findNode(state.rootNodes, composedId);
 
-  if (existing) {
-    rootNodes = mapNode(state.rootNodes, stepId, (n) => ({
-      ...n,
-      status: 'running',
-      label: params.stepName,
-    }));
-  } else {
-    // Lazy-create branch: replan ({@link replacePlanSteps}) cancels the old
-    // step list but never receives the new skeleton over the wire — the
-    // daemon's plan_replanned only carries newStepCount + rationale (#439).
-    // When plan_step_started arrives for an index that wasn't pre-created,
-    // append a fresh running step under the plan instead of dropping the
-    // event silently.
-    rootNodes = mapNode(state.rootNodes, params.planId, (plan) => ({
-      ...plan,
-      children: [
-        ...plan.children,
-        {
-          id: stepId,
-          type: 'step',
-          status: 'running',
-          label: params.stepName,
-          children: [],
-          metadata: {
-            stepIndex: params.stepIndex,
-            totalSteps: params.totalSteps,
-            createdByReplan: true,
-          },
-        },
-      ],
-    }));
+  // Skeleton-update path: the original plan_created step is still pending and
+  // matches by composed id. Flip it to running, take focus.
+  if (existing && existing.status !== 'cancelled') {
+    return {
+      ...state,
+      rootNodes: mapNode(state.rootNodes, composedId, (n) => ({
+        ...n,
+        status: 'running',
+        label: params.stepName,
+      })),
+      activeNodeId: composedId,
+    };
   }
-  return { ...state, rootNodes, activeNodeId: stepId };
+
+  // From here, we either have no skeleton yet (out-of-order arrival) or we
+  // hit a cancelled tombstone left behind by replan. In both cases we want
+  // to insert a NEW running step — but only if the plan itself exists. If
+  // not, decline to move focus rather than dangle activeNodeId at a node
+  // that no later handler can find.
+  const plan = findNode(state.rootNodes, params.planId);
+  if (!plan) {
+    return state;
+  }
+
+  // Cancelled tombstones must keep their cancelled state — replan resets the
+  // daemon's stepIndex counter to 1, so a naive resurrection would silently
+  // turn an old cancelled step back into the new running one and erase the
+  // replan history. Mint a synthetic id ({composedId}:r{n}) for the
+  // replacement so the tombstone and the new step coexist.
+  const isReplanResurrection = existing?.status === 'cancelled';
+  const newStepId = isReplanResurrection
+    ? `${composedId}:r${state.nextSyntheticId}`
+    : composedId;
+  const newCounter = isReplanResurrection
+    ? state.nextSyntheticId + 1
+    : state.nextSyntheticId;
+
+  const rootNodes = mapNode(state.rootNodes, params.planId, (p) => ({
+    ...p,
+    children: [
+      ...p.children,
+      {
+        id: newStepId,
+        type: 'step',
+        status: 'running',
+        label: params.stepName,
+        children: [],
+        metadata: {
+          stepIndex: params.stepIndex,
+          totalSteps: params.totalSteps,
+          createdByReplan: isReplanResurrection,
+        },
+      },
+    ],
+  }));
+  return {
+    ...state,
+    rootNodes,
+    activeNodeId: newStepId,
+    nextSyntheticId: newCounter,
+  };
 }
 
 function completeStep(
   state: ExecutionTree,
   params: PlanStepCompletedParams,
 ): ExecutionTree {
-  const stepId = stepNodeId(params.planId, params.stepIndex);
+  const composedId = stepNodeId(params.planId, params.stepIndex);
+  // Resolve the step we should complete. Skeleton path matches by composed
+  // id; replan path may have minted a synthetic id, in which case the active
+  // node points at it (activateStep just moved focus there a moment ago).
+  const composedExisting = findNode(state.rootNodes, composedId);
+  const skeletonHit =
+    composedExisting && composedExisting.status !== 'cancelled'
+      ? composedId
+      : null;
+  const activeFallback =
+    state.activeNodeId &&
+    findNode(state.rootNodes, state.activeNodeId)?.type === 'step'
+      ? state.activeNodeId
+      : null;
+  const stepId = skeletonHit ?? activeFallback;
+
+  if (!stepId) {
+    // No matching step (e.g. plan_step_completed before plan_created). Decline
+    // to move focus — we can't honour the event meaningfully.
+    return state;
+  }
+
   const rootNodes = mapNode(state.rootNodes, stepId, (n) => ({
     ...n,
     status: params.success ? 'completed' : 'failed',
     duration: params.durationMs,
   }));
-  // Step done → next step (still pending) inherits focus, otherwise the plan.
+  // Step done → next pending sibling inherits focus, else the plan, else
+  // leave focus alone (plan was missing too).
   const plan = findNode(rootNodes, params.planId);
-  const nextPending = plan?.children.find(
+  if (!plan) {
+    return { ...state, rootNodes };
+  }
+  const nextPending = plan.children.find(
     (c) => c.type === 'step' && c.status === 'pending',
   );
   return {
@@ -625,22 +677,46 @@ function addSubAgentNode(
   };
 }
 
+/**
+ * Pattern that matches synthetic subagent ids minted by {@link addSubAgentNode},
+ * format {@code subagent:{agentType}:{counter}}. Capture group 1 is the
+ * monotonic counter that lets us pick "most recently started" deterministically
+ * instead of relying on DFS traversal order.
+ */
+const SUBAGENT_ID_PATTERN = /^subagent:.+:(\d+)$/;
+
 function completeSubAgentNode(
   state: ExecutionTree,
   params: SubAgentEndParams,
 ): ExecutionTree {
-  // Match the most recent running subagent of this type — the daemon does not
-  // include a unique id on subagent.end (#439), so we resolve by walking from
-  // the active context back up to the most recent matching subagent.
+  // Daemon doesn't carry a unique id on subagent.end (#439), so we resolve
+  // among running subagents matching the agentType. With two same-type
+  // subagents alive in different branches, DFS order is whatever the tree
+  // shape happens to be; using the highest synthetic counter gives
+  // deterministic LIFO (last started, first ended), which is the
+  // overwhelmingly common pattern. Snapshot-replay nodes that lack the
+  // synthetic suffix fall back to the last DFS match.
   let target: ExecutionNode | null = null;
+  let highestCounter = -1;
   const visit = (nodes: readonly ExecutionNode[]): void => {
     for (const n of nodes) {
       if (
         n.type === 'subagent' &&
         n.status === 'running' &&
-        (n.metadata?.['agentType'] === params.agentType)
+        n.metadata?.['agentType'] === params.agentType
       ) {
-        target = n;
+        const m = SUBAGENT_ID_PATTERN.exec(n.id);
+        if (m && m[1]) {
+          const counter = Number(m[1]);
+          if (counter > highestCounter) {
+            highestCounter = counter;
+            target = n;
+          }
+        } else if (highestCounter < 0) {
+          // No synthetic suffix (e.g. snapshot-loaded node). Tracking here
+          // only kicks in when no synthetic-id match has been found yet.
+          target = n;
+        }
       }
       visit(n.children);
     }
