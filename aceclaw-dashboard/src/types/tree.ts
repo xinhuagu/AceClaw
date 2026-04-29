@@ -16,7 +16,8 @@ export type ExecutionNodeType =
   | 'turn'
   | 'tool'
   | 'subagent'
-  | 'text';
+  | 'text'
+  | 'thinking';
 
 /** Lifecycle status, presentation-agnostic. */
 export type ExecutionStatus =
@@ -83,6 +84,24 @@ export interface ExecutionTree {
    * same tree.
    */
   nextSyntheticId: number;
+  /**
+   * The thinking node that subsequent {@code stream.tool_use} events should
+   * attach to as a child. Captures the ReAct semantic: thinking is the
+   * cause, tool calls are its effects. Parallel tools from a single LLM
+   * call share the same anchor (no thinking delta arrives between them);
+   * the next iteration's thinking delta creates a fresh node and rotates
+   * the anchor. {@code null} when no thinking has been emitted yet (e.g.
+   * extended thinking disabled) — tools fall back to attaching to the turn.
+   */
+  currentThinkingId: string | null;
+  /**
+   * True when the current {@link #currentThinkingId} has been "sealed" by a
+   * subsequent {@code tool_use} or text delta. The next thinking delta
+   * creates a new thinking node instead of appending to the sealed one,
+   * so multi-iteration ReAct turns produce one thinking node per
+   * iteration rather than one fat concatenated node per turn.
+   */
+  thinkingSealed: boolean;
   /** Aggregate counters surfaced in the UI sidebar. */
   stats: TreeStats;
 }
@@ -104,6 +123,8 @@ export function emptyTree(sessionId: string): ExecutionTree {
     activeNodeId: null,
     lastEventId: 0,
     nextSyntheticId: 1,
+    currentThinkingId: null,
+    thinkingSealed: false,
     stats: {
       totalTools: 0,
       completedTools: 0,
@@ -127,9 +148,25 @@ export interface LayoutNode extends ExecutionNode {
   height: number;
 }
 
+/**
+ * Visual semantic of an edge:
+ *
+ * - {@code containment}: parent-child relationship ("属于"). Solid stroke,
+ *   curved bezier. The reducer's tree shape produces these — every node
+ *   below the root has exactly one containment-edge in.
+ * - {@code sequence}: temporal order between same-rank siblings whose
+ *   ordering is meaningful (turns under a session, thinking nodes under
+ *   a turn). Dashed stroke, straight line. Synthesized post-layout from
+ *   sibling order — they're not in the dagre graph because forcing dagre
+ *   to honour them would push siblings into different ranks and break the
+ *   LR "siblings stack vertically" pattern.
+ */
+export type EdgeKind = 'containment' | 'sequence';
+
 /** A directional edge between two laid-out nodes. */
 export interface LayoutEdge {
   id: string;
+  kind: EdgeKind;
   from: { x: number; y: number };
   to: { x: number; y: number };
   status: ExecutionStatus;

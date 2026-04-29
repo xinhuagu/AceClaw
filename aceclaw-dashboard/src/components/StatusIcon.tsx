@@ -23,30 +23,37 @@ interface StatusIconProps {
   /** Centre of the icon in the parent {@code <g>}'s coordinate space. */
   cx: number;
   cy: number;
+  /**
+   * Optional override for the icon stroke/fill — lets the caller
+   * tie the glyph to the node's type-specific accent (so a completed
+   * thinking shows a violet check, a completed response an amber one)
+   * instead of every check being the same status-default green.
+   */
+  color?: string;
 }
 
-export function StatusIcon({ status, cx, cy }: StatusIconProps) {
-  const color = COLORS[status];
+export function StatusIcon({ status, cx, cy, color }: StatusIconProps) {
+  const resolved = color ?? COLORS[status];
   switch (status) {
     case 'pending':
       // Empty circle — "not started yet".
       return (
-        <circle cx={cx} cy={cy} r={5} fill="none" stroke={color} strokeWidth={1.5} />
+        <circle cx={cx} cy={cy} r={5} fill="none" stroke={resolved} strokeWidth={1.5} />
       );
     case 'running':
       // Filled circle with a thin halo — pulses via parent GrowingNode.
-      return <circle cx={cx} cy={cy} r={4.5} fill={color} />;
+      return <circle cx={cx} cy={cy} r={4.5} fill={resolved} />;
     case 'completed':
-      // Checkmark inside a green-tinted box.
+      // Checkmark inside the node's accent colour (passed in via `color`).
       return (
-        <g stroke={color} strokeWidth={1.8} fill="none" strokeLinecap="round">
+        <g stroke={resolved} strokeWidth={1.8} fill="none" strokeLinecap="round">
           <path d={`M ${cx - 4} ${cy} L ${cx - 1} ${cy + 3} L ${cx + 4} ${cy - 3}`} />
         </g>
       );
     case 'failed':
       // Cross.
       return (
-        <g stroke={color} strokeWidth={1.8} strokeLinecap="round">
+        <g stroke={resolved} strokeWidth={1.8} strokeLinecap="round">
           <line x1={cx - 4} y1={cy - 4} x2={cx + 4} y2={cy + 4} />
           <line x1={cx - 4} y1={cy + 4} x2={cx + 4} y2={cy - 4} />
         </g>
@@ -54,7 +61,7 @@ export function StatusIcon({ status, cx, cy }: StatusIconProps) {
     case 'paused':
       // Two parallel bars (pause symbol).
       return (
-        <g fill={color}>
+        <g fill={resolved}>
           <rect x={cx - 4} y={cy - 4} width={2} height={8} />
           <rect x={cx + 2} y={cy - 4} width={2} height={8} />
         </g>
@@ -62,7 +69,7 @@ export function StatusIcon({ status, cx, cy }: StatusIconProps) {
     case 'cancelled':
       // Circle with a slash through it — clearly "wasn't allowed to finish".
       return (
-        <g stroke={color} strokeWidth={1.5} fill="none">
+        <g stroke={resolved} strokeWidth={1.5} fill="none">
           <circle cx={cx} cy={cy} r={5} />
           <line x1={cx - 4} y1={cy + 4} x2={cx + 4} y2={cy - 4} />
         </g>

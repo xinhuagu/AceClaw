@@ -170,6 +170,21 @@ export function useExecutionTree(
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let backoffMs = RECONNECT_INITIAL_MS;
     let cancelled = false;
+    // Snapshot handshake gate. While true, every live envelope arriving
+    // on the socket is BUFFERED instead of dispatched — the reducer's
+    // {@code lastEventId} watermark is the dedup gate against snapshot
+    // replay, and a live event slipping in before the snapshot lands
+    // would advance that watermark past every snapshot envelope (which
+    // are necessarily older), so all snapshot replay would be deduped
+    // and the tree would miss its structural roots. Once
+    // {@code snapshot.response} is applied we flush the queue in
+    // arrival order through the reducer (same dedup rules apply, so a
+    // queued event whose eventId is <= the snapshot watermark is
+    // correctly dropped — but events that ARE newer than the snapshot
+    // get applied normally). Reset on every reconnect, since a fresh
+    // handshake is needed for each new socket.
+    let snapshotPending = false;
+    let pendingLive: Array<DaemonEventEnvelope<DaemonEvent>> = [];
 
     const connect = (): void => {
       if (cancelled) return;
@@ -179,13 +194,65 @@ export function useExecutionTree(
       ws.onopen = () => {
         backoffMs = RECONNECT_INITIAL_MS;
         setStatus('open');
-        // TODO(#432): once the snapshot endpoint exists, send
-        // { method: "snapshot.subscribe", sessionId, lastEventId: tree.lastEventId }
-        // here so the daemon replays only events the browser hasn't seen.
+        // Reset handshake state for this fresh socket. Reconnect after
+        // a drop runs through the same path: send snapshot.request, gate
+        // live events until the response lands, flush queue, run live.
+        snapshotPending = true;
+        pendingLive = [];
+        // Ask the daemon to replay every envelope it still holds for this
+        // session (issue #432). Without this, a tab opened mid-execution
+        // would only see events emitted AFTER it connected — root node,
+        // first turn, and any in-flight tools would all be missing.
+        ws?.send(
+          JSON.stringify({ method: 'snapshot.request', params: { sessionId } }),
+        );
       };
 
       ws.onmessage = (e: MessageEvent<string>) => {
-        const result = parseEnvelope(e.data);
+        // snapshot.response is non-enveloped (point-to-point reply, like
+        // sessions.list.result from #445). Detect and replay before falling
+        // through to the live-envelope path.
+        let data: unknown;
+        try {
+          data = JSON.parse(e.data);
+        } catch {
+          return;
+        }
+        if (
+          isPlainObject(data) &&
+          data['method'] === 'snapshot.response' &&
+          data['sessionId'] === sessionId &&
+          Array.isArray(data['events'])
+        ) {
+          for (const env of data['events']) {
+            const parsed = parseEnvelopeFromObject(env);
+            if (!parsed) continue;
+            if (parsed.sessionId !== sessionId) continue;
+            if (parsed.kind === 'unknown') {
+              setTree((prev) =>
+                prev.lastEventId >= parsed.eventId
+                  ? prev
+                  : { ...prev, lastEventId: parsed.eventId },
+              );
+              continue;
+            }
+            dispatch(parsed.envelope);
+          }
+          // Flush every live envelope that arrived during the snapshot
+          // wait. Order is preserved (it's just the receive order off the
+          // socket), and the reducer's dedup gate handles overlap with
+          // the snapshot — events whose eventId fell into the snapshot's
+          // range are skipped, the rest apply.
+          const queued = pendingLive;
+          pendingLive = [];
+          snapshotPending = false;
+          for (const envelope of queued) {
+            dispatch(envelope);
+          }
+          return;
+        }
+
+        const result = parseEnvelopeFromObject(data);
         if (!result) return;
         // Cross-session filter: the bridge broadcasts every session's events
         // to every connected client. A multi-tenant browser tab on its own
@@ -195,12 +262,25 @@ export function useExecutionTree(
           // Forward-compat (Tier 2/3) methods bypass the reducer but still
           // bump the watermark — without this, #432's snapshot replay would
           // re-deliver them indefinitely whenever they're the newest events
-          // the browser saw.
+          // the browser saw. During the snapshot handshake we deliberately
+          // skip the watermark advance (and skip the event) — the snapshot
+          // path will set lastEventId via its own envelope replay, and an
+          // unknown live event arriving during the wait shouldn't poison
+          // that watermark.
+          if (snapshotPending) return;
           setTree((prev) =>
             prev.lastEventId >= result.eventId
               ? prev
               : { ...prev, lastEventId: result.eventId },
           );
+          return;
+        }
+        // GATE: hold live envelopes until snapshot replay lands, then
+        // flush them in order. Without this, a live event arriving before
+        // snapshot.response would advance lastEventId past every snapshot
+        // envelope and dedup the whole replay.
+        if (snapshotPending) {
+          pendingLive.push(result.envelope);
           return;
         }
         dispatch(result.envelope);
@@ -280,6 +360,16 @@ export function parseEnvelope(raw: string): ParseResult {
   } catch {
     return null;
   }
+  return parseEnvelopeFromObject(data);
+}
+
+/**
+ * Same shape and validation as {@link parseEnvelope}, but takes an
+ * already-parsed JSON value. Used by {@code snapshot.response} replay so
+ * each event in the array runs through the exact same validation gate as
+ * a live frame, without paying for a JSON round-trip per event.
+ */
+export function parseEnvelopeFromObject(data: unknown): ParseResult {
   if (!isPlainObject(data)) return null;
   const eventId = data['eventId'];
   const sessionId = data['sessionId'];
