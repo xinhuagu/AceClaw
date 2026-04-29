@@ -179,13 +179,52 @@ export function useExecutionTree(
       ws.onopen = () => {
         backoffMs = RECONNECT_INITIAL_MS;
         setStatus('open');
-        // TODO(#432): once the snapshot endpoint exists, send
-        // { method: "snapshot.subscribe", sessionId, lastEventId: tree.lastEventId }
-        // here so the daemon replays only events the browser hasn't seen.
+        // Ask the daemon to replay every envelope it still holds for this
+        // session (issue #432). Without this, a tab opened mid-execution
+        // would only see events emitted AFTER it connected — root node,
+        // first turn, and any in-flight tools would all be missing.
+        // Reconnect after a drop also goes through this path; the reducer
+        // dedups overlap via state.lastEventId so the snapshot-then-live
+        // sequence is idempotent on either ordering.
+        ws?.send(
+          JSON.stringify({ method: 'snapshot.request', params: { sessionId } }),
+        );
       };
 
       ws.onmessage = (e: MessageEvent<string>) => {
-        const result = parseEnvelope(e.data);
+        // snapshot.response is non-enveloped (point-to-point reply, like
+        // sessions.list.result from #445). Detect and replay before falling
+        // through to the live-envelope path.
+        let data: unknown;
+        try {
+          data = JSON.parse(e.data);
+        } catch {
+          return;
+        }
+        if (
+          isPlainObject(data) &&
+          data['method'] === 'snapshot.response' &&
+          data['sessionId'] === sessionId &&
+          Array.isArray(data['events'])
+        ) {
+          for (const env of data['events']) {
+            const parsed = parseEnvelopeFromObject(env);
+            if (!parsed) continue;
+            if (parsed.sessionId !== sessionId) continue;
+            if (parsed.kind === 'unknown') {
+              setTree((prev) =>
+                prev.lastEventId >= parsed.eventId
+                  ? prev
+                  : { ...prev, lastEventId: parsed.eventId },
+              );
+              continue;
+            }
+            dispatch(parsed.envelope);
+          }
+          return;
+        }
+
+        const result = parseEnvelopeFromObject(data);
         if (!result) return;
         // Cross-session filter: the bridge broadcasts every session's events
         // to every connected client. A multi-tenant browser tab on its own
@@ -280,6 +319,16 @@ export function parseEnvelope(raw: string): ParseResult {
   } catch {
     return null;
   }
+  return parseEnvelopeFromObject(data);
+}
+
+/**
+ * Same shape and validation as {@link parseEnvelope}, but takes an
+ * already-parsed JSON value. Used by {@code snapshot.response} replay so
+ * each event in the array runs through the exact same validation gate as
+ * a live frame, without paying for a JSON round-trip per event.
+ */
+export function parseEnvelopeFromObject(data: unknown): ParseResult {
   if (!isPlainObject(data)) return null;
   const eventId = data['eventId'];
   const sessionId = data['sessionId'];

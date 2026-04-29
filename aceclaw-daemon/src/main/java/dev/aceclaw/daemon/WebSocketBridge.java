@@ -1,6 +1,7 @@
 package dev.aceclaw.daemon;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.javalin.Javalin;
 import io.javalin.websocket.WsContext;
 import org.slf4j.Logger;
@@ -86,6 +87,13 @@ public final class WebSocketBridge {
      * the {@code lastEventId} watermark.
      */
     private final AtomicLong eventIdCounter = new AtomicLong();
+    /**
+     * Per-session ring buffer of envelopes, populated on every {@link #broadcast}
+     * regardless of whether any client is currently connected. The snapshot
+     * endpoint (#432) reads this so a late-joining tab can reconstruct the
+     * tree without replaying real history.
+     */
+    private final SessionEventBuffer eventBuffer = new SessionEventBuffer();
 
     private volatile Javalin app;
     private volatile InboundHandler inboundHandler = (ctx, message) -> { /* default: drop */ };
@@ -229,12 +237,13 @@ public final class WebSocketBridge {
         // and that contract requires an unbroken sequence regardless of
         // whether any tab was connected when each event was produced.
         long eventId = eventIdCounter.incrementAndGet();
-        if (clients.isEmpty()) {
-            return;
-        }
+        // Build the envelope unconditionally — even with zero connected
+        // clients, #432 needs the buffer populated so a tab that opens AFTER
+        // the event was emitted can replay it via snapshot.request.
+        ObjectNode envelope;
         String message;
         try {
-            var envelope = objectMapper.createObjectNode();
+            envelope = objectMapper.createObjectNode();
             envelope.put("eventId", eventId);
             envelope.put("sessionId", sessionId);
             envelope.put("receivedAt", Instant.now().toString());
@@ -245,6 +254,10 @@ public final class WebSocketBridge {
             message = objectMapper.writeValueAsString(envelope);
         } catch (Exception e) {
             log.warn("Failed to serialise WS broadcast for {}: {}", method, e.getMessage());
+            return;
+        }
+        eventBuffer.append(sessionId, envelope);
+        if (clients.isEmpty()) {
             return;
         }
         for (var client : clients) {
@@ -287,6 +300,27 @@ public final class WebSocketBridge {
      */
     public long currentEventId() {
         return eventIdCounter.get();
+    }
+
+    /**
+     * Returns the per-session envelope buffer that backs {@code snapshot.request}
+     * (issue #432). Daemon code reads from it via the inbound handler; tests
+     * use it to assert that broadcasts populate the buffer correctly.
+     */
+    public SessionEventBuffer eventBuffer() {
+        return eventBuffer;
+    }
+
+    /**
+     * Drops every envelope held for {@code sessionId}. The daemon calls this
+     * from {@link SessionManager}'s end callback after the
+     * {@code stream.session_ended} broadcast has been buffered, so a snapshot
+     * fetched in the brief window between session-end-broadcast and
+     * session-removal still includes the {@code session_ended} event but
+     * memory is reclaimed once the session is gone.
+     */
+    public void clearSession(String sessionId) {
+        eventBuffer.clear(sessionId);
     }
 
     /**

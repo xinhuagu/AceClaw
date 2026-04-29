@@ -486,32 +486,15 @@ public final class AceClawDaemon {
             // requesting client and skip the EventMultiplexer fan-out path.
             final var sessionsRef = sessionManager;
             final var mapperRef = objectMapper;
+            final var bridgeRef = this.webSocketBridge;
             this.webSocketBridge.setInboundHandler((ctx, message) -> {
                 var methodNode = message.get("method");
                 if (methodNode == null) return;
                 var method = methodNode.asText("");
-                if (!"sessions.list".equals(method)) return;
-                try {
-                    var response = mapperRef.createObjectNode();
-                    response.put("method", "sessions.list.result");
-                    var sessionsArray = mapperRef.createArrayNode();
-                    for (var session : sessionsRef.activeSessions()) {
-                        var sNode = mapperRef.createObjectNode();
-                        sNode.put("sessionId", session.id());
-                        sNode.put("projectPath", session.projectPath().toString());
-                        sNode.put("createdAt", session.createdAt().toString());
-                        sNode.put("active", session.isActive());
-                        // Mirror the model carried by stream.session_started so the
-                        // sidebar can show the active model without waiting for the
-                        // next session start. getModelForSession falls back to the
-                        // daemon default when there's no per-session override.
-                        sNode.put("model", agentHandler.getModelForSession(session.id()));
-                        sessionsArray.add(sNode);
-                    }
-                    response.set("sessions", sessionsArray);
-                    ctx.send(mapperRef.writeValueAsString(response));
-                } catch (Exception e) {
-                    log.warn("Failed to send sessions.list reply: {}", e.getMessage());
+                switch (method) {
+                    case "sessions.list" -> handleSessionsList(ctx, mapperRef, sessionsRef, agentHandler);
+                    case "snapshot.request" -> handleSnapshotRequest(ctx, message, mapperRef, bridgeRef);
+                    default -> { /* unknown method: drop */ }
                 }
             });
 
@@ -821,6 +804,13 @@ public final class AceClawDaemon {
                     log.warn("Failed to broadcast stream.session_ended for {}: {}",
                             session.id(), e.getMessage());
                 }
+                // Drop the snapshot buffer for this session (issue #432). The
+                // session_ended event was just buffered above, so a tab that
+                // opens between this point and the buffer being cleared still
+                // gets a snapshot containing session_ended; afterward the
+                // session is gone from sessionManager, so sessions.list won't
+                // surface it and snapshot.request returns an empty list.
+                bridge.clearSession(session.id());
             }
 
             if (memoryStore != null) {
@@ -2340,6 +2330,96 @@ public final class AceClawDaemon {
             case CODEBASE_INSIGHT, ANTI_PATTERN, SUCCESSFUL_STRATEGY -> true;
             default -> false;
         };
+    }
+
+    /**
+     * Replies to a {@code sessions.list} inbound message with the list of
+     * sessions currently tracked by SessionManager (issue #445). Reply is
+     * point-to-point, not envelope-wrapped — semantically a request-response,
+     * not a stream event.
+     */
+    private static void handleSessionsList(io.javalin.websocket.WsContext ctx,
+                                           ObjectMapper mapper,
+                                           SessionManager sessions,
+                                           StreamingAgentHandler handler) {
+        try {
+            var response = mapper.createObjectNode();
+            response.put("method", "sessions.list.result");
+            var sessionsArray = mapper.createArrayNode();
+            for (var session : sessions.activeSessions()) {
+                var sNode = mapper.createObjectNode();
+                sNode.put("sessionId", session.id());
+                sNode.put("projectPath", session.projectPath().toString());
+                sNode.put("createdAt", session.createdAt().toString());
+                sNode.put("active", session.isActive());
+                sNode.put("model", handler.getModelForSession(session.id()));
+                sessionsArray.add(sNode);
+            }
+            response.set("sessions", sessionsArray);
+            ctx.send(mapper.writeValueAsString(response));
+        } catch (Exception e) {
+            log.warn("Failed to send sessions.list reply: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Replies to a {@code snapshot.request} inbound message with every
+     * envelope the bridge currently holds for the requested session (issue
+     * #432). The dashboard reducer replays them to reconstruct the tree on
+     * first paint and on every reconnect, then deduplicates the live stream
+     * via the {@code lastEventId} watermark.
+     *
+     * <p>Reply shape (point-to-point, NOT envelope-wrapped):
+     * <pre>{@code
+     * {
+     *   "method": "snapshot.response",
+     *   "sessionId": "<requested>",
+     *   "lastEventId": <last envelope id in the events array, 0 if empty>,
+     *   "events": [<DaemonEventEnvelope>, ...]   // oldest → newest
+     * }
+     * }</pre>
+     *
+     * <p>An empty buffer is a valid reply, not an error: it means the session
+     * exists in SessionManager but no broadcast has happened yet, OR the
+     * session is unknown to the bridge. The dashboard treats both as "no
+     * snapshot, listen for live deltas".
+     */
+    private static void handleSnapshotRequest(io.javalin.websocket.WsContext ctx,
+                                              com.fasterxml.jackson.databind.JsonNode message,
+                                              ObjectMapper mapper,
+                                              WebSocketBridge bridge) {
+        try {
+            var paramsNode = message.get("params");
+            if (paramsNode == null || !paramsNode.has("sessionId")) {
+                log.warn("snapshot.request missing params.sessionId; dropping");
+                return;
+            }
+            var sessionId = paramsNode.get("sessionId").asText();
+            if (sessionId.isBlank()) {
+                log.warn("snapshot.request with blank sessionId; dropping");
+                return;
+            }
+            var envelopes = bridge.eventBuffer().snapshot(sessionId);
+            var response = mapper.createObjectNode();
+            response.put("method", "snapshot.response");
+            response.put("sessionId", sessionId);
+            // lastEventId is the eventId of the newest envelope in the snapshot.
+            // The dashboard uses it to drop any subsequent live event whose
+            // eventId is less-than-or-equal — those are already in the snapshot.
+            // Empty snapshot → 0, so every live event passes the dedup gate.
+            long lastEventId = envelopes.isEmpty()
+                    ? 0L
+                    : envelopes.get(envelopes.size() - 1).get("eventId").asLong();
+            response.put("lastEventId", lastEventId);
+            var eventsArray = mapper.createArrayNode();
+            for (var env : envelopes) {
+                eventsArray.add(env);
+            }
+            response.set("events", eventsArray);
+            ctx.send(mapper.writeValueAsString(response));
+        } catch (Exception e) {
+            log.warn("Failed to send snapshot.response: {}", e.getMessage());
+        }
     }
 
     private static ObjectMapper createObjectMapper() {

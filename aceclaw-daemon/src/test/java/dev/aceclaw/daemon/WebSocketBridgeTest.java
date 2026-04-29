@@ -339,6 +339,153 @@ final class WebSocketBridgeTest {
         wsOther.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     }
 
+    @Test
+    void broadcastPopulatesEventBufferEvenWithZeroClients() throws Exception {
+        // The snapshot endpoint (#432) must work for tabs that connect AFTER
+        // an event was emitted. That means broadcast has to populate the
+        // buffer regardless of whether anyone is currently listening — the
+        // historical bug here was a clients.isEmpty() short-circuit that
+        // skipped both the send loop AND the buffer write.
+        bridge = startOnRandomPort();
+        bridge.broadcast("s1", "stream.text", java.util.Map.of("delta", "hi"));
+        bridge.broadcast("s1", "stream.text", java.util.Map.of("delta", " world"));
+
+        var snap = bridge.eventBuffer().snapshot("s1");
+        assertThat(snap).hasSize(2);
+        assertThat(snap.get(0).get("event").get("method").asText()).isEqualTo("stream.text");
+        assertThat(snap.get(0).get("eventId").asLong()).isEqualTo(1L);
+        assertThat(snap.get(1).get("eventId").asLong()).isEqualTo(2L);
+    }
+
+    @Test
+    void clearSessionDropsBufferedEnvelopes() throws Exception {
+        // Ensures the daemon's session-end callback can reclaim memory.
+        bridge = startOnRandomPort();
+        bridge.broadcast("s1", "stream.text", java.util.Map.of("delta", "hi"));
+        bridge.broadcast("s2", "stream.text", java.util.Map.of("delta", "ok"));
+        bridge.clearSession("s1");
+        assertThat(bridge.eventBuffer().snapshot("s1")).isEmpty();
+        assertThat(bridge.eventBuffer().snapshot("s2")).hasSize(1);
+    }
+
+    @Test
+    void snapshotRequestRepliesPointToPointWithBufferedEvents() throws Exception {
+        // End-to-end pin of #432's wire contract: a client sends
+        // {method:"snapshot.request", params:{sessionId}} → daemon replies
+        // {method:"snapshot.response", sessionId, lastEventId, events:[...]}.
+        // The reply lands ONLY on the requesting client (point-to-point) and
+        // contains the envelopes the bridge has buffered for that session.
+        // We wire the same handler the daemon installs in production, just
+        // inlined here so the test doesn't depend on AceClawDaemon's full
+        // wiring.
+        bridge = startOnRandomPort();
+        var bridgeRef = bridge;
+        bridge.setInboundHandler((ctx, message) -> {
+            if (!message.has("method")) return;
+            if (!"snapshot.request".equals(message.get("method").asText())) return;
+            var sessionId = message.get("params").get("sessionId").asText();
+            var envelopes = bridgeRef.eventBuffer().snapshot(sessionId);
+            try {
+                var response = objectMapper.createObjectNode();
+                response.put("method", "snapshot.response");
+                response.put("sessionId", sessionId);
+                long lastId = envelopes.isEmpty() ? 0L
+                        : envelopes.get(envelopes.size() - 1).get("eventId").asLong();
+                response.put("lastEventId", lastId);
+                var arr = objectMapper.createArrayNode();
+                for (var env : envelopes) arr.add(env);
+                response.set("events", arr);
+                ctx.send(objectMapper.writeValueAsString(response));
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+
+        // Pre-populate the buffer with a session_started + a tool_use, like
+        // a tab joining mid-execution would find on the wire.
+        bridge.broadcast("s1", "stream.session_started",
+                java.util.Map.of("sessionId", "s1", "model", "claude-opus-4-7"));
+        bridge.broadcast("s1", "stream.tool_use",
+                java.util.Map.of("toolUseId", "t1", "toolName", "bash"));
+        bridge.broadcast("other-session", "stream.text",
+                java.util.Map.of("delta", "noise"));
+
+        var connected = new CountDownLatch(1);
+        bridge.addConnectionListener(_ -> connected.countDown());
+        var queue = new LinkedBlockingQueue<String>();
+        var ws = connect(queue::add);
+        assertThat(connected.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)).isTrue();
+
+        ws.sendText("{\"method\":\"snapshot.request\",\"params\":{\"sessionId\":\"s1\"}}", true)
+                .get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+
+        var reply = queue.poll(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        assertThat(reply).isNotNull();
+        var response = objectMapper.readTree(reply);
+        assertThat(response.get("method").asText()).isEqualTo("snapshot.response");
+        assertThat(response.get("sessionId").asText()).isEqualTo("s1");
+        // Two events were broadcast for s1 → eventIds 1 and 2 (the third
+        // broadcast was for other-session and got eventId=3, but it is NOT in
+        // s1's snapshot because the buffer is keyed by sessionId).
+        var events = response.get("events");
+        assertThat(events.size()).isEqualTo(2);
+        assertThat(events.get(0).get("event").get("method").asText())
+                .isEqualTo("stream.session_started");
+        assertThat(events.get(1).get("event").get("method").asText())
+                .isEqualTo("stream.tool_use");
+        // lastEventId is the id of the newest envelope in the snapshot — the
+        // dashboard uses it to gate live deltas via eventId<=lastEventId.
+        // In the bridge's overall counter that's eventId=2 for s1's last
+        // event (the other-session broadcast got eventId=3 but doesn't show
+        // up in s1's snapshot).
+        assertThat(response.get("lastEventId").asLong()).isEqualTo(2L);
+
+        ws.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    }
+
+    @Test
+    void snapshotRequestForUnknownSessionReturnsEmptyArray() throws Exception {
+        // Empty snapshot is a valid reply, not an error: the dashboard treats
+        // it as "nothing to replay, listen for live deltas". lastEventId=0
+        // ensures every subsequent live event passes the eventId<=lastEventId
+        // dedup gate (the bridge's eventId counter starts at 1).
+        bridge = startOnRandomPort();
+        var bridgeRef = bridge;
+        bridge.setInboundHandler((ctx, message) -> {
+            if (!"snapshot.request".equals(message.get("method").asText())) return;
+            var sessionId = message.get("params").get("sessionId").asText();
+            var envelopes = bridgeRef.eventBuffer().snapshot(sessionId);
+            try {
+                var response = objectMapper.createObjectNode();
+                response.put("method", "snapshot.response");
+                response.put("sessionId", sessionId);
+                response.put("lastEventId", envelopes.isEmpty() ? 0L
+                        : envelopes.get(envelopes.size() - 1).get("eventId").asLong());
+                response.set("events", objectMapper.createArrayNode());
+                ctx.send(objectMapper.writeValueAsString(response));
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
+
+        var connected = new CountDownLatch(1);
+        bridge.addConnectionListener(_ -> connected.countDown());
+        var queue = new LinkedBlockingQueue<String>();
+        var ws = connect(queue::add);
+        assertThat(connected.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)).isTrue();
+
+        ws.sendText("{\"method\":\"snapshot.request\",\"params\":{\"sessionId\":\"never-seen\"}}", true)
+                .get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+
+        var reply = queue.poll(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        assertThat(reply).isNotNull();
+        var response = objectMapper.readTree(reply);
+        assertThat(response.get("events").size()).isZero();
+        assertThat(response.get("lastEventId").asLong()).isZero();
+
+        ws.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    }
+
     private WebSocketBridge startOnRandomPort() throws Exception {
         return startOnRandomPort(List.of());
     }
