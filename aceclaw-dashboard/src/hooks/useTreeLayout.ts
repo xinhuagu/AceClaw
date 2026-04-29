@@ -41,19 +41,115 @@ const VIEWBOX_PADDING = 24;
  * the execution tree. Walks pre-order so the dagre node insertion order
  * matches event arrival order — useful when dagre's tie-breaking falls back
  * to insertion order.
+ *
+ * <p>Skips containment edges that the flow-edge pass (see
+ * {@link addReActFlowEdges}) will replace. Specifically: the second-and-later
+ * {@code thinking} children of a turn don't get a direct turn → thinking
+ * containment edge — they're reached via the flow chain
+ * (thinking[i] tools → thinking[i+1]). Same for the {@code text} response
+ * when any thinking exists. Without this skip, dagre would draw a long
+ * containment line from turn to thinking[i+1] that crosses the chain
+ * visually for no semantic gain.
  */
 function populateGraph(
   graph: dagre.graphlib.Graph,
   nodes: ExecutionNode[],
-  parentId: string | null,
+  parent: ExecutionNode | null,
 ): void {
   for (const n of nodes) {
     graph.setNode(n.id, { width: NODE_WIDTH, height: NODE_HEIGHT });
-    if (parentId !== null) {
-      graph.setEdge(parentId, n.id);
+    if (parent !== null && !shouldSkipContainment(parent, n)) {
+      graph.setEdge(parent.id, n.id);
     }
     if (n.children.length > 0) {
-      populateGraph(graph, n.children, n.id);
+      populateGraph(graph, n.children, n);
+    }
+  }
+}
+
+/**
+ * True iff the {@code child}'s containment edge from {@code parent} is
+ * redundant with a flow edge that {@link addReActFlowEdges} will add.
+ *
+ * - A non-first {@code thinking} child of a turn: the chain enters via
+ *   the previous thinking's tool outputs.
+ * - A {@code text} (response) child of a turn that has at least one
+ *   thinking sibling: the chain enters via the last thinking's tool
+ *   outputs (or the last thinking directly when it had no tools).
+ */
+function shouldSkipContainment(
+  parent: ExecutionNode,
+  child: ExecutionNode,
+): boolean {
+  if (parent.type !== 'turn') return false;
+  if (child.type === 'thinking') {
+    const firstThinking = parent.children.find((c) => c.type === 'thinking');
+    return firstThinking !== child;
+  }
+  if (child.type === 'text') {
+    return parent.children.some((c) => c.type === 'thinking');
+  }
+  return false;
+}
+
+/**
+ * Adds dashed flow edges to the graph so the dagre layout chains
+ * thinking/tool/thinking/.../response left-to-right within a turn.
+ *
+ * For each turn that has multiple thinking iterations:
+ *   - Each tool of {@code thinking[i]} gets a flow edge to
+ *     {@code thinking[i+1]}. Multiple parallel tools all merge into
+ *     the next thinking, mirroring "tool results feed the next LLM call".
+ *   - When {@code thinking[i]} has no tool children (rare — a thinking
+ *     that produced no tool_use), a direct
+ *     {@code thinking[i] → thinking[i+1]} flow edge is used instead.
+ *
+ * For the response (text node) at the end of a turn: every tool of the
+ * final thinking gets a flow edge to it, or the final thinking itself
+ * when it had no tools.
+ *
+ * Flow edges carry a {@code { flow: true }} label so the readback pass
+ * can mark them {@code kind: 'sequence'} and the renderer draws them
+ * dashed.
+ */
+function addReActFlowEdges(
+  graph: dagre.graphlib.Graph,
+  nodes: ExecutionNode[],
+): void {
+  for (const parent of nodes) {
+    if (parent.type === 'turn') {
+      const thinkings = parent.children.filter((c) => c.type === 'thinking');
+      const responses = parent.children.filter((c) => c.type === 'text');
+
+      for (let i = 0; i < thinkings.length - 1; i += 1) {
+        const curr = thinkings[i]!;
+        const next = thinkings[i + 1]!;
+        const tools = curr.children.filter((c) => c.type === 'tool');
+        if (tools.length > 0) {
+          for (const t of tools) {
+            graph.setEdge(t.id, next.id, { flow: true });
+          }
+        } else {
+          graph.setEdge(curr.id, next.id, { flow: true });
+        }
+      }
+
+      if (thinkings.length > 0 && responses.length > 0) {
+        const last = thinkings[thinkings.length - 1]!;
+        const lastTools = last.children.filter((c) => c.type === 'tool');
+        for (const r of responses) {
+          if (lastTools.length > 0) {
+            for (const t of lastTools) {
+              graph.setEdge(t.id, r.id, { flow: true });
+            }
+          } else {
+            graph.setEdge(last.id, r.id, { flow: true });
+          }
+        }
+      }
+    }
+    if (parent.children.length > 0) {
+      addReActFlowEdges(graph, parent.children);
     }
   }
 }
@@ -69,12 +165,19 @@ function flattenNodes(nodes: ExecutionNode[], out: ExecutionNode[]): void {
 }
 
 /**
- * Types whose sibling-order is semantically meaningful and worth showing
- * with a dashed sequence edge in the layout. Other types either don't
- * sequence (tools — can be parallel) or never have multiple instances
- * sharing a parent (sessions, plans).
+ * Types that get a vertical dashed sibling-sequence edge between
+ * consecutive same-type peers in {@link addSequenceEdges}. Currently
+ * only {@code turn} — turns under a session stack vertically at the
+ * same rank in LR layout, so a short vertical dashed connector is the
+ * clearest expression of "next turn".
+ *
+ * Thinking nodes used to be on this list, but their ReAct-iteration
+ * ordering is now expressed via horizontal flow edges through the tool
+ * chain (see {@link addReActFlowEdges}). Tools are excluded by design —
+ * within a thinking parent they're parallel; outside one we can't tell
+ * parallel from sequential.
  */
-const SEQUENCE_TYPES: ReadonlyArray<ExecutionNode['type']> = ['turn', 'thinking'];
+const SEQUENCE_TYPES: ReadonlyArray<ExecutionNode['type']> = ['turn'];
 
 /**
  * Walks the tree and pushes a {@code sequence}-kind edge between every
@@ -142,6 +245,7 @@ export function useTreeLayout(tree: ExecutionTree): TreeLayout {
     });
     graph.setDefaultEdgeLabel(() => ({}));
     populateGraph(graph, tree.rootNodes, null);
+    addReActFlowEdges(graph, tree.rootNodes);
     dagre.layout(graph);
 
     // Walk tree again pre-order; dagre stores positions on its internal
@@ -174,22 +278,26 @@ export function useTreeLayout(tree: ExecutionTree): TreeLayout {
       const fromY = from ? from.y : 0;
       const toX = to ? to.x - to.width / 2 : 0;
       const toY = to ? to.y : 0;
+      // Flow edges carry { flow: true } in their dagre label (set by
+      // addReActFlowEdges); containment edges have the default empty
+      // label. Detect by reading the label back.
+      const label = graph.edge(e.v, e.w) as { flow?: boolean } | undefined;
+      const kind: LayoutEdge['kind'] = label?.flow ? 'sequence' : 'containment';
       return {
         id: `${e.v}->${e.w}`,
-        kind: 'containment' as const,
+        kind,
         from: { x: fromX, y: fromY },
         to: { x: toX, y: toY },
         status: to?.status ?? 'pending',
       };
     });
 
-    // Sequence edges: dashed connectors between consecutive same-type
-    // siblings whose ordering carries meaning. Turns happen one after
-    // another under their owning session/step; thinking nodes happen one
-    // ReAct iteration after another under their owning turn. Tools are
-    // intentionally excluded — within a thinking they're parallel by
-    // construction (one LLM response), and outside one we can't tell
-    // sequential from parallel without execution-order metadata.
+    // Sibling-sequence edges (vertical dashed) between consecutive turns
+    // under a session/step — turns stack vertically at the same rank, so
+    // the connector is short and clean as a post-layout overlay.
+    // Thinking-to-thinking sequencing within a turn is handled in dagre
+    // via flow edges (see addReActFlowEdges) — those go horizontally
+    // through the tool chain and need dagre's rank-aware layout.
     addSequenceEdges(tree.rootNodes, nodesById, layoutEdges);
 
     const g = graph.graph();
