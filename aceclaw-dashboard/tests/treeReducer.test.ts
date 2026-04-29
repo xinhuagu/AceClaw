@@ -678,6 +678,153 @@ describe('replan with colliding stepIndex', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Replan after a successful step — the completed step's history must survive
+// ---------------------------------------------------------------------------
+
+describe('replan preserves non-pending tombstones (completed / failed)', () => {
+  it('replanning after a successful step keeps the completed record intact', () => {
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 1,
+        goal: 'g',
+        steps: [{ index: 1, name: 'analyze', description: '' }],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 'analyze',
+      }),
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 'analyze',
+        success: true,
+        durationMs: 12,
+        tokensUsed: 100,
+      }),
+      // Replan AFTER step 1 completed. replacePlanSteps only flips
+      // not-yet-completed steps to cancelled, so the completed step stays
+      // completed. activateStep for the new stepIndex=1 must NOT overwrite
+      // that completed history.
+      envelope('stream.plan_replanned', {
+        planId: 'plan-1',
+        replanAttempt: 1,
+        newStepCount: 1,
+        rationale: 'still need more',
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1-new',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 'deeper analysis',
+      }),
+    );
+    const plan = state.rootNodes[0]!.children[0]!.children[0]!;
+    const completedOriginal = plan.children.find(
+      (c) => c.id === stepNodeId('plan-1', 1),
+    );
+    expect(completedOriginal?.status).toBe('completed');
+    expect(completedOriginal?.label).toBe('analyze');
+    const replacement = plan.children.find(
+      (c) => c.metadata?.['createdByReplan'] === true && c.status === 'running',
+    );
+    expect(replacement?.label).toBe('deeper analysis');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// completeStep finds the running step under the plan even when active focus
+// has moved to a child tool/text. Without this guard, replanned-step
+// completions would silently no-op and leave the step stuck running.
+// ---------------------------------------------------------------------------
+
+describe('completeStep resolves replanned synthetic steps after focus moves', () => {
+  it('completes the synthetic-id replan step when activeNodeId points at a tool', () => {
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 1,
+        goal: 'g',
+        steps: [{ index: 1, name: 's1-old', description: '' }],
+      }),
+      envelope('stream.plan_replanned', {
+        planId: 'plan-1',
+        replanAttempt: 1,
+        newStepCount: 1,
+        rationale: 'changed approach',
+      }),
+      // After replan, daemon resets stepIndex. activateStep mints a synthetic
+      // id since the composed id is now a cancelled tombstone.
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1-replan',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 's1-replan',
+      }),
+      // Real flow: a tool runs inside the step. activeNodeId moves off the
+      // step to the tool.
+      envelope('stream.tool_use', { id: 't1', name: 'read_file' }),
+    );
+    expect(state.activeNodeId).toBe('t1');
+    // Now the step completes. The composed id ("plan-1:step:1") matches the
+    // cancelled tombstone, NOT the running synthetic step. activeFallback
+    // would have failed (active is a tool). The fix walks the plan children
+    // for the running step.
+    state = runAll(
+      state,
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1-replan',
+        stepIndex: 1,
+        stepName: 's1-replan',
+        success: true,
+        durationMs: 50,
+        tokensUsed: 200,
+      }),
+    );
+    const plan = state.rootNodes[0]!.children[0]!.children[0]!;
+    const tombstone = plan.children.find(
+      (c) => c.id === stepNodeId('plan-1', 1),
+    );
+    const replacement = plan.children.find(
+      (c) => c.metadata?.['createdByReplan'] === true,
+    );
+    expect(tombstone?.status).toBe('cancelled');
+    expect(replacement?.status).toBe('completed');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Step events arriving before plan_created — don't dangle activeNodeId
 // ---------------------------------------------------------------------------
 

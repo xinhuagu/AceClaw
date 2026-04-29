@@ -450,9 +450,13 @@ function activateStep(
   const composedId = stepNodeId(params.planId, params.stepIndex);
   const existing = findNode(state.rootNodes, composedId);
 
-  // Skeleton-update path: the original plan_created step is still pending and
-  // matches by composed id. Flip it to running, take focus.
-  if (existing && existing.status !== 'cancelled') {
+  // Skeleton-update path: the only state that means "this slot is a fresh
+  // pre-created skeleton waiting to be activated" is 'pending'. Everything
+  // else — running (duplicate event), completed/failed (replan after the
+  // step already finished), cancelled (replan after pending), paused
+  // (mid-permission) — is a tombstone whose history must be preserved. Mint
+  // a synthetic id for the new step instead of overwriting.
+  if (existing && existing.status === 'pending') {
     return {
       ...state,
       rootNodes: mapNode(state.rootNodes, composedId, (n) => ({
@@ -465,21 +469,21 @@ function activateStep(
   }
 
   // From here, we either have no skeleton yet (out-of-order arrival) or we
-  // hit a cancelled tombstone left behind by replan. In both cases we want
-  // to insert a NEW running step — but only if the plan itself exists. If
-  // not, decline to move focus rather than dangle activeNodeId at a node
-  // that no later handler can find.
+  // hit a tombstone of any non-pending status left behind by replan. In both
+  // cases we want to insert a NEW running step — but only if the plan itself
+  // exists. If not, decline to move focus rather than dangle activeNodeId at
+  // a node that no later handler can find.
   const plan = findNode(state.rootNodes, params.planId);
   if (!plan) {
     return state;
   }
 
-  // Cancelled tombstones must keep their cancelled state — replan resets the
-  // daemon's stepIndex counter to 1, so a naive resurrection would silently
-  // turn an old cancelled step back into the new running one and erase the
-  // replan history. Mint a synthetic id ({composedId}:r{n}) for the
-  // replacement so the tombstone and the new step coexist.
-  const isReplanResurrection = existing?.status === 'cancelled';
+  // Any existing tombstone (cancelled / completed / failed / running / paused)
+  // must keep its history — a naive resurrection at the colliding composed id
+  // would erase replan history or overwrite a successfully completed step's
+  // record. Mint a synthetic id ({composedId}:r{n}) so the tombstone and the
+  // new step coexist as siblings under the plan.
+  const isReplanResurrection = existing != null;
   const newStepId = isReplanResurrection
     ? `${composedId}:r${state.nextSyntheticId}`
     : composedId;
@@ -518,20 +522,22 @@ function completeStep(
   params: PlanStepCompletedParams,
 ): ExecutionTree {
   const composedId = stepNodeId(params.planId, params.stepIndex);
-  // Resolve the step we should complete. Skeleton path matches by composed
-  // id; replan path may have minted a synthetic id, in which case the active
-  // node points at it (activateStep just moved focus there a moment ago).
+  // Resolve the step we should complete. Two paths:
+  //   1. Composed id matches a still-running pre-created skeleton step.
+  //   2. Plan has a running step at a synthetic id (replan path) — find it
+  //      by scanning the plan's children rather than relying on activeNodeId,
+  //      because the active node has typically moved to a child tool/text by
+  //      the time plan_step_completed arrives.
   const composedExisting = findNode(state.rootNodes, composedId);
   const skeletonHit =
-    composedExisting && composedExisting.status !== 'cancelled'
+    composedExisting && composedExisting.status === 'running'
       ? composedId
       : null;
-  const activeFallback =
-    state.activeNodeId &&
-    findNode(state.rootNodes, state.activeNodeId)?.type === 'step'
-      ? state.activeNodeId
-      : null;
-  const stepId = skeletonHit ?? activeFallback;
+  const plan = findNode(state.rootNodes, params.planId);
+  const replanRunningStep = plan?.children.find(
+    (c) => c.type === 'step' && c.status === 'running',
+  );
+  const stepId = skeletonHit ?? replanRunningStep?.id ?? null;
 
   if (!stepId) {
     // No matching step (e.g. plan_step_completed before plan_created). Decline
@@ -546,11 +552,11 @@ function completeStep(
   }));
   // Step done → next pending sibling inherits focus, else the plan, else
   // leave focus alone (plan was missing too).
-  const plan = findNode(rootNodes, params.planId);
-  if (!plan) {
+  const planAfter = findNode(rootNodes, params.planId);
+  if (!planAfter) {
     return { ...state, rootNodes };
   }
-  const nextPending = plan.children.find(
+  const nextPending = planAfter.children.find(
     (c) => c.type === 'step' && c.status === 'pending',
   );
   return {
