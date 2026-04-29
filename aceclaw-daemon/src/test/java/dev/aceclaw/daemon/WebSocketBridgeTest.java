@@ -301,11 +301,17 @@ final class WebSocketBridgeTest {
             }
         });
 
-        var connected = new CountDownLatch(1);
+        // Two clients connected: a single-client test would still pass even
+        // if the bridge fanned the reply out via broadcast (the requester
+        // would receive its own reply either way). The second client lets
+        // us prove the reply is requester-only.
+        var connected = new CountDownLatch(2);
         bridge.addConnectionListener(_ -> connected.countDown());
 
-        var queue = new LinkedBlockingQueue<String>();
-        var ws = connect(queue::add);
+        var requesterQueue = new LinkedBlockingQueue<String>();
+        var otherQueue = new LinkedBlockingQueue<String>();
+        var ws = connect(requesterQueue::add);
+        var wsOther = connect(otherQueue::add);
         assertThat(connected.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)).isTrue();
 
         ws.sendText("{\"method\":\"ping\",\"id\":\"r-42\"}", true)
@@ -313,14 +319,24 @@ final class WebSocketBridgeTest {
 
         // Reply lands on the requesting client's queue. Crucially, this is
         // NOT envelope-wrapped — no eventId / sessionId / receivedAt.
-        var reply = queue.poll(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        var reply = requesterQueue.poll(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
         assertThat(reply).isNotNull();
         var node = objectMapper.readTree(reply);
         assertThat(node.get("method").asText()).isEqualTo("pong");
         assertThat(node.get("correlationId").asText()).isEqualTo("r-42");
         assertThat(node.has("eventId")).as("control replies must NOT carry an envelope").isFalse();
 
+        // The non-requesting client must not see the reply: this is what
+        // makes ctx.send semantically distinct from bridge.broadcast.
+        // Use a short bounded poll — the message either arrived by now
+        // (Jetty would have delivered it on the same network turn as the
+        // requester's frame) or it never will. 200ms is plenty in-process.
+        assertThat(otherQueue.poll(200, TimeUnit.MILLISECONDS))
+                .as("non-requesting clients must not receive point-to-point replies")
+                .isNull();
+
         ws.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        wsOther.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     }
 
     private WebSocketBridge startOnRandomPort() throws Exception {

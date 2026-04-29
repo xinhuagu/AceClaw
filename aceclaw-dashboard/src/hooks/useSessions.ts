@@ -52,7 +52,13 @@ export function useSessions(wsUrl: string | null): SessionInfo[] {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
 
   useEffect(() => {
-    if (!wsUrl) return;
+    if (!wsUrl) {
+      // Clear any rows from a prior connection so the sidebar doesn't
+      // keep showing ghost sessions when the dashboard is detached
+      // (e.g. user back on the session-prompt screen).
+      setSessions([]);
+      return;
+    }
     let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let backoffMs = RECONNECT_INITIAL_MS;
@@ -230,16 +236,18 @@ function sortByCreatedDesc(list: SessionInfo[]): SessionInfo[] {
 
 /**
  * Merges a fresh sessions.list snapshot into the current state, keyed by
- * sessionId, so live events that arrived before the snapshot is delivered
- * aren't clobbered. Rules:
+ * sessionId. The snapshot is authoritative for *membership* — sessions
+ * absent from it are dropped, even if local state still has them. This is
+ * the only way the sidebar self-heals after a disconnect during which we
+ * missed a {@code stream.session_ended} broadcast: once we reconnect and
+ * re-fetch the snapshot, the stale row goes away.
  *
- *   - Sessions only in the snapshot are added.
- *   - Sessions only in local state are kept (they were observed via a live
- *     event that the daemon's snapshot pre-dated).
- *   - For overlaps, snapshot wins on immutable fields (projectPath, model,
- *     createdAt) but a locally-observed terminal {@code active=false} is
- *     preserved over a snapshot {@code active=true} — the end event is
- *     newer than the snapshot capture even if it raced ahead of delivery.
+ * The one exception is a locally-observed terminal {@code active=false}
+ * over a snapshot {@code active=true}. That race (broadcast lands before
+ * the snapshot reply, even though both are sent on the same socket) is
+ * narrow but possible because the daemon dispatches them on separate code
+ * paths. Since active state only transitions one way, preferring "ended"
+ * is always safe.
  *
  * Exported for unit testing.
  */
@@ -247,18 +255,16 @@ export function mergeSnapshot(
   prev: SessionInfo[],
   snapshot: SessionInfo[],
 ): SessionInfo[] {
-  const merged = new Map<string, SessionInfo>();
-  for (const s of snapshot) merged.set(s.sessionId, s);
-  for (const s of prev) {
-    const fromSnap = merged.get(s.sessionId);
-    if (!fromSnap) {
-      merged.set(s.sessionId, s);
-      continue;
-    }
-    // Locally-observed end event beats snapshot's stale active=true.
-    if (!s.active && fromSnap.active) {
-      merged.set(s.sessionId, { ...fromSnap, active: false });
+  const prevById = new Map(prev.map((s) => [s.sessionId, s]));
+  const out: SessionInfo[] = [];
+  for (const fromSnap of snapshot) {
+    const local = prevById.get(fromSnap.sessionId);
+    // Honour a locally-observed end over a stale snapshot active=true.
+    if (local && !local.active && fromSnap.active) {
+      out.push({ ...fromSnap, active: false });
+    } else {
+      out.push(fromSnap);
     }
   }
-  return sortByCreatedDesc([...merged.values()]);
+  return sortByCreatedDesc(out);
 }

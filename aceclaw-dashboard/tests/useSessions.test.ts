@@ -123,13 +123,16 @@ describe('mergeSnapshot', () => {
     expect(merged.map((s) => s.sessionId).sort()).toEqual(['s1', 's2']);
   });
 
-  it('keeps locally-observed sessions that the snapshot pre-dated', () => {
-    // Live session_started arrived for s2 between snapshot capture and delivery.
-    const local = [session({ sessionId: 's2', createdAt: '2026-04-29T09:00:00.000Z' })];
+  it('drops local-only sessions that the snapshot omits (post-reconnect heal)', () => {
+    // After a disconnect we may have missed a stream.session_ended for s2.
+    // The fresh snapshot is authoritative on membership — keeping s2 here
+    // would leave a permanent stale "active" row that never self-corrects.
+    const local = [
+      session({ sessionId: 's2', createdAt: '2026-04-29T09:00:00.000Z', active: true }),
+    ];
     const snap = [session({ sessionId: 's1', createdAt: '2026-04-29T08:00:00.000Z' })];
     const merged = mergeSnapshot(local, snap);
-    expect(merged).toHaveLength(2);
-    expect(merged.map((s) => s.sessionId)).toEqual(['s2', 's1']); // sorted by createdAt desc
+    expect(merged.map((s) => s.sessionId)).toEqual(['s1']);
   });
 
   it("preserves a locally-observed end (active=false) over a stale snapshot active=true", () => {
