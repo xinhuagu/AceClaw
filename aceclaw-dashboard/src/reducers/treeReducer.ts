@@ -307,13 +307,17 @@ function completeTurnNode(
     endTime: Date.parse(params.timestamp),
     duration: params.durationMs,
   }));
-  // After a turn completes, the active node is the parent (step / session).
-  const path = findPath(rootNodes, params.requestId) ?? [];
-  const parent = path.length >= 2 ? path[path.length - 2] : null;
+  // Don't bubble activeNodeId up to the parent (session/step) when the
+  // turn closes — that yanks the dashboard's auto-scroll back to the
+  // session box, hiding the response the user just watched stream in.
+  // Leaving activeNodeId on the last leaf makes the camera stay on the
+  // response. The auto-scroll effect re-runs because layout.nodes
+  // identity changed (turn status flipped to completed), but the
+  // target is the leaf the user was already looking at, so the pan
+  // is a no-op.
   return {
     ...state,
     rootNodes,
-    activeNodeId: parent ? parent.id : null,
   };
 }
 
@@ -462,14 +466,17 @@ function appendTextToCurrentTurn(
 
   const existing = turn.children.find((c) => c.type === 'text');
   let rootNodes: ExecutionNode[];
+  let textId: string;
   if (existing) {
+    textId = existing.id;
     rootNodes = mapNode(state.rootNodes, existing.id, (t) => ({
       ...t,
       text: (t.text ?? '') + params.delta,
     }));
   } else {
+    textId = textNodeId(turn.id);
     const textNode: ExecutionNode = {
-      id: textNodeId(turn.id),
+      id: textId,
       type: 'text',
       status: 'running',
       label: 'response',
@@ -486,10 +493,16 @@ function appendTextToCurrentTurn(
       t.status === 'running' ? { ...t, status: 'completed' as const } : t,
     );
   }
+  // Move auto-scroll focus onto the response. Without this, activeNodeId
+  // stays on the previous tool and the camera centres there while the
+  // model is actually streaming text — the user wants to watch the
+  // response form, not stare at a finished tool. Subsequent text deltas
+  // are no-ops for activeNodeId (still pointing at the same response
+  // node), so the camera sits on the response until the turn closes.
   // Seal the thinking anchor: a text response means the model has decided
   // to talk rather than tool-call, so any subsequent thinking is the next
   // ReAct iteration (or — typically — there is no next iteration).
-  return { ...state, rootNodes, thinkingSealed: true };
+  return { ...state, rootNodes, activeNodeId: textId, thinkingSealed: true };
 }
 
 function appendThinkingToCurrentTurn(
