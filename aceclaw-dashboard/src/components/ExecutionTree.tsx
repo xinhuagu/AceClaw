@@ -50,22 +50,21 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
   const dragRef = useRef<{ startX: number; startY: number; baseX: number; baseY: number } | null>(
     null,
   );
-  // Tracks whether the user has manually interacted; auto-scroll yields once
-  // they've taken control so the dashboard doesn't fight the operator's eyes.
-  const userControlledRef = useRef(false);
-
-  // Auto-fit the layout into view whenever the diagram grows. Re-fitting
-  // on every new node is cheaper than letting the operator hunt for the
-  // off-screen part of an actively-growing tree. The signature includes
-  // the node count, not just the bounding box, because some events
-  // (status updates, tool_completed) don't change width/height but still
-  // mark a new "moment" the user wants in view. The {@code userControlledRef}
-  // guard below stops the auto-fit fighting the operator once they pan
-  // or zoom — autopilot yields, manual stays.
+  // Auto-fit the layout into view whenever the diagram grows. Streaming
+  // execution is the dashboard's reason to exist — readers want the new
+  // node in view, not buried off-screen. We skip the fit only while a
+  // pointer drag is in progress (so we don't yank the view out from under
+  // the user mid-gesture); a wheel zoom is instantaneous, so there's
+  // nothing to interrupt. After a manual pan or zoom completes, the next
+  // arriving event re-fits — that's the contract the user asked for.
+  //
+  // Signature includes node count, not just bounding box, because some
+  // events (status updates, tool_completed) don't change width×height
+  // but still mark a new "moment" the user wants in view.
   const layoutSignature = `${layout.width}x${layout.height}#${layout.nodes.length}`;
   const lastFitRef = useRef<string>('');
   useEffect(() => {
-    if (userControlledRef.current) return;
+    if (dragRef.current) return;
     if (layout.width <= 0 || layout.height <= 0) return;
     if (lastFitRef.current === layoutSignature) return;
     const el = containerRef.current;
@@ -91,10 +90,11 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
     lastFitRef.current = layoutSignature;
   }, [layout.width, layout.height, layoutSignature]);
 
-  // Auto-scroll: smoothly recentre the active leaf as the daemon emits new
-  // events. We adjust pan only; the scale stays where the user left it.
+  // Auto-scroll: recentre the active leaf as the daemon emits new events.
+  // Adjusts pan only; the scale stays where auto-fit left it. Skipped
+  // mid-drag so the view doesn't fight the user's gesture.
   useEffect(() => {
-    if (userControlledRef.current) return;
+    if (dragRef.current) return;
     if (!tree.activeNodeId) return;
     const target = layout.nodes.find((n) => n.id === tree.activeNodeId);
     if (!target) return;
@@ -112,7 +112,6 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
     // Stop the page from scrolling while the operator is zooming the tree.
     // React's onWheel listener is non-passive, so preventDefault is honoured.
     e.preventDefault();
-    userControlledRef.current = true;
     const delta = -e.deltaY * ZOOM_STEP;
     setViewport((prev) => {
       const next = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, prev.scale + delta));
@@ -133,7 +132,6 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
 
   const handlePointerDown = (e: ReactPointerEvent<HTMLDivElement>): void => {
     if (e.button !== 0) return;
-    userControlledRef.current = true;
     dragRef.current = {
       startX: e.clientX,
       startY: e.clientY,
