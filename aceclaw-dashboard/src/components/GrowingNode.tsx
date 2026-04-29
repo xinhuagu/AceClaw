@@ -25,17 +25,18 @@ const STATUS_BG: Record<string, string> = {
 };
 
 /**
- * Per-type background overrides. Each non-default type gets its own
- * palette so the eye can tell — at a glance — what kind of work each
- * box represents:
+ * Per-type palette overrides. The system is one harmonious jewel-tone
+ * family at matched saturation/depth so the three node types read as
+ * variants of the same look, not as clashing accents:
  *
- *   - {@code thinking}: indigo/violet — model reasoning
- *   - {@code text} (response): rose/pink — final answer to the user
+ *   - {@code tool}     — default blue→green (runs, then succeeds)
+ *   - {@code thinking} — indigo/violet     (cool jewel, model reasoning)
+ *   - {@code text}     — amber/gold        (warm jewel, final answer)
  *
- * Tool nodes inherit the default blue/green status palette (running
- * blue → completed green) since they're the "default" work type and
- * make up the bulk of the tree. Other types fall through to
- * {@link STATUS_BG}.
+ * All three share the same depth (Tailwind 700/800 for running, 900/950
+ * for completed) so the brightness contrast carries the running ↔ done
+ * signal across types. Hue separation tells you what kind of work it
+ * is. Other types fall through to {@link STATUS_BG}.
  */
 const TYPE_BG: Partial<Record<string, Record<string, string>>> = {
   thinking: {
@@ -47,9 +48,9 @@ const TYPE_BG: Partial<Record<string, Record<string, string>>> = {
     cancelled: '#1f2937',
   },
   text: {
-    pending: '#831843', // pink-900
-    running: '#be185d', // pink-700 — bright while streaming response
-    completed: '#831843', // pink-900 — muted once the turn ends
+    pending: '#78350f', // amber-900
+    running: '#b45309', // amber-700 — bright while streaming response
+    completed: '#78350f', // amber-900 — muted once the turn ends
     failed: '#7f1d1d',
     paused: '#713f12',
     cancelled: '#1f2937',
@@ -71,9 +72,9 @@ const TYPE_BORDER: Partial<Record<string, Record<string, string>>> = {
     cancelled: '#71717a',
   },
   text: {
-    pending: '#f472b6', // pink-400
-    running: '#ec4899', // pink-500
-    completed: '#f9a8d4', // pink-300 (muted)
+    pending: '#fbbf24', // amber-400
+    running: '#f59e0b', // amber-500
+    completed: '#fcd34d', // amber-300 (muted)
     failed: '#ef4444',
     paused: '#f59e0b',
     cancelled: '#71717a',
