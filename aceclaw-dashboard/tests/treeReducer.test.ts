@@ -5,7 +5,7 @@ import type {
   EventParams,
 } from '../src/types/events';
 import { emptyTree, type ExecutionTree } from '../src/types/tree';
-import { executionTreeReducer } from '../src/reducers/treeReducer';
+import { executionTreeReducer, stepNodeId } from '../src/reducers/treeReducer';
 
 /**
  * Acceptance-criteria coverage for issue #435. Each describe block maps to
@@ -239,7 +239,7 @@ describe('plan lifecycle', () => {
     expect(plan.children[0]!.status).toBe('completed');
     expect(plan.children[1]!.status).toBe('pending');
     // After step 1 completes, focus should shift to the next pending step.
-    expect(state.activeNodeId).toBe('plan-1:2');
+    expect(state.activeNodeId).toBe(stepNodeId('plan-1', 2));
   });
 });
 
@@ -435,6 +435,168 @@ describe('activeNodeId tracking', () => {
     // After tool completes, focus returns to the parent turn so the next
     // tool_use under the same turn becomes active naturally.
     expect(state.activeNodeId).toBe('req-1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Replan → next step: lazy-create when the new step ID was never seen before
+// ---------------------------------------------------------------------------
+
+describe('replan → next step', () => {
+  it('creates the new step under the plan when activateStep is the first sighting', () => {
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 2,
+        goal: 'g',
+        steps: [
+          { index: 1, name: 's1', description: '' },
+          { index: 2, name: 's2', description: '' },
+        ],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 2,
+        stepName: 's1',
+      }),
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 1,
+        tokensUsed: 1,
+      }),
+      // Replan cancels s2 and signals a brand new step list (s3) coming next.
+      envelope('stream.plan_replanned', {
+        planId: 'plan-1',
+        replanAttempt: 1,
+        newStepCount: 1,
+        rationale: 'detour',
+      }),
+    );
+    // Daemon now sends plan_step_started with a NEW index that the skeleton
+    // never saw — without lazy-create this would silently no-op.
+    state = runAll(
+      state,
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's3',
+        stepIndex: 99,
+        totalSteps: 1,
+        stepName: 's3 (replanned)',
+      }),
+    );
+    const plan = state.rootNodes[0]!.children[0]!.children[0]!;
+    const newStep = plan.children.find(
+      (c) => c.metadata?.['createdByReplan'] === true,
+    );
+    expect(newStep).toBeDefined();
+    expect(newStep?.status).toBe('running');
+    expect(newStep?.label).toBe('s3 (replanned)');
+    expect(state.activeNodeId).toBe(newStep?.id);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Text deltas accumulate into a single text node under the active turn
+// ---------------------------------------------------------------------------
+
+describe('text accumulation', () => {
+  it('appends deltas onto the same text-typed child of the turn', () => {
+    const state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.text', { delta: 'Hello, ' }),
+      envelope('stream.text', { delta: 'world' }),
+      envelope('stream.text', { delta: '!' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const textChildren = turn.children.filter((c) => c.type === 'text');
+    expect(textChildren).toHaveLength(1);
+    expect(textChildren[0]!.text).toBe('Hello, world!');
+  });
+
+  it('drops deltas that arrive without a running turn', () => {
+    const state = runAll(
+      freshTree(),
+      envelope('stream.text', { delta: 'orphan' }),
+    );
+    expect(state.rootNodes).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sub-agent: completion matches the most-recent running entry by agentType
+// ---------------------------------------------------------------------------
+
+describe('subagent completion', () => {
+  it('marks the running subagent of matching agentType as completed', () => {
+    const state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.subagent.start', {
+        agentType: 'skill:commit',
+        prompt: 'commit changes',
+      }),
+      envelope('stream.subagent.end', { agentType: 'skill:commit' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const sub = turn.children.find((c) => c.type === 'subagent')!;
+    expect(sub.status).toBe('completed');
+    expect(sub.metadata?.['agentType']).toBe('skill:commit');
+  });
+
+  it('subagent.end without a matching active subagent is a no-op', () => {
+    const before = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+    );
+    const after = runAll(
+      before,
+      envelope('stream.subagent.end', { agentType: 'skill:nope' }),
+    );
+    // Watermark advances but the tree itself stays unchanged.
+    expect(after.rootNodes).toEqual(before.rootNodes);
   });
 });
 

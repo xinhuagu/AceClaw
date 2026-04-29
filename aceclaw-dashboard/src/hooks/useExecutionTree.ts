@@ -6,16 +6,24 @@
  * responsible for transport concerns the reducer must stay pure of:
  *
  * - JSON parsing of WS frames.
- * - Envelope shape validation.
+ * - Envelope shape validation, including a per-method critical-field check
+ *   for the events that can't recover from a missing field (e.g.
+ *   {@code permission.request} without {@code requestId}).
  * - Method allow-listing — unknown methods (Tier 2/3 forward-compat) are
- *   logged at debug level and dropped, so the reducer's switch can stay
- *   exhaustive in the type system.
+ *   dropped at the boundary so the reducer's switch can stay exhaustive in
+ *   the type system.
+ * - Cross-session filter — the WebSocket bridge broadcasts every active
+ *   session's events to every connected client (the reducer does not filter).
+ *   This hook is single-session by contract and drops envelopes whose
+ *   {@code sessionId} does not match the {@code sessionId} prop.
+ * - Tree reset when {@code sessionId} changes — switching sessions in a tab
+ *   must clear stale tree state.
  * - Reconnect with exponential backoff. The snapshot+replay handshake (#432)
  *   plugs in here once that endpoint exists; the watermark is already tracked
  *   on {@code state.lastEventId} so the reconnect path can send it as-is.
  */
 
-import { useEffect, useReducer, useRef } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type {
   DaemonEvent,
   DaemonEventEnvelope,
@@ -70,6 +78,27 @@ const KNOWN_METHODS = new Set<DaemonEvent['method']>([
   'permission.request',
 ]);
 
+/**
+ * Per-method critical-field allow-list. The reducer copes with most missing
+ * params (numeric fields default to 0, optional strings stay undefined), but
+ * a handful of events drive flow-control decisions and would silently corrupt
+ * downstream state if a key field were missing — e.g. a {@code permission.request}
+ * without {@code requestId} would orphan the response future. This map is
+ * NOT exhaustive on purpose; it only guards the events whose handlers can't
+ * recover from a malformed param shape.
+ */
+const CRITICAL_FIELDS: Partial<Record<DaemonEvent['method'], readonly string[]>> = {
+  'permission.request': ['requestId', 'description', 'tool'],
+  'stream.tool_use': ['id', 'name'],
+  'stream.tool_completed': ['id', 'name'],
+  'stream.turn_started': ['requestId', 'turnNumber'],
+  'stream.turn_completed': ['requestId', 'turnNumber'],
+  'stream.session_started': ['sessionId', 'model'],
+  'stream.plan_created': ['planId', 'steps'],
+  'stream.plan_step_started': ['planId', 'stepIndex'],
+  'stream.plan_step_completed': ['planId', 'stepIndex'],
+};
+
 const RECONNECT_INITIAL_MS = 500;
 const RECONNECT_MAX_MS = 30_000;
 
@@ -78,22 +107,35 @@ const RECONNECT_MAX_MS = 30_000;
  * execution tree. Unmounting the consuming component closes the socket and
  * stops any pending reconnect timer.
  *
- * @param wsUrl  e.g. {@code "ws://localhost:3141/ws"} — daemon-bound, never null.
- * @param sessionId session this tree belongs to. Multi-session demuxing is
- *                  caller's concern: spin up one hook per visible session.
+ * Switching {@code sessionId} after mount resets the tree — listeners in a
+ * multi-session UI typically remount via {@code key={sessionId}} but this
+ * hook is also defensible on its own.
+ *
+ * @param wsUrl     e.g. {@code "ws://localhost:3141/ws"} — daemon-bound, never null.
+ * @param sessionId session this tree belongs to. Envelopes for any other
+ *                  session are dropped before dispatch.
  */
 export function useExecutionTree(
   wsUrl: string,
   sessionId: string,
 ): UseExecutionTreeResult {
-  const [tree, dispatch] = useReducer(executionTreeReducer, sessionId, emptyTree);
-  const statusRef = useRef<WsStatus>('connecting');
-  const [, forceRender] = useReducer((x: number) => x + 1, 0);
+  const [tree, setTree] = useState<ExecutionTree>(() => emptyTree(sessionId));
+  const [status, setStatus] = useState<WsStatus>('connecting');
 
-  const setStatus = (s: WsStatus): void => {
-    statusRef.current = s;
-    forceRender();
-  };
+  // Reset tree state whenever the consumer flips sessions. We use useState
+  // (not useReducer) precisely so this reset is one line; a useReducer-based
+  // version would need a synthetic 'reset' action threaded through every
+  // dispatch site.
+  useEffect(() => {
+    setTree(emptyTree(sessionId));
+  }, [sessionId]);
+
+  const dispatch = useCallback(
+    (envelope: DaemonEventEnvelope<DaemonEvent>) => {
+      setTree((prev) => executionTreeReducer(prev, envelope));
+    },
+    [],
+  );
 
   useEffect(() => {
     let ws: WebSocket | null = null;
@@ -110,13 +152,18 @@ export function useExecutionTree(
         backoffMs = RECONNECT_INITIAL_MS;
         setStatus('open');
         // TODO(#432): once the snapshot endpoint exists, send
-        // { method: "snapshot.subscribe", lastEventId: tree.lastEventId }
+        // { method: "snapshot.subscribe", sessionId, lastEventId: tree.lastEventId }
         // here so the daemon replays only events the browser hasn't seen.
       };
 
       ws.onmessage = (e: MessageEvent<string>) => {
         const envelope = parseEnvelope(e.data);
-        if (envelope) dispatch(envelope);
+        if (!envelope) return;
+        // Cross-session filter: the bridge broadcasts every session's events
+        // to every connected client. A multi-tenant browser tab on its own
+        // session would otherwise mix two sessions' trees together.
+        if (envelope.sessionId !== sessionId) return;
+        dispatch(envelope);
       };
 
       ws.onerror = () => {
@@ -146,11 +193,9 @@ export function useExecutionTree(
       }
       setStatus('closed');
     };
-    // dispatch is stable (useReducer); wsUrl is the only real dependency.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wsUrl]);
+  }, [wsUrl, sessionId, dispatch]);
 
-  return { tree, status: statusRef.current };
+  return { tree, status };
 }
 
 // ---------------------------------------------------------------------------
@@ -159,10 +204,8 @@ export function useExecutionTree(
 
 /**
  * Parses a raw WS frame into a typed envelope, or returns null if the frame
- * is malformed or carries an event method outside {@link DaemonEvent}. We
- * accept the wider {@link UnknownDaemonEvent} shape here only to prove that
- * known-method narrowing is sound at the boundary; the reducer never sees
- * the unknown branch.
+ * is malformed, carries an event method outside {@link DaemonEvent}, or is
+ * missing a critical field for its method (see {@link CRITICAL_FIELDS}).
  */
 function parseEnvelope(raw: string): DaemonEventEnvelope<DaemonEvent> | null {
   let data: unknown;
@@ -188,15 +231,19 @@ function parseEnvelope(raw: string): DaemonEventEnvelope<DaemonEvent> | null {
   const params = event['params'];
   if (typeof method !== 'string' || !isPlainObject(params)) return null;
   if (!KNOWN_METHODS.has(method as DaemonEvent['method'])) {
-    // Forward-compat: log once per unknown method bucket, then drop.
+    // Forward-compat: unknown methods are reserved for Tier 2/3 expansion;
+    // dropping them at the boundary keeps the reducer's switch type-safe.
     return null;
   }
-  // Trust the schema once method is in the allow-list. The reducer's switch
-  // narrows further on `event.method` and pulls fields off `event.params`
-  // without per-case runtime checks. Cast goes through `unknown` because
-  // `{method: string, params: Record<string, unknown>}` doesn't structurally
-  // overlap with the discriminated DaemonEvent union — TypeScript would
-  // otherwise reject the direct widening.
+  // Per-method critical-field check. Most methods don't have entries here
+  // and pass through; the ones that do cannot recover from a missing field.
+  const required = CRITICAL_FIELDS[method as DaemonEvent['method']];
+  if (required && !required.every((k) => k in params)) {
+    return null;
+  }
+  // Trust the schema once method + critical fields are validated. Cast goes
+  // through `unknown` because `{method: string, params: Record<string, unknown>}`
+  // doesn't structurally overlap with the discriminated DaemonEvent union.
   return {
     eventId,
     sessionId,
