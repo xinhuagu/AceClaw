@@ -75,6 +75,14 @@ export interface ExecutionTree {
    * sends this back as a watermark to skip events the browser already has.
    */
   lastEventId: number;
+  /**
+   * Monotonic counter used by the reducer when it needs to mint a synthetic
+   * node id (e.g. {@code stream.subagent.start} doesn't carry a unique id
+   * over the wire — see #439). Kept on state instead of a module-level
+   * variable so the reducer stays pure and snapshot-replay produces the
+   * same tree.
+   */
+  nextSyntheticId: number;
   /** Aggregate counters surfaced in the UI sidebar. */
   stats: TreeStats;
 }
@@ -95,6 +103,7 @@ export function emptyTree(sessionId: string): ExecutionTree {
     rootNodes: [],
     activeNodeId: null,
     lastEventId: 0,
+    nextSyntheticId: 1,
     stats: {
       totalTools: 0,
       completedTools: 0,

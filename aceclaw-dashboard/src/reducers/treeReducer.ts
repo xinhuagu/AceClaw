@@ -599,8 +599,13 @@ function addSubAgentNode(
     (n) => n.type === 'turn' && n.status === 'running',
   );
   // Sub-agent ids in the daemon are not unique across the same agentType
-  // running twice in one turn, so synthesise a unique frontend-side id.
-  const id = `subagent:${params.agentType}:${state.stats.totalTools}:${state.rootNodes.length}`;
+  // running twice in one turn (#439). Mint a synthetic id from the per-tree
+  // monotonic counter so two subagent.start events back-to-back with the
+  // same agentType cannot collide. The counter lives on state (not a module
+  // variable) so the reducer stays pure and a snapshot replay produces the
+  // same tree on every machine.
+  const syntheticId = state.nextSyntheticId;
+  const id = `subagent:${params.agentType}:${syntheticId}`;
   const node: ExecutionNode = {
     id,
     type: 'subagent',
@@ -609,14 +614,15 @@ function addSubAgentNode(
     children: [],
     metadata: { agentType: params.agentType, prompt: params.prompt },
   };
-  if (turn) {
-    return {
-      ...state,
-      rootNodes: appendChild(state.rootNodes, turn.id, node),
-      activeNodeId: id,
-    };
-  }
-  return { ...state, rootNodes: [...state.rootNodes, node], activeNodeId: id };
+  const baseRootNodes = turn
+    ? appendChild(state.rootNodes, turn.id, node)
+    : [...state.rootNodes, node];
+  return {
+    ...state,
+    rootNodes: baseRootNodes,
+    activeNodeId: id,
+    nextSyntheticId: syntheticId + 1,
+  };
 }
 
 function completeSubAgentNode(

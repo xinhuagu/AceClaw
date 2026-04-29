@@ -23,7 +23,7 @@
  *   on {@code state.lastEventId} so the reconnect path can send it as-is.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   DaemonEvent,
   DaemonEventEnvelope,
@@ -97,6 +97,7 @@ const CRITICAL_FIELDS: Partial<Record<DaemonEvent['method'], readonly string[]>>
   'stream.plan_created': ['planId', 'steps'],
   'stream.plan_step_started': ['planId', 'stepIndex'],
   'stream.plan_step_completed': ['planId', 'stepIndex'],
+  'stream.subagent.start': ['agentType'],
 };
 
 const RECONNECT_INITIAL_MS = 500;
@@ -121,13 +122,21 @@ export function useExecutionTree(
 ): UseExecutionTreeResult {
   const [tree, setTree] = useState<ExecutionTree>(() => emptyTree(sessionId));
   const [status, setStatus] = useState<WsStatus>('connecting');
+  // Tracks the sessionId the current tree was initialised under so the reset
+  // effect below only fires on actual sessionId transitions. Without this
+  // guard, mount runs the lazy useState initializer AND the effect's
+  // setTree(...) — costing an extra render per consumer mount.
+  const prevSessionIdRef = useRef(sessionId);
 
   // Reset tree state whenever the consumer flips sessions. We use useState
   // (not useReducer) precisely so this reset is one line; a useReducer-based
   // version would need a synthetic 'reset' action threaded through every
   // dispatch site.
   useEffect(() => {
-    setTree(emptyTree(sessionId));
+    if (prevSessionIdRef.current !== sessionId) {
+      setTree(emptyTree(sessionId));
+      prevSessionIdRef.current = sessionId;
+    }
   }, [sessionId]);
 
   const dispatch = useCallback(

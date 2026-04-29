@@ -595,8 +595,16 @@ describe('subagent completion', () => {
       before,
       envelope('stream.subagent.end', { agentType: 'skill:nope' }),
     );
-    // Watermark advances but the tree itself stays unchanged.
+    // Tree, active context, and stats all stay byte-equal — a no-op end signal
+    // for a subagent that never started must not corrupt anything. The
+    // watermark IS expected to advance: the dispatch happened, just produced
+    // no tree changes, and the reconnect-dedup logic depends on every
+    // accepted envelope bumping lastEventId.
     expect(after.rootNodes).toEqual(before.rootNodes);
+    expect(after.activeNodeId).toBe(before.activeNodeId);
+    expect(after.stats).toEqual(before.stats);
+    expect(after.nextSyntheticId).toBe(before.nextSyntheticId);
+    expect(after.lastEventId).toBeGreaterThan(before.lastEventId);
   });
 });
 
