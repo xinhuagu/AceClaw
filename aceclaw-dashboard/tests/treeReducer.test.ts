@@ -714,6 +714,7 @@ describe('thinking-anchored tool grouping (ReAct iterations)', () => {
         turnNumber: 1,
         timestamp: new Date(2026, 0, 1).toISOString(),
         durationMs: 100,
+        toolCount: 1,
       }),
       envelope('stream.turn_started', {
         sessionId: 'sess-1',

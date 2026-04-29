@@ -69,6 +69,53 @@ function flattenNodes(nodes: ExecutionNode[], out: ExecutionNode[]): void {
 }
 
 /**
+ * Types whose sibling-order is semantically meaningful and worth showing
+ * with a dashed sequence edge in the layout. Other types either don't
+ * sequence (tools — can be parallel) or never have multiple instances
+ * sharing a parent (sessions, plans).
+ */
+const SEQUENCE_TYPES: ReadonlyArray<ExecutionNode['type']> = ['turn', 'thinking'];
+
+/**
+ * Walks the tree and pushes a {@code sequence}-kind edge between every
+ * pair of consecutive same-type siblings whose type appears in
+ * {@link SEQUENCE_TYPES}. Coordinates are derived from the dagre layout
+ * positions: in LR layout siblings stack vertically at the same x, so
+ * the edge runs from the bottom of {@code prev} to the top of
+ * {@code curr}.
+ */
+function addSequenceEdges(
+  siblings: ExecutionNode[],
+  layoutById: Map<string, LayoutNode>,
+  out: LayoutEdge[],
+): void {
+  for (let i = 1; i < siblings.length; i += 1) {
+    const prev = siblings[i - 1]!;
+    const curr = siblings[i]!;
+    if (
+      prev.type === curr.type &&
+      SEQUENCE_TYPES.includes(prev.type as ExecutionNode['type'])
+    ) {
+      const p = layoutById.get(prev.id);
+      const c = layoutById.get(curr.id);
+      if (!p || !c) continue;
+      out.push({
+        id: `seq:${prev.id}->${curr.id}`,
+        kind: 'sequence',
+        from: { x: p.x, y: p.y + p.height / 2 },
+        to: { x: c.x, y: c.y - c.height / 2 },
+        status: c.status,
+      });
+    }
+  }
+  for (const sibling of siblings) {
+    if (sibling.children.length > 0) {
+      addSequenceEdges(sibling.children, layoutById, out);
+    }
+  }
+}
+
+/**
  * Reactive layout pass. Returns an empty layout for an empty tree (avoids
  * dagre's 0×0 viewBox edge case), otherwise the full dagre output decorated
  * with the source ExecutionNode for each LayoutNode.
@@ -129,11 +176,21 @@ export function useTreeLayout(tree: ExecutionTree): TreeLayout {
       const toY = to ? to.y : 0;
       return {
         id: `${e.v}->${e.w}`,
+        kind: 'containment' as const,
         from: { x: fromX, y: fromY },
         to: { x: toX, y: toY },
         status: to?.status ?? 'pending',
       };
     });
+
+    // Sequence edges: dashed connectors between consecutive same-type
+    // siblings whose ordering carries meaning. Turns happen one after
+    // another under their owning session/step; thinking nodes happen one
+    // ReAct iteration after another under their owning turn. Tools are
+    // intentionally excluded — within a thinking they're parallel by
+    // construction (one LLM response), and outside one we can't tell
+    // sequential from parallel without execution-order metadata.
+    addSequenceEdges(tree.rootNodes, nodesById, layoutEdges);
 
     const g = graph.graph();
     const width = g.width ?? 0;
