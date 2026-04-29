@@ -75,4 +75,34 @@ describe('parseSessionsListResult', () => {
     });
     expect(result).toHaveLength(1);
   });
+
+  it('captures the model field when present and well-typed', () => {
+    const result = parseSessionsListResult({
+      sessions: [
+        {
+          sessionId: 's1',
+          projectPath: '/a',
+          createdAt: 't',
+          active: true,
+          model: 'claude-opus-4-7',
+        },
+      ],
+    });
+    expect(result).toHaveLength(1);
+    expect(result?.[0]!.model).toBe('claude-opus-4-7');
+  });
+
+  it('omits model when the field is missing or wrong-typed (older daemons)', () => {
+    const result = parseSessionsListResult({
+      sessions: [
+        // No model field — backward-compat with daemons that don't emit it.
+        { sessionId: 's1', projectPath: '/a', createdAt: 't', active: true },
+        // Wrong type — should be dropped silently, but the row stays.
+        { sessionId: 's2', projectPath: '/b', createdAt: 't', active: true, model: 42 },
+      ],
+    });
+    expect(result).toHaveLength(2);
+    expect(result?.[0]!.model).toBeUndefined();
+    expect(result?.[1]!.model).toBeUndefined();
+  });
 });

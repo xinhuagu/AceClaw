@@ -501,6 +501,11 @@ public final class AceClawDaemon {
                         sNode.put("projectPath", session.projectPath().toString());
                         sNode.put("createdAt", session.createdAt().toString());
                         sNode.put("active", session.isActive());
+                        // Mirror the model carried by stream.session_started so the
+                        // sidebar can show the active model without waiting for the
+                        // next session start. getModelForSession falls back to the
+                        // daemon default when there's no per-session override.
+                        sNode.put("model", agentHandler.getModelForSession(session.id()));
                         sessionsArray.add(sNode);
                     }
                     response.set("sessions", sessionsArray);
@@ -791,6 +796,33 @@ public final class AceClawDaemon {
         }
         final var runtimeSkillGeneratorForSessionEnd = dynamicSkillGenerator;
         sessionManager.setSessionEndCallback(session -> {
+            // Notify dashboard FIRST so the sidebar transitions immediately —
+            // the rest of this callback (memory extraction, history flush,
+            // learning analysis, runtime-skill-draft persistence, …) can take
+            // multiple seconds and the user shouldn't watch a stale "active"
+            // dot the whole time. SessionManager has already removed the
+            // session from its map by the time this runs, so the broadcast is
+            // honest about the daemon's view of state.
+            //
+            // reason carries the daemon's lifecycle context: the running flag
+            // is true for normal session.destroy calls and false during
+            // shutdownManager.executeShutdown(), so the dashboard can
+            // distinguish "user closed this one session" from "daemon is
+            // going down" without an extra round-trip.
+            var bridge = this.webSocketBridge;
+            if (bridge != null) {
+                try {
+                    var params = objectMapper.createObjectNode();
+                    params.put("sessionId", session.id());
+                    params.put("timestamp", java.time.Instant.now().toString());
+                    params.put("reason", running ? "destroyed" : "shutdown");
+                    bridge.broadcast(session.id(), "stream.session_ended", params);
+                } catch (Exception e) {
+                    log.warn("Failed to broadcast stream.session_ended for {}: {}",
+                            session.id(), e.getMessage());
+                }
+            }
+
             if (memoryStore != null) {
                 var sessionWorkingDir = session.projectPath().toAbsolutePath().normalize();
                 var sessionWorkspaceHash = WorkspacePaths.workspaceHash(sessionWorkingDir);
@@ -890,23 +922,6 @@ public final class AceClawDaemon {
             // Clean up session-scoped resources in the agent handler
             agentHandlerForCleanup.clearSessionOverride(session.id());
             agentHandlerForCleanup.clearSessionMetrics(session.id());
-
-            // Notify dashboard sidebar (#445) that a session is gone — without
-            // this, the sidebar would have to poll sessions.list to detect
-            // closures. Bridge-disabled deployments skip this entirely.
-            var bridge = this.webSocketBridge;
-            if (bridge != null) {
-                try {
-                    var params = objectMapper.createObjectNode();
-                    params.put("sessionId", session.id());
-                    params.put("timestamp", java.time.Instant.now().toString());
-                    params.put("reason", "destroyed");
-                    bridge.broadcast(session.id(), "stream.session_ended", params);
-                } catch (Exception e) {
-                    log.warn("Failed to broadcast stream.session_ended for {}: {}",
-                            session.id(), e.getMessage());
-                }
-            }
         });
 
         // Expose model name, provider info, and health monitor to status endpoint

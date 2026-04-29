@@ -24,6 +24,11 @@ export interface SessionInfo {
   /** ISO-8601 timestamp; daemon-assigned. */
   createdAt: string;
   active: boolean;
+  /**
+   * Effective model for the session (override or daemon default). Optional
+   * for forward/backward compat with daemons that don't yet emit it.
+   */
+  model?: string;
 }
 
 const SESSIONS_LIST_REQUEST = JSON.stringify({ method: 'sessions.list' });
@@ -190,6 +195,7 @@ export function parseSessionsListResult(
     const projectPath = entry['projectPath'];
     const createdAt = entry['createdAt'];
     const active = entry['active'];
+    const model = entry['model'];
     if (
       typeof sessionId !== 'string' ||
       typeof projectPath !== 'string' ||
@@ -198,7 +204,16 @@ export function parseSessionsListResult(
     ) {
       continue;
     }
-    out.push({ sessionId, projectPath, createdAt, active });
+    // model is optional — drop it silently if it's the wrong type rather
+    // than failing the whole row. exactOptionalPropertyTypes forbids
+    // assigning `undefined`, so spread it conditionally.
+    out.push({
+      sessionId,
+      projectPath,
+      createdAt,
+      active,
+      ...(typeof model === 'string' ? { model } : {}),
+    });
   }
   return out;
 }
