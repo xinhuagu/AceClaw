@@ -283,6 +283,46 @@ final class WebSocketBridgeTest {
         ws.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     }
 
+    @Test
+    void inboundHandlerCanReplyPointToPoint() throws Exception {
+        // Pins the contract that #445's sessions.list relies on: an inbound
+        // handler can call ctx.send to reply to the requester only, without
+        // routing through bridge.broadcast (which would fan the response out
+        // to every other connected client too). Without this, the sessions
+        // list would leak into every browser tab — wrong shape for a
+        // request-response.
+        bridge = startOnRandomPort();
+        bridge.setInboundHandler((ctx, message) -> {
+            // Echo a control-style reply, unwrapped (no DaemonEventEnvelope).
+            // sessions.list does the same thing in production.
+            if (message.has("method") && "ping".equals(message.get("method").asText())) {
+                ctx.send("{\"method\":\"pong\",\"correlationId\":\""
+                        + message.get("id").asText() + "\"}");
+            }
+        });
+
+        var connected = new CountDownLatch(1);
+        bridge.addConnectionListener(_ -> connected.countDown());
+
+        var queue = new LinkedBlockingQueue<String>();
+        var ws = connect(queue::add);
+        assertThat(connected.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)).isTrue();
+
+        ws.sendText("{\"method\":\"ping\",\"id\":\"r-42\"}", true)
+                .get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+
+        // Reply lands on the requesting client's queue. Crucially, this is
+        // NOT envelope-wrapped — no eventId / sessionId / receivedAt.
+        var reply = queue.poll(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        assertThat(reply).isNotNull();
+        var node = objectMapper.readTree(reply);
+        assertThat(node.get("method").asText()).isEqualTo("pong");
+        assertThat(node.get("correlationId").asText()).isEqualTo("r-42");
+        assertThat(node.has("eventId")).as("control replies must NOT carry an envelope").isFalse();
+
+        ws.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    }
+
     private WebSocketBridge startOnRandomPort() throws Exception {
         return startOnRandomPort(List.of());
     }
