@@ -924,6 +924,66 @@ describe('subagent.end LIFO resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
+// stream.session_ended (issue #445) — close the session node, clear focus
+// ---------------------------------------------------------------------------
+
+describe('stream.session_ended', () => {
+  it('closes the matching session node and records the reason', () => {
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+    );
+    expect(state.activeNodeId).toBe('req-1');
+    state = runAll(
+      state,
+      envelope('stream.session_ended', {
+        sessionId: 'sess-1',
+        timestamp: new Date(2026, 0, 1, 1).toISOString(),
+        reason: 'destroyed',
+      }),
+    );
+    const session = state.rootNodes[0]!;
+    expect(session.type).toBe('session');
+    expect(session.status).toBe('completed');
+    expect(session.metadata?.['endReason']).toBe('destroyed');
+    expect(session.endTime).toBeGreaterThan(0);
+    // Active focus is cleared — no further events apply to this session.
+    expect(state.activeNodeId).toBeNull();
+  });
+
+  it('is a no-op when the ended session does not match this tree', () => {
+    const before = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+    );
+    const after = runAll(
+      before,
+      envelope('stream.session_ended', {
+        sessionId: 'sess-other',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+        reason: 'destroyed',
+      }),
+    );
+    expect(after.rootNodes).toEqual(before.rootNodes);
+    expect(after.activeNodeId).toBe(before.activeNodeId);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Forward-compat: unknown methods are ignored, watermark still advances
 // ---------------------------------------------------------------------------
 

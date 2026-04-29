@@ -58,6 +58,18 @@ export interface SessionStartedParams {
   timestamp: string; // ISO-8601
 }
 
+/**
+ * stream.session_ended — emitted when {@code SessionManager.destroySession}
+ * runs (issue #445). Lets the dashboard sidebar prune closed sessions
+ * without polling. Reason mirrors the daemon's destroy reason — "destroyed"
+ * for normal close, "shutdown" if the daemon is going down, etc.
+ */
+export interface SessionEndedParams {
+  sessionId: string;
+  timestamp: string; // ISO-8601
+  reason: string;
+}
+
 /** stream.turn_started — NEW (issue #439, daemon to add in #431). */
 export interface TurnStartedParams {
   sessionId: string;
@@ -307,6 +319,7 @@ export interface PermissionResponseParams {
 export type DaemonEvent =
   // Lifecycle (NEW — daemon must add in #431)
   | { method: 'stream.session_started'; params: SessionStartedParams }
+  | { method: 'stream.session_ended'; params: SessionEndedParams }
   | { method: 'stream.turn_started'; params: TurnStartedParams }
   | { method: 'stream.turn_completed'; params: TurnCompletedParams }
   // Streaming primitives
@@ -407,6 +420,7 @@ export interface UnknownDaemonEvent {
 export const DAEMON_EMISSION_MAP = {
   // NEW — to be added by #431
   'stream.session_started': { status: 'new', emitter: 'StreamingAgentHandler#startSession' },
+  'stream.session_ended': { status: 'new', emitter: 'AceClawDaemon#sessionEndCallback' },
   'stream.turn_started': { status: 'new', emitter: 'StreamingAgentHandler#beginTurn' },
   'stream.turn_completed': { status: 'new', emitter: 'StreamingAgentHandler#endTurn' },
   'stream.plan_step_fallback': { status: 'new', emitter: 'SequentialPlanExecutor#onStepFallback' },
