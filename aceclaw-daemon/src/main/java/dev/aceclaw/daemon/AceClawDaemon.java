@@ -2104,6 +2104,20 @@ public final class AceClawDaemon {
         try {
             udsListener.start();
         } catch (Exception e) {
+            // Roll back the WS bridge we already started in step 3.9. Without
+            // this, a UDS bind failure (stale socket path, permission error,
+            // …) leaves the Javalin thread holding the WS port — blocking the
+            // operator's retry and presenting an unexpected local endpoint
+            // even though the daemon is considered failed to start. Best-
+            // effort: log but do not mask the original DaemonException.
+            if (webSocketBridge != null) {
+                try {
+                    webSocketBridge.stop();
+                } catch (Exception stopErr) {
+                    log.warn("Failed to stop WebSocket bridge during startup abort: {}",
+                            stopErr.getMessage());
+                }
+            }
             lock.release();
             throw new DaemonException("Failed to start UDS listener: " + e.getMessage(), e);
         }
