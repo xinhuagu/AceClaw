@@ -16,7 +16,8 @@ export type ExecutionNodeType =
   | 'turn'
   | 'tool'
   | 'subagent'
-  | 'text';
+  | 'text'
+  | 'thinking';
 
 /** Lifecycle status, presentation-agnostic. */
 export type ExecutionStatus =

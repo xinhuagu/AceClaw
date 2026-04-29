@@ -554,6 +554,59 @@ describe('text accumulation', () => {
     );
     expect(state.rootNodes).toHaveLength(0);
   });
+
+  it('rolls thinking deltas into a single thinking child of the running turn', () => {
+    // The reducer used to drop stream.thinking entirely (missing case in
+    // the switch), so a turn that thought before tool-using showed up as
+    // an empty parent. Mirrors the text behaviour: one thinking node per
+    // turn, deltas concatenate.
+    const state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.thinking', { delta: 'Let me ' }),
+      envelope('stream.thinking', { delta: 'consider…' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const thinkingChildren = turn.children.filter((c) => c.type === 'thinking');
+    expect(thinkingChildren).toHaveLength(1);
+    expect(thinkingChildren[0]!.text).toBe('Let me consider…');
+    expect(thinkingChildren[0]!.label).toBe('thinking');
+  });
+
+  it('keeps thinking and text as siblings under the same turn', () => {
+    // A real turn often thinks then responds; both nodes should hang off
+    // the turn so the layout shows two distinct children rather than one
+    // collapsing into the other.
+    const state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.thinking', { delta: 'reasoning' }),
+      envelope('stream.text', { delta: 'response' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const childTypes = turn.children.map((c) => c.type).sort();
+    expect(childTypes).toEqual(['text', 'thinking']);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -32,6 +32,7 @@ import type {
   SubAgentEndParams,
   SubAgentStartParams,
   TextDeltaParams,
+  ThinkingDeltaParams,
   ToolCompletedParams,
   ToolUseParams,
   TurnCompletedParams,
@@ -67,6 +68,11 @@ export function stepNodeId(planId: string, stepIndex: number): string {
 /** ID for the rolled-up text-bubble child of a turn. One per turn. */
 export function textNodeId(turnId: string): string {
   return `${turnId}:text`;
+}
+
+/** ID for the rolled-up thinking-bubble child of a turn. One per turn. */
+export function thinkingNodeId(turnId: string): string {
+  return `${turnId}:thinking`;
 }
 
 // ---------------------------------------------------------------------------
@@ -419,6 +425,46 @@ function appendTextToCurrentTurn(
   return {
     ...state,
     rootNodes: appendChild(state.rootNodes, turn.id, textNode),
+  };
+}
+
+function appendThinkingToCurrentTurn(
+  state: ExecutionTree,
+  params: ThinkingDeltaParams,
+): ExecutionTree {
+  // Mirrors {@link appendTextToCurrentTurn} but rolls up extended-thinking
+  // deltas into a separate {@code thinking}-typed child. The reducer used
+  // to drop these — meaning a turn that only thought (no tools, no text
+  // yet) showed up as an empty parent in the tree, which left the user
+  // wondering what the agent was doing during the visible "running" pulse.
+  const turn = findNearestAncestor(
+    state.rootNodes,
+    state.activeNodeId,
+    (n) => n.type === 'turn' && n.status === 'running',
+  );
+  if (!turn) return state;
+
+  const existing = turn.children.find((c) => c.type === 'thinking');
+  if (existing) {
+    return {
+      ...state,
+      rootNodes: mapNode(state.rootNodes, existing.id, (t) => ({
+        ...t,
+        text: (t.text ?? '') + params.delta,
+      })),
+    };
+  }
+  const thinkingNode: ExecutionNode = {
+    id: thinkingNodeId(turn.id),
+    type: 'thinking',
+    status: 'running',
+    label: 'thinking',
+    children: [],
+    text: params.delta,
+  };
+  return {
+    ...state,
+    rootNodes: appendChild(state.rootNodes, turn.id, thinkingNode),
   };
 }
 
@@ -885,6 +931,9 @@ export function executionTreeReducer(
       break;
     case 'stream.text':
       next = appendTextToCurrentTurn(state, event.params);
+      break;
+    case 'stream.thinking':
+      next = appendThinkingToCurrentTurn(state, event.params);
       break;
     case 'stream.plan_created':
       next = addPlanSkeleton(state, event.params);
