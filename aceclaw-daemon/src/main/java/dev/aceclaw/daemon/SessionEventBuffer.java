@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -47,6 +48,48 @@ public final class SessionEventBuffer {
 
     /** Default per-session cap. 5000 envelopes ~ 1-5MB JSON per session. */
     public static final int DEFAULT_PER_SESSION_CAPACITY = 5000;
+
+    /**
+     * Methods whose envelopes the dashboard reducer relies on to build the
+     * tree's structural skeleton (root node, turn nodes, plan steps, tool
+     * boxes, subagent groups). Plain FIFO eviction when the cap is hit
+     * would drop the oldest envelope first, which is always
+     * {@code stream.session_started} — losing it means the reducer never
+     * creates a root node and the snapshot rebuilds an empty tree.
+     *
+     * <p>On overflow we evict the oldest <em>non-pinned</em> envelope so
+     * structural events survive arbitrarily long sessions while noisy
+     * high-volume events (text deltas, heartbeats, usage) get dropped
+     * first. The trade-off: a long session loses some text history from
+     * earlier turns, but the tree shape and tool calls remain intact —
+     * which is the contract the dashboard's "click into a session, see
+     * the tree" UX depends on.
+     *
+     * <p>Not pinned: {@code stream.text}, {@code stream.thinking},
+     * {@code stream.heartbeat}, {@code stream.usage},
+     * {@code stream.compaction}, {@code stream.gate} — these are either
+     * high-volume noise or terminal status the reducer doesn't replay.
+     */
+    private static final Set<String> PINNED_METHODS = Set.of(
+            "stream.session_started",
+            "stream.session_ended",
+            "stream.turn_started",
+            "stream.turn_completed",
+            "stream.plan_created",
+            "stream.plan_step_started",
+            "stream.plan_step_completed",
+            "stream.plan_step_fallback",
+            "stream.plan_replanned",
+            "stream.plan_completed",
+            "stream.plan_escalated",
+            "stream.tool_use",
+            "stream.tool_completed",
+            "stream.subagent.start",
+            "stream.subagent.end",
+            "stream.error",
+            "stream.cancelled",
+            "stream.budget_exhausted",
+            "permission.request");
 
     private final int capacity;
     private final ConcurrentHashMap<String, SessionLog> bySession = new ConcurrentHashMap<>();
@@ -119,15 +162,41 @@ public final class SessionEventBuffer {
 
         synchronized void append(ObjectNode envelope) {
             if (envelopes.size() >= capacity) {
-                envelopes.pollFirst();
+                evictOldestNonPinned();
                 if (!overflowLogged) {
                     log.warn("SessionEventBuffer overflow for session {} (cap={}); "
-                                    + "evicting oldest envelopes. Snapshot will be partial.",
+                                    + "evicting oldest non-structural envelopes. "
+                                    + "Snapshot will be partial.",
                             sessionId, capacity);
                     overflowLogged = true;
                 }
             }
             envelopes.addLast(envelope);
+        }
+
+        /**
+         * Removes the oldest envelope whose method is NOT in
+         * {@link #PINNED_METHODS}. Falls back to plain FIFO eviction when
+         * every envelope in the buffer is structural — at that point the
+         * buffer is full of session-shape events and we'd rather lose the
+         * oldest one than refuse new events. ArrayDeque's iterator runs
+         * head-to-tail (oldest → newest) and supports {@code remove}.
+         */
+        private void evictOldestNonPinned() {
+            var it = envelopes.iterator();
+            while (it.hasNext()) {
+                var env = it.next();
+                var method = env.path("event").path("method").asText("");
+                if (!PINNED_METHODS.contains(method)) {
+                    it.remove();
+                    return;
+                }
+            }
+            // All-pinned fallback. Practically impossible at the default
+            // 5000 cap (a real session generates far more text/heartbeat
+            // than structural events) but the safe fallback keeps the
+            // append path deterministic.
+            envelopes.pollFirst();
         }
 
         synchronized List<ObjectNode> snapshot() {

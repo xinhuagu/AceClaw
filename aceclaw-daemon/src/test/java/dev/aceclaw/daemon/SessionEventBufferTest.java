@@ -130,6 +130,53 @@ class SessionEventBufferTest {
     }
 
     @Test
+    void evictionPreservesStructuralEventsLikeSessionStarted() {
+        // The reducer needs stream.session_started to build the tree's
+        // root node. With plain FIFO eviction, the oldest envelope
+        // (which is always session_started, by daemon construction) would
+        // be evicted first whenever the buffer overflows — the dashboard
+        // would then rebuild an empty tree from a snapshot full of tools
+        // with no parent. Pinned-aware eviction targets noisy events
+        // (stream.text here) instead so structure survives.
+        var buffer = new SessionEventBuffer(3);
+        buffer.append("s1", envelopeWithMethod(1, "stream.session_started"));
+        buffer.append("s1", envelopeWithMethod(2, "stream.text"));
+        buffer.append("s1", envelopeWithMethod(3, "stream.text"));
+        // Cap=3 reached. Next append must evict — but the oldest non-pinned
+        // envelope (eventId=2) goes, NOT the oldest envelope (eventId=1).
+        buffer.append("s1", envelopeWithMethod(4, "stream.text"));
+
+        var snapshot = buffer.snapshot("s1");
+        assertThat(snapshot).hasSize(3);
+        // session_started survived eviction — first slot.
+        assertThat(snapshot.get(0).get("event").get("method").asText())
+                .isEqualTo("stream.session_started");
+        assertThat(snapshot.get(0).get("eventId").asLong()).isEqualTo(1L);
+        // The two newest text events are still there; eventId=2 was the
+        // one evicted (oldest non-pinned).
+        assertThat(snapshot.get(1).get("eventId").asLong()).isEqualTo(3L);
+        assertThat(snapshot.get(2).get("eventId").asLong()).isEqualTo(4L);
+    }
+
+    @Test
+    void evictionFallsBackToFifoWhenEveryEnvelopeIsPinned() {
+        // Pathological case: a buffer somehow holds only structural events
+        // (tool_use here, all pinned). The cap-exceed path can't preserve
+        // them all, so it degrades to FIFO — losing the oldest pinned
+        // is better than refusing new events. In production the noisy
+        // events guarantee this branch is rarely taken.
+        var buffer = new SessionEventBuffer(2);
+        buffer.append("s1", envelopeWithMethod(1, "stream.tool_use"));
+        buffer.append("s1", envelopeWithMethod(2, "stream.tool_use"));
+        buffer.append("s1", envelopeWithMethod(3, "stream.tool_use"));
+
+        var snapshot = buffer.snapshot("s1");
+        assertThat(snapshot).hasSize(2);
+        assertThat(snapshot.get(0).get("eventId").asLong()).isEqualTo(2L);
+        assertThat(snapshot.get(1).get("eventId").asLong()).isEqualTo(3L);
+    }
+
+    @Test
     void rejectsNonPositiveCapacity() {
         org.junit.jupiter.api.Assertions.assertThrows(
                 IllegalArgumentException.class, () -> new SessionEventBuffer(0));
@@ -141,6 +188,22 @@ class SessionEventBufferTest {
         var env = mapper.createObjectNode();
         env.put("eventId", id);
         env.put("sessionId", "s1");
+        return env;
+    }
+
+    /**
+     * Builds an envelope whose {@code event.method} matters to eviction
+     * (the pinning decision reads this path). The bridge always populates
+     * it; without it, the test envelope counts as "non-pinned" and
+     * eviction degrades to plain FIFO — which is what the
+     * {@link #capacityEvictsOldestEnvelopes} test relies on.
+     */
+    private com.fasterxml.jackson.databind.node.ObjectNode envelopeWithMethod(
+            long id, String method) {
+        var env = envelopeWithEventId(id);
+        var event = mapper.createObjectNode();
+        event.put("method", method);
+        env.set("event", event);
         return env;
     }
 }
