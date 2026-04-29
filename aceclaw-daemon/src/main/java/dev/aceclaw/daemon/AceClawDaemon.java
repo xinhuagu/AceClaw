@@ -478,6 +478,43 @@ public final class AceClawDaemon {
                     config.webSocketHost(), config.webSocketPort(), objectMapper,
                     config.webSocketAllowedOrigins());
             agentHandler.setWebSocketBridge(this.webSocketBridge);
+
+            // Issue #445: respond to sessions.list requests from the dashboard
+            // sidebar. The reply is a one-shot point-to-point message rather
+            // than a broadcast envelope — semantically a request-response,
+            // not a stream event, so we ctx.send the JSON directly to the
+            // requesting client and skip the EventMultiplexer fan-out path.
+            final var sessionsRef = sessionManager;
+            final var mapperRef = objectMapper;
+            this.webSocketBridge.setInboundHandler((ctx, message) -> {
+                var methodNode = message.get("method");
+                if (methodNode == null) return;
+                var method = methodNode.asText("");
+                if (!"sessions.list".equals(method)) return;
+                try {
+                    var response = mapperRef.createObjectNode();
+                    response.put("method", "sessions.list.result");
+                    var sessionsArray = mapperRef.createArrayNode();
+                    for (var session : sessionsRef.activeSessions()) {
+                        var sNode = mapperRef.createObjectNode();
+                        sNode.put("sessionId", session.id());
+                        sNode.put("projectPath", session.projectPath().toString());
+                        sNode.put("createdAt", session.createdAt().toString());
+                        sNode.put("active", session.isActive());
+                        // Mirror the model carried by stream.session_started so the
+                        // sidebar can show the active model without waiting for the
+                        // next session start. getModelForSession falls back to the
+                        // daemon default when there's no per-session override.
+                        sNode.put("model", agentHandler.getModelForSession(session.id()));
+                        sessionsArray.add(sNode);
+                    }
+                    response.set("sessions", sessionsArray);
+                    ctx.send(mapperRef.writeValueAsString(response));
+                } catch (Exception e) {
+                    log.warn("Failed to send sessions.list reply: {}", e.getMessage());
+                }
+            });
+
             log.info("WebSocket bridge configured: {}:{} (allowed browser origins: {})",
                     config.webSocketHost(), config.webSocketPort(),
                     config.webSocketAllowedOrigins().isEmpty()
@@ -759,6 +796,33 @@ public final class AceClawDaemon {
         }
         final var runtimeSkillGeneratorForSessionEnd = dynamicSkillGenerator;
         sessionManager.setSessionEndCallback(session -> {
+            // Notify dashboard FIRST so the sidebar transitions immediately —
+            // the rest of this callback (memory extraction, history flush,
+            // learning analysis, runtime-skill-draft persistence, …) can take
+            // multiple seconds and the user shouldn't watch a stale "active"
+            // dot the whole time. SessionManager has already removed the
+            // session from its map by the time this runs, so the broadcast is
+            // honest about the daemon's view of state.
+            //
+            // reason carries the daemon's lifecycle context: the running flag
+            // is true for normal session.destroy calls and false during
+            // shutdownManager.executeShutdown(), so the dashboard can
+            // distinguish "user closed this one session" from "daemon is
+            // going down" without an extra round-trip.
+            var bridge = this.webSocketBridge;
+            if (bridge != null) {
+                try {
+                    var params = objectMapper.createObjectNode();
+                    params.put("sessionId", session.id());
+                    params.put("timestamp", java.time.Instant.now().toString());
+                    params.put("reason", running ? "destroyed" : "shutdown");
+                    bridge.broadcast(session.id(), "stream.session_ended", params);
+                } catch (Exception e) {
+                    log.warn("Failed to broadcast stream.session_ended for {}: {}",
+                            session.id(), e.getMessage());
+                }
+            }
+
             if (memoryStore != null) {
                 var sessionWorkingDir = session.projectPath().toAbsolutePath().normalize();
                 var sessionWorkspaceHash = WorkspacePaths.workspaceHash(sessionWorkingDir);

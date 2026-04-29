@@ -1,22 +1,30 @@
 import { useState } from 'react';
 import { ExecutionTree } from './components/ExecutionTree';
+import { SessionList } from './components/SessionList';
 import { useExecutionTree } from './hooks/useExecutionTree';
+import { useSessions } from './hooks/useSessions';
 
 /**
- * Tier 1 dashboard root (issues #434 → #436). Wires three pieces:
+ * Tier 1 dashboard root (issues #434 → #436, sidebar from #445).
  *
- *   1. {@link useExecutionTree} — opens a WebSocket to the daemon's bridge
- *      (#431) and exposes a reactive {@link ExecutionTreeState}.
- *   2. {@link ExecutionTree} — SVG tree with dagre layout + Framer Motion
- *      animations (#436).
- *   3. A small status bar with the connection state, session id, and live
- *      stats from the reducer.
+ * Layout:
+ *   ┌──────────────┬──────────────────────────────────────┐
+ *   │ SessionList  │ StatusBar                            │
+ *   │   sidebar    ├──────────────────────────────────────┤
+ *   │  (#445)      │ ExecutionTree (#436)                 │
+ *   │              │                                      │
+ *   └──────────────┴──────────────────────────────────────┘
  *
- * Reading WS URL + session from query params keeps this Tier 1 friendly:
- * a developer can hit
- *   http://localhost:5173/?session=&ws=ws://localhost:3141/ws
- * once the daemon is running with webSocket.enabled and an allowlisted
- * origin, and see live trees without rebuilding.
+ * Two independent WebSockets (one per hook). The sidebar's
+ * {@link useSessions} sends {@code sessions.list} once on connect and then
+ * tails {@code stream.session_started} / {@code stream.session_ended} for
+ * live deltas. The tree's {@link useExecutionTree} filters by sessionId so
+ * only the selected session's events drive the rendered tree.
+ *
+ * Reading WS URL + session from query params keeps Tier 1 friendly:
+ *   http://localhost:5173/?session=<id>&ws=ws://localhost:3141/ws
+ * once the daemon is running. Selecting a session in the sidebar updates
+ * the URL in place so reloads remember the selection.
  */
 
 const DEFAULT_WS_URL = 'ws://localhost:3141/ws';
@@ -51,20 +59,49 @@ export function App() {
   const initialWs = sanitiseWsUrl(readQueryParam('ws')) ?? DEFAULT_WS_URL;
   const [sessionId, setSessionId] = useState(initialSession);
   const [wsUrl] = useState(initialWs);
+  const sessions = useSessions(wsUrl);
 
-  if (!sessionId.trim()) {
-    return <SessionPrompt onSubmit={setSessionId} defaultWsUrl={initialWs} />;
-  }
+  // Selecting a session in the sidebar replaces the URL so reload preserves
+  // the selection — replaceState rather than pushState so the back button
+  // doesn't treat session-switching as navigation history.
+  const selectSession = (newSessionId: string): void => {
+    setSessionId(newSessionId);
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      url.searchParams.set('session', newSessionId);
+      window.history.replaceState(null, '', url.toString());
+    }
+  };
 
-  return <DashboardConnected sessionId={sessionId.trim()} wsUrl={wsUrl} />;
+  return (
+    <div className="flex h-full">
+      <SessionList
+        sessions={sessions}
+        selectedSessionId={sessionId || null}
+        onSelect={selectSession}
+      />
+      <div className="flex flex-1 flex-col overflow-hidden">
+        {sessionId ? (
+          <DashboardConnected sessionId={sessionId.trim()} wsUrl={wsUrl} />
+        ) : (
+          <SessionPrompt
+            onSubmit={selectSession}
+            defaultWsUrl={initialWs}
+            hasSessions={sessions.length > 0}
+          />
+        )}
+      </div>
+    </div>
+  );
 }
 
 interface SessionPromptProps {
   onSubmit: (sessionId: string) => void;
   defaultWsUrl: string;
+  hasSessions: boolean;
 }
 
-function SessionPrompt({ onSubmit, defaultWsUrl }: SessionPromptProps) {
+function SessionPrompt({ onSubmit, defaultWsUrl, hasSessions }: SessionPromptProps) {
   const [draft, setDraft] = useState('');
   return (
     <main className="flex h-full flex-col items-center justify-center gap-6 p-8">
@@ -76,6 +113,11 @@ function SessionPrompt({ onSubmit, defaultWsUrl }: SessionPromptProps) {
           if (draft.trim()) onSubmit(draft);
         }}
       >
+        <p className="text-sm text-zinc-400">
+          {hasSessions
+            ? 'Pick a session from the sidebar, or paste an ID below.'
+            : 'No sessions yet — start one with the CLI, or paste an ID below.'}
+        </p>
         <label className="flex flex-col gap-1 text-sm text-zinc-400">
           Session ID
           <input
@@ -111,12 +153,12 @@ interface DashboardConnectedProps {
 function DashboardConnected({ sessionId, wsUrl }: DashboardConnectedProps) {
   const { tree, status } = useExecutionTree(wsUrl, sessionId);
   return (
-    <div className="flex h-full flex-col">
+    <>
       <StatusBar sessionId={sessionId} status={status} stats={tree.stats} />
       <div className="flex-1">
         <ExecutionTree tree={tree} />
       </div>
-    </div>
+    </>
   );
 }
 

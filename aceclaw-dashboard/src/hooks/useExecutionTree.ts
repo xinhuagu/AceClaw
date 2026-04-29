@@ -53,6 +53,7 @@ export interface UseExecutionTreeResult {
  */
 const KNOWN_METHODS = new Set<DaemonEvent['method']>([
   'stream.session_started',
+  'stream.session_ended',
   'stream.turn_started',
   'stream.turn_completed',
   'stream.thinking',
@@ -104,6 +105,8 @@ const VALIDATORS: Partial<Record<DaemonEvent['method'], ParamGuard>> = {
   'stream.turn_completed': (p) =>
     isString(p['requestId']) && isNumber(p['turnNumber']) && isNumber(p['durationMs']),
   'stream.session_started': (p) => isString(p['sessionId']) && isString(p['model']),
+  'stream.session_ended': (p) =>
+    isString(p['sessionId']) && isString(p['timestamp']) && isString(p['reason']),
   // Critical: addPlanSkeleton calls steps.map — must be Array, not just present.
   'stream.plan_created': (p) =>
     isString(p['planId']) && Array.isArray(p['steps']),
