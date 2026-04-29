@@ -113,6 +113,11 @@ public final class AceClawConfig {
     private static final int DEFAULT_MAX_PLAN_TOTAL_WALL_TIME_SEC = 3600;
     private static final boolean DEFAULT_DEFERRED_ACTION_ENABLED = true;
     private static final int DEFAULT_DEFERRED_ACTION_TICK_SECONDS = 5;
+    /** WebSocket bridge for browser dashboard (issue #431). Disabled by default; opt-in. */
+    private static final boolean DEFAULT_WEBSOCKET_ENABLED = false;
+    private static final int DEFAULT_WEBSOCKET_PORT = 3141;
+    /** Bind only to localhost by default. Acceptance criterion of #431 (security). */
+    private static final String DEFAULT_WEBSOCKET_HOST = "localhost";
 
     /** Claude CLI credentials directory. */
     private static final Path CLAUDE_CLI_DIR = Path.of(System.getProperty("user.home"), ".claude");
@@ -193,6 +198,17 @@ public final class AceClawConfig {
     private int maxPlanTotalWallTimeSec;
     private boolean deferredActionEnabled;
     private int deferredActionTickSeconds;
+    private boolean webSocketEnabled;
+    private int webSocketPort;
+    private String webSocketHost;
+    /**
+     * Allowlist of {@code Origin} headers permitted to open a WebSocket.
+     * Default empty — browsers cannot connect until the user explicitly opts in
+     * by listing the dashboard's origin (e.g. {@code http://localhost:5173}).
+     * Tools that send no {@code Origin} (curl, Java HttpClient) are always
+     * allowed because cross-site browser attacks cannot suppress the header.
+     */
+    private List<String> webSocketAllowedOrigins;
     private List<String> subAgentAutoApproveTools;
     private Map<String, List<HookMatcherFormat>> hooks;
     private boolean context1m;
@@ -271,6 +287,10 @@ public final class AceClawConfig {
         this.maxPlanTotalWallTimeSec = DEFAULT_MAX_PLAN_TOTAL_WALL_TIME_SEC;
         this.deferredActionEnabled = DEFAULT_DEFERRED_ACTION_ENABLED;
         this.deferredActionTickSeconds = DEFAULT_DEFERRED_ACTION_TICK_SECONDS;
+        this.webSocketEnabled = DEFAULT_WEBSOCKET_ENABLED;
+        this.webSocketPort = DEFAULT_WEBSOCKET_PORT;
+        this.webSocketHost = DEFAULT_WEBSOCKET_HOST;
+        this.webSocketAllowedOrigins = List.of();
         this.subAgentAutoApproveTools = List.of();
         this.providerModels = new java.util.HashMap<>();
         this.context1m = DEFAULT_CONTEXT_1M;
@@ -1175,6 +1195,38 @@ public final class AceClawConfig {
     }
 
     /**
+     * Returns whether the browser-facing WebSocket bridge is enabled.
+     * Defaults to {@code false} — opt-in via {@code webSocket.enabled} in config.json.
+     */
+    public boolean webSocketEnabled() {
+        return webSocketEnabled;
+    }
+
+    /**
+     * Returns the port the WebSocket bridge binds to. Defaults to 3141.
+     */
+    public int webSocketPort() {
+        return webSocketPort;
+    }
+
+    /**
+     * Returns the host the WebSocket bridge binds to. Defaults to {@code localhost}
+     * for security; never expose without an authentication layer in front.
+     */
+    public String webSocketHost() {
+        return webSocketHost;
+    }
+
+    /**
+     * Returns the allowlist of browser {@code Origin} headers permitted to open
+     * a WebSocket connection. Empty list = no browser may connect; tools with
+     * no {@code Origin} header are always allowed.
+     */
+    public List<String> webSocketAllowedOrigins() {
+        return webSocketAllowedOrigins;
+    }
+
+    /**
      * Returns extra tool names to auto-approve for sub-agents, configured via
      * {@code subAgentAutoApproveTools} in config.json. These are merged with
      * the built-in read-only tool whitelist.
@@ -1675,6 +1727,37 @@ public final class AceClawConfig {
         if (fileConfig.deferredActionTickSeconds > 0) {
             this.deferredActionTickSeconds = fileConfig.deferredActionTickSeconds;
         }
+        if (fileConfig.webSocket != null) {
+            if (fileConfig.webSocket.enabled != null) {
+                this.webSocketEnabled = fileConfig.webSocket.enabled;
+            }
+            if (fileConfig.webSocket.port != null) {
+                int p = fileConfig.webSocket.port;
+                // Reject out-of-range ports here so a misconfiguration surfaces
+                // at config-parsing time, not later when the bridge tries to
+                // bind. Port 0 ("ephemeral") is intentionally not allowed in
+                // user-facing config — production deployments need a stable
+                // port; tests construct WebSocketBridge directly with port=0.
+                if (p >= 1 && p <= 65_535) {
+                    this.webSocketPort = p;
+                } else {
+                    log.warn("Ignoring invalid webSocket.port {} (must be 1..65535)", p);
+                }
+            }
+            if (fileConfig.webSocket.host != null && !fileConfig.webSocket.host.isBlank()) {
+                this.webSocketHost = fileConfig.webSocket.host;
+            }
+            if (fileConfig.webSocket.allowedOrigins != null) {
+                // Trim before the blank check — WebSocketBridge does an exact
+                // Origin match, so " http://localhost:5173 " would otherwise
+                // survive the merge but never match a real browser header.
+                this.webSocketAllowedOrigins = fileConfig.webSocket.allowedOrigins.stream()
+                        .filter(o -> o != null)
+                        .map(String::trim)
+                        .filter(o -> !o.isBlank())
+                        .toList();
+            }
+        }
         if (fileConfig.context1m != null) {
             this.context1m = fileConfig.context1m;
         }
@@ -1777,6 +1860,7 @@ public final class AceClawConfig {
         public Integer maxPlanTotalWallTimeSec;
         public Boolean deferredActionEnabled;
         public int deferredActionTickSeconds;
+        public WebSocketConfigFormat webSocket;
         public List<String> subAgentAutoApproveTools;
         public String defaultProfile;
         public Map<String, ConfigFileFormat> profiles;
@@ -1796,6 +1880,22 @@ public final class AceClawConfig {
         public Long initialBackoffMs;
         public Long maxBackoffMs;
         public Double jitterFactor;
+    }
+
+    /**
+     * JSON structure for the WebSocket bridge section (issue #431).
+     * <pre>{
+     *   "enabled": true,
+     *   "port": 3141,
+     *   "host": "localhost",
+     *   "allowedOrigins": ["http://localhost:5173"]
+     * }</pre>
+     */
+    public static class WebSocketConfigFormat {
+        public Boolean enabled;
+        public Integer port;
+        public String host;
+        public List<String> allowedOrigins;
     }
 
     /**

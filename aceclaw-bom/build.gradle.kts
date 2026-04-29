@@ -32,6 +32,9 @@ dependencies {
         // MCP (Model Context Protocol)
         api("io.modelcontextprotocol.sdk:mcp:0.17.2")
 
+        // WebSocket bridge (Tier 1 dashboard, issue #431)
+        api("io.javalin:javalin:6.4.0")
+
         // HTML parsing
         api("org.jsoup:jsoup:1.18.3")
 

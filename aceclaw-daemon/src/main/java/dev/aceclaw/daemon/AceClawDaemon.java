@@ -113,6 +113,8 @@ public final class AceClawDaemon {
     private DeferredActionScheduler deferredActionScheduler;
     private DeferredActionStore deferredActionStore;
     private DeferCheckTool deferCheckTool;
+    /** Browser dashboard bridge (issue #431); null when {@code webSocket.enabled=false}. */
+    private WebSocketBridge webSocketBridge;
 
     private volatile boolean running;
 
@@ -468,6 +470,20 @@ public final class AceClawDaemon {
         // 8. Streaming agent handler
         var agentHandler = new StreamingAgentHandler(
                 sessionManager, agentLoop, toolRegistry, permissionManager, objectMapper);
+        // 8a. WebSocket bridge for browser dashboard (issue #431). Disabled by default.
+        // Constructed but NOT started here; lifecycle binds to udsListener below so the
+        // port is held only while the daemon is accepting clients.
+        if (config.webSocketEnabled()) {
+            this.webSocketBridge = new WebSocketBridge(
+                    config.webSocketHost(), config.webSocketPort(), objectMapper,
+                    config.webSocketAllowedOrigins());
+            agentHandler.setWebSocketBridge(this.webSocketBridge);
+            log.info("WebSocket bridge configured: {}:{} (allowed browser origins: {})",
+                    config.webSocketHost(), config.webSocketPort(),
+                    config.webSocketAllowedOrigins().isEmpty()
+                            ? "(none — browsers blocked)"
+                            : config.webSocketAllowedOrigins());
+        }
         // Use config model for anthropic (user's choice), client's resolved model for other providers
         // (factory may translate or fall back, e.g. copilot ignores anthropic model names)
         String effectiveModel = "anthropic".equals(config.provider()) ? model : llmClient.defaultModel();
@@ -2029,6 +2045,17 @@ public final class AceClawDaemon {
             @Override public void onShutdown() { eventBus.stop(); }
         });
 
+        if (webSocketBridge != null) {
+            shutdownManager.register(new ShutdownManager.ShutdownParticipant() {
+                @Override public String name() { return "WebSocket Bridge"; }
+                // Stop AFTER UDS (priority 100) and Session Manager (90) so any
+                // in-flight prompt finishes its notification stream cleanly first;
+                // BEFORE Event Bus (15) since it has no dependency on the bus.
+                @Override public int priority() { return 25; }
+                @Override public void onShutdown() { webSocketBridge.stop(); }
+            });
+        }
+
         shutdownManager.register(new ShutdownManager.ShutdownParticipant() {
             @Override public String name() { return "Daemon Lock"; }
             @Override public int priority() { return 10; }
@@ -2061,10 +2088,36 @@ public final class AceClawDaemon {
             log.debug("Boot execution disabled via config");
         }
 
+        // 3.9 Start WebSocket bridge (issue #431). Bound before UDS listener so a
+        // browser tab connecting in the same instant as the CLI does not race with
+        // the first agent.prompt event arrival.
+        if (webSocketBridge != null) {
+            try {
+                webSocketBridge.start();
+            } catch (Exception e) {
+                log.error("WebSocket bridge failed to start (continuing without it): {}",
+                        e.getMessage(), e);
+            }
+        }
+
         // 4. Start UDS listener
         try {
             udsListener.start();
         } catch (Exception e) {
+            // Roll back the WS bridge we already started in step 3.9. Without
+            // this, a UDS bind failure (stale socket path, permission error,
+            // …) leaves the Javalin thread holding the WS port — blocking the
+            // operator's retry and presenting an unexpected local endpoint
+            // even though the daemon is considered failed to start. Best-
+            // effort: log but do not mask the original DaemonException.
+            if (webSocketBridge != null) {
+                try {
+                    webSocketBridge.stop();
+                } catch (Exception stopErr) {
+                    log.warn("Failed to stop WebSocket bridge during startup abort: {}",
+                            stopErr.getMessage());
+                }
+            }
             lock.release();
             throw new DaemonException("Failed to start UDS listener: " + e.getMessage(), e);
         }

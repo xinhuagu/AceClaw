@@ -162,6 +162,13 @@ public final class StreamingAgentHandler {
     private final SkillMetricsStore skillMetricsStore = new SkillMetricsStore();
     private volatile RuntimeMetricsExporter runtimeMetricsExporter;
     private volatile dev.aceclaw.memory.InjectionAuditLog injectionAuditLog;
+    /**
+     * WebSocket bridge for browser dashboard (issue #431). Null when disabled —
+     * the per-request context falls back to direct CLI delivery in that case.
+     */
+    private volatile WebSocketBridge webSocketBridge;
+    /** Sessions for which {@code stream.session_started} has already been emitted. */
+    private final Set<String> sessionsStartedSignaled = ConcurrentHashMap.newKeySet();
 
     /** Per-session turn locks for serializing main turns within a session. */
     private final ConcurrentHashMap<String, ReentrantLock> sessionTurnLocks =
@@ -197,6 +204,42 @@ public final class StreamingAgentHandler {
         router.registerStreaming("agent.prompt", this::handlePrompt);
     }
 
+    /**
+     * Wires the WebSocket bridge for browser-facing event fan-out (issue #431).
+     * Pass {@code null} to disable; once set, every JSON-RPC notification emitted
+     * during {@code agent.prompt} is also broadcast to all connected WS clients.
+     */
+    public void setWebSocketBridge(WebSocketBridge bridge) {
+        this.webSocketBridge = bridge;
+    }
+
+    /**
+     * Emits a notification that should reach BROWSER clients only — never the
+     * CLI's Unix-domain socket protocol. Used for the lifecycle events added in
+     * #431 ({@code stream.session_started}, {@code stream.turn_started},
+     * {@code stream.turn_completed}, {@code stream.plan_step_fallback}) which
+     * the existing CLI does not consume and should not have to tolerate.
+     *
+     * <p>The boundary lives at the emission site rather than in
+     * {@link EventMultiplexer}: that keeps {@code sendNotification()} faithful
+     * to the original CLI protocol and {@code broadcast()} the browser
+     * projection, instead of pushing per-method routing policy into transport.
+     *
+     * <p>No-op when the bridge is disabled — these events are not emitted at
+     * all in that case, so the CLI never sees them and there is no CLI
+     * compatibility concern.
+     *
+     * <p>Package-private for unit tests; production callers are inside this
+     * class.
+     */
+    void emitBrowserOnly(String sessionId, String method, Object params) {
+        var bridge = this.webSocketBridge;
+        if (bridge == null) {
+            return;
+        }
+        bridge.broadcast(sessionId, method, params);
+    }
+
     private Object handlePrompt(JsonNode params, StreamContext context) throws Exception {
         var sessionId = requireString(params, "sessionId");
         var prompt = requireString(params, "prompt");
@@ -211,7 +254,21 @@ public final class StreamingAgentHandler {
 
         // Set workspace context for tools (e.g. CronTool) that need to know the current workspace.
         // Cleared in the finally block below to cover all exit paths (success, plan, resume, error).
+        //
+        // Lifecycle-notification state (issue #431): turn_started + turn_completed
+        // both fire INSIDE the per-session turnLock (so concurrent prompts on
+        // the same session see correctly ordered events and no interleaving).
+        // requestId / turnNumber / turnStartMillis are declared here only because
+        // turn_completed lives in the inner finally and Java needs the variables
+        // in scope across the try/finally pair; the actual assignment happens
+        // under the lock and the inner-finally emission is gated by
+        // requestId != null so a throw before reaching the assignment (e.g. a
+        // startMonitor failure) emits neither side.
         CronTool.setWorkspaceContext(session.projectPath().toString());
+        CancelAwareStreamContext cancelContext = null;
+        String requestId = null;
+        int turnNumber = 0;
+        long turnStartMillis = 0L;
         try {
 
         log.info("Streaming agent prompt: sessionId={}, promptLength={}", sessionId, prompt.length());
@@ -224,8 +281,17 @@ public final class StreamingAgentHandler {
         // Set up cancellation support: the CancelAwareStreamContext runs a monitor
         // thread that reads from the socket and dispatches agent.cancel and
         // permission.response messages accordingly.
+        //
+        // When the WebSocket bridge is enabled (issue #431), wrap the raw context
+        // with an EventMultiplexer so every JSON-RPC notification fans out to all
+        // connected browser clients in addition to the per-request CLI socket.
         var cancellationToken = new CancellationToken();
-        var cancelContext = new CancelAwareStreamContext(context, cancellationToken, objectMapper);
+        var bridge = this.webSocketBridge;
+        cancelContext = bridge != null
+                ? new CancelAwareStreamContext(
+                        context, new EventMultiplexer(context, bridge, sessionId),
+                        cancellationToken, objectMapper)
+                : new CancelAwareStreamContext(context, cancellationToken, objectMapper);
 
         // Create a StreamEventHandler that forwards events via the cancel-aware context
         var eventHandler = new StreamingNotificationHandler(cancelContext, objectMapper);
@@ -288,6 +354,40 @@ public final class StreamingAgentHandler {
             // Start the cancel monitor thread to read from the socket
             cancelContext.startMonitor();
 
+            // ---- Lifecycle notifications (issue #439 + #431) ------------------
+            // These fire per agent.prompt request and let browser dashboards
+            // anchor a Turn-level node + render session boundaries without
+            // inferring them from text-delta gaps. The CLI ignores them.
+            //
+            // Computed UNDER turnLock so concurrent agent.prompt calls on the
+            // same session (e.g. two attached clients) see correctly ordered
+            // turnNumbers — the lock serialises both the read of
+            // session.messages() and the resulting emission. session_started
+            // could safely emit outside (atomic CHM gate), but is kept here
+            // for symmetry — there is one place that opens the turn.
+            turnStartMillis = System.currentTimeMillis();
+            requestId = "turn-" + UUID.randomUUID();
+            // turnNumber = Nth user message in this session, matching the existing
+            // AgentEvent.TurnStarted semantics in StreamingAgentLoop.
+            turnNumber = (int) session.messages().stream()
+                    .filter(m -> m instanceof AgentSession.ConversationMessage.User).count() + 1;
+            // Browser-only: bypass cancelContext entirely so the CLI's UDS
+            // protocol stays unchanged. emitBrowserOnly is a no-op when the
+            // bridge is off, so disabled deployments emit nothing at all.
+            if (sessionsStartedSignaled.add(sessionId)) {
+                var p = objectMapper.createObjectNode();
+                p.put("sessionId", sessionId);
+                p.put("model", getModelForSession(sessionId));
+                p.put("timestamp", Instant.now().toString());
+                emitBrowserOnly(sessionId, "stream.session_started", p);
+            }
+            var ts = objectMapper.createObjectNode();
+            ts.put("sessionId", sessionId);
+            ts.put("requestId", requestId);
+            ts.put("turnNumber", turnNumber);
+            ts.put("timestamp", Instant.now().toString());
+            emitBrowserOnly(sessionId, "stream.turn_started", ts);
+
             // Check for resumable plan checkpoint before planning or execution
             if (planCheckpointStore != null) {
                 var resumeResult = tryResumeFromCheckpoint(
@@ -335,6 +435,29 @@ public final class StreamingAgentHandler {
             String userMessage = formatLlmError(e);
             throw new IllegalStateException(userMessage);
         } finally {
+            // Emit stream.turn_completed BEFORE releasing the lock so the
+            // start→end window is fully serialised against other prompts on
+            // the same session. If we unlocked first, a concurrent agent.prompt
+            // on the same session could grab the lock and emit its own
+            // turn_started between this request's unlock and turn_completed,
+            // garbling event ordering on the browser dashboard.
+            //
+            // Browser-only: bypasses cancelContext, so the CLI never sees
+            // turn_completed. Guarded by requestId != null so we never emit a
+            // closer for a Turn we never opened — the assignment lives inside
+            // this try block, so anything thrown before reaching it (e.g.
+            // startMonitor failure) leaves requestId null and no notification
+            // fires.
+            if (requestId != null) {
+                var tcp = objectMapper.createObjectNode();
+                tcp.put("sessionId", sessionId);
+                tcp.put("requestId", requestId);
+                tcp.put("turnNumber", turnNumber);
+                tcp.put("durationMs", System.currentTimeMillis() - turnStartMillis);
+                tcp.put("toolCount", cancelContext.toolUseCount());
+                tcp.put("timestamp", Instant.now().toString());
+                emitBrowserOnly(sessionId, "stream.turn_completed", tcp);
+            }
             if (watchdog != null) {
                 watchdog.close();
             }
@@ -480,6 +603,22 @@ public final class StreamingAgentHandler {
                 } catch (IOException e) {
                     log.warn("Failed to send plan_escalated notification: {}", e.getMessage());
                 }
+            }
+
+            @Override
+            public void onStepFallback(PlannedStep step, int stepIndex,
+                                       String fallbackApproach, int attempt) {
+                // Browser-only: CLI does not consume plan_step_fallback today,
+                // so route directly to the WS bridge instead of through
+                // cancelContext.sendNotification.
+                var p = objectMapper.createObjectNode();
+                p.put("sessionId", sessionId);
+                p.put("planId", plan.planId());
+                p.put("stepId", step.stepId());
+                p.put("stepIndex", stepIndex + 1);
+                p.put("fallbackApproach", fallbackApproach);
+                p.put("attempt", attempt);
+                emitBrowserOnly(sessionId, "stream.plan_step_fallback", p);
             }
         };
 
@@ -1756,6 +1895,7 @@ public final class StreamingAgentHandler {
         sessionProgressDetectors.remove(sessionId);
         sessionPostProcessing.remove(sessionId);
         sessionRuntimePruneScheduled.remove(sessionId);
+        sessionsStartedSignaled.remove(sessionId);
     }
 
     public void awaitSessionPostProcessing(String sessionId) {
@@ -2590,6 +2730,22 @@ public final class StreamingAgentHandler {
                     log.warn("Failed to send plan_escalated notification: {}", e.getMessage());
                 }
             }
+
+            @Override
+            public void onStepFallback(PlannedStep step, int stepIndex,
+                                       String fallbackApproach, int attempt) {
+                // Browser-only — see planned-prompt path above for rationale.
+                var p = objectMapper.createObjectNode();
+                p.put("sessionId", sessionId);
+                p.put("planId", resumedPlanId);
+                p.put("stepId", step.stepId());
+                // Resume path: stepIndex is local to the remaining-steps slice,
+                // so offset by cp.nextStepIndex() to match the original plan's 1-based index.
+                p.put("stepIndex", cp.nextStepIndex() + stepIndex + 1);
+                p.put("fallbackApproach", fallbackApproach);
+                p.put("attempt", attempt);
+                emitBrowserOnly(sessionId, "stream.plan_step_fallback", p);
+            }
         };
 
         // 9. Wrap with checkpointing listener
@@ -2853,6 +3009,12 @@ public final class StreamingAgentHandler {
             }
         }
 
+        @Override
+        public void onStepFallback(PlannedStep step, int stepIndex,
+                                   String fallbackApproach, int attempt) {
+            delegate.onStepFallback(step, stepIndex, fallbackApproach, attempt);
+        }
+
         private static List<String> serializeSessionMessages(AgentSession session) {
             // Simple serialization: role:content for each message
             var result = new ArrayList<String>();
@@ -3102,24 +3264,42 @@ public final class StreamingAgentHandler {
         private final ConcurrentHashMap<String, CompletableFuture<JsonNode>> pendingPermissions = new ConcurrentHashMap<>();
         private final BlockingQueue<JsonNode> unmatchedResponses = new LinkedBlockingQueue<>();
         private final Object permissionLifecycleLock = new Object();
+        private final java.util.concurrent.atomic.AtomicInteger toolUseCount =
+                new java.util.concurrent.atomic.AtomicInteger();
         private volatile boolean stopped = false;
         private volatile Thread monitorThread;
         private volatile Selector selector;
 
         CancelAwareStreamContext(StreamContext delegate, CancellationToken cancellationToken,
                                  ObjectMapper objectMapper) {
-            this.delegate = delegate;
+            this(delegate, delegate, cancellationToken, objectMapper);
+        }
+
+        /**
+         * Two-context overload: {@code rawContext} is the original socket-backed
+         * context used for cancel-monitor channel extraction; {@code outboundContext}
+         * is what {@link #sendNotification} delegates to and is typically an
+         * {@link EventMultiplexer} that tees to the WebSocket bridge.
+         */
+        CancelAwareStreamContext(StreamContext rawContext, StreamContext outboundContext,
+                                 CancellationToken cancellationToken, ObjectMapper objectMapper) {
+            this.delegate = outboundContext;
             this.cancellationToken = cancellationToken;
             this.objectMapper = objectMapper;
 
             // Extract the channel and lineBuilder from the underlying ChannelStreamContext
-            if (delegate instanceof ConnectionBridge.ChannelStreamContext channelCtx) {
+            if (rawContext instanceof ConnectionBridge.ChannelStreamContext channelCtx) {
                 this.channel = channelCtx.channel();
                 this.lineBuilder = channelCtx.lineBuilder();
             } else {
                 this.channel = null;
                 this.lineBuilder = null;
             }
+        }
+
+        /** Number of {@code stream.tool_use} notifications observed during this request. */
+        int toolUseCount() {
+            return toolUseCount.get();
         }
 
         /**
@@ -3292,6 +3472,9 @@ public final class StreamingAgentHandler {
 
         @Override
         public void sendNotification(String method, Object params) throws IOException {
+            if ("stream.tool_use".equals(method)) {
+                toolUseCount.incrementAndGet();
+            }
             delegate.sendNotification(method, params);
         }
 
