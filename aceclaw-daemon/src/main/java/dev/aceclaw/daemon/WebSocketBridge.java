@@ -133,28 +133,22 @@ public final class WebSocketBridge {
                 fire(connectListeners, ctx);
             });
             ws.onClose(ctx -> {
-                // Gate listener notification on whether this client was ever
-                // an active member: disallowed-origin handshakes are closed in
-                // onConnect BEFORE clients.add, and onError may have already
-                // removed-and-notified the same socket. Either case would
-                // otherwise corrupt listener state (underflowed counts, double
-                // cleanup) for any consumer maintaining connect/disconnect
-                // parity.
-                boolean removed = clients.remove(ctx);
-                log.info("WS client closed: {} (total={}, wasActive={})",
-                        ctx.sessionId(), clients.size(), removed);
-                if (removed) {
-                    fire(disconnectListeners, ctx);
-                }
+                // dropClient gates listener notification on whether the client
+                // was an active member. Disallowed-origin handshakes are closed
+                // in onConnect BEFORE clients.add; onError or broadcast() may
+                // have already removed-and-notified the same socket; or send()
+                // may have failed synchronously inside broadcast. In every
+                // case the helper makes "remove + notify" exactly-once.
+                int beforeSize = clients.size();
+                boolean wasActive = dropClient(ctx);
+                log.info("WS client closed: {} (size {} -> {}, wasActive={})",
+                        ctx.sessionId(), beforeSize, clients.size(), wasActive);
             });
             ws.onError(ctx -> {
-                boolean removed = clients.remove(ctx);
                 Throwable err = ctx.error();
                 log.warn("WS client error: {} ({})", ctx.sessionId(),
                         err != null ? err.getMessage() : "unknown");
-                if (removed) {
-                    fire(disconnectListeners, ctx);
-                }
+                dropClient(ctx);
             });
             ws.onMessage(ctx -> {
                 try {
@@ -246,11 +240,31 @@ public final class WebSocketBridge {
                 client.send(message);
             } catch (Exception e) {
                 // Synchronous failure (e.g. session closed mid-iteration). Async
-                // failures land on onError above, which also removes the client.
+                // failures land on onError above. Either path goes through
+                // dropClient so disconnectListeners fire exactly once for the
+                // first observer that wins the remove — listeners that track
+                // connect/disconnect parity never lose a cleanup callback even
+                // if Jetty's onClose runs late or never.
                 log.warn("WS send failed for {}: {}", client.sessionId(), e.getMessage());
-                clients.remove(client);
+                dropClient(client);
             }
         }
+    }
+
+    /**
+     * Removes {@code ctx} from the active set and fires disconnect listeners
+     * iff this call won the remove. Idempotent: a second invocation for the
+     * same context returns {@code false} and notifies nobody. The unified path
+     * for every "this client is gone" observer (onClose, onError, broadcast
+     * synchronous send failure) — listeners that track connect/disconnect
+     * parity see exactly one disconnect per active client.
+     */
+    private boolean dropClient(WsContext ctx) {
+        if (clients.remove(ctx)) {
+            fire(disconnectListeners, ctx);
+            return true;
+        }
+        return false;
     }
 
     /**

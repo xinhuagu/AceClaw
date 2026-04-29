@@ -124,8 +124,15 @@ final class WebSocketBridgeTest {
         bridge = startOnRandomPort();
         var connected = new CountDownLatch(1);
         var disconnected = new CountDownLatch(1);
+        // Disconnect parity contract: the listener must fire EXACTLY ONCE per
+        // client lifecycle, regardless of which observer path (onClose,
+        // onError, broadcast synchronous send-failure) drops the client first.
+        var disconnectFires = new java.util.concurrent.atomic.AtomicInteger();
         bridge.addConnectionListener(_ -> connected.countDown());
-        bridge.addDisconnectionListener(_ -> disconnected.countDown());
+        bridge.addDisconnectionListener(_ -> {
+            disconnectFires.incrementAndGet();
+            disconnected.countDown();
+        });
 
         var queue = new LinkedBlockingQueue<String>();
         var ws = connect(queue::add);
@@ -136,8 +143,15 @@ final class WebSocketBridgeTest {
         assertThat(bridge.clientCount()).isZero();
 
         // The daemon must not crash or hang when broadcasting after a disconnect.
-        bridge.broadcast("sess-1", "stream.text", Map.of("delta", "after-close"));
+        // Multiple post-close broadcasts must NOT re-fire disconnect — the
+        // helper that drops clients is idempotent (CHM.remove + conditional
+        // fire), so the listener observes one disconnect per client.
+        bridge.broadcast("sess-1", "stream.text", Map.of("delta", "after-close-1"));
+        bridge.broadcast("sess-1", "stream.text", Map.of("delta", "after-close-2"));
         assertThat(bridge.isRunning()).isTrue();
+        assertThat(disconnectFires.get())
+                .as("disconnect listener must fire exactly once per client lifecycle")
+                .isEqualTo(1);
     }
 
     @Test
