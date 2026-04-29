@@ -32,6 +32,7 @@ import type {
   SubAgentEndParams,
   SubAgentStartParams,
   TextDeltaParams,
+  ThinkingDeltaParams,
   ToolCompletedParams,
   ToolUseParams,
   TurnCompletedParams,
@@ -67,6 +68,11 @@ export function stepNodeId(planId: string, stepIndex: number): string {
 /** ID for the rolled-up text-bubble child of a turn. One per turn. */
 export function textNodeId(turnId: string): string {
   return `${turnId}:text`;
+}
+
+/** ID for the rolled-up thinking-bubble child of a turn. One per turn. */
+export function thinkingNodeId(turnId: string): string {
+  return `${turnId}:thinking`;
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +283,11 @@ function addTurnNode(
     ...state,
     rootNodes,
     activeNodeId: turn.id,
+    // A new turn always starts a fresh ReAct loop — clear the thinking
+    // anchor so the first tool of this turn doesn't accidentally graft
+    // itself onto the previous turn's last thinking node.
+    currentThinkingId: null,
+    thinkingSealed: false,
     stats: { ...state.stats, totalTurns: state.stats.totalTurns + 1 },
   };
 }
@@ -285,33 +296,66 @@ function completeTurnNode(
   state: ExecutionTree,
   params: TurnCompletedParams,
 ): ExecutionTree {
+  // Mark the turn AND every still-running thinking/text descendant as
+  // completed. Tools manage their own status via stream.tool_completed,
+  // but thinking and text are delta-only — there's no explicit "ended"
+  // event for them, so without this sweep they'd stay in the 'running'
+  // visual state (pulsing glow) forever even after the turn is over.
   const rootNodes = mapNode(state.rootNodes, params.requestId, (n) => ({
-    ...n,
+    ...completeRunningDeltaDescendants(n),
     status: 'completed' as const,
     endTime: Date.parse(params.timestamp),
     duration: params.durationMs,
   }));
-  // After a turn completes, the active node is the parent (step / session).
-  const path = findPath(rootNodes, params.requestId) ?? [];
-  const parent = path.length >= 2 ? path[path.length - 2] : null;
+  // Don't bubble activeNodeId up to the parent (session/step) when the
+  // turn closes — that yanks the dashboard's auto-scroll back to the
+  // session box, hiding the response the user just watched stream in.
+  // Leaving activeNodeId on the last leaf makes the camera stay on the
+  // response. The auto-scroll effect re-runs because layout.nodes
+  // identity changed (turn status flipped to completed), but the
+  // target is the leaf the user was already looking at, so the pan
+  // is a no-op.
   return {
     ...state,
     rootNodes,
-    activeNodeId: parent ? parent.id : null,
   };
+}
+
+/**
+ * Returns {@code node} with every descendant of type {@code thinking} or
+ * {@code text} that's still {@code running} flipped to {@code completed}.
+ * Pure recursion; preserves all other fields. Used by
+ * {@link completeTurnNode} so the turn's delta-stream children stop
+ * pulsing the moment the turn closes.
+ */
+function completeRunningDeltaDescendants(node: ExecutionNode): ExecutionNode {
+  if (node.children.length === 0) return node;
+  const updated = node.children.map((c) => {
+    const child = completeRunningDeltaDescendants(c);
+    if ((child.type === 'thinking' || child.type === 'text') && child.status === 'running') {
+      return { ...child, status: 'completed' as const };
+    }
+    return child;
+  });
+  return { ...node, children: updated };
 }
 
 function addToolNode(
   state: ExecutionTree,
   params: ToolUseParams,
 ): ExecutionTree {
-  // Tools always nest under the nearest running turn. Without one, the event
-  // arrived out of order; surface it at root so the operator sees something.
+  // Tools attach to the most recent thinking anchor under the running turn
+  // when extended thinking is enabled — that captures the ReAct semantic of
+  // "thinking is the cause, tool calls are its effects" and groups parallel
+  // tools from one LLM response under one parent. With no thinking events
+  // (e.g. extended thinking disabled), tools fall back to attaching to the
+  // turn itself, preserving the pre-thinking-anchor behaviour.
   const turn = findNearestAncestor(
     state.rootNodes,
     state.activeNodeId,
     (n) => n.type === 'turn' && n.status === 'running',
   );
+  const anchorId = state.currentThinkingId ?? (turn ? turn.id : null);
 
   const tool: ExecutionNode = {
     id: params.id,
@@ -323,29 +367,51 @@ function addToolNode(
   };
 
   let rootNodes: ExecutionNode[];
-  if (turn) {
-    // Parallel-detection: if any sibling tool is already running, mark the
-    // turn as having executed parallel work. One-way flag — once true, stays.
-    const hasRunningSibling = turn.children.some(
-      (c) => c.type === 'tool' && c.status === 'running',
-    );
-    rootNodes = mapNode(state.rootNodes, turn.id, (t) => ({
-      ...t,
-      // One-way flag: once a turn has had parallel work, we keep that record
-      // even after every tool finishes. Conditional spread because
-      // exactOptionalPropertyTypes forbids assigning `undefined` to an
-      // optional property.
-      ...(hasRunningSibling || t.parallel ? { parallel: true } : {}),
-      children: [...t.children, tool],
+  if (anchorId) {
+    // Parallel detection: a running sibling tool under the same anchor (be
+    // that the thinking or the turn) means this is a parallel call from
+    // the same LLM response. One-way flag on the turn for sidebar stats.
+    const anchorPath = findPath(state.rootNodes, anchorId);
+    const anchorNode = anchorPath ? anchorPath[anchorPath.length - 1]! : null;
+    const hasRunningSibling = anchorNode
+      ? anchorNode.children.some(
+          (c) => c.type === 'tool' && c.status === 'running',
+        )
+      : false;
+    rootNodes = mapNode(state.rootNodes, anchorId, (a) => ({
+      ...a,
+      children: [...a.children, tool],
     }));
+    if (turn && (hasRunningSibling || turn.parallel)) {
+      // Conditional spread because exactOptionalPropertyTypes forbids
+      // assigning `undefined` to an optional property.
+      rootNodes = mapNode(rootNodes, turn.id, (t) => ({ ...t, parallel: true }));
+    }
   } else {
     rootNodes = [...state.rootNodes, tool];
+  }
+
+  // Mark the thinking anchor as completed: the LLM has stopped thinking
+  // and is now acting. Without this, the thinking node would keep its
+  // running-status pulse indefinitely while tools execute, even though
+  // the model is no longer actively thinking. Only flip 'running' →
+  // 'completed' so we don't clobber a thinking that already failed/etc.
+  if (state.currentThinkingId) {
+    rootNodes = mapNode(rootNodes, state.currentThinkingId, (t) =>
+      t.status === 'running' ? { ...t, status: 'completed' as const } : t,
+    );
   }
 
   return {
     ...state,
     rootNodes,
     activeNodeId: tool.id,
+    // Seal the current thinking anchor: any subsequent thinking delta is
+    // from a NEW LLM call (next ReAct iteration) and should mint a new
+    // thinking node rather than concatenate into this one. Parallel
+    // tool_use events that follow within the SAME LLM call don't get a
+    // thinking delta between them, so the anchor stays valid for them.
+    thinkingSealed: true,
     stats: { ...state.stats, totalTools: state.stats.totalTools + 1 },
   };
 }
@@ -399,27 +465,120 @@ function appendTextToCurrentTurn(
   if (!turn) return state;
 
   const existing = turn.children.find((c) => c.type === 'text');
+  let rootNodes: ExecutionNode[];
+  let textId: string;
   if (existing) {
+    textId = existing.id;
+    rootNodes = mapNode(state.rootNodes, existing.id, (t) => ({
+      ...t,
+      text: (t.text ?? '') + params.delta,
+    }));
+  } else {
+    textId = textNodeId(turn.id);
+    const textNode: ExecutionNode = {
+      id: textId,
+      type: 'text',
+      status: 'running',
+      label: 'response',
+      children: [],
+      text: params.delta,
+    };
+    rootNodes = appendChild(state.rootNodes, turn.id, textNode);
+  }
+  // Mark the thinking anchor as completed: text response means the LLM
+  // has stopped thinking and is now responding (mirrors the thinking →
+  // tool transition in addToolNode). Only flip running → completed.
+  if (state.currentThinkingId) {
+    rootNodes = mapNode(rootNodes, state.currentThinkingId, (t) =>
+      t.status === 'running' ? { ...t, status: 'completed' as const } : t,
+    );
+  }
+  // Move auto-scroll focus onto the response. Without this, activeNodeId
+  // stays on the previous tool and the camera centres there while the
+  // model is actually streaming text — the user wants to watch the
+  // response form, not stare at a finished tool. Subsequent text deltas
+  // are no-ops for activeNodeId (still pointing at the same response
+  // node), so the camera sits on the response until the turn closes.
+  // Seal the thinking anchor: a text response means the model has decided
+  // to talk rather than tool-call, so any subsequent thinking is the next
+  // ReAct iteration (or — typically — there is no next iteration).
+  return { ...state, rootNodes, activeNodeId: textId, thinkingSealed: true };
+}
+
+function appendThinkingToCurrentTurn(
+  state: ExecutionTree,
+  params: ThinkingDeltaParams,
+): ExecutionTree {
+  // Builds a {@code thinking}-typed node under the running turn. The
+  // reducer used to drop these — meaning a turn that only thought (no
+  // tools, no text yet) showed up as an empty parent. A turn can have
+  // MULTIPLE thinking nodes, one per ReAct iteration — each iteration is a
+  // separate LLM call, and the boundary is detected via {@link
+  // ExecutionTree#thinkingSealed}: a tool_use or text delta seals the
+  // current thinking node, so the next thinking delta starts a fresh one.
+  // Parallel tool_use events from a single LLM response don't seal the
+  // anchor between themselves (no thinking delta arrives between them), so
+  // they correctly attach to the same parent.
+  const turn = findNearestAncestor(
+    state.rootNodes,
+    state.activeNodeId,
+    (n) => n.type === 'turn' && n.status === 'running',
+  );
+  if (!turn) return state;
+
+  // Same iteration: append the delta to the existing thinking node.
+  if (state.currentThinkingId && !state.thinkingSealed) {
     return {
       ...state,
-      rootNodes: mapNode(state.rootNodes, existing.id, (t) => ({
+      rootNodes: mapNode(state.rootNodes, state.currentThinkingId, (t) => ({
         ...t,
         text: (t.text ?? '') + params.delta,
       })),
     };
   }
-  const textNode: ExecutionNode = {
-    id: textNodeId(turn.id),
-    type: 'text',
+
+  // New iteration: mint a new thinking node. Use a synthetic id keyed on
+  // the turn + an index so multiple thinking nodes per turn each get a
+  // unique id (the first uses the existing `${turnId}:thinking` id; later
+  // iterations append a counter).
+  const existingThinkingCount = countDescendantsOfType(turn, 'thinking');
+  const id =
+    existingThinkingCount === 0
+      ? thinkingNodeId(turn.id)
+      : `${thinkingNodeId(turn.id)}:${existingThinkingCount}`;
+  const thinkingNode: ExecutionNode = {
+    id,
+    type: 'thinking',
     status: 'running',
-    label: 'response',
+    label: 'thinking',
     children: [],
     text: params.delta,
   };
   return {
     ...state,
-    rootNodes: appendChild(state.rootNodes, turn.id, textNode),
+    rootNodes: appendChild(state.rootNodes, turn.id, thinkingNode),
+    currentThinkingId: id,
+    thinkingSealed: false,
   };
+}
+
+/**
+ * Counts every descendant of {@code root} (any depth) whose type matches.
+ * Used to mint stable unique ids for repeated-per-turn synthetic nodes
+ * (e.g. multiple thinking blocks across ReAct iterations).
+ */
+function countDescendantsOfType(
+  root: ExecutionNode,
+  type: ExecutionNode['type'],
+): number {
+  let count = 0;
+  const stack: ExecutionNode[] = [...root.children];
+  while (stack.length > 0) {
+    const n = stack.pop()!;
+    if (n.type === type) count += 1;
+    if (n.children.length > 0) stack.push(...n.children);
+  }
+  return count;
 }
 
 function addPlanSkeleton(
@@ -885,6 +1044,9 @@ export function executionTreeReducer(
       break;
     case 'stream.text':
       next = appendTextToCurrentTurn(state, event.params);
+      break;
+    case 'stream.thinking':
+      next = appendThinkingToCurrentTurn(state, event.params);
       break;
     case 'stream.plan_created':
       next = addPlanSkeleton(state, event.params);

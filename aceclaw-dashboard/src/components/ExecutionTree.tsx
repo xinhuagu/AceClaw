@@ -50,28 +50,31 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
   const dragRef = useRef<{ startX: number; startY: number; baseX: number; baseY: number } | null>(
     null,
   );
-  // Tracks whether the user has manually interacted; auto-scroll yields once
-  // they've taken control so the dashboard doesn't fight the operator's eyes.
-  const userControlledRef = useRef(false);
-
-  // Auto-fit the layout into view on the first render that has a non-empty
-  // tree. We compute the scale that fits the layout into the container's
-  // bounding box (with a 10% margin), and centre it. Re-runs whenever the
-  // layout's overall bounding-box changes — typically only on the very
-  // first node arriving.
-  const layoutSignature = `${layout.width}x${layout.height}`;
-  const lastFitRef = useRef<string>('');
+  // Initial auto-fit: pick a scale that shows the whole tree on the first
+  // render that has content, then NEVER refit afterward. Later events
+  // pan to the active node at the chosen scale (see auto-scroll below)
+  // so the camera follows the action without zooming out to fit a
+  // growing tree — the user complaint here was "after response, don't
+  // jump back to show everything; stop where you are". A constant
+  // scale combined with active-node-following gives that.
+  //
+  // Reset on sessionId change so picking a new session re-fits to its
+  // dimensions; lastFitRef would otherwise leak the previous session's
+  // signature.
+  const lastFitRef = useRef<string | null>(null);
   useEffect(() => {
-    if (userControlledRef.current) return;
+    lastFitRef.current = null;
+  }, [tree.sessionId]);
+  useEffect(() => {
+    if (dragRef.current) return;
+    if (lastFitRef.current !== null) return;
     if (layout.width <= 0 || layout.height <= 0) return;
-    if (lastFitRef.current === layoutSignature) return;
     const el = containerRef.current;
     if (!el) return;
     const { width: cw, height: ch } = el.getBoundingClientRect();
     if (cw <= 0 || ch <= 0) {
       // Container hasn't been measured yet (hidden tab, deferred layout, …).
-      // Don't mark this layout as fitted — the next render still in this
-      // size class should retry once the container becomes measurable.
+      // Leave lastFitRef null so the next render retries once measurable.
       return;
     }
     const margin = 0.9;
@@ -82,16 +85,18 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
       x: (cw - layout.width * scale) / 2,
       y: (ch - layout.height * scale) / 2,
     });
-    // Mark this layout signature as fitted ONLY after we successfully
-    // applied a fit — otherwise an early-return above (zero container size)
-    // would permanently skip the initial fit for this size class.
-    lastFitRef.current = layoutSignature;
-  }, [layout.width, layout.height, layoutSignature]);
+    lastFitRef.current = 'fitted';
+  }, [layout.width, layout.height]);
 
-  // Auto-scroll: smoothly recentre the active leaf as the daemon emits new
-  // events. We adjust pan only; the scale stays where the user left it.
+  // Auto-scroll: pan to the active node whenever the focus moves OR a
+  // new node arrives (layout.nodes identity changes on every reducer
+  // step, so this fires on every event the running session emits). The
+  // scale stays where the initial fit left it — no rescale per event.
+  // Once the turn completes and activeNodeId stops changing, the camera
+  // sits on the last active node and stays there: that's the "stop
+  // after response" behaviour.
   useEffect(() => {
-    if (userControlledRef.current) return;
+    if (dragRef.current) return;
     if (!tree.activeNodeId) return;
     const target = layout.nodes.find((n) => n.id === tree.activeNodeId);
     if (!target) return;
@@ -109,7 +114,6 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
     // Stop the page from scrolling while the operator is zooming the tree.
     // React's onWheel listener is non-passive, so preventDefault is honoured.
     e.preventDefault();
-    userControlledRef.current = true;
     const delta = -e.deltaY * ZOOM_STEP;
     setViewport((prev) => {
       const next = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, prev.scale + delta));
@@ -130,7 +134,6 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
 
   const handlePointerDown = (e: ReactPointerEvent<HTMLDivElement>): void => {
     if (e.button !== 0) return;
-    userControlledRef.current = true;
     dragRef.current = {
       startX: e.clientX,
       startY: e.clientY,
@@ -185,6 +188,28 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
       className="relative h-full w-full cursor-grab overflow-hidden bg-zinc-950 active:cursor-grabbing"
     >
       <svg className="h-full w-full" role="img" aria-label="execution tree">
+        {/*
+          Arrowhead marker for sequence/flow edges. Shape: a thin triangle
+          oriented along the path tangent (orient="auto") so it points
+          where the edge points, regardless of straight-line vs bezier.
+          Sized in user-space units so it scales with the SVG group's
+          transform. Fill matches GrowingEdge's SEQUENCE_STROKE so the
+          arrowhead and line look like one piece.
+        */}
+        <defs>
+          <marker
+            id="seq-arrow"
+            viewBox="0 0 10 10"
+            refX="9"
+            refY="5"
+            markerWidth="7"
+            markerHeight="7"
+            orient="auto-start-reverse"
+            markerUnits="userSpaceOnUse"
+          >
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#52525b" opacity={0.7} />
+          </marker>
+        </defs>
         <g transform={transform}>
           <AnimatePresence>
             {layout.edges.map((e) => (

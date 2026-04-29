@@ -100,6 +100,126 @@ describe('useTreeLayout', () => {
     }
   });
 
+  it('emits a dashed sequence edge between consecutive sibling turns', () => {
+    // Two turns under a session: solid containment edges from session to
+    // each turn, plus a dashed sequence edge between turn1 → turn2 to
+    // express temporal order. Tools and other types don't get sequence
+    // edges (parallelism is ambiguous without metadata).
+    const session: ExecutionNode = {
+      id: 's',
+      type: 'session',
+      status: 'running',
+      label: 'session',
+      children: [
+        {
+          id: 't1',
+          type: 'turn',
+          status: 'completed',
+          label: 'turn 1',
+          children: [],
+        },
+        {
+          id: 't2',
+          type: 'turn',
+          status: 'running',
+          label: 'turn 2',
+          children: [],
+        },
+      ],
+    };
+    const { result } = renderHook(() => useTreeLayout(tree([session])));
+    const containment = result.current.edges.filter((e) => e.kind === 'containment');
+    const sequence = result.current.edges.filter((e) => e.kind === 'sequence');
+    // Two containment edges (session→t1, session→t2) and one sequence
+    // edge (t1→t2).
+    expect(containment).toHaveLength(2);
+    expect(sequence).toHaveLength(1);
+    expect(sequence[0]!.id).toBe('seq:t1->t2');
+    // Sequence-edge status follows the target — this is what the renderer
+    // uses to colour the line; for a sequence edge GrowingEdge ignores
+    // status anyway and uses the muted neutral, but the shape contract
+    // mirrors containment so consumers can switch on kind alone.
+    expect(sequence[0]!.status).toBe('running');
+  });
+
+  it('chains thinking → tools → next thinking via flow edges (ReAct pipeline)', () => {
+    // Two ReAct iterations under one turn:
+    //   thinking1 ─┬─ toolA
+    //              └─ toolB ─ ─ ─ ─ ─ thinking2 ─── toolC ─ ─ ─ response
+    // The dashed flow edges from each tool of thinking1 land on thinking2,
+    // expressing "tool results feed the next LLM call". Same idea for
+    // toolC → response: response is the final output of the chain.
+    const turn: ExecutionNode = {
+      id: 't',
+      type: 'turn',
+      status: 'running',
+      label: 'turn',
+      children: [
+        {
+          id: 'th1',
+          type: 'thinking',
+          status: 'completed',
+          label: 'thinking',
+          children: [leaf('toolA'), leaf('toolB')],
+        },
+        {
+          id: 'th2',
+          type: 'thinking',
+          status: 'running',
+          label: 'thinking',
+          children: [leaf('toolC')],
+        },
+        {
+          id: 'resp',
+          type: 'text',
+          status: 'running',
+          label: 'response',
+          children: [],
+        },
+      ],
+    };
+    const { result } = renderHook(() => useTreeLayout(tree([turn])));
+    const flow = result.current.edges.filter((e) => e.kind === 'sequence');
+    const flowIds = flow.map((e) => e.id).sort();
+    // Two flows from thinking1's tools to thinking2 (toolA→th2, toolB→th2).
+    // One flow from thinking2's tool to response (toolC→resp).
+    expect(flowIds).toContain('toolA->th2');
+    expect(flowIds).toContain('toolB->th2');
+    expect(flowIds).toContain('toolC->resp');
+
+    // Containment edges shouldn't include redundant turn→thinking2 or
+    // turn→response — those paths are reached via the flow chain.
+    const containment = result.current.edges.filter((e) => e.kind === 'containment');
+    const containmentIds = containment.map((e) => e.id);
+    expect(containmentIds).toContain('t->th1');
+    expect(containmentIds).not.toContain('t->th2');
+    expect(containmentIds).not.toContain('t->resp');
+    // But thinking → tool containments are intact.
+    expect(containmentIds).toContain('th1->toolA');
+    expect(containmentIds).toContain('th1->toolB');
+    expect(containmentIds).toContain('th2->toolC');
+  });
+
+  it('does not emit sequence edges between sibling tools (parallel/sequential ambiguous)', () => {
+    // Two parallel tools under a turn: only containment edges, no
+    // sequence edge between them. Without execution-order metadata we
+    // can't say whether they ran in parallel or sequentially, and a
+    // wrong sequence edge is worse than no edge.
+    const turn: ExecutionNode = {
+      id: 't',
+      type: 'turn',
+      status: 'running',
+      label: 'turn',
+      children: [
+        leaf('tool-a'),
+        leaf('tool-b'),
+      ],
+    };
+    const { result } = renderHook(() => useTreeLayout(tree([turn])));
+    const sequence = result.current.edges.filter((e) => e.kind === 'sequence');
+    expect(sequence).toHaveLength(0);
+  });
+
   it('attaches the dagre coordinates while preserving every ExecutionNode field', () => {
     const root: ExecutionNode = {
       id: 'r',
