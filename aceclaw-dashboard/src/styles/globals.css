@@ -1,0 +1,9 @@
+@import "tailwindcss";
+
+/* Dark mode is the default for AceClaw dashboard — execution trees are dense
+ * and the contrast of light text on dark canvas keeps signal/noise high.
+ * Tailwind 4's @import expands to all utilities; no separate config needed. */
+
+html, body, #root {
+  height: 100%;
+}
