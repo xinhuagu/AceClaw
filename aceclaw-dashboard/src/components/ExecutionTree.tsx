@@ -54,12 +54,15 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
   // they've taken control so the dashboard doesn't fight the operator's eyes.
   const userControlledRef = useRef(false);
 
-  // Auto-fit the layout into view on the first render that has a non-empty
-  // tree. We compute the scale that fits the layout into the container's
-  // bounding box (with a 10% margin), and centre it. Re-runs whenever the
-  // layout's overall bounding-box changes — typically only on the very
-  // first node arriving.
-  const layoutSignature = `${layout.width}x${layout.height}`;
+  // Auto-fit the layout into view whenever the diagram grows. Re-fitting
+  // on every new node is cheaper than letting the operator hunt for the
+  // off-screen part of an actively-growing tree. The signature includes
+  // the node count, not just the bounding box, because some events
+  // (status updates, tool_completed) don't change width/height but still
+  // mark a new "moment" the user wants in view. The {@code userControlledRef}
+  // guard below stops the auto-fit fighting the operator once they pan
+  // or zoom — autopilot yields, manual stays.
+  const layoutSignature = `${layout.width}x${layout.height}#${layout.nodes.length}`;
   const lastFitRef = useRef<string>('');
   useEffect(() => {
     if (userControlledRef.current) return;
@@ -185,6 +188,28 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
       className="relative h-full w-full cursor-grab overflow-hidden bg-zinc-950 active:cursor-grabbing"
     >
       <svg className="h-full w-full" role="img" aria-label="execution tree">
+        {/*
+          Arrowhead marker for sequence/flow edges. Shape: a thin triangle
+          oriented along the path tangent (orient="auto") so it points
+          where the edge points, regardless of straight-line vs bezier.
+          Sized in user-space units so it scales with the SVG group's
+          transform. Fill matches GrowingEdge's SEQUENCE_STROKE so the
+          arrowhead and line look like one piece.
+        */}
+        <defs>
+          <marker
+            id="seq-arrow"
+            viewBox="0 0 10 10"
+            refX="9"
+            refY="5"
+            markerWidth="7"
+            markerHeight="7"
+            orient="auto-start-reverse"
+            markerUnits="userSpaceOnUse"
+          >
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#52525b" opacity={0.7} />
+          </marker>
+        </defs>
         <g transform={transform}>
           <AnimatePresence>
             {layout.edges.map((e) => (

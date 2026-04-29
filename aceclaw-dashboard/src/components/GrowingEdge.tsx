@@ -52,6 +52,13 @@ export function GrowingEdge({ edge }: GrowingEdgeProps) {
   const isSequence = edge.kind === 'sequence';
   const stroke = isSequence ? SEQUENCE_STROKE : STATUS_COLOR[edge.status];
   const d = isSequence ? straightPath(edge) : bezierPath(edge);
+  // Sequence edges carry a directional arrowhead so reads can tell flow
+  // direction at a glance — important once parallel tools merge into the
+  // next thinking and the eye needs to track multiple converging dashes.
+  // Containment edges don't get one: the parent-on-the-left, child-on-
+  // the-right convention plus the bezier shape already imply direction,
+  // and adding arrowheads to every containment edge would be visual noise.
+  const markerEnd = isSequence ? 'url(#seq-arrow)' : undefined;
   return (
     <motion.path
       d={d}
@@ -62,6 +69,9 @@ export function GrowingEdge({ edge }: GrowingEdgeProps) {
       initial={{ pathLength: 0, opacity: 0 }}
       animate={{ pathLength: 1, opacity: isSequence ? 0.5 : 0.85 }}
       transition={{ duration: 0.4, ease: 'easeOut' }}
+      // exactOptionalPropertyTypes: avoid passing undefined to the
+      // optional markerEnd attribute.
+      {...(markerEnd ? { markerEnd } : {})}
     />
   );
 }
