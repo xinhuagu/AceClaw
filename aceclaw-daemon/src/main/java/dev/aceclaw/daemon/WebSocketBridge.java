@@ -186,7 +186,14 @@ public final class WebSocketBridge {
         } catch (Exception e) {
             log.warn("WebSocket bridge stop failed: {}", e.getMessage());
         } finally {
-            clients.clear();
+            // Drain via dropClient so disconnectListeners observe shutdown
+            // drops, not just live-traffic drops. List.copyOf gives a stable
+            // snapshot that's safe to iterate even if Jetty's onClose runs
+            // concurrently from another thread; dropClient is idempotent so
+            // a late onClose for the same socket simply no-ops.
+            for (var client : List.copyOf(clients)) {
+                dropClient(client);
+            }
             app = null;
             log.info("WebSocket bridge stopped");
         }
@@ -212,14 +219,19 @@ public final class WebSocketBridge {
      */
     public void broadcast(String sessionId, String method, Object params) {
         Objects.requireNonNull(sessionId, "sessionId");
-        if (clients.isEmpty() || app == null) {
+        if (app == null) {
             return;
         }
-        // Always assign an envelope id even with no live clients so the counter
-        // remains a faithful monotonic record. The early-return above is purely
-        // an optimisation; if it is removed in future work the eventId stream
-        // still has no gaps.
+        // Increment BEFORE the no-clients short-circuit so eventId stays
+        // monotonic and gap-free across zero-client periods. #432's snapshot
+        // endpoint exposes currentEventId() as the reconnect watermark; the
+        // browser uses it to deduplicate the live stream against the snapshot,
+        // and that contract requires an unbroken sequence regardless of
+        // whether any tab was connected when each event was produced.
         long eventId = eventIdCounter.incrementAndGet();
+        if (clients.isEmpty()) {
+            return;
+        }
         String message;
         try {
             var envelope = objectMapper.createObjectNode();

@@ -1748,8 +1748,13 @@ public final class AceClawConfig {
                 this.webSocketHost = fileConfig.webSocket.host;
             }
             if (fileConfig.webSocket.allowedOrigins != null) {
+                // Trim before the blank check — WebSocketBridge does an exact
+                // Origin match, so " http://localhost:5173 " would otherwise
+                // survive the merge but never match a real browser header.
                 this.webSocketAllowedOrigins = fileConfig.webSocket.allowedOrigins.stream()
-                        .filter(o -> o != null && !o.isBlank())
+                        .filter(o -> o != null)
+                        .map(String::trim)
+                        .filter(o -> !o.isBlank())
                         .toList();
             }
         }

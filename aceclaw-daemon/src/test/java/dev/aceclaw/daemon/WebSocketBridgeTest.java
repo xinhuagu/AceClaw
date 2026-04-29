@@ -120,6 +120,55 @@ final class WebSocketBridgeTest {
     }
 
     @Test
+    void eventIdAdvancesAcrossZeroClientGaps() throws Exception {
+        // The currentEventId watermark feeds #432's snapshot/reconnect dedup,
+        // so the counter must advance even when no tab is connected — gaps in
+        // the id stream would let the live stream alias against the snapshot
+        // and resurrect events the browser already saw.
+        bridge = startOnRandomPort();
+        assertThat(bridge.currentEventId()).isZero();
+
+        bridge.broadcast("sess-1", "stream.text", Map.of("delta", "a"));
+        bridge.broadcast("sess-1", "stream.text", Map.of("delta", "b"));
+        bridge.broadcast("sess-1", "stream.text", Map.of("delta", "c"));
+
+        assertThat(bridge.currentEventId())
+                .as("eventId must increment for every broadcast, even with no clients")
+                .isEqualTo(3L);
+    }
+
+    @Test
+    void stopFiresDisconnectListenersForActiveClients() throws Exception {
+        bridge = startOnRandomPort();
+        var connected = new CountDownLatch(1);
+        var disconnected = new CountDownLatch(1);
+        var disconnectFires = new java.util.concurrent.atomic.AtomicInteger();
+        bridge.addConnectionListener(_ -> connected.countDown());
+        bridge.addDisconnectionListener(_ -> {
+            disconnectFires.incrementAndGet();
+            disconnected.countDown();
+        });
+
+        var queue = new LinkedBlockingQueue<String>();
+        var ws = connect(queue::add);
+        assertThat(connected.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)).isTrue();
+        assertThat(bridge.clientCount()).isEqualTo(1);
+
+        bridge.stop();
+
+        // dropClient drained the active set during stop; the listener observes
+        // the cleanup. Idempotent: a later async onClose for the same socket
+        // simply no-ops, so the count stays at exactly 1.
+        assertThat(disconnected.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)).isTrue();
+        assertThat(disconnectFires.get())
+                .as("stop() must fire disconnect listener exactly once per active client")
+                .isEqualTo(1);
+        assertThat(bridge.isRunning()).isFalse();
+
+        ws.abort();
+    }
+
+    @Test
     void clientDisconnectDoesNotBlockSubsequentBroadcasts() throws Exception {
         bridge = startOnRandomPort();
         var connected = new CountDownLatch(1);
