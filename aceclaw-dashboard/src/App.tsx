@@ -26,9 +26,29 @@ function readQueryParam(name: string): string | null {
   return new URLSearchParams(window.location.search).get(name);
 }
 
+/**
+ * Validates that {@code raw} is a usable WebSocket URL. The {@code WebSocket}
+ * constructor throws synchronously on garbage input ({@code "localhost:3141"},
+ * {@code "foo"}, missing protocol), which would otherwise take down the
+ * dashboard before the React error boundary can render anything. We
+ * pre-check the protocol and return null on anything unfit, letting the
+ * caller fall back to the default URL. Exported for unit testing.
+ */
+export function sanitiseWsUrl(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') return null;
+  return parsed.toString();
+}
+
 export function App() {
   const initialSession = readQueryParam('session') ?? '';
-  const initialWs = readQueryParam('ws') ?? DEFAULT_WS_URL;
+  const initialWs = sanitiseWsUrl(readQueryParam('ws')) ?? DEFAULT_WS_URL;
   const [sessionId, setSessionId] = useState(initialSession);
   const [wsUrl] = useState(initialWs);
 

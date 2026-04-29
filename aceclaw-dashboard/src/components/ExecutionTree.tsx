@@ -65,11 +65,15 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
     if (userControlledRef.current) return;
     if (layout.width <= 0 || layout.height <= 0) return;
     if (lastFitRef.current === layoutSignature) return;
-    lastFitRef.current = layoutSignature;
     const el = containerRef.current;
     if (!el) return;
     const { width: cw, height: ch } = el.getBoundingClientRect();
-    if (cw <= 0 || ch <= 0) return;
+    if (cw <= 0 || ch <= 0) {
+      // Container hasn't been measured yet (hidden tab, deferred layout, …).
+      // Don't mark this layout as fitted — the next render still in this
+      // size class should retry once the container becomes measurable.
+      return;
+    }
     const margin = 0.9;
     const fitScale = Math.min((cw / layout.width) * margin, (ch / layout.height) * margin, 1);
     const scale = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, fitScale));
@@ -78,6 +82,10 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
       x: (cw - layout.width * scale) / 2,
       y: (ch - layout.height * scale) / 2,
     });
+    // Mark this layout signature as fitted ONLY after we successfully
+    // applied a fit — otherwise an early-return above (zero container size)
+    // would permanently skip the initial fit for this size class.
+    lastFitRef.current = layoutSignature;
   }, [layout.width, layout.height, layoutSignature]);
 
   // Auto-scroll: smoothly recentre the active leaf as the daemon emits new
@@ -98,6 +106,9 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
   }, [tree.activeNodeId, layout.nodes]);
 
   const handleWheel = (e: ReactWheelEvent<HTMLDivElement>): void => {
+    // Stop the page from scrolling while the operator is zooming the tree.
+    // React's onWheel listener is non-passive, so preventDefault is honoured.
+    e.preventDefault();
     userControlledRef.current = true;
     const delta = -e.deltaY * ZOOM_STEP;
     setViewport((prev) => {
