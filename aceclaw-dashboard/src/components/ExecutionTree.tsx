@@ -50,30 +50,31 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
   const dragRef = useRef<{ startX: number; startY: number; baseX: number; baseY: number } | null>(
     null,
   );
-  // Auto-fit the layout into view whenever the diagram grows. Streaming
-  // execution is the dashboard's reason to exist — readers want the new
-  // node in view, not buried off-screen. We skip the fit only while a
-  // pointer drag is in progress (so we don't yank the view out from under
-  // the user mid-gesture); a wheel zoom is instantaneous, so there's
-  // nothing to interrupt. After a manual pan or zoom completes, the next
-  // arriving event re-fits — that's the contract the user asked for.
+  // Initial auto-fit: pick a scale that shows the whole tree on the first
+  // render that has content, then NEVER refit afterward. Later events
+  // pan to the active node at the chosen scale (see auto-scroll below)
+  // so the camera follows the action without zooming out to fit a
+  // growing tree — the user complaint here was "after response, don't
+  // jump back to show everything; stop where you are". A constant
+  // scale combined with active-node-following gives that.
   //
-  // Signature includes node count, not just bounding box, because some
-  // events (status updates, tool_completed) don't change width×height
-  // but still mark a new "moment" the user wants in view.
-  const layoutSignature = `${layout.width}x${layout.height}#${layout.nodes.length}`;
-  const lastFitRef = useRef<string>('');
+  // Reset on sessionId change so picking a new session re-fits to its
+  // dimensions; lastFitRef would otherwise leak the previous session's
+  // signature.
+  const lastFitRef = useRef<string | null>(null);
+  useEffect(() => {
+    lastFitRef.current = null;
+  }, [tree.sessionId]);
   useEffect(() => {
     if (dragRef.current) return;
+    if (lastFitRef.current !== null) return;
     if (layout.width <= 0 || layout.height <= 0) return;
-    if (lastFitRef.current === layoutSignature) return;
     const el = containerRef.current;
     if (!el) return;
     const { width: cw, height: ch } = el.getBoundingClientRect();
     if (cw <= 0 || ch <= 0) {
       // Container hasn't been measured yet (hidden tab, deferred layout, …).
-      // Don't mark this layout as fitted — the next render still in this
-      // size class should retry once the container becomes measurable.
+      // Leave lastFitRef null so the next render retries once measurable.
       return;
     }
     const margin = 0.9;
@@ -84,15 +85,16 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
       x: (cw - layout.width * scale) / 2,
       y: (ch - layout.height * scale) / 2,
     });
-    // Mark this layout signature as fitted ONLY after we successfully
-    // applied a fit — otherwise an early-return above (zero container size)
-    // would permanently skip the initial fit for this size class.
-    lastFitRef.current = layoutSignature;
-  }, [layout.width, layout.height, layoutSignature]);
+    lastFitRef.current = 'fitted';
+  }, [layout.width, layout.height]);
 
-  // Auto-scroll: recentre the active leaf as the daemon emits new events.
-  // Adjusts pan only; the scale stays where auto-fit left it. Skipped
-  // mid-drag so the view doesn't fight the user's gesture.
+  // Auto-scroll: pan to the active node whenever the focus moves OR a
+  // new node arrives (layout.nodes identity changes on every reducer
+  // step, so this fires on every event the running session emits). The
+  // scale stays where the initial fit left it — no rescale per event.
+  // Once the turn completes and activeNodeId stops changing, the camera
+  // sits on the last active node and stays there: that's the "stop
+  // after response" behaviour.
   useEffect(() => {
     if (dragRef.current) return;
     if (!tree.activeNodeId) return;
