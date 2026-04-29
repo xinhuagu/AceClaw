@@ -25,10 +25,16 @@ const STATUS_BG: Record<string, string> = {
 };
 
 /**
- * Per-type background overrides. Thinking gets a purple palette so it's
- * visually distinct from tool execution (which inherits the default
- * blue/green/red status colours) — the eye can tell at a glance which
- * boxes are model reasoning vs tool work. Other types fall through to
+ * Per-type background overrides. Each non-default type gets its own
+ * palette so the eye can tell — at a glance — what kind of work each
+ * box represents:
+ *
+ *   - {@code thinking}: indigo/violet — model reasoning
+ *   - {@code text} (response): rose/pink — final answer to the user
+ *
+ * Tool nodes inherit the default blue/green status palette (running
+ * blue → completed green) since they're the "default" work type and
+ * make up the bulk of the tree. Other types fall through to
  * {@link STATUS_BG}.
  */
 const TYPE_BG: Partial<Record<string, Record<string, string>>> = {
@@ -36,6 +42,14 @@ const TYPE_BG: Partial<Record<string, Record<string, string>>> = {
     pending: '#312e81', // indigo-900
     running: '#5b21b6', // violet-800 — bright while actively thinking
     completed: '#1e1b4b', // indigo-950 — muted once the turn moves on
+    failed: '#7f1d1d',
+    paused: '#713f12',
+    cancelled: '#1f2937',
+  },
+  text: {
+    pending: '#831843', // pink-900
+    running: '#be185d', // pink-700 — bright while streaming response
+    completed: '#831843', // pink-900 — muted once the turn ends
     failed: '#7f1d1d',
     paused: '#713f12',
     cancelled: '#1f2937',
@@ -52,6 +66,14 @@ const TYPE_BORDER: Partial<Record<string, Record<string, string>>> = {
     pending: '#6366f1', // indigo-500
     running: '#a78bfa', // violet-400
     completed: '#818cf8', // indigo-400 (muted)
+    failed: '#ef4444',
+    paused: '#f59e0b',
+    cancelled: '#71717a',
+  },
+  text: {
+    pending: '#f472b6', // pink-400
+    running: '#ec4899', // pink-500
+    completed: '#f9a8d4', // pink-300 (muted)
     failed: '#ef4444',
     paused: '#f59e0b',
     cancelled: '#71717a',
