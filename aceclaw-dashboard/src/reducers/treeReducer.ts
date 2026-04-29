@@ -296,8 +296,13 @@ function completeTurnNode(
   state: ExecutionTree,
   params: TurnCompletedParams,
 ): ExecutionTree {
+  // Mark the turn AND every still-running thinking/text descendant as
+  // completed. Tools manage their own status via stream.tool_completed,
+  // but thinking and text are delta-only — there's no explicit "ended"
+  // event for them, so without this sweep they'd stay in the 'running'
+  // visual state (pulsing glow) forever even after the turn is over.
   const rootNodes = mapNode(state.rootNodes, params.requestId, (n) => ({
-    ...n,
+    ...completeRunningDeltaDescendants(n),
     status: 'completed' as const,
     endTime: Date.parse(params.timestamp),
     duration: params.durationMs,
@@ -310,6 +315,25 @@ function completeTurnNode(
     rootNodes,
     activeNodeId: parent ? parent.id : null,
   };
+}
+
+/**
+ * Returns {@code node} with every descendant of type {@code thinking} or
+ * {@code text} that's still {@code running} flipped to {@code completed}.
+ * Pure recursion; preserves all other fields. Used by
+ * {@link completeTurnNode} so the turn's delta-stream children stop
+ * pulsing the moment the turn closes.
+ */
+function completeRunningDeltaDescendants(node: ExecutionNode): ExecutionNode {
+  if (node.children.length === 0) return node;
+  const updated = node.children.map((c) => {
+    const child = completeRunningDeltaDescendants(c);
+    if ((child.type === 'thinking' || child.type === 'text') && child.status === 'running') {
+      return { ...child, status: 'completed' as const };
+    }
+    return child;
+  });
+  return { ...node, children: updated };
 }
 
 function addToolNode(
@@ -361,6 +385,17 @@ function addToolNode(
     }
   } else {
     rootNodes = [...state.rootNodes, tool];
+  }
+
+  // Mark the thinking anchor as completed: the LLM has stopped thinking
+  // and is now acting. Without this, the thinking node would keep its
+  // running-status pulse indefinitely while tools execute, even though
+  // the model is no longer actively thinking. Only flip 'running' →
+  // 'completed' so we don't clobber a thinking that already failed/etc.
+  if (state.currentThinkingId) {
+    rootNodes = mapNode(rootNodes, state.currentThinkingId, (t) =>
+      t.status === 'running' ? { ...t, status: 'completed' as const } : t,
+    );
   }
 
   return {
@@ -442,6 +477,14 @@ function appendTextToCurrentTurn(
       text: params.delta,
     };
     rootNodes = appendChild(state.rootNodes, turn.id, textNode);
+  }
+  // Mark the thinking anchor as completed: text response means the LLM
+  // has stopped thinking and is now responding (mirrors the thinking →
+  // tool transition in addToolNode). Only flip running → completed.
+  if (state.currentThinkingId) {
+    rootNodes = mapNode(rootNodes, state.currentThinkingId, (t) =>
+      t.status === 'running' ? { ...t, status: 'completed' as const } : t,
+    );
   }
   // Seal the thinking anchor: a text response means the model has decided
   // to talk rather than tool-call, so any subsequent thinking is the next

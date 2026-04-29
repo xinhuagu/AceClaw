@@ -24,6 +24,40 @@ const STATUS_BG: Record<string, string> = {
   cancelled: '#1f2937',
 };
 
+/**
+ * Per-type background overrides. Thinking gets a purple palette so it's
+ * visually distinct from tool execution (which inherits the default
+ * blue/green/red status colours) — the eye can tell at a glance which
+ * boxes are model reasoning vs tool work. Other types fall through to
+ * {@link STATUS_BG}.
+ */
+const TYPE_BG: Partial<Record<string, Record<string, string>>> = {
+  thinking: {
+    pending: '#312e81', // indigo-900
+    running: '#5b21b6', // violet-800 — bright while actively thinking
+    completed: '#1e1b4b', // indigo-950 — muted once the turn moves on
+    failed: '#7f1d1d',
+    paused: '#713f12',
+    cancelled: '#1f2937',
+  },
+};
+
+/**
+ * Per-type stroke overrides. Mirrors {@link TYPE_BG} so the border
+ * outline is consistent with the fill. Falls through to the default
+ * status-colour border for un-overridden types.
+ */
+const TYPE_BORDER: Partial<Record<string, Record<string, string>>> = {
+  thinking: {
+    pending: '#6366f1', // indigo-500
+    running: '#a78bfa', // violet-400
+    completed: '#818cf8', // indigo-400 (muted)
+    failed: '#ef4444',
+    paused: '#f59e0b',
+    cancelled: '#71717a',
+  },
+};
+
 interface GrowingNodeProps {
   node: LayoutNode;
 }
@@ -37,8 +71,10 @@ function truncate(s: string, max = 24): string {
 }
 
 export function GrowingNode({ node }: GrowingNodeProps) {
-  const bg = STATUS_BG[node.status] ?? STATUS_BG['pending']!;
-  const border = STATUS_COLOR[node.status];
+  const typeBg = TYPE_BG[node.type]?.[node.status];
+  const typeBorder = TYPE_BORDER[node.type]?.[node.status];
+  const bg = typeBg ?? STATUS_BG[node.status] ?? STATUS_BG['pending']!;
+  const border = typeBorder ?? STATUS_COLOR[node.status];
   // Top-left corner of the node in dagre coords (it gives us centres).
   const left = node.x - node.width / 2;
   const top = node.y - node.height / 2;

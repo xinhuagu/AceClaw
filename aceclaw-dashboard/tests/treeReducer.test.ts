@@ -688,6 +688,56 @@ describe('thinking-anchored tool grouping (ReAct iterations)', () => {
     expect(thinkingChildren[1]!.children.map((c) => c.id)).toEqual(['t2']);
   });
 
+  it('marks the thinking node completed when a tool_use seals it', () => {
+    // Without this transition, the thinking node keeps its 'running'
+    // status (and the renderer's pulse animation) indefinitely while
+    // tools execute — the user's "thinking 不停 thinking 了就别闪了"
+    // complaint.
+    const state = runAll(
+      startedTurn(),
+      envelope('stream.thinking', { delta: 'reasoning' }),
+      envelope('stream.tool_use', { id: 't1', name: 'bash' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const thinking = turn.children.find((c) => c.type === 'thinking')!;
+    expect(thinking.status).toBe('completed');
+  });
+
+  it('marks the thinking node completed when a text response seals it', () => {
+    const state = runAll(
+      startedTurn(),
+      envelope('stream.thinking', { delta: 'about to respond' }),
+      envelope('stream.text', { delta: 'hi' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const thinking = turn.children.find((c) => c.type === 'thinking')!;
+    expect(thinking.status).toBe('completed');
+  });
+
+  it('marks remaining running thinking/text nodes completed when the turn ends', () => {
+    // Edge case: a turn ends while a delta-stream child is still
+    // 'running' (for example, the model emitted thinking but the turn
+    // closed before any tool_use/text ever sealed it). turn_completed
+    // sweeps still-running thinking and text into 'completed' so the
+    // pulse stops with the turn.
+    const state = runAll(
+      startedTurn(),
+      envelope('stream.thinking', { delta: 'no tool, no text' }),
+      envelope('stream.turn_completed', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+        durationMs: 50,
+        toolCount: 0,
+      }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    expect(turn.status).toBe('completed');
+    const thinking = turn.children.find((c) => c.type === 'thinking')!;
+    expect(thinking.status).toBe('completed');
+  });
+
   it('falls back to attaching tools to the turn when no thinking has been emitted', () => {
     // Extended thinking disabled: stream.thinking never fires, so tools
     // attach to the turn directly (preserves the pre-anchor shape).
