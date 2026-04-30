@@ -135,12 +135,19 @@ public final class PermissionBridge {
             throw new IllegalStateException("Permission request failed unexpectedly", e);
         } finally {
             futures.remove(request.requestId());
-            // Belt-and-suspenders: drop any externalCancellations entry
-            // that arrived AFTER the late-check (e.g. a daemon-side
-            // permission.cancelled raced past requestPermission's body
-            // and landed during future.get()). Without this cleanup
-            // the entry would leak until the CLI process exits.
-            externalCancellations.remove(request.requestId());
+            // DO NOT remove externalCancellations here. The modal's
+            // terminal-read loop polls consumeExternalCancellation
+            // every ~250 ms; if cancelExternal completed our future
+            // and we ran the finally before the modal's next tick,
+            // clearing the entry here would race the modal and leave
+            // it blocking on stdin until the daemon's 120 s deadline
+            // (the user's "CLI stuck" report). Cleanup happens through
+            // either the modal's consumeExternalCancellation (when it
+            // picks up the cancellation) or consumeResolvedAnswer's
+            // clearExternalCancellation hook (when the modal exits via
+            // user input). Edge case where neither runs (cancel arrives
+            // AFTER the modal already exited via submitAnswer) leaks
+            // one entry — bounded and rare.
             if (enqueued) {
                 pending.remove(request);
             }
