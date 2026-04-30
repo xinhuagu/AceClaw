@@ -7,6 +7,8 @@
   <img src="https://img.shields.io/badge/Java-21-orange?logo=openjdk" alt="Java 21">
   <img src="https://img.shields.io/badge/GraalVM-Native_Image-blue?logo=oracle" alt="GraalVM">
   <img src="https://img.shields.io/badge/Gradle-8.14-02303A?logo=gradle&logoColor=white" alt="Gradle 8.14">
+  <img src="https://img.shields.io/badge/Node-20_LTS-339933?logo=nodedotjs&logoColor=white" alt="Node 20 LTS">
+  <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white" alt="React 19">
 </p>
 
 AceClaw is two things in one project:
