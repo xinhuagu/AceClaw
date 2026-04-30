@@ -45,6 +45,30 @@ function runAll(state: ExecutionTree, ...envs: DaemonEventEnvelope[]): Execution
   return envs.reduce(executionTreeReducer, state);
 }
 
+/**
+ * Walk the whole tree and return the first node matching {@code id}.
+ * Used by tests that want to be agnostic to whether a synthetic
+ * thinking sits between turn and tool (the reducer mints one when no
+ * stream.thinking arrived for the iteration — see addToolNode and
+ * appendTextToCurrentTurn). Mechanical depth navigation in tests was
+ * coupling them to the exact synthesis layout, which made the test
+ * suite churn every time the reducer's iteration-boundary detection
+ * grew a new clause.
+ */
+function findById(state: ExecutionTree, id: string): ExecutionNode {
+  function search(nodes: ExecutionNode[]): ExecutionNode | null {
+    for (const n of nodes) {
+      if (n.id === id) return n;
+      const found = search(n.children);
+      if (found) return found;
+    }
+    return null;
+  }
+  const found = search(state.rootNodes);
+  if (!found) throw new Error(`node ${id} not found in tree`);
+  return found;
+}
+
 // ---------------------------------------------------------------------------
 // Sequential tools — baseline tree shape
 // ---------------------------------------------------------------------------
@@ -123,7 +147,13 @@ describe('parallel tools', () => {
     );
     const turn = state.rootNodes[0]!.children[0]!;
     expect(turn.parallel).toBe(true);
-    expect(turn.children).toHaveLength(2);
+    // Without a stream.thinking event, both parallel tools share a
+    // synthetic thinking parent (addToolNode synthesises one for the
+    // first tool, the second tool is a parallel sibling under the
+    // same anchor). Turn → 1 thinking → 2 tools.
+    expect(turn.children).toHaveLength(1);
+    expect(turn.children[0]!.type).toBe('thinking');
+    expect(turn.children[0]!.children).toHaveLength(2);
   });
 
   it('parallel flag persists after both tools complete', () => {
@@ -338,7 +368,7 @@ describe('permission pause', () => {
         requestId: 'perm-1',
       }),
     );
-    const tool = state.rootNodes[0]!.children[0]!.children[0]!;
+    const tool = findById(state, 't1');
     expect(tool.status).toBe('paused');
     expect(tool.awaitingInput).toBe(true);
     expect(tool.inputPrompt).toBe('rm -rf /');
@@ -379,7 +409,7 @@ describe('permission pause', () => {
         },
       } as DaemonEventEnvelope,
     );
-    const tool = state.rootNodes[0]!.children[0]!.children[0]!;
+    const tool = findById(state, 't1');
     expect(tool.metadata?.['permissionRequestedAt']).toBe(Date.parse(aged));
   });
 });
@@ -420,7 +450,7 @@ describe('permission resolution (issue #437)', () => {
   it('approve flips paused → running, strips awaitingInput, records resolvedBy', () => {
     const before = pausedToolTree();
     const after = resolvePermissionLocally(before, 'perm-1', true);
-    const tool = after.rootNodes[0]!.children[0]!.children[0]!;
+    const tool = findById(after, 't1');
     expect(tool.status).toBe('running');
     expect(tool.awaitingInput).toBeUndefined();
     expect(tool.inputPrompt).toBeUndefined();
@@ -431,7 +461,7 @@ describe('permission resolution (issue #437)', () => {
 
   it('deny flips paused → cancelled', () => {
     const after = resolvePermissionLocally(pausedToolTree(), 'perm-1', false);
-    const tool = after.rootNodes[0]!.children[0]!.children[0]!;
+    const tool = findById(after, 't1');
     expect(tool.status).toBe('cancelled');
     expect(tool.metadata?.['resolvedApproved']).toBe(false);
   });
@@ -467,7 +497,7 @@ describe('permission resolution (issue #437)', () => {
         isError: false,
       }),
     );
-    const tool = after.rootNodes[0]!.children[0]!.children[0]!;
+    const tool = findById(after, 't1');
     expect(tool.status).toBe('completed');
     expect(tool.metadata?.['resolvedBy']).toBe('cli');
     expect(tool.metadata?.['resolvedApproved']).toBe(true);
@@ -487,7 +517,7 @@ describe('permission resolution (issue #437)', () => {
         error: 'Permission denied',
       }),
     );
-    const tool = after.rootNodes[0]!.children[0]!.children[0]!;
+    const tool = findById(after, 't1');
     expect(tool.status).toBe('failed');
     expect(tool.metadata?.['resolvedBy']).toBe('cli');
     expect(tool.metadata?.['resolvedApproved']).toBe(false);
@@ -512,7 +542,7 @@ describe('permission resolution (issue #437)', () => {
     );
     const after = resolvePermissionLocally(cliResolved, 'perm-1', false);
     expect(after).toBe(cliResolved); // referentially identical → no-op
-    const tool = after.rootNodes[0]!.children[0]!.children[0]!;
+    const tool = findById(after, 't1');
     expect(tool.status).toBe('completed');
     expect(tool.metadata?.['resolvedBy']).toBe('cli');
     expect(tool.metadata?.['resolvedApproved']).toBe(true);
@@ -531,7 +561,7 @@ describe('permission resolution (issue #437)', () => {
         isError: false,
       }),
     );
-    const tool = after.rootNodes[0]!.children[0]!.children[0]!;
+    const tool = findById(after, 't1');
     expect(tool.status).toBe('completed');
     expect(tool.metadata?.['resolvedBy']).toBe('browser');
   });
@@ -541,7 +571,7 @@ describe('permission resolution (issue #437)', () => {
     // responding. Status remains paused until the daemon resolves; we
     // only clear the panel-mounting flags so the overlay unmounts.
     const dismissed = dismissPermissionPanel(pausedToolTree(), 'perm-1');
-    const tool = dismissed.rootNodes[0]!.children[0]!.children[0]!;
+    const tool = findById(dismissed, 't1');
     expect(tool.awaitingInput).toBeUndefined();
     expect(tool.inputPrompt).toBeUndefined();
     expect(tool.permissionRequestId).toBeUndefined();
@@ -646,9 +676,12 @@ describe('activeNodeId tracking', () => {
         isError: false,
       }),
     );
-    // After tool completes, focus returns to the parent turn so the next
-    // tool_use under the same turn becomes active naturally.
-    expect(state.activeNodeId).toBe('req-1');
+    // After tool completes, focus returns to the tool's parent. The
+    // tool was minted under a synthetic thinking (no stream.thinking
+    // arrived for this iteration), so the parent is `req-1:thinking`,
+    // not the turn directly. The next tool_use under the same turn
+    // still attaches to the same synthetic anchor naturally.
+    expect(state.activeNodeId).toBe('req-1:thinking');
   });
 });
 
@@ -1224,16 +1257,56 @@ describe('thinking-anchored tool grouping (ReAct iterations)', () => {
     expect(thinking.status).toBe('completed');
   });
 
-  it('falls back to attaching tools to the turn when no thinking has been emitted', () => {
-    // Extended thinking disabled: stream.thinking never fires, so tools
-    // attach to the turn directly (preserves the pre-anchor shape).
+  it('synthesises a thinking parent when a tool_use arrives with no preceding thinking', () => {
+    // Extended thinking disabled (or model emitted tool_use without
+    // any thinking delta): addToolNode mints a synthetic thinking
+    // (status=completed) under the turn so the tool has a proper
+    // ReAct parent. Without this the tool became a direct child of
+    // the turn and the next iteration's text → minted-thinking pair
+    // appeared visually parallel to the tool — the user's complaint
+    // on the "after permission" diagram (#437).
     const state = runAll(
       startedTurn(),
       envelope('stream.tool_use', { id: 't1', name: 'bash' }),
     );
     const turn = state.rootNodes[0]!.children[0]!;
+    // turn → synthetic thinking → tool
     expect(turn.children).toHaveLength(1);
-    expect(turn.children[0]!.id).toBe('t1');
+    const thinking = turn.children[0]!;
+    expect(thinking.type).toBe('thinking');
+    expect(thinking.status).toBe('completed');
+    expect(thinking.children).toHaveLength(1);
+    expect(thinking.children[0]!.id).toBe('t1');
+    expect(thinking.children[0]!.type).toBe('tool');
+  });
+
+  it('chains a synthesised thinking into the next iteration when no real thinking arrives', () => {
+    // First tool_use minted thinking_1; the final text arrives with
+    // no real thinking either, so appendTextToCurrentTurn mints
+    // thinking_2. The two synthetic thinkings under the turn give
+    // addReActFlowEdges what it needs to draw the horizontal flow
+    // chain (thinking_1 → tool → thinking_2 → text).
+    const state = runAll(
+      startedTurn(),
+      envelope('stream.tool_use', { id: 't1', name: 'bash' }),
+      envelope('stream.tool_completed', {
+        id: 't1',
+        name: 'bash',
+        durationMs: 12,
+        isError: false,
+      }),
+      envelope('stream.text', { delta: 'd.txt 已创建' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const thinkings = turn.children.filter((c) => c.type === 'thinking');
+    expect(thinkings).toHaveLength(2);
+    // Tool lives under thinking_1; text lives under thinking_2.
+    const t1 = findById(state, 't1');
+    expect(t1.type).toBe('tool');
+    const text = turn.children.find(
+      (c) => c.type === 'thinking' && c.children.some((cc) => cc.type === 'text'),
+    );
+    expect(text).toBeDefined();
   });
 
   it('resets the anchor across turns so a new turn starts a fresh ReAct loop', () => {
@@ -1260,14 +1333,16 @@ describe('thinking-anchored tool grouping (ReAct iterations)', () => {
       }),
       envelope('stream.tool_use', { id: 't2', name: 'read' }),
     );
-    // currentThinkingId stays null because turn 2 had no thinking event
-    // before its tool_use — and addTurnNode wiped turn 1's anchor on entry.
-    // The tool fell back to the turn-as-anchor branch.
-    expect(state.currentThinkingId).toBeNull();
+    // Turn 2's first tool synthesises ITS OWN thinking — addToolNode
+    // does this when no real thinking event arrived for the new
+    // iteration. The synthetic thinking is fresh-per-turn (turn 1's
+    // anchor was wiped by addTurnNode), so currentThinkingId now
+    // points at turn 2's synthetic thinking, not turn 1's real one.
+    expect(state.currentThinkingId).toBe('req-2:thinking');
     const turn2 = state.rootNodes[0]!.children[1]!;
     expect(turn2.children).toHaveLength(1);
-    expect(turn2.children[0]!.id).toBe('t2');
-    expect(turn2.children[0]!.type).toBe('tool');
+    expect(turn2.children[0]!.type).toBe('thinking');
+    expect(turn2.children[0]!.children[0]!.id).toBe('t2');
   });
 });
 

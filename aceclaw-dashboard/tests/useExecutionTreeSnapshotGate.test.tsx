@@ -1,6 +1,38 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { useExecutionTree } from '../src/hooks/useExecutionTree';
+import type { ExecutionNode } from '../src/types/tree';
+
+/**
+ * Recursive subtree search. Used so snapshot-gate assertions stay
+ * agnostic to whether a tool lives directly under the turn or under
+ * a synthetic thinking parent the reducer mints when no
+ * stream.thinking arrived for the iteration.
+ */
+function findFirst(
+  root: ExecutionNode,
+  predicate: (n: ExecutionNode) => boolean,
+): ExecutionNode | undefined {
+  if (predicate(root)) return root;
+  for (const child of root.children) {
+    const found = findFirst(child, predicate);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function findAll(
+  root: ExecutionNode,
+  predicate: (n: ExecutionNode) => boolean,
+): ExecutionNode[] {
+  const out: ExecutionNode[] = [];
+  function visit(n: ExecutionNode): void {
+    if (predicate(n)) out.push(n);
+    for (const child of n.children) visit(child);
+  }
+  visit(root);
+  return out;
+}
 
 /**
  * Pins the snapshot handshake gate (codex P1 finding on PR #448).
@@ -152,7 +184,11 @@ describe('useExecutionTree snapshot handshake gate (P1)', () => {
     expect(session.type).toBe('session');
     const turn = session.children[0]!;
     expect(turn.type).toBe('turn');
-    const tool = turn.children.find((c) => c.type === 'tool');
+    // Tool may live directly under the turn or under a synthetic
+    // thinking the reducer mints when no stream.thinking arrives —
+    // the snapshot gate's invariant is "tool exists somewhere in the
+    // tree", not "tool is a direct child of turn".
+    const tool = findFirst(turn, (c) => c.type === 'tool');
     expect(tool).toBeDefined();
     expect(tool!.id).toBe('t1');
     // Watermark advanced past the queued live event — subsequent live
@@ -208,7 +244,9 @@ describe('useExecutionTree snapshot handshake gate (P1)', () => {
       expect(result.current.tree.rootNodes).toHaveLength(1);
     });
     const turn = result.current.tree.rootNodes[0]!.children[0]!;
-    const tools = turn.children.filter((c) => c.type === 'tool');
+    // Tools may live under the turn directly or under a synthetic
+    // thinking parent. Walk the subtree.
+    const tools = findAll(turn, (c) => c.type === 'tool');
     // Only the snapshot's canonical tool exists; the queued live tool
     // with the same eventId was dedup'd.
     expect(tools).toHaveLength(1);

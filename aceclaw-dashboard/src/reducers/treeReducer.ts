@@ -380,8 +380,15 @@ function addToolNode(
   //      tools that follow are the execution of that plan. Parent → child.
   //   2. Otherwise the iteration's thinking — when the model went straight
   //      from reasoning to acting with no narration, thinking is the cause.
-  //   3. Otherwise the running turn — extended thinking off, or events
-  //      arrived out of order. Fallback so the tool still surfaces.
+  //   3. Otherwise a freshly-minted SYNTHETIC thinking under the running
+  //      turn (see iteration-boundary block below). Dropping the tool as
+  //      a direct child of the turn was the prior fallback, but it left
+  //      the tool visually parallel with the next iteration's thinking
+  //      node — readers (correctly) interpret that as "tool ran in
+  //      parallel with thinking", which doesn't match the actual
+  //      sequential ReAct flow. The synthetic thinking gives the tool a
+  //      proper parent so the layout chains turn → thinking → tool →
+  //      next-thinking → text horizontally.
   // Parallel tools from one LLM response don't get a thinking delta or
   // a text delta between them, so they share the same anchor — they
   // attach as siblings to whichever anchor was selected for the first
@@ -391,6 +398,43 @@ function addToolNode(
     state.activeNodeId,
     (n) => n.type === 'turn' && n.status === 'running',
   );
+
+  // Iteration-boundary synthesis (mirrors appendTextToCurrentTurn):
+  // when this tool_use is the FIRST event of a new iteration with no
+  // narration open and no live thinking anchor, mint a synthetic
+  // thinking node so the tool has a proper ReAct parent. Two trigger
+  // shapes:
+  //   1. textIsOpen=false + currentThinkingId=null — first event of
+  //      the turn is a tool_use (extended thinking off, or model went
+  //      straight to acting).
+  //   2. textIsOpen=false + thinkingSealed=true — previous iteration
+  //      ended via tool_use; this is a NEW iteration's tool.
+  // Suppress the synthesis when there's a running sibling tool under
+  // the current anchor — that signals parallel tools from the SAME LLM
+  // call, which must keep sharing the existing anchor.
+  let workingState = state;
+  if (
+    turn &&
+    state.currentTextId === null &&
+    (state.currentThinkingId === null || state.thinkingSealed)
+  ) {
+    const currentAnchor = state.currentThinkingId
+      ? findNode(state.rootNodes, state.currentThinkingId)
+      : null;
+    const hasRunningSiblingTool = currentAnchor
+      ? currentAnchor.children.some(
+          (c) => c.type === 'tool' && c.status === 'running',
+        )
+      : false;
+    if (!hasRunningSiblingTool) {
+      workingState = mintIterationThinking(state, turn, '', 'completed').state;
+    }
+  }
+  // Use workingState (= state if no synthesis) for the rest. Rebinding
+  // keeps the existing logic readable; the original `state` is no
+  // longer referenced.
+  state = workingState;
+
   // Tool anchor preference: the active narration text (if one is open
   // OR was the most recent under current thinking) > thinking > turn.
   // currentTextId stays valid through parallel tool_use events so they

@@ -284,9 +284,25 @@ describe('useExecutionTree permission flow (issue #437)', () => {
       }),
     );
 
+    // Tool may live under a synthetic thinking parent (no
+    // stream.thinking arrived) so walk the tree by id rather than
+    // hard-coding the depth.
+    function findTool(): import('../src/types/tree').ExecutionNode | null {
+      function search(
+        nodes: readonly import('../src/types/tree').ExecutionNode[],
+      ): import('../src/types/tree').ExecutionNode | null {
+        for (const n of nodes) {
+          if (n.id === 't1') return n;
+          const f = search(n.children);
+          if (f) return f;
+        }
+        return null;
+      }
+      return search(result.current.tree.rootNodes);
+    }
+
     await waitFor(() => {
-      const tool = result.current.tree.rootNodes[0]!.children[0]!.children[0]!;
-      expect(tool.awaitingInput).toBe(true);
+      expect(findTool()?.awaitingInput).toBe(true);
     });
 
     // Optimistic local resolve — does NOT push anything onto the wire
@@ -297,7 +313,7 @@ describe('useExecutionTree permission flow (issue #437)', () => {
     act(() => result.current.resolvePermission('perm-1', true));
     expect(ws.sent.length).toBe(sentBefore);
 
-    const tool = result.current.tree.rootNodes[0]!.children[0]!.children[0]!;
+    const tool = findTool()!;
     expect(tool.status).toBe('running');
     expect(tool.awaitingInput).toBeUndefined();
     expect(tool.metadata?.['resolvedBy']).toBe('browser');
