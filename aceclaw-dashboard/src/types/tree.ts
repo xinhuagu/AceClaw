@@ -123,6 +123,23 @@ export interface ExecutionTree {
    * iteration's text (ids both keyed on {@link currentThinkingId}).
    */
   textIsOpen: boolean;
+  /**
+   * Permission requests whose target tool node hasn't arrived yet
+   * (the daemon's parallel-tool path can deliver permission.request
+   * BEFORE the corresponding stream.tool_use depending on virtual
+   * thread scheduling). Keyed by toolUseId; drained by addToolNode
+   * when the matching node is created. Without this buffer, an
+   * out-of-order permission.request would either fall back to
+   * activeNodeId (collide with another tool's awaiting marker) or
+   * be lost — the user would see fewer "click ✓/✗" chips than the
+   * number of pending permissions.
+   */
+  pendingPermissionsByToolUseId: Record<string, {
+    description: string;
+    requestId: string;
+    tool: string;
+    requestedAt: number;
+  }>;
   /** Aggregate counters surfaced in the UI sidebar. */
   stats: TreeStats;
 }
@@ -148,6 +165,7 @@ export function emptyTree(sessionId: string): ExecutionTree {
     thinkingSealed: false,
     currentTextId: null,
     textIsOpen: false,
+    pendingPermissionsByToolUseId: {},
     stats: {
       totalTools: 0,
       completedTools: 0,

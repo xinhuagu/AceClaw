@@ -30,8 +30,25 @@
  */
 
 import { motion } from 'framer-motion';
-import type { LayoutNode } from '../types/tree';
+import { useEffect, useRef, useState } from 'react';
+import type { ExecutionStatus, LayoutNode } from '../types/tree';
 import { STATUS_COLOR, StatusIcon } from './StatusIcon';
+
+/**
+ * Minimum visible duration of the running pulse, in ms. Many tools
+ * complete in well under a second (single-digit ms for local
+ * write_file, ~150 ms for an in-cache MCP wiki_search). Without
+ * this floor the user sees the node go paused → completed with no
+ * intermediate "I'm working on it" feedback. 1500 ms = one full
+ * cycle of the drop-shadow pulse animation, so the user gets to
+ * see the glow ramp up AND down before the node settles into its
+ * completed colour. Tuning notes: shorter than 1500 looked
+ * "interrupted" mid-cycle; longer felt sluggish on long-running
+ * tools whose actual run time greatly exceeds the minimum (in that
+ * case node.status is still 'running' anyway, so the floor is a
+ * no-op).
+ */
+const MIN_RUNNING_VISIBLE_MS = 1500;
 
 /**
  * Accent colour per (type, status). Used as both fill (with low opacity)
@@ -83,30 +100,85 @@ const FILL_ALPHA: Record<string, number> = {
 
 interface GrowingNodeProps {
   node: LayoutNode;
+  /**
+   * Click handler for nodes that are awaiting permission (#437). When
+   * the user clicks an awaiting node the parent opens its
+   * {@link PermissionPanel}; non-awaiting clicks are no-ops. Optional
+   * so test scaffolding can render without wiring panel state.
+   */
+  onAwaitingClick?: (requestId: string) => void;
+  /**
+   * True when this node's permission panel is currently open. Used to
+   * show a "panel open" visual hint (different border / cursor) so the
+   * user can tell which node owns the floating panel they're looking at.
+   */
+  isOpenPanel?: boolean;
 }
 
 /**
- * Truncates labels that would overrun the fixed 180-px node width. The cap
- * (24 chars) was chosen so JetBrains-Mono 13px text fits with margins.
+ * Truncates labels that would overrun the fixed 180-px node width.
+ *
+ * <p>Cap calc: usable label area = node.width - 30 (left padding for
+ * status icon + spacing) - 8 (right padding) = 142 px. JetBrains Mono
+ * at 12 px averages ~7.2 px per character (some glyphs wider, e.g. 'm',
+ * 'w'), so 142 / 7.2 ≈ 19. Cap at 18 to leave a hair of slack and so
+ * the trailing `…` still fits without pushing the last visible glyph
+ * past the right edge — labels like {@code mcp__agent-wiki__wiki_search}
+ * were overflowing the previous 24-char cap.
  */
-function truncate(s: string, max = 24): string {
+function truncate(s: string, max = 18): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
-export function GrowingNode({ node }: GrowingNodeProps) {
+export function GrowingNode({ node, onAwaitingClick, isOpenPanel }: GrowingNodeProps) {
+  // Effective render status — usually node.status but held at
+  // 'running' for MIN_RUNNING_VISIBLE_MS so the pulse animation is
+  // perceptible even when the daemon completes a tool in single-
+  // digit ms (e.g. write_file). Without this floor the user clicks
+  // Approve and the node goes paused → completed with no animated
+  // "I'm working on it" feedback.
+  const [displayStatus, setDisplayStatus] = useState<ExecutionStatus>(node.status);
+  const lastRunningSetAt = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (node.status === 'running') {
+      lastRunningSetAt.current = Date.now();
+      setDisplayStatus('running');
+      return;
+    }
+    // Node is no longer running. Hold the visual at 'running' for the
+    // remainder of the minimum window, then snap to the new status.
+    const startedAt = lastRunningSetAt.current;
+    if (startedAt !== null) {
+      const elapsed = Date.now() - startedAt;
+      const remaining = MIN_RUNNING_VISIBLE_MS - elapsed;
+      if (remaining > 0) {
+        const next: ExecutionStatus = node.status;
+        const t = window.setTimeout(() => {
+          setDisplayStatus(next);
+          lastRunningSetAt.current = null;
+        }, remaining);
+        return () => window.clearTimeout(t);
+      }
+    }
+    lastRunningSetAt.current = null;
+    setDisplayStatus(node.status);
+    return undefined;
+  }, [node.status]);
+
   const palette = TYPE_ACCENT[node.type] ?? TYPE_ACCENT['default']!;
   // The accent picks per-type-and-status; if a type is missing a status
   // fallback (shouldn't happen with the palette above), drop back to the
   // default tool palette — same reason a missing-key in TYPE_ACCENT does.
   const accent =
-    palette[node.status] ??
-    TYPE_ACCENT['default']![node.status] ??
-    STATUS_COLOR[node.status];
-  const fillAlpha = FILL_ALPHA[node.status] ?? FILL_ALPHA['pending']!;
+    palette[displayStatus] ??
+    TYPE_ACCENT['default']![displayStatus] ??
+    STATUS_COLOR[displayStatus];
+  const fillAlpha = FILL_ALPHA[displayStatus] ?? FILL_ALPHA['pending']!;
   // Top-left corner of the node in dagre coords (it gives us centres).
   const left = node.x - node.width / 2;
   const top = node.y - node.height / 2;
-  const isRunning = node.status === 'running';
+  const isRunning = displayStatus === 'running';
 
   // Pulse the running node's glow so the eye picks up the active branch
   // at a glance. The animation runs forever; framer-motion handles unmount
@@ -130,13 +202,56 @@ export function GrowingNode({ node }: GrowingNodeProps) {
       }
     : {};
 
+  // Awaiting nodes get an interactive cursor and a click handler that
+  // opens the permission panel. Stop pointer/click propagation so the
+  // parent's pan handler doesn't grab pointer capture and swallow the
+  // click — same fix applied inside PermissionPanel for its buttons.
+  const isAwaiting =
+    node.awaitingInput === true && node.permissionRequestId !== undefined;
+  const interactive = isAwaiting && onAwaitingClick !== undefined;
+
   return (
     <motion.g
       initial={{ opacity: 0, scale: 0.6, x: -40 }}
       animate={{ opacity: 1, scale: 1, x: 0 }}
       exit={{ opacity: 0, scale: 0.6, transition: { duration: 0.15 } }}
       transition={{ type: 'spring', stiffness: 350, damping: 28 }}
-      style={{ transformOrigin: `${node.x}px ${node.y}px` }}
+      style={{
+        transformOrigin: `${node.x}px ${node.y}px`,
+        cursor: interactive ? 'pointer' : 'default',
+      }}
+      // Keyboard + ARIA: an awaiting node is a button (it opens the
+      // permission panel); make it focusable, give it a role/label, and
+      // wire Enter/Space the same way as click. aria-pressed flips when
+      // the panel is open so screen readers reflect the toggle state.
+      // Non-interactive nodes (any tree node not awaiting permission)
+      // stay unfocusable so the tab order matches the actionable set.
+      tabIndex={interactive ? 0 : undefined}
+      role={interactive ? 'button' : undefined}
+      aria-label={
+        interactive ? `Open permission panel for ${node.label}` : undefined
+      }
+      aria-pressed={interactive ? isOpenPanel === true : undefined}
+      onPointerDown={interactive ? (e) => e.stopPropagation() : undefined}
+      onClick={
+        interactive
+          ? (e) => {
+              e.stopPropagation();
+              onAwaitingClick!(node.permissionRequestId!);
+            }
+          : undefined
+      }
+      onKeyDown={
+        interactive
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                e.stopPropagation();
+                onAwaitingClick!(node.permissionRequestId!);
+              }
+            }
+          : undefined
+      }
     >
       <motion.rect
         x={left}
@@ -147,10 +262,40 @@ export function GrowingNode({ node }: GrowingNodeProps) {
         fill={accent}
         fillOpacity={fillAlpha}
         stroke={accent}
-        strokeWidth={1.5}
+        strokeWidth={isOpenPanel ? 2.5 : 1.5}
         {...pulseProps}
       />
-      <StatusIcon status={node.status} cx={left + 16} cy={node.y} color={accent} />
+      {/*
+        "Click to review" hint for awaiting nodes (#437). A small amber
+        chip on the top-right of the node so the operator can spot
+        permission gates at a glance and knows the node is interactive.
+        Hidden once the panel is open or the request resolves.
+      */}
+      {interactive && !isOpenPanel ? (
+        <g pointerEvents="none">
+          <rect
+            x={left + node.width - 64}
+            y={top - 10}
+            width={62}
+            height={16}
+            rx={8}
+            fill="#fbbf24"
+            fillOpacity={0.95}
+          />
+          <text
+            x={left + node.width - 33}
+            y={top + 1}
+            textAnchor="middle"
+            fontFamily="ui-monospace, 'JetBrains Mono', monospace"
+            fontSize={9}
+            fontWeight={600}
+            fill="#451a03"
+          >
+            click ✓/✗
+          </text>
+        </g>
+      ) : null}
+      <StatusIcon status={displayStatus} cx={left + 16} cy={node.y} color={accent} />
       <text
         x={left + 30}
         y={node.y + 4}
@@ -158,6 +303,9 @@ export function GrowingNode({ node }: GrowingNodeProps) {
         fontSize={12}
         fill="#e5e7eb"
       >
+        {/* Native SVG <title> renders as a tooltip on hover so the
+            full label is recoverable when truncate() drops chars. */}
+        <title>{node.label}</title>
         {truncate(node.label)}
       </text>
       {typeof node.duration === 'number' && node.duration > 0 ? (

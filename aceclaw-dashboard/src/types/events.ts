@@ -304,6 +304,17 @@ export interface PermissionRequestParams {
   tool: string;
   description: string;
   requestId: string;
+  /**
+   * The tool_use block id that owns this permission request. Optional
+   * for backward compatibility with daemons predating #437's parallel-
+   * permission fix; when present, the reducer marks THAT specific
+   * tool node as awaiting instead of falling back to activeNodeId.
+   * Without it, parallel tool_use events would each fire a
+   * permission.request but only the most-recent tool node would show
+   * the "click ✓/✗" chip — the user could only approve one from
+   * the dashboard.
+   */
+  toolUseId?: string;
 }
 
 /**
@@ -316,6 +327,14 @@ export interface PermissionRequestParams {
  */
 export interface PermissionResponseParams {
   requestId: string;
+  /**
+   * Session this response belongs to. The daemon enforces a
+   * cross-session guard (#433/#454): a response without sessionId, or
+   * with a sessionId that doesn't match the originating request, is
+   * dropped. The {@link useExecutionTree} hook auto-injects this from
+   * its own session prop so callers can omit it.
+   */
+  sessionId?: string;
   approved: boolean;
   /** When true, daemon grants session-level approval for this tool. */
   remember?: boolean;

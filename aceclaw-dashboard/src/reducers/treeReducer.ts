@@ -380,8 +380,15 @@ function addToolNode(
   //      tools that follow are the execution of that plan. Parent → child.
   //   2. Otherwise the iteration's thinking — when the model went straight
   //      from reasoning to acting with no narration, thinking is the cause.
-  //   3. Otherwise the running turn — extended thinking off, or events
-  //      arrived out of order. Fallback so the tool still surfaces.
+  //   3. Otherwise a freshly-minted SYNTHETIC thinking under the running
+  //      turn (see iteration-boundary block below). Dropping the tool as
+  //      a direct child of the turn was the prior fallback, but it left
+  //      the tool visually parallel with the next iteration's thinking
+  //      node — readers (correctly) interpret that as "tool ran in
+  //      parallel with thinking", which doesn't match the actual
+  //      sequential ReAct flow. The synthetic thinking gives the tool a
+  //      proper parent so the layout chains turn → thinking → tool →
+  //      next-thinking → text horizontally.
   // Parallel tools from one LLM response don't get a thinking delta or
   // a text delta between them, so they share the same anchor — they
   // attach as siblings to whichever anchor was selected for the first
@@ -391,6 +398,43 @@ function addToolNode(
     state.activeNodeId,
     (n) => n.type === 'turn' && n.status === 'running',
   );
+
+  // Iteration-boundary synthesis (mirrors appendTextToCurrentTurn):
+  // when this tool_use is the FIRST event of a new iteration with no
+  // narration open and no live thinking anchor, mint a synthetic
+  // thinking node so the tool has a proper ReAct parent. Two trigger
+  // shapes:
+  //   1. textIsOpen=false + currentThinkingId=null — first event of
+  //      the turn is a tool_use (extended thinking off, or model went
+  //      straight to acting).
+  //   2. textIsOpen=false + thinkingSealed=true — previous iteration
+  //      ended via tool_use; this is a NEW iteration's tool.
+  // Suppress the synthesis when there's a running sibling tool under
+  // the current anchor — that signals parallel tools from the SAME LLM
+  // call, which must keep sharing the existing anchor.
+  let workingState = state;
+  if (
+    turn &&
+    state.currentTextId === null &&
+    (state.currentThinkingId === null || state.thinkingSealed)
+  ) {
+    const currentAnchor = state.currentThinkingId
+      ? findNode(state.rootNodes, state.currentThinkingId)
+      : null;
+    const hasRunningSiblingTool = currentAnchor
+      ? currentAnchor.children.some(
+          (c) => c.type === 'tool' && c.status === 'running',
+        )
+      : false;
+    if (!hasRunningSiblingTool) {
+      workingState = mintIterationThinking(state, turn, '', 'completed').state;
+    }
+  }
+  // Use workingState (= state if no synthesis) for the rest. Rebinding
+  // keeps the existing logic readable; the original `state` is no
+  // longer referenced.
+  state = workingState;
+
   // Tool anchor preference: the active narration text (if one is open
   // OR was the most recent under current thinking) > thinking > turn.
   // currentTextId stays valid through parallel tool_use events so they
@@ -451,7 +495,7 @@ function addToolNode(
     );
   }
 
-  return {
+  let next: ExecutionTree = {
     ...state,
     rootNodes,
     activeNodeId: tool.id,
@@ -465,6 +509,29 @@ function addToolNode(
     textIsOpen: false,
     stats: { ...state.stats, totalTools: state.stats.totalTools + 1 },
   };
+  // Drain any buffered permission.request that arrived BEFORE this
+  // tool_use event (parallel virtual threads on the daemon dispatch
+  // permission.request and stream.tool_use independently — wire order
+  // is non-deterministic). The buffer is keyed by toolUseId; if our
+  // new node matches, apply the awaiting marker now so the user gets
+  // the "click ✓/✗" chip without delay.
+  const buffered = next.pendingPermissionsByToolUseId[params.id];
+  if (buffered) {
+    const { [params.id]: _consumed, ...rest } = next.pendingPermissionsByToolUseId;
+    void _consumed;
+    next = applyPermissionAwaiting(
+      { ...next, pendingPermissionsByToolUseId: rest },
+      params.id,
+      {
+        tool: buffered.tool,
+        description: buffered.description,
+        requestId: buffered.requestId,
+        toolUseId: params.id,
+      },
+      buffered.requestedAt,
+    );
+  }
+  return next;
 }
 
 function completeToolNode(
@@ -477,6 +544,36 @@ function completeToolNode(
   const status: ExecutionNode['status'] = params.isError ? 'failed' : 'completed';
   const rootNodes = mapNode(state.rootNodes, params.id, (n) => {
     const error = params.error ?? n.error;
+    // If the tool completes while still awaitingInput AND no local click
+    // resolved it, the CLI must have answered the permission first
+    // (first-response-wins via the daemon's permissionRegistry, #433).
+    // Stamp resolvedBy='cli' for diagnostics + strip the panel-trigger
+    // fields so the node stops looking "click to approve" in the tree.
+    // Keeping awaitingInput here would leave a forever-clickable node
+    // (the original click-to-open UX flowed via that flag); strip it
+    // and the dashboard self-corrects to the daemon's verdict.
+    const isExternalResolution =
+      n.awaitingInput === true && (n.metadata?.['resolvedBy'] ?? null) === null;
+    if (isExternalResolution) {
+      const {
+        awaitingInput: _ai,
+        inputPrompt: _ip,
+        permissionRequestId: _pid,
+        ...rest
+      } = n;
+      void _ai; void _ip; void _pid;
+      return {
+        ...rest,
+        status,
+        duration: params.durationMs,
+        ...(error !== undefined ? { error } : {}),
+        metadata: {
+          ...(n.metadata ?? {}),
+          resolvedBy: 'cli',
+          resolvedApproved: !params.isError,
+        },
+      };
+    }
     return {
       ...n,
       status,
@@ -672,6 +769,14 @@ function mintIterationThinking(
   const newState: ExecutionTree = {
     ...state,
     rootNodes: appendChild(preparedRootNodes, turn.id, thinkingNode),
+    // Move auto-scroll focus to the new thinking node so the camera
+    // pans to it as it arrives. Without this, a new ReAct iteration's
+    // thinking lands off the right edge of the viewport (downstream of
+    // the just-completed tool) and the user sees no movement until a
+    // text delta later flips activeNodeId — at which point the canvas
+    // jumps two steps ahead. With the focus move + the SVG transition
+    // on style.transform, every new node slides smoothly into view.
+    activeNodeId: id,
     currentThinkingId: id,
     thinkingSealed: false,
     // New iteration: forget the previous iteration's text anchors so
@@ -712,6 +817,9 @@ function appendThinkingToCurrentTurn(
         ...t,
         text: (t.text ?? '') + params.delta,
       })),
+      // Keep auto-scroll focus on the streaming thinking node so a
+      // long thought doesn't drift off-screen as content grows.
+      activeNodeId: state.currentThinkingId,
     };
   }
 
@@ -1114,24 +1222,217 @@ function completeSubAgentNode(
   };
 }
 
-function pauseForPermission(
+/**
+ * Marks {@code targetNodeId} as paused awaiting a permission decision.
+ * Pure helper used by both {@link pauseForPermission} (when the target
+ * node already exists) and {@link addToolNode} (when a buffered
+ * permission for the new node was waiting on its arrival).
+ *
+ * <p>Also sets {@code activeNodeId} to the awaiting node so the
+ * camera's auto-scroll effect pans the node into view if it's
+ * outside the comfort zone — a permission-awaiting node off the
+ * right edge would otherwise be invisible (no chip on screen) and
+ * the user couldn't approve it without scrolling. Combined with
+ * the comfort-zone guard in ExecutionTree's auto-scroll, this only
+ * actually moves the camera when the awaiting node is past the edge.
+ */
+function applyPermissionAwaiting(
   state: ExecutionTree,
+  targetNodeId: string,
   params: PermissionRequestParams,
+  requestedAt: number,
 ): ExecutionTree {
-  // The daemon pauses execution waiting for a permission.response. We mark
-  // the active leaf as paused + awaitingInput so the renderer can surface
-  // the prompt right where the agent stopped.
-  if (!state.activeNodeId) return state;
   return {
     ...state,
-    rootNodes: mapNode(state.rootNodes, state.activeNodeId, (n) => ({
+    activeNodeId: targetNodeId,
+    rootNodes: mapNode(state.rootNodes, targetNodeId, (n) => ({
       ...n,
       status: 'paused',
       awaitingInput: true,
       inputPrompt: params.description,
       permissionRequestId: params.requestId,
-      metadata: { ...(n.metadata ?? {}), permissionTool: params.tool },
+      metadata: {
+        ...(n.metadata ?? {}),
+        permissionTool: params.tool,
+        permissionRequestedAt: requestedAt,
+      },
     })),
+  };
+}
+
+function pauseForPermission(
+  state: ExecutionTree,
+  params: PermissionRequestParams,
+  receivedAt: string,
+): ExecutionTree {
+  // The daemon pauses execution waiting for a permission.response. We mark
+  // the active leaf as paused + awaitingInput so the renderer can surface
+  // the prompt right where the agent stopped. Stamp requestedAt from the
+  // envelope's receivedAt (set by the bridge when the daemon emitted the
+  // event) so the PermissionPanel's countdown is correct on snapshot
+  // replay too — using Date.now() here would re-stamp every replay with
+  // the current wall clock, making aged requests look fresh and breaking
+  // the deadline math. Server side caps at 120 s — see
+  // CancelAwareStreamContext.PERMISSION_RESPONSE_TIMEOUT_MS.
+  //
+  const requestedAtRaw = Date.parse(receivedAt);
+  const requestedAt = Number.isFinite(requestedAtRaw) ? requestedAtRaw : Date.now();
+
+  // Target resolution, in order of preference:
+  //   1. toolUseId names a node already in the tree → mark that node.
+  //      This is the per-tool-node path that disambiguates parallel
+  //      permissions (#437).
+  //   2. toolUseId is provided but its node hasn't arrived yet (race:
+  //      parallel tool execution dispatches permission.request before
+  //      the matching stream.tool_use lands on the wire). BUFFER the
+  //      request keyed by toolUseId; addToolNode drains the buffer
+  //      when the matching node is added.
+  //   3. No toolUseId at all (older daemons predating the toolUseId
+  //      emission). Fall back to activeNodeId — same legacy
+  //      collapse-onto-last behaviour as before, kept for backward
+  //      compat with daemons that haven't been rebuilt.
+  if (params.toolUseId) {
+    if (findNode(state.rootNodes, params.toolUseId)) {
+      return applyPermissionAwaiting(state, params.toolUseId, params, requestedAt);
+    }
+    return {
+      ...state,
+      pendingPermissionsByToolUseId: {
+        ...state.pendingPermissionsByToolUseId,
+        [params.toolUseId]: {
+          tool: params.tool,
+          description: params.description,
+          requestId: params.requestId,
+          requestedAt,
+        },
+      },
+    };
+  }
+  if (!state.activeNodeId) return state;
+  return applyPermissionAwaiting(state, state.activeNodeId, params, requestedAt);
+}
+
+/**
+ * Locally apply a user's Approve / Deny click to the paused node and clear
+ * its awaitingInput flag. The browser still posts {@code permission.response}
+ * over the WS for the daemon to act on — this reducer step just keeps the
+ * UI in sync without waiting for a daemon-side reflection (the daemon
+ * never echoes the response, it just resumes execution and emits
+ * stream.tool_completed when the tool finishes).
+ *
+ * Status semantic mirrors the issue spec:
+ *   - approved → 'running' (the tool is now executing on the daemon)
+ *   - denied   → 'cancelled' (tool returns "Permission denied" and the
+ *     model continues from the failure)
+ *
+ * Tagging metadata.resolvedBy = 'browser' lets a future "approved via X"
+ * banner in the panel distinguish the responder. Idempotent: if no node
+ * is found awaiting this requestId, the state is returned unchanged
+ * (lets duplicate clicks no-op cleanly).
+ */
+/**
+ * Tears down the permission panel for {@code requestId} by stripping the
+ * panel-trigger fields ({@code awaitingInput}, {@code inputPrompt},
+ * {@code permissionRequestId}) from whatever node carries them. Used by
+ * the panel's dismiss timer after a CLI-resolved request has shown its
+ * "Approved/Denied via CLI" state long enough to register on the eye.
+ * Idempotent — a no-op when the request is no longer pending.
+ */
+export function dismissPermissionPanel(
+  state: ExecutionTree,
+  requestId: string,
+): ExecutionTree {
+  let target: ExecutionNode | null = null;
+  const visit = (nodes: readonly ExecutionNode[]): void => {
+    for (const n of nodes) {
+      if (n.permissionRequestId === requestId && target === null) {
+        target = n;
+      }
+      if (n.children.length > 0) visit(n.children);
+    }
+  };
+  visit(state.rootNodes);
+  if (!target) return state;
+  const targetNode: ExecutionNode = target;
+  return {
+    ...state,
+    rootNodes: mapNode(state.rootNodes, targetNode.id, (n) => {
+      const {
+        awaitingInput: _ai,
+        inputPrompt: _ip,
+        permissionRequestId: _pid,
+        ...rest
+      } = n;
+      void _ai; void _ip; void _pid;
+      return rest;
+    }),
+  };
+}
+
+export function resolvePermissionLocally(
+  state: ExecutionTree,
+  requestId: string,
+  approved: boolean,
+  resolvedBy: 'browser' | 'cli' = 'browser',
+): ExecutionTree {
+  let target: ExecutionNode | null = null;
+  const visit = (nodes: readonly ExecutionNode[]): void => {
+    for (const n of nodes) {
+      if (
+        n.awaitingInput === true &&
+        n.permissionRequestId === requestId &&
+        target === null
+      ) {
+        target = n;
+      }
+      if (n.children.length > 0) visit(n.children);
+    }
+  };
+  visit(state.rootNodes);
+  if (!target) return state;
+
+  const targetNode: ExecutionNode = target;
+
+  // Race guard: if the daemon already echoed tool_completed (CLI won the
+  // race) the reducer's completeToolNode stamped resolvedBy='cli' and
+  // moved the node to a terminal status, but kept awaitingInput=true so
+  // the panel can briefly show "Approved/Denied via CLI". A tardy click
+  // from the user must not overwrite that resolution: reverting status
+  // from 'completed'/'failed' back to 'running' would resurrect a node
+  // the daemon already finished, and stamping resolvedBy='browser' would
+  // mislabel who actually resolved it. Bail to a panel-dismiss-only
+  // path so the UI clears without corrupting state.
+  if (
+    targetNode.metadata?.['resolvedBy'] === 'cli' ||
+    (targetNode.status !== 'paused' && resolvedBy === 'browser')
+  ) {
+    return dismissPermissionPanel(state, requestId);
+  }
+
+  const nextStatus: ExecutionStatus = approved ? 'running' : 'cancelled';
+  return {
+    ...state,
+    rootNodes: mapNode(state.rootNodes, targetNode.id, (n) => {
+      // Strip awaitingInput / inputPrompt / permissionRequestId from the
+      // node so the panel unmounts. Drop them with destructuring rather
+      // than setting `undefined` (exactOptionalPropertyTypes forbids it).
+      const {
+        awaitingInput: _ai,
+        inputPrompt: _ip,
+        permissionRequestId: _pid,
+        ...rest
+      } = n;
+      void _ai; void _ip; void _pid;
+      return {
+        ...rest,
+        status: nextStatus,
+        metadata: {
+          ...(n.metadata ?? {}),
+          resolvedBy,
+          resolvedApproved: approved,
+        },
+      };
+    }),
   };
 }
 
@@ -1261,7 +1562,7 @@ export function executionTreeReducer(
       next = completeSubAgentNode(state, event.params);
       break;
     case 'permission.request':
-      next = pauseForPermission(state, event.params);
+      next = pauseForPermission(state, event.params, envelope.receivedAt);
       break;
     case 'stream.usage':
       next = updateUsageStats(state, event.params);

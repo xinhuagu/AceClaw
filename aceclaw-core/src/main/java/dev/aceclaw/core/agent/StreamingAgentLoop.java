@@ -855,7 +855,18 @@ public final class StreamingAgentLoop {
 
         try {
             log.debug("Executing tool: {} (id: {})", tool.name(), toolUse.id());
-            var result = tool.execute(toolUse.inputJson());
+            // Stash the tool-use id on a ThreadLocal so PermissionAwareTool
+            // can stamp it onto outbound permission.request notifications.
+            // The dashboard needs the id to mark the SPECIFIC tool node
+            // as awaiting (parallel tool_use events otherwise all collapse
+            // onto the last activeNodeId — issue #437 follow-up).
+            ToolExecutionContext.setCurrentToolUseId(toolUse.id());
+            Tool.ToolResult result;
+            try {
+                result = tool.execute(toolUse.inputJson());
+            } finally {
+                ToolExecutionContext.clearCurrentToolUseId();
+            }
             long toolDuration = System.currentTimeMillis() - toolStart;
             String output = truncateToolResult(result.output(), MAX_TOOL_RESULT_CHARS);
             if (output.length() != result.output().length()) {
