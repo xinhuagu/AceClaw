@@ -369,9 +369,12 @@ final class WebSocketBridgeTest {
         var ws = connect(queue::add);
         assertThat(connected.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)).isTrue();
 
+        // Browser-shaped permission.response: includes sessionId for
+        // the cross-session guard the daemon validates server-side.
         ws.sendText(
                 "{\"method\":\"permission.response\","
                         + "\"params\":{\"requestId\":\"perm-abc-123\","
+                        + "\"sessionId\":\"sess-1\","
                         + "\"approved\":true,\"remember\":false}}",
                 true)
                 .get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
@@ -379,6 +382,7 @@ final class WebSocketBridgeTest {
         var landed = handlerReceived.get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
         var params = landed.get("params");
         assertThat(params.get("requestId").asText()).isEqualTo("perm-abc-123");
+        assertThat(params.get("sessionId").asText()).isEqualTo("sess-1");
         assertThat(params.get("approved").asBoolean()).isTrue();
         assertThat(params.get("remember").asBoolean()).isFalse();
 

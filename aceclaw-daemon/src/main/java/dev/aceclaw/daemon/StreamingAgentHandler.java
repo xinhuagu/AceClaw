@@ -180,9 +180,26 @@ public final class StreamingAgentHandler {
      * sees a no-op (CompletableFuture.complete is idempotent + the
      * remove is atomic). Per-context shutdown removes its own entries
      * without affecting other concurrent prompts.
+     *
+     * <p>Each entry holds the originating session id alongside the
+     * future. {@link #routePermissionResponse} validates that a
+     * browser-sent response carries a matching {@code sessionId} —
+     * without this check, any WS client that observed the broadcast
+     * {@code permission.request} (which fans out to all connected
+     * clients) could replay its {@code requestId} and approve/deny
+     * tools on a session it doesn't own. The CLI path bypasses the
+     * sessionId check because UDS connections are inherently
+     * per-session at the transport layer.
      */
-    private final ConcurrentHashMap<String, CompletableFuture<JsonNode>> permissionRegistry =
+    private final ConcurrentHashMap<String, PendingPermission> permissionRegistry =
             new ConcurrentHashMap<>();
+
+    /**
+     * Tuple stored in {@link #permissionRegistry}: the originating
+     * session and the future to complete. Used by the WS routing
+     * path to validate cross-session attempts.
+     */
+    private record PendingPermission(String sessionId, CompletableFuture<JsonNode> future) {}
 
     /** Per-session turn locks for serializing main turns within a session. */
     private final ConcurrentHashMap<String, ReentrantLock> sessionTurnLocks =
@@ -251,14 +268,37 @@ public final class StreamingAgentHandler {
         if (ridNode == null) return false;
         var requestId = ridNode.asText("");
         if (requestId.isEmpty()) return false;
-        var future = permissionRegistry.remove(requestId);
-        if (future == null) {
+        var pending = permissionRegistry.get(requestId);
+        if (pending == null) {
             log.warn("WS permission.response: no pending request for requestId={}, "
                     + "dropping (already completed by CLI, timed out, or unknown)",
                     requestId);
             return false;
         }
-        return future.complete(message);
+        // Cross-session guard: WS clients see ALL permission.request
+        // broadcasts (the bridge fans out to every connected tab), so
+        // a tab viewing session B could otherwise replay session A's
+        // requestId and approve/deny on A's behalf. The browser must
+        // include the sessionId it observed on the request envelope;
+        // we reject mismatches and missing values.
+        var sidNode = params.get("sessionId");
+        var responseSessionId = sidNode == null ? null : sidNode.asText("");
+        if (responseSessionId == null || responseSessionId.isEmpty()) {
+            log.warn("WS permission.response missing sessionId for requestId={}, dropping",
+                    requestId);
+            return false;
+        }
+        if (!pending.sessionId().equals(responseSessionId)) {
+            log.warn("WS permission.response sessionId mismatch for requestId={}: "
+                    + "expected {}, got {} — dropping (cross-session attempt)",
+                    requestId, pending.sessionId(), responseSessionId);
+            return false;
+        }
+        // Atomic remove-if-still-present; if the CLI got there first,
+        // remove returns false and we leave the pre-existing completion
+        // alone.
+        if (!permissionRegistry.remove(requestId, pending)) return false;
+        return pending.future().complete(message);
     }
 
     /**
@@ -3368,9 +3408,11 @@ public final class StreamingAgentHandler {
          * Daemon-wide registry shared with the WS bridge (issue #433) so a
          * browser-sent {@code permission.response} can complete the same
          * future the CLI socket monitor would. Null when running outside a
-         * full daemon (tests). All writes mirror {@link #pendingPermissions}.
+         * full daemon (tests). All writes mirror {@link #pendingPermissions};
+         * value type carries the sessionId for the cross-session guard in
+         * {@link StreamingAgentHandler#routePermissionResponse}.
          */
-        private final ConcurrentHashMap<String, CompletableFuture<JsonNode>> globalPermissionRegistry;
+        private final ConcurrentHashMap<String, PendingPermission> globalPermissionRegistry;
         private final BlockingQueue<JsonNode> unmatchedResponses = new LinkedBlockingQueue<>();
         private final Object permissionLifecycleLock = new Object();
         private final java.util.concurrent.atomic.AtomicInteger toolUseCount =
@@ -3386,7 +3428,7 @@ public final class StreamingAgentHandler {
 
         CancelAwareStreamContext(StreamContext delegate, CancellationToken cancellationToken,
                                  ObjectMapper objectMapper,
-                                 ConcurrentHashMap<String, CompletableFuture<JsonNode>> globalPermissionRegistry) {
+                                 ConcurrentHashMap<String, PendingPermission> globalPermissionRegistry) {
             this(delegate, delegate, cancellationToken, objectMapper, globalPermissionRegistry);
         }
 
@@ -3403,7 +3445,7 @@ public final class StreamingAgentHandler {
 
         CancelAwareStreamContext(StreamContext rawContext, StreamContext outboundContext,
                                  CancellationToken cancellationToken, ObjectMapper objectMapper,
-                                 ConcurrentHashMap<String, CompletableFuture<JsonNode>> globalPermissionRegistry) {
+                                 ConcurrentHashMap<String, PendingPermission> globalPermissionRegistry) {
             this.delegate = outboundContext;
             this.cancellationToken = cancellationToken;
             this.objectMapper = objectMapper;
@@ -3428,8 +3470,9 @@ public final class StreamingAgentHandler {
          * Registers a pending permission request keyed by requestId.
          * Returns a future that will be completed when the matching response arrives.
          */
-        CompletableFuture<JsonNode> registerPermissionRequest(String requestId) {
+        CompletableFuture<JsonNode> registerPermissionRequest(String requestId, String sessionId) {
             Objects.requireNonNull(requestId, "requestId");
+            Objects.requireNonNull(sessionId, "sessionId");
             var future = new CompletableFuture<JsonNode>();
             synchronized (permissionLifecycleLock) {
                 if (stopped) {
@@ -3444,8 +3487,9 @@ public final class StreamingAgentHandler {
                 // Mirror into the daemon-wide registry so the WS bridge's
                 // permission.response routing (issue #433) can complete
                 // the same future without knowing which context owns it.
+                // Tag with sessionId for the cross-session guard.
                 if (globalPermissionRegistry != null) {
-                    globalPermissionRegistry.put(requestId, future);
+                    globalPermissionRegistry.put(requestId, new PendingPermission(sessionId, future));
                 }
             }
             return future;
@@ -3826,7 +3870,7 @@ public final class StreamingAgentHandler {
                     var requestId = "perm-" + UUID.randomUUID();
                     long timeoutMs = CancelAwareStreamContext.PERMISSION_RESPONSE_TIMEOUT_MS;
 
-                    var future = context.registerPermissionRequest(requestId);
+                    var future = context.registerPermissionRequest(requestId, sessionId);
                     if (future.isCancelled()) {
                         return new ToolResult("Permission denied: request cancelled", true);
                     }
