@@ -35,14 +35,20 @@ import type { ExecutionStatus, LayoutNode } from '../types/tree';
 import { STATUS_COLOR, StatusIcon } from './StatusIcon';
 
 /**
- * Minimum visible duration of the running pulse, in ms. Some tools
- * complete in single-digit ms (e.g. local write_file). Without this
- * floor the user sees the node go paused → completed with no
- * intermediate "I'm working on it" feedback. 600 ms is long enough
- * for one full pulse cycle (the rect's drop-shadow animation runs
- * at 1500 ms / cycle, so ~40 % of a cycle is visible).
+ * Minimum visible duration of the running pulse, in ms. Many tools
+ * complete in well under a second (single-digit ms for local
+ * write_file, ~150 ms for an in-cache MCP wiki_search). Without
+ * this floor the user sees the node go paused → completed with no
+ * intermediate "I'm working on it" feedback. 1500 ms = one full
+ * cycle of the drop-shadow pulse animation, so the user gets to
+ * see the glow ramp up AND down before the node settles into its
+ * completed colour. Tuning notes: shorter than 1500 looked
+ * "interrupted" mid-cycle; longer felt sluggish on long-running
+ * tools whose actual run time greatly exceeds the minimum (in that
+ * case node.status is still 'running' anyway, so the floor is a
+ * no-op).
  */
-const MIN_RUNNING_VISIBLE_MS = 600;
+const MIN_RUNNING_VISIBLE_MS = 1500;
 
 /**
  * Accent colour per (type, status). Used as both fill (with low opacity)
