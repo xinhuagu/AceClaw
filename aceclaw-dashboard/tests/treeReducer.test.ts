@@ -463,6 +463,48 @@ describe('permission pause', () => {
     expect(findById(state, 't3').permissionRequestId).toBe('perm-3');
   });
 
+  it('moves activeNodeId to the awaiting node so the camera can pan it into view (#437)', () => {
+    // User-reported: a permission-awaiting node off the right edge
+    // had no visible chip — the operator couldn't see what to click.
+    // Cause: pauseForPermission marked the node awaiting but didn't
+    // touch activeNodeId, so the auto-scroll effect (which depends
+    // on [activeNodeId, layout.nodes]) didn't re-evaluate. The
+    // ExecutionTree comfort-zone guard handles the "no-op when
+    // already in view" case; the reducer just needs to make the
+    // awaiting node the auto-scroll target.
+    const state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.tool_use', { id: 't-prior', name: 'read_file' }),
+      envelope('stream.tool_completed', {
+        id: 't-prior',
+        name: 'read_file',
+        durationMs: 1,
+        isError: false,
+      }),
+      envelope('stream.tool_use', { id: 't-perm', name: 'bash' }),
+      envelope('permission.request', {
+        tool: 'bash',
+        description: 'rm -rf',
+        requestId: 'perm-1',
+        toolUseId: 't-perm',
+      }),
+    );
+    expect(state.activeNodeId).toBe('t-perm');
+    const tool = findById(state, 't-perm');
+    expect(tool.awaitingInput).toBe(true);
+  });
+
   it('disambiguates 8 parallel permissions even with arbitrary wire interleaving', () => {
     // Stress version of the parallel-permission test. Daemon's parallel
     // virtual threads can interleave stream.tool_use and

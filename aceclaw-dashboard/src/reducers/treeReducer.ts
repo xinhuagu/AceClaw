@@ -1227,6 +1227,14 @@ function completeSubAgentNode(
  * Pure helper used by both {@link pauseForPermission} (when the target
  * node already exists) and {@link addToolNode} (when a buffered
  * permission for the new node was waiting on its arrival).
+ *
+ * <p>Also sets {@code activeNodeId} to the awaiting node so the
+ * camera's auto-scroll effect pans the node into view if it's
+ * outside the comfort zone — a permission-awaiting node off the
+ * right edge would otherwise be invisible (no chip on screen) and
+ * the user couldn't approve it without scrolling. Combined with
+ * the comfort-zone guard in ExecutionTree's auto-scroll, this only
+ * actually moves the camera when the awaiting node is past the edge.
  */
 function applyPermissionAwaiting(
   state: ExecutionTree,
@@ -1236,6 +1244,7 @@ function applyPermissionAwaiting(
 ): ExecutionTree {
   return {
     ...state,
+    activeNodeId: targetNodeId,
     rootNodes: mapNode(state.rootNodes, targetNodeId, (n) => ({
       ...n,
       status: 'paused',
