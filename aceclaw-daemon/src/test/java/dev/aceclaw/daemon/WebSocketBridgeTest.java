@@ -1,5 +1,6 @@
 package dev.aceclaw.daemon;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -337,6 +338,55 @@ final class WebSocketBridgeTest {
 
         ws.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
         wsOther.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    }
+
+    @Test
+    void inboundHandlerRoutesPermissionResponseByRequestId() throws Exception {
+        // Pins the wire contract that #433 relies on: a browser-sent
+        // {method: permission.response, params: {requestId, approved}}
+        // arriving on the WS bridge gets dispatched to whatever handler
+        // the daemon installed (in production: AceClawDaemon's
+        // dispatcher, which calls StreamingAgentHandler.routePermissionResponse).
+        // The test stands in for the routePermissionResponse step with a
+        // CompletableFuture so we can assert the message reached the
+        // handler intact. Logic of the routing itself (registry lookup,
+        // first-response-wins, idempotency) is contract-of-CompletableFuture
+        // and exercised in production code paths; what we test here is
+        // that the bridge plumbs the message to the right place.
+        bridge = startOnRandomPort();
+        var handlerReceived = new CompletableFuture<JsonNode>();
+        bridge.setInboundHandler((ctx, message) -> {
+            var methodNode = message.get("method");
+            if (methodNode == null) return;
+            if ("permission.response".equals(methodNode.asText(""))) {
+                handlerReceived.complete(message);
+            }
+        });
+
+        var connected = new CountDownLatch(1);
+        bridge.addConnectionListener(_ -> connected.countDown());
+        var queue = new LinkedBlockingQueue<String>();
+        var ws = connect(queue::add);
+        assertThat(connected.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)).isTrue();
+
+        // Browser-shaped permission.response: includes sessionId for
+        // the cross-session guard the daemon validates server-side.
+        ws.sendText(
+                "{\"method\":\"permission.response\","
+                        + "\"params\":{\"requestId\":\"perm-abc-123\","
+                        + "\"sessionId\":\"sess-1\","
+                        + "\"approved\":true,\"remember\":false}}",
+                true)
+                .get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+
+        var landed = handlerReceived.get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        var params = landed.get("params");
+        assertThat(params.get("requestId").asText()).isEqualTo("perm-abc-123");
+        assertThat(params.get("sessionId").asText()).isEqualTo("sess-1");
+        assertThat(params.get("approved").asBoolean()).isTrue();
+        assertThat(params.get("remember").asBoolean()).isFalse();
+
+        ws.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     }
 
     @Test
