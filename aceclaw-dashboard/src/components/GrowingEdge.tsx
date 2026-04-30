@@ -66,19 +66,26 @@ export function GrowingEdge({ edge }: GrowingEdgeProps) {
   // and adding arrowheads to every containment edge would be visual noise.
   const markerEnd = isSequence ? 'url(#seq-arrow)' : undefined;
   return (
+    // Animation differs by edge kind: framer-motion's `pathLength`
+    // implements its draw-on animation by setting strokeDasharray
+    // internally — which silently clobbers any explicit dasharray we
+    // pass for sequence edges, rendering them as solid lines. So
+    // sequence edges drop pathLength and fade in via opacity instead;
+    // their custom dash pattern survives. Containment edges keep the
+    // line-drawing animation since they have no custom dasharray to
+    // preserve.
     <motion.path
       d={d}
       stroke={stroke}
-      // Sequence edges get the same stroke width as containment so they
-      // read on a dark background, but with butt linecaps and a wider
-      // gap-to-dash ratio so the dashes stay obviously discrete. Round
-      // caps blob the dash ends out by ~strokeWidth/2 each side, which
-      // closed the gaps and made the line look solid.
       strokeWidth={isSequence ? 1.75 : 1.75}
       strokeDasharray={isSequence ? '5 6' : undefined}
       fill="none"
-      initial={{ pathLength: 0, opacity: 0 }}
-      animate={{ pathLength: 1, opacity: isSequence ? 0.85 : 0.85 }}
+      initial={
+        isSequence ? { opacity: 0 } : { pathLength: 0, opacity: 0 }
+      }
+      animate={
+        isSequence ? { opacity: 0.85 } : { pathLength: 1, opacity: 0.85 }
+      }
       transition={{ duration: 0.4, ease: 'easeOut' }}
       // exactOptionalPropertyTypes: avoid passing undefined to the
       // optional markerEnd attribute.
