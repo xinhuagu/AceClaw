@@ -30,8 +30,19 @@
  */
 
 import { motion } from 'framer-motion';
-import type { LayoutNode } from '../types/tree';
+import { useEffect, useRef, useState } from 'react';
+import type { ExecutionStatus, LayoutNode } from '../types/tree';
 import { STATUS_COLOR, StatusIcon } from './StatusIcon';
+
+/**
+ * Minimum visible duration of the running pulse, in ms. Some tools
+ * complete in single-digit ms (e.g. local write_file). Without this
+ * floor the user sees the node go paused → completed with no
+ * intermediate "I'm working on it" feedback. 600 ms is long enough
+ * for one full pulse cycle (the rect's drop-shadow animation runs
+ * at 1500 ms / cycle, so ~40 % of a cycle is visible).
+ */
+const MIN_RUNNING_VISIBLE_MS = 600;
 
 /**
  * Accent colour per (type, status). Used as both fill (with low opacity)
@@ -114,19 +125,54 @@ function truncate(s: string, max = 18): string {
 }
 
 export function GrowingNode({ node, onAwaitingClick, isOpenPanel }: GrowingNodeProps) {
+  // Effective render status — usually node.status but held at
+  // 'running' for MIN_RUNNING_VISIBLE_MS so the pulse animation is
+  // perceptible even when the daemon completes a tool in single-
+  // digit ms (e.g. write_file). Without this floor the user clicks
+  // Approve and the node goes paused → completed with no animated
+  // "I'm working on it" feedback.
+  const [displayStatus, setDisplayStatus] = useState<ExecutionStatus>(node.status);
+  const lastRunningSetAt = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (node.status === 'running') {
+      lastRunningSetAt.current = Date.now();
+      setDisplayStatus('running');
+      return;
+    }
+    // Node is no longer running. Hold the visual at 'running' for the
+    // remainder of the minimum window, then snap to the new status.
+    const startedAt = lastRunningSetAt.current;
+    if (startedAt !== null) {
+      const elapsed = Date.now() - startedAt;
+      const remaining = MIN_RUNNING_VISIBLE_MS - elapsed;
+      if (remaining > 0) {
+        const next: ExecutionStatus = node.status;
+        const t = window.setTimeout(() => {
+          setDisplayStatus(next);
+          lastRunningSetAt.current = null;
+        }, remaining);
+        return () => window.clearTimeout(t);
+      }
+    }
+    lastRunningSetAt.current = null;
+    setDisplayStatus(node.status);
+    return undefined;
+  }, [node.status]);
+
   const palette = TYPE_ACCENT[node.type] ?? TYPE_ACCENT['default']!;
   // The accent picks per-type-and-status; if a type is missing a status
   // fallback (shouldn't happen with the palette above), drop back to the
   // default tool palette — same reason a missing-key in TYPE_ACCENT does.
   const accent =
-    palette[node.status] ??
-    TYPE_ACCENT['default']![node.status] ??
-    STATUS_COLOR[node.status];
-  const fillAlpha = FILL_ALPHA[node.status] ?? FILL_ALPHA['pending']!;
+    palette[displayStatus] ??
+    TYPE_ACCENT['default']![displayStatus] ??
+    STATUS_COLOR[displayStatus];
+  const fillAlpha = FILL_ALPHA[displayStatus] ?? FILL_ALPHA['pending']!;
   // Top-left corner of the node in dagre coords (it gives us centres).
   const left = node.x - node.width / 2;
   const top = node.y - node.height / 2;
-  const isRunning = node.status === 'running';
+  const isRunning = displayStatus === 'running';
 
   // Pulse the running node's glow so the eye picks up the active branch
   // at a glance. The animation runs forever; framer-motion handles unmount
@@ -243,7 +289,7 @@ export function GrowingNode({ node, onAwaitingClick, isOpenPanel }: GrowingNodeP
           </text>
         </g>
       ) : null}
-      <StatusIcon status={node.status} cx={left + 16} cy={node.y} color={accent} />
+      <StatusIcon status={displayStatus} cx={left + 16} cy={node.y} color={accent} />
       <text
         x={left + 30}
         y={node.y + 4}
