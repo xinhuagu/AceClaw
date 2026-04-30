@@ -186,6 +186,13 @@ export function ExecutionTree({
     }));
   }, [tree.activeNodeId, layout.nodes]);
 
+  // Wheel zoom should stay snappy: each wheel tick is a discrete user
+  // gesture, not an event we want to spring-animate. Track recent wheel
+  // activity and suppress the auto-scroll transition during it the
+  // same way pointer drag does.
+  const wheelIdleTimer = useRef<number | null>(null);
+  const [isWheeling, setIsWheeling] = useState<boolean>(false);
+
   const handleWheel = (e: ReactWheelEvent<HTMLDivElement>): void => {
     // Stop the page from scrolling while the operator is zooming the tree.
     // React's onWheel listener is non-passive, so preventDefault is honoured.
@@ -206,7 +213,27 @@ export function ExecutionTree({
         y: cy - (cy - prev.y) * ratio,
       };
     });
+    // Mark the user as actively wheeling for ~150 ms so the
+    // transition-on-viewport-change effect doesn't try to spring-
+    // animate consecutive zoom ticks (would feel laggy). After the
+    // wheel goes idle we switch back to smooth-transition mode.
+    setIsWheeling(true);
+    if (wheelIdleTimer.current !== null) {
+      window.clearTimeout(wheelIdleTimer.current);
+    }
+    wheelIdleTimer.current = window.setTimeout(() => {
+      setIsWheeling(false);
+      wheelIdleTimer.current = null;
+    }, 150);
   };
+
+  // Tracks whether the user is currently dragging the canvas. When
+  // true, the SVG/panel CSS transitions are disabled so the canvas
+  // stays glued to the cursor; when false, viewport changes (driven
+  // by auto-scroll-to-active-node) animate smoothly so a freshly-
+  // arrived node off the right edge slides into view rather than the
+  // camera teleporting to it.
+  const [isDragging, setIsDragging] = useState<boolean>(false);
 
   const handlePointerDown = (e: ReactPointerEvent<HTMLDivElement>): void => {
     if (e.button !== 0) return;
@@ -216,6 +243,7 @@ export function ExecutionTree({
       baseX: viewport.x,
       baseY: viewport.y,
     };
+    setIsDragging(true);
     e.currentTarget.setPointerCapture(e.pointerId);
   };
 
@@ -233,14 +261,26 @@ export function ExecutionTree({
     if (dragRef.current) {
       e.currentTarget.releasePointerCapture(e.pointerId);
       dragRef.current = null;
+      setIsDragging(false);
     }
   };
 
-  // Stable transform string — useMemo because it's used inside <g>.
-  const transform = useMemo(
-    () => `translate(${viewport.x}, ${viewport.y}) scale(${viewport.scale})`,
+  // Stable transform — used as style.transform (NOT the SVG attribute)
+  // so CSS transitions on it actually animate. style.transform on SVG
+  // wants CSS units (px) and the standard CSS transform syntax;
+  // the SVG `transform` attribute is unitless and isn't reliably
+  // transitionable across browsers (Safari especially).
+  const transformStyle = useMemo(
+    () => `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`,
     [viewport.x, viewport.y, viewport.scale],
   );
+  // The canvas transition is enabled only when no user interaction
+  // (drag/wheel) is in flight — so a pan or zoom feels direct, but a
+  // newly-arrived node sliding into focus is animated.
+  const transformTransition =
+    isDragging || isWheeling
+      ? 'none'
+      : 'transform 0.4s cubic-bezier(0.22, 1, 0.36, 1)';
 
   /**
    * Click-to-open panel state. Earlier versions auto-mounted the panel
@@ -386,7 +426,13 @@ export function ExecutionTree({
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8" opacity={0.95} />
           </marker>
         </defs>
-        <g transform={transform}>
+        <g
+          style={{
+            transform: transformStyle,
+            transformOrigin: '0 0',
+            transition: transformTransition,
+          }}
+        >
           <AnimatePresence>
             {layout.edges.map((e) => (
               <GrowingEdge key={e.id} edge={e} />
