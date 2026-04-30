@@ -199,7 +199,21 @@ public final class StreamingAgentHandler {
      * session and the future to complete. Used by the WS routing
      * path to validate cross-session attempts.
      */
-    private record PendingPermission(String sessionId, CompletableFuture<JsonNode> future) {}
+    /**
+     * Tracks a pending permission request keyed by {@code requestId} in
+     * {@link #permissionRegistry}. The {@code context} reference lets the
+     * WS-side router ({@link #routePermissionResponse}) push a
+     * {@code permission.cancelled} notification back to the originating
+     * CLI's UDS connection so a TUI prompt blocking on local stdin can
+     * dismiss itself when a browser tab has already answered (issue #437).
+     * Without that signal, the daemon-side future completes but the
+     * CLI's local {@code PermissionBridge} future stays pending until
+     * the user types y/n into a prompt that has no effect.
+     */
+    private record PendingPermission(
+            String sessionId,
+            CompletableFuture<JsonNode> future,
+            StreamContext context) {}
 
     /** Per-session turn locks for serializing main turns within a session. */
     private final ConcurrentHashMap<String, ReentrantLock> sessionTurnLocks =
@@ -298,7 +312,30 @@ public final class StreamingAgentHandler {
         // remove returns false and we leave the pre-existing completion
         // alone.
         if (!permissionRegistry.remove(requestId, pending)) return false;
-        return pending.future().complete(message);
+        boolean completed = pending.future().complete(message);
+        if (completed) {
+            // Notify the originating CLI's UDS context so its TUI can
+            // dismiss the in-progress y/n prompt — without this signal
+            // the daemon-side tool resumes but the CLI prompt sits
+            // there waiting for stdin that has no effect anymore. The
+            // notification carries the resolved answer so the CLI can
+            // show "Approved via dashboard" rather than a generic
+            // dismissal. Best-effort: failures here don't roll back
+            // the resolution that already took the daemon-side path.
+            try {
+                var approvedNode = params.get("approved");
+                boolean approved = approvedNode != null && approvedNode.asBoolean(false);
+                var cancelParams = objectMapper.createObjectNode();
+                cancelParams.put("requestId", requestId);
+                cancelParams.put("approved", approved);
+                cancelParams.put("via", "websocket");
+                pending.context().sendNotification("permission.cancelled", cancelParams);
+            } catch (IOException e) {
+                log.warn("Failed to notify originating CLI of WS-resolved permission "
+                        + "(requestId={}): {}", requestId, e.getMessage());
+            }
+        }
+        return completed;
     }
 
     /**
@@ -3489,7 +3526,7 @@ public final class StreamingAgentHandler {
                 // the same future without knowing which context owns it.
                 // Tag with sessionId for the cross-session guard.
                 if (globalPermissionRegistry != null) {
-                    globalPermissionRegistry.put(requestId, new PendingPermission(sessionId, future));
+                    globalPermissionRegistry.put(requestId, new PendingPermission(sessionId, future, this));
                 }
             }
             return future;

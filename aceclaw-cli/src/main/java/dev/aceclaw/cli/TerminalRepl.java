@@ -182,7 +182,25 @@ public final class TerminalRepl {
     private record UiNotice(Instant at, String text) {}
     private record ForegroundPause(TaskHandle handle, ForegroundOutputSink sink,
                                    BackgroundOutputBuffer buffer) {}
-    private record PermissionDecision(boolean approved, boolean remember, boolean timedOut) {}
+    /**
+     * Result of a single permission modal interaction.
+     *
+     * <p>{@code externalCancel = true} means the daemon resolved the
+     * request via another client (dashboard via WS, #437) while the
+     * modal was on screen — the modal should dismiss with a "Resolved
+     * via dashboard" indicator and the caller must not call
+     * {@link PermissionBridge#submitAnswer} (the bridge future was
+     * already completed by {@code cancelExternal}).
+     */
+    private record PermissionDecision(
+            boolean approved,
+            boolean remember,
+            boolean timedOut,
+            boolean externalCancel) {
+        PermissionDecision(boolean approved, boolean remember, boolean timedOut) {
+            this(approved, remember, timedOut, false);
+        }
+    }
 
     private record CronJobStatus(
             String id,
@@ -1390,11 +1408,15 @@ public final class TerminalRepl {
             out.print(PERMISSION + " > " + RESET);
             out.flush();
 
-            var answer = readPermissionAnswer(reader);
+            var answer = readPermissionAnswer(reader, req.requestId());
             boolean approved = answer.approved();
             boolean remember = answer.remember();
 
-            if (answer.timedOut()) {
+            if (answer.externalCancel()) {
+                out.printf("%s%s Resolved via dashboard%s (%s)%s%n",
+                        APPROVED, CHECKMARK, RESET,
+                        approved ? "approved" : "denied", RESET);
+            } else if (answer.timedOut()) {
                 out.printf("%sTimed out%s%n", WARNING, RESET);
             } else if (approved) {
                 out.printf("%s%s Approved%s%s%n", APPROVED, CHECKMARK,
@@ -1404,8 +1426,14 @@ public final class TerminalRepl {
             }
             out.flush();
 
-            permissionBridge.submitAnswer(req.requestId(),
-                    new PermissionBridge.PermissionAnswer(approved, remember));
+            // External cancel already completed the bridge future via
+            // cancelExternal — don't double-submit, that would override
+            // the external answer with the local default and confuse
+            // any caller that inspects the resolved answer afterwards.
+            if (!answer.externalCancel()) {
+                permissionBridge.submitAnswer(req.requestId(),
+                        new PermissionBridge.PermissionAnswer(approved, remember));
+            }
             permissionBridge.consumeResolvedAnswer(req.requestId());
             var task = taskManager.get(req.taskId());
             if (task != null) {
@@ -1420,6 +1448,19 @@ public final class TerminalRepl {
     }
 
     private PermissionDecision readPermissionAnswer(LineReader reader) {
+        return readPermissionAnswer(reader, null);
+    }
+
+    /**
+     * Reads the user's y/n/a answer from the terminal for the modal
+     * currently on screen. When {@code requestId} is non-null, the
+     * polling loop also checks {@link PermissionBridge#consumeExternalCancellation}
+     * each tick so a {@code permission.cancelled} arriving from the
+     * daemon (because the dashboard answered first, #437) can dismiss
+     * the modal immediately instead of leaving the user typing into a
+     * prompt with no effect.
+     */
+    private PermissionDecision readPermissionAnswer(LineReader reader, String requestId) {
         var terminal = activeTerminal != null ? activeTerminal : reader.getTerminal();
         if (terminal == null) {
             return new PermissionDecision(false, false, true);
@@ -1436,6 +1477,18 @@ public final class TerminalRepl {
         terminal.setAttributes(rawAttrs);
         try {
             while (true) {
+                // External cancellation (dashboard answered first via WS):
+                // bail out of the read loop with a synthetic decision
+                // tagged externalCancel=true so handlePermissionFromBridge
+                // can render the right "Resolved via dashboard" copy and
+                // skip submitAnswer.
+                if (requestId != null) {
+                    var external = permissionBridge.consumeExternalCancellation(requestId);
+                    if (external != null) {
+                        return new PermissionDecision(
+                                external.approved(), external.remember(), false, true);
+                    }
+                }
                 long remainingNanos = deadlineNanos - System.nanoTime();
                 if (remainingNanos <= 0) {
                     return new PermissionDecision(false, false, true);

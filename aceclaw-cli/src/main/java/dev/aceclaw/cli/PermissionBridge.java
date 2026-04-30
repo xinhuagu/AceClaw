@@ -31,6 +31,16 @@ public final class PermissionBridge {
             new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, PermissionAnswer> resolvedAnswers =
             new ConcurrentHashMap<>();
+    /**
+     * Tracks externally resolved request ids — answered by another client
+     * (typically the dashboard via the WebSocket bridge, issue #437) while
+     * a CLI prompt was still showing. The TUI's blocking terminal-read
+     * loop polls {@link #consumeExternalCancellation(String)} each
+     * iteration so it can dismiss the y/n prompt instead of waiting on
+     * stdin that has no effect anymore.
+     */
+    private final ConcurrentHashMap<String, PermissionAnswer> externalCancellations =
+            new ConcurrentHashMap<>();
     private volatile RequestListener requestListener;
 
     /**
@@ -170,6 +180,39 @@ public final class PermissionBridge {
     }
 
     /**
+     * Records that {@code requestId} has been resolved externally — the
+     * daemon completed its tool-execution future via another path (e.g.
+     * the dashboard answered first via the WebSocket bridge, #437). The
+     * task thread's pending {@link #requestPermission} call is unblocked
+     * with {@code answer}, and the TUI's blocking terminal-read loop
+     * picks up the cancellation via
+     * {@link #consumeExternalCancellation(String)} so it can dismiss
+     * its modal instead of waiting on stdin that no longer matters.
+     *
+     * <p>Idempotent: repeating the call for an already-cancelled
+     * requestId is a no-op.
+     */
+    public void cancelExternal(String requestId, PermissionAnswer answer) {
+        Objects.requireNonNull(requestId, "requestId");
+        Objects.requireNonNull(answer, "answer");
+        externalCancellations.putIfAbsent(requestId, answer);
+        var future = futures.get(requestId);
+        if (future != null) {
+            future.complete(answer);
+        }
+    }
+
+    /**
+     * Returns and clears any pending external cancellation for the given
+     * request id. The TUI's modal calls this once per polling tick so a
+     * cancellation that arrives mid-prompt can dismiss the modal.
+     */
+    public PermissionAnswer consumeExternalCancellation(String requestId) {
+        Objects.requireNonNull(requestId, "requestId");
+        return externalCancellations.remove(requestId);
+    }
+
+    /**
      * Returns and clears a previously resolved answer for a request, if present.
      *
      * <p>This is used by the UI polling loop to detect requests that were
@@ -197,6 +240,17 @@ public final class PermissionBridge {
 
     /**
      * The user's answer to a permission request.
+     *
+     * <p>{@code external = true} means the daemon already resolved the
+     * request via another client (typically the dashboard, #437). The
+     * task thread receiving this answer must NOT re-send a
+     * permission.response over UDS — the daemon-side future is already
+     * done and a duplicate is dropped on the floor by the cancel
+     * monitor's stale-response guard.
      */
-    public record PermissionAnswer(boolean approved, boolean remember) {}
+    public record PermissionAnswer(boolean approved, boolean remember, boolean external) {
+        public PermissionAnswer(boolean approved, boolean remember) {
+            this(approved, remember, false);
+        }
+    }
 }
