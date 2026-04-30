@@ -412,6 +412,97 @@ describe('permission pause', () => {
     const tool = findById(state, 't1');
     expect(tool.metadata?.['permissionRequestedAt']).toBe(Date.parse(aged));
   });
+
+  it('marks each parallel tool node awaiting via toolUseId disambiguation', () => {
+    // User-reported (#437): three parallel wiki_search calls fired
+    // three permission.requests, but the dashboard only marked ONE
+    // node as awaiting (the most-recent activeNodeId) — operator
+    // could only approve one from the dashboard. Daemon now stamps
+    // toolUseId on each permission.request; reducer marks THAT node
+    // instead of activeNodeId. All three should get awaitingInput.
+    const state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.tool_use', { id: 't1', name: 'wiki_search' }),
+      envelope('stream.tool_use', { id: 't2', name: 'wiki_search' }),
+      envelope('stream.tool_use', { id: 't3', name: 'wiki_search' }),
+      envelope('permission.request', {
+        tool: 'wiki_search',
+        description: 'wiki_search 1',
+        requestId: 'perm-1',
+        toolUseId: 't1',
+      }),
+      envelope('permission.request', {
+        tool: 'wiki_search',
+        description: 'wiki_search 2',
+        requestId: 'perm-2',
+        toolUseId: 't2',
+      }),
+      envelope('permission.request', {
+        tool: 'wiki_search',
+        description: 'wiki_search 3',
+        requestId: 'perm-3',
+        toolUseId: 't3',
+      }),
+    );
+    expect(findById(state, 't1').awaitingInput).toBe(true);
+    expect(findById(state, 't1').permissionRequestId).toBe('perm-1');
+    expect(findById(state, 't2').awaitingInput).toBe(true);
+    expect(findById(state, 't2').permissionRequestId).toBe('perm-2');
+    expect(findById(state, 't3').awaitingInput).toBe(true);
+    expect(findById(state, 't3').permissionRequestId).toBe('perm-3');
+  });
+
+  it('buffers a permission.request whose tool node has not arrived yet', () => {
+    // Race: parallel virtual threads on the daemon dispatch
+    // permission.request and stream.tool_use independently — wire
+    // order is not deterministic. If permission.request lands BEFORE
+    // its corresponding stream.tool_use, the reducer must NOT fall
+    // back to activeNodeId (would mark the wrong node). It buffers
+    // the request keyed by toolUseId, and addToolNode applies the
+    // marker when the matching node arrives. User symptom of the
+    // unbuffered version: 3 permissions fired but only 2 chips
+    // appeared in the dashboard (the third's permission silently
+    // landed on the wrong node).
+    const state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      // permission arrives FIRST, no node t-late yet — must buffer.
+      envelope('permission.request', {
+        tool: 'wiki_search',
+        description: 'wiki_search early',
+        requestId: 'perm-late',
+        toolUseId: 't-late',
+      }),
+      // Then the tool_use arrives — addToolNode drains the buffer.
+      envelope('stream.tool_use', { id: 't-late', name: 'wiki_search' }),
+    );
+    const tool = findById(state, 't-late');
+    expect(tool.awaitingInput).toBe(true);
+    expect(tool.permissionRequestId).toBe('perm-late');
+    // Buffer is empty after drain.
+    expect(state.pendingPermissionsByToolUseId).toEqual({});
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -495,7 +495,7 @@ function addToolNode(
     );
   }
 
-  return {
+  let next: ExecutionTree = {
     ...state,
     rootNodes,
     activeNodeId: tool.id,
@@ -509,6 +509,29 @@ function addToolNode(
     textIsOpen: false,
     stats: { ...state.stats, totalTools: state.stats.totalTools + 1 },
   };
+  // Drain any buffered permission.request that arrived BEFORE this
+  // tool_use event (parallel virtual threads on the daemon dispatch
+  // permission.request and stream.tool_use independently — wire order
+  // is non-deterministic). The buffer is keyed by toolUseId; if our
+  // new node matches, apply the awaiting marker now so the user gets
+  // the "click ✓/✗" chip without delay.
+  const buffered = next.pendingPermissionsByToolUseId[params.id];
+  if (buffered) {
+    const { [params.id]: _consumed, ...rest } = next.pendingPermissionsByToolUseId;
+    void _consumed;
+    next = applyPermissionAwaiting(
+      { ...next, pendingPermissionsByToolUseId: rest },
+      params.id,
+      {
+        tool: buffered.tool,
+        description: buffered.description,
+        requestId: buffered.requestId,
+        toolUseId: params.id,
+      },
+      buffered.requestedAt,
+    );
+  }
+  return next;
 }
 
 function completeToolNode(
@@ -1188,6 +1211,35 @@ function completeSubAgentNode(
   };
 }
 
+/**
+ * Marks {@code targetNodeId} as paused awaiting a permission decision.
+ * Pure helper used by both {@link pauseForPermission} (when the target
+ * node already exists) and {@link addToolNode} (when a buffered
+ * permission for the new node was waiting on its arrival).
+ */
+function applyPermissionAwaiting(
+  state: ExecutionTree,
+  targetNodeId: string,
+  params: PermissionRequestParams,
+  requestedAt: number,
+): ExecutionTree {
+  return {
+    ...state,
+    rootNodes: mapNode(state.rootNodes, targetNodeId, (n) => ({
+      ...n,
+      status: 'paused',
+      awaitingInput: true,
+      inputPrompt: params.description,
+      permissionRequestId: params.requestId,
+      metadata: {
+        ...(n.metadata ?? {}),
+        permissionTool: params.tool,
+        permissionRequestedAt: requestedAt,
+      },
+    })),
+  };
+}
+
 function pauseForPermission(
   state: ExecutionTree,
   params: PermissionRequestParams,
@@ -1203,38 +1255,41 @@ function pauseForPermission(
   // the deadline math. Server side caps at 120 s — see
   // CancelAwareStreamContext.PERMISSION_RESPONSE_TIMEOUT_MS.
   //
-  // Target node: prefer params.toolUseId (the tool_use block id the
-  // daemon stamped on the request, #437) so parallel tool calls each
-  // mark their OWN node awaiting. Fall back to activeNodeId for
-  // backward compat with older daemons that don't emit toolUseId —
-  // accepts the legacy collapse-onto-last behaviour rather than
-  // dropping the event.
-  const targetNodeId =
-    (params.toolUseId && findNode(state.rootNodes, params.toolUseId)
-      ? params.toolUseId
-      : null) ?? state.activeNodeId;
-  if (!targetNodeId) return state;
-  const requestedAt = Date.parse(receivedAt);
-  return {
-    ...state,
-    rootNodes: mapNode(state.rootNodes, targetNodeId, (n) => ({
-      ...n,
-      status: 'paused',
-      awaitingInput: true,
-      inputPrompt: params.description,
-      permissionRequestId: params.requestId,
-      metadata: {
-        ...(n.metadata ?? {}),
-        permissionTool: params.tool,
-        // NaN guard: malformed receivedAt (shouldn't happen — the bridge
-        // always sets it) falls back to current time so the panel still
-        // shows something sane rather than a permanently-empty ring.
-        permissionRequestedAt: Number.isFinite(requestedAt)
-          ? requestedAt
-          : Date.now(),
+  const requestedAtRaw = Date.parse(receivedAt);
+  const requestedAt = Number.isFinite(requestedAtRaw) ? requestedAtRaw : Date.now();
+
+  // Target resolution, in order of preference:
+  //   1. toolUseId names a node already in the tree → mark that node.
+  //      This is the per-tool-node path that disambiguates parallel
+  //      permissions (#437).
+  //   2. toolUseId is provided but its node hasn't arrived yet (race:
+  //      parallel tool execution dispatches permission.request before
+  //      the matching stream.tool_use lands on the wire). BUFFER the
+  //      request keyed by toolUseId; addToolNode drains the buffer
+  //      when the matching node is added.
+  //   3. No toolUseId at all (older daemons predating the toolUseId
+  //      emission). Fall back to activeNodeId — same legacy
+  //      collapse-onto-last behaviour as before, kept for backward
+  //      compat with daemons that haven't been rebuilt.
+  if (params.toolUseId) {
+    if (findNode(state.rootNodes, params.toolUseId)) {
+      return applyPermissionAwaiting(state, params.toolUseId, params, requestedAt);
+    }
+    return {
+      ...state,
+      pendingPermissionsByToolUseId: {
+        ...state.pendingPermissionsByToolUseId,
+        [params.toolUseId]: {
+          tool: params.tool,
+          description: params.description,
+          requestId: params.requestId,
+          requestedAt,
+        },
       },
-    })),
-  };
+    };
+  }
+  if (!state.activeNodeId) return state;
+  return applyPermissionAwaiting(state, state.activeNodeId, params, requestedAt);
 }
 
 /**
