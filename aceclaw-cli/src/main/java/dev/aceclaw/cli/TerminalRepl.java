@@ -42,6 +42,7 @@ import java.util.Objects;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
 
 import static dev.aceclaw.cli.TerminalTheme.*;
@@ -118,6 +119,18 @@ public final class TerminalRepl {
     private final Object uiRenderLock = new Object();
     private final AtomicBoolean permissionInterruptRequested = new AtomicBoolean(false);
     private final AtomicBoolean uiRenderRequested = new AtomicBoolean(true);
+    /**
+     * Wall-clock nanos of the most recent Ctrl-C. The SIGINT handler
+     * uses this to detect a "double-tap": two Ctrl-Cs within
+     * {@link #SIGINT_DOUBLE_TAP_NANOS} while a foreground task is
+     * still running force an immediate process exit, so a daemon that
+     * isn't honouring the cancel can't trap the operator in the TUI.
+     * {@code 0} means "never pressed" — first hit always primes; the
+     * double-tap branch fires on the second hit only.
+     */
+    private final AtomicLong lastSigintNanos = new AtomicLong(0);
+    private static final long SIGINT_DOUBLE_TAP_NANOS =
+            TimeUnit.SECONDS.toNanos(2);
 
     /** Tracks the effective model, updated after successful model switches. */
     private volatile String effectiveModel;
@@ -461,12 +474,44 @@ public final class TerminalRepl {
             reader.getKeyMaps().get(LineReader.MAIN)
                     .bind(new Reference("aceclaw-clear-screen"), KeyMap.ctrl('L'));
 
-            // Install Ctrl+C handler: cancel foreground task or exit REPL
+            // Install Ctrl+C handler with double-tap escape:
+            //   1st Ctrl-C while a task runs → cancel the task gracefully.
+            //   2nd Ctrl-C within 2 s while the task is STILL alive →
+            //     force-exit the JVM with code 130 (128+SIGINT). This
+            //     unblocks the operator when the daemon stops honouring
+            //     stream.cancelled (e.g. blocked on a permission future
+            //     no other client can answer) — without it, the
+            //     foreground polling loop's `while (hasForegroundTask())`
+            //     never terminates and Ctrl-C feels like it does
+            //     nothing.
+            //   At the prompt with no task: JLine throws
+            //     UserInterruptException from readLine() and the main
+            //     loop breaks out gracefully.
             terminal.handle(Terminal.Signal.INT, _ -> {
                 if (taskManager.hasForegroundTask()) {
+                    long now = System.nanoTime();
+                    long prev = lastSigintNanos.getAndSet(now);
+                    boolean doubleTap = prev != 0
+                            && (now - prev) < SIGINT_DOUBLE_TAP_NANOS;
+                    if (doubleTap) {
+                        out.println();
+                        out.println(WARNING
+                                + "Ctrl-C twice — force-exiting AceClaw."
+                                + RESET);
+                        out.flush();
+                        // 128 + SIGINT (2) — POSIX convention for
+                        // exits triggered by an interrupt signal.
+                        System.exit(130);
+                    }
                     cancelForegroundTask(out);
+                } else {
+                    // No active task. Reset the double-tap timestamp
+                    // so a stale Ctrl-C from a previous task doesn't
+                    // pair with a fresh one to trigger force-exit on
+                    // the next task. JLine's UserInterruptException
+                    // will break out of readLine() for prompt exit.
+                    lastSigintNanos.set(0);
                 }
-                // If no foreground task, JLine throws UserInterruptException from readLine()
             });
 
             while (true) {
@@ -1132,6 +1177,10 @@ public final class TerminalRepl {
             return;
         }
         consoleMode = ConsoleMode.FOREGROUND_WAIT;
+        // Fresh task: clear the double-tap timestamp so a Ctrl-C that
+        // landed during this task doesn't pair with one from a prior
+        // task and force-exit on the first hit.
+        lastSigintNanos.set(0);
 
         // Enter raw mode: ICANON off (char-at-a-time), ECHO off
         Attributes savedAttrs = terminal.getAttributes();
@@ -1190,6 +1239,9 @@ public final class TerminalRepl {
      */
     private void simplePollForeground(PrintWriter out, LineReader reader) {
         consoleMode = ConsoleMode.FOREGROUND_WAIT;
+        // Same double-tap reset as in the rich-terminal foreground wait
+        // path — entering a fresh task clears any stale Ctrl-C window.
+        lastSigintNanos.set(0);
         while (taskManager.hasForegroundTask()) {
             try {
                 var permReq = permissionBridge.pollPending(50, TimeUnit.MILLISECONDS);
