@@ -1,6 +1,6 @@
 <h1 align="center">AceClaw</h1>
 
-<p align="center">A self-learning agent harness for long-running work</p>
+<p align="center">A Java agent runtime with a visual agent harness for long-running work</p>
 
 <p align="center">
   <a href="https://github.com/xinhuagu/AceClaw/actions/workflows/ci.yml"><img src="https://github.com/xinhuagu/AceClaw/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -9,13 +9,22 @@
   <img src="https://img.shields.io/badge/Gradle-8.14-02303A?logo=gradle&logoColor=white" alt="Gradle 8.14">
 </p>
 
-> **AceClaw exists because long-running tasks demand learning.**
+<p align="center">
+  <img src="docs/img/aceclaw-dashboard.gif" alt="AceClaw dashboard — real-time execution tree visualization" width="820">
+</p>
+
+<p align="center"><sub>Live execution tree: ReAct iterations, parallel tool calls, plan steps, and inline permission approvals — all driven by the daemon's event stream.</sub></p>
+
+> **AceClaw exists because long-running tasks demand learning — and visibility.**
 >
-> When an agent runs for minutes or hours, context is not enough. It must absorb experience while it works, reuse what succeeds, and govern what it learns so it does not become noisy or unsafe.
-> The goal is to make an agent behave more like an experienced engineering system over time.
+> When an agent runs for minutes or hours, context is not enough. It must absorb experience while it works, reuse what succeeds, and govern what it learns so it does not become noisy or unsafe. And the operator needs to *see* what the agent is doing — every thought, every tool call, every plan step, every permission gate — without re-reading log files after the fact.
 
+**AceClaw is two things in one project:**
 
-An **agent harness** is the orchestration layer that turns LLMs into persistent, self-correcting workers — the loop that reasons, acts, observes, recovers, and remembers. Most harnesses treat each session as a blank slate. **AceClaw doesn't.** It is built for long-running execution, where repeated failures, recoveries, tool sequences, and user corrections must become reusable knowledge instead of disappearing at the end of the session.
+1. **A Java agent runtime** — a persistent JVM daemon (Java 21, sealed types, structured concurrency) that runs the ReAct + Plan/Replan loop, tools, permissions, memory, and self-learning. Pure Java, zero AI framework, zero network attack surface.
+2. **A visual agent harness** — a React dashboard streaming the daemon's event bus over a WebSocket bridge so you can watch the agent reason, plan, branch into parallel tools, and pause for permission — in real time, with a click-to-approve UI from the browser.
+
+An **agent harness** is the orchestration layer that turns LLMs into persistent, self-correcting workers — the loop that reasons, acts, observes, recovers, and remembers. Most harnesses treat each session as a blank slate, and most run headless. **AceClaw doesn't.** It is built for long-running execution where repeated failures, recoveries, tool sequences, and user corrections must become reusable knowledge — and where the operator needs an honest picture of what the agent just did and what it is about to do.
 
 <p align="center">
   <img src="docs/img/aceclaw_daemon_architecture.drawio.png" alt="AceClaw Self-Learning Daemon Architecture" width="600">
@@ -25,14 +34,15 @@ An **agent harness** is the orchestration layer that turns LLMs into persistent,
 
 AceClaw is a persistent JVM daemon built for workflows that run for hours, not seconds. Pure Java 21, zero network attack surface, built from scratch around one idea:
 
-**Memory helps an agent remember. Self-learning helps an agent improve.**
+**Memory helps an agent remember. Self-learning helps an agent improve. Visualization makes both legible.**
 
-That is the spirit of AceClaw, and it drives four key differentiators:
+That is the spirit of AceClaw, and it drives five key differentiators:
 
-1. **Plan → Execute → Replan** — Most agent harnesses use a flat ReAct loop (think → act → observe, one step at a time). AceClaw generates an **explicit task plan** before execution, runs it step by step with per-step iteration budgets, and **replans inline** when steps fail. Plans are streamed to the user in real time. This gives AceClaw a structural advantage in long-running tasks — the agent has a visible roadmap instead of hoping the model stays on track turn by turn.
-2. **Self-Learning** — Zero-cost heuristic detectors and session-end retrospectives turn agent behavior into durable learning signals. The agent evolves its own strategies without extra LLM calls in the hot path.
-3. **Security** — UDS-only communication, sealed 4-level permissions, HMAC-signed memory
-4. **Long-Term Memory** — 8-tier hierarchy, hybrid search, automated consolidation
+1. **Real-time Visual Harness** — A React dashboard renders the agent's execution as a live tree: turns, ReAct iterations, parallel tool calls, plan steps, sub-agents, replans. Permission requests show up as inline panels with **Approve/Deny** buttons (with `A`/`D` keyboard shortcuts and a 120s countdown ring) so you can govern the agent from a browser without dropping back to the CLI.
+2. **Plan → Execute → Replan** — Most agent harnesses use a flat ReAct loop (think → act → observe, one step at a time). AceClaw generates an **explicit task plan** before execution, runs it step by step with per-step iteration budgets, and **replans inline** when steps fail. Plans are streamed to the user in real time. This gives AceClaw a structural advantage in long-running tasks — the agent has a visible roadmap instead of hoping the model stays on track turn by turn.
+3. **Self-Learning** — Zero-cost heuristic detectors and session-end retrospectives turn agent behavior into durable learning signals. The agent evolves its own strategies without extra LLM calls in the hot path.
+4. **Security** — UDS-only daemon socket, optional read-only WebSocket bridge bound to 127.0.0.1, sealed 4-level permissions, HMAC-signed memory.
+5. **Long-Term Memory** — 8-tier hierarchy, hybrid search, automated consolidation.
 
 **What makes this architecture different:**
 
@@ -40,6 +50,45 @@ That is the spirit of AceClaw, and it drives four key differentiators:
 - **Behavior-centric, not memory-centric** — Most agent memory systems store facts. AceClaw observes *behavior* — error-recovery sequences, tool usage patterns, user corrections — and distills them into typed, confidence-scored insights. The agent doesn't just remember what happened; it learns *how it should act differently next time*.
 - **Closed feedback loop** — Detectors emit typed insights → insights accumulate confidence across sessions → high-confidence insights get persisted → persisted memory is injected back into the next run. Repeated corrections auto-promote from auto-memory (Tier 6) to workspace rules (Tier 3).
 - **Everything is sealed** — `Insight` (5 permits), `PermissionDecision` (3 permits), `MemoryTier` (8 permits), `StreamEvent`, `ContentBlock` — the compiler enforces exhaustive handling everywhere. Adding a new variant is a compile error until all switches are updated.
+
+## Visual Agent Harness
+
+Most agent CLIs scroll past you. AceClaw streams every event to a browser dashboard that renders the run as a live, navigable tree.
+
+| What you see | Where it comes from |
+|--------------|---------------------|
+| Session, turns, ReAct iterations | `stream.session_started`, `stream.turn_started`, `stream.thinking` |
+| Tool calls (parallel siblings collapse cleanly) | `stream.tool_use`, `stream.tool_completed` |
+| Streaming narration / final response | `stream.text` deltas, anchored to the iteration's thinking node |
+| Plan skeleton with per-step status | `stream.plan_created`, `stream.plan_step_started/completed`, `stream.plan_replanned` |
+| Sub-agent fan-outs | `stream.subagent.start/end` |
+| Permission requests, approvable from the browser | `permission.request` → inline panel → `permission.response` |
+| Token usage, compaction events, stop reasons | `stream.usage`, `stream.compaction`, turn `stopReason` |
+
+**How it's wired:**
+
+```
+Daemon (Java)                                  Dashboard (React)
+─────────────                                  ─────────────────
+StreamingAgentHandler                          useExecutionTree
+   │  emits AceClawEvent (sealed type)            │  WebSocket subscribe
+   ▼                                              ▼
+AceClawEventBus  ──►  WebSocketBridge  ──►  treeReducer (pure fn)
+                       (envelope:                 │
+                        eventId,                  ▼
+                        sessionId,            ExecutionTree
+                        receivedAt)              (immutable, structurally shared)
+                                                  │
+                                                  ▼
+                                              dagre layout → SVG tree + panels
+```
+
+- **Multi-session sidebar** — one daemon, many concurrent sessions; the sidebar lists them and the URL preserves the selection across reload.
+- **Snapshot + replay reconnect** — a tab opened mid-execution issues `snapshot.request`, gets the full event history back, and dedupes against the live stream via a monotonic `eventId` watermark. No "I missed the first half of the run."
+- **First-response-wins permissions** — CLI and browser race to answer; the daemon resolves whichever lands first via a `ConcurrentHashMap` registry, with a sessionId guard so a tab on session B can't approve session A's tool calls.
+- **Pure reducer, immutable tree** — every event flows through one pure function. The same reducer drives live rendering and snapshot replay, so the two paths can't diverge.
+
+The dashboard lives under [`aceclaw-dashboard/`](aceclaw-dashboard/). Run `pnpm dev` (or `npm run dev`) and visit `http://localhost:5173/?session=<id>&ws=ws://localhost:3141/ws` once the daemon is up with `webSocket.enabled: true`.
 
 ## Plan → Execute → Replan
 <sub>Supported by research: <a href="https://arxiv.org/abs/2502.01390">Plan-Then-Execute (CHI 2025)</a></sub>
@@ -269,7 +318,9 @@ All three platform checks are required for merging to main. Windows requires Jav
 
 ## Tech Stack
 
-Java 21 (preview features) · Gradle 8.14 · Picocli 4.7.6 · JLine3 3.27.1 · Jackson 2.18.2 · GraalVM Native Image · JUnit 5
+**Runtime (daemon + CLI):** Java 21 (preview features) · Gradle 8.14 · Picocli 4.7.6 · JLine3 3.27.1 · Jackson 2.18.2 · Javalin 6 (WebSocket bridge) · GraalVM Native Image · JUnit 5
+
+**Dashboard:** React 19 · TypeScript 5 · Vite 6 · Tailwind 4 · framer-motion · dagre · Vitest
 
 ## License
 
