@@ -25,12 +25,17 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
+  ClientCommand,
   DaemonEvent,
   DaemonEventEnvelope,
   UnknownDaemonEvent,
 } from '../types/events';
 import { emptyTree, type ExecutionTree } from '../types/tree';
-import { executionTreeReducer } from '../reducers/treeReducer';
+import {
+  dismissPermissionPanel,
+  executionTreeReducer,
+  resolvePermissionLocally,
+} from '../reducers/treeReducer';
 
 /** Connection lifecycle states surfaced to the renderer. */
 export type WsStatus =
@@ -40,10 +45,49 @@ export type WsStatus =
   | 'closed'
   | 'error';
 
+/**
+ * Disposition of a {@code sendCommand} call. Three terminal states:
+ *
+ *   - {@code 'sent'}    — written directly to an open socket.
+ *   - {@code 'queued'}  — buffered for flush on the next {@code onopen}.
+ *   - {@code 'dropped'} — pre-open buffer is full (cap {@link PENDING_SEND_CAP}).
+ *     The caller should avoid running optimistic local updates so the
+ *     daemon's eventual timeout/event remains the source of truth.
+ */
+export type SendCommandResult = 'sent' | 'queued' | 'dropped';
+
 /** Shape returned to consumers — tree state plus a connection indicator. */
 export interface UseExecutionTreeResult {
   tree: ExecutionTree;
   status: WsStatus;
+  /**
+   * Sends a {@link ClientCommand} (browser → daemon) over the WS. Used by
+   * the PermissionPanel (#437) to post {@code permission.response}. If the
+   * socket isn't open yet, the command is buffered and flushed on
+   * {@code onopen}; reconnect re-sends nothing — pending permission
+   * approvals time out anyway and the daemon will re-emit a fresh
+   * {@code permission.request}. Returns the disposition of the command
+   * so callers can avoid running optimistic local updates when the
+   * command was dropped (e.g. don't strip awaitingInput just because we
+   * couldn't notify the daemon).
+   */
+  sendCommand: (cmd: ClientCommand) => SendCommandResult;
+  /**
+   * Same as a reducer-driven {@code permission.response} broadcast: flips
+   * the paused node out of awaiting-input state in the local tree. The
+   * caller is expected to invoke {@link UseExecutionTreeResult.sendCommand}
+   * separately so the daemon also learns of the decision — keeping the
+   * two calls split avoids double-resolving when the user clicks twice
+   * before the optimistic update lands.
+   */
+  resolvePermission: (requestId: string, approved: boolean) => void;
+  /**
+   * Tears down the permission panel for {@code requestId} after a
+   * CLI-resolved request has shown its "Approved/Denied via CLI" state
+   * long enough to register. Idempotent — a no-op when the request is
+   * no longer pending.
+   */
+  dismissPermission: (requestId: string) => void;
 }
 
 /**
@@ -121,6 +165,15 @@ const VALIDATORS: Partial<Record<DaemonEvent['method'], ParamGuard>> = {
 
 const RECONNECT_INITIAL_MS = 500;
 const RECONNECT_MAX_MS = 30_000;
+/**
+ * Soft cap on the pre-open send buffer. Permission flows emit one
+ * outbound command per click; a click-storm during reconnect that fills
+ * 32 slots is already pathological and probably indicates the user is
+ * unaware the WS is down — drop further commands and surface
+ * {@code 'dropped'} to the caller so it can refrain from optimistic
+ * local updates.
+ */
+const PENDING_SEND_CAP = 32;
 
 /**
  * Subscribes to the daemon's WebSocket bridge and exposes the current
@@ -165,6 +218,70 @@ export function useExecutionTree(
     [],
   );
 
+  // Stable refs the connect effect can read without re-tearing the socket
+  // when their identities change. wsRef is the live socket; pendingSendRef
+  // is the outbound command queue we flush in onopen.
+  const wsRef = useRef<WebSocket | null>(null);
+  const pendingSendRef = useRef<ClientCommand[]>([]);
+
+  const sendCommand = useCallback((cmd: ClientCommand): SendCommandResult => {
+    // Auto-inject sessionId on permission.response. The daemon's
+    // cross-session guard (#433 / #454) drops frames that don't carry
+    // a sessionId, so callers can no longer just send
+    // {requestId, approved} like older builds — but the hook already
+    // knows which session this WS is attached to, so injecting here
+    // keeps every callsite simple and the wire format correct.
+    const augmented: ClientCommand =
+      cmd.method === 'permission.response'
+        ? { ...cmd, params: { ...cmd.params, sessionId } }
+        : cmd;
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(augmented));
+      return 'sent';
+    }
+    // Buffer until onopen flushes. Two queue invariants:
+    //   1. Per-requestId dedup for permission.response — if the user
+    //      clicks Approve, then quickly Deny while the WS is reconnecting,
+    //      both would otherwise queue and the daemon's first-response-wins
+    //      would honour whichever arrived first; on a daemon without #433
+    //      the second click never lands. Replace the prior entry IN PLACE
+    //      so dedup preserves arrival order against any unrelated commands
+    //      that may sit between the two clicks. Today {@link ClientCommand}
+    //      only has permission.response, so this is theoretical — but
+    //      future command types must keep this invariant in mind.
+    //   2. Hard cap at PENDING_SEND_CAP — beyond that, drop and signal
+    //      back to the caller so it can avoid optimistic local updates.
+    const queue = pendingSendRef.current;
+    if (augmented.method === 'permission.response') {
+      const dupIdx = queue.findIndex(
+        (q) =>
+          q.method === 'permission.response' &&
+          q.params.requestId === augmented.params.requestId,
+      );
+      if (dupIdx >= 0) {
+        queue[dupIdx] = augmented;
+        return 'queued';
+      }
+    }
+    if (queue.length >= PENDING_SEND_CAP) {
+      return 'dropped';
+    }
+    queue.push(augmented);
+    return 'queued';
+  }, [sessionId]);
+
+  const resolvePermission = useCallback(
+    (requestId: string, approved: boolean) => {
+      setTree((prev) => resolvePermissionLocally(prev, requestId, approved));
+    },
+    [],
+  );
+
+  const dismissPermission = useCallback((requestId: string) => {
+    setTree((prev) => dismissPermissionPanel(prev, requestId));
+  }, []);
+
   useEffect(() => {
     let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -190,6 +307,7 @@ export function useExecutionTree(
       if (cancelled) return;
       setStatus('connecting');
       ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
 
       ws.onopen = () => {
         backoffMs = RECONNECT_INITIAL_MS;
@@ -206,6 +324,41 @@ export function useExecutionTree(
         ws?.send(
           JSON.stringify({ method: 'snapshot.request', params: { sessionId } }),
         );
+        // Flush any commands the user queued before the socket opened
+        // (e.g. clicked Approve while the tab was reconnecting). Drained
+        // in arrival order — the daemon's first-response-wins (#433)
+        // makes back-to-back duplicates safe.
+        //
+        // Preserve unsent commands on failure: ws.send does NOT
+        // reliably throw once the socket has moved to CLOSING/CLOSED
+        // (browsers can silently discard the frame), so we also
+        // re-check readyState on every iteration. Optimistic local
+        // resolves have already run for permission decisions, so a
+        // silent drop here would leave the dashboard showing
+        // "approved" while the daemon waits 120 s for a response
+        // that never lands.
+        if (pendingSendRef.current.length > 0) {
+          const queued = pendingSendRef.current;
+          pendingSendRef.current = [];
+          for (let i = 0; i < queued.length; i += 1) {
+            if (ws?.readyState !== WebSocket.OPEN) {
+              // Socket dropped mid-flush. Re-queue this command and
+              // everything after it for the next reconnect.
+              pendingSendRef.current.unshift(...queued.slice(i));
+              break;
+            }
+            try {
+              ws.send(JSON.stringify(queued[i]!));
+            } catch {
+              // Re-queue this command and everything after it so a
+              // subsequent reconnect's flush picks them up. Order is
+              // preserved (slice preserves indices) and the dedup
+              // check in sendCommand keeps duplicates from accumulating.
+              pendingSendRef.current.unshift(...queued.slice(i));
+              break;
+            }
+          }
+        }
       };
 
       ws.onmessage = (e: MessageEvent<string>) => {
@@ -305,17 +458,25 @@ export function useExecutionTree(
     return () => {
       cancelled = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      // Drop any queued outbound commands so a session switch (the
+      // sidebar's session selector reuses this hook instance) doesn't
+      // flush stale permission.responses from session A onto session
+      // B's brand-new socket. Each new session re-opens with an empty
+      // queue; pending approvals from the prior session would land on
+      // the wrong session's daemon path otherwise.
+      pendingSendRef.current = [];
       if (ws) {
         ws.onclose = null;
         ws.onerror = null;
         ws.onmessage = null;
         ws.close();
       }
+      wsRef.current = null;
       setStatus('closed');
     };
   }, [wsUrl, sessionId, dispatch]);
 
-  return { tree, status };
+  return { tree, status, sendCommand, resolvePermission, dismissPermission };
 }
 
 // ---------------------------------------------------------------------------

@@ -168,4 +168,150 @@ class PermissionBridgeTest {
             bridge.submitAnswer(req.requestId(), new PermissionBridge.PermissionAnswer(false, false));
         }
     }
+
+    // ---- cancelExternal / consumeExternalCancellation (issue #437) -------
+
+    @Test
+    void cancelExternal_unblocksWaitingRequestPermission() throws Exception {
+        // Daemon side resolved the permission via WS first; the CLI's
+        // task thread is blocked on requestPermission and needs to wake
+        // with the external answer so its bookkeeping (clearWaitingPermission
+        // etc.) runs without showing the modal as "still active".
+        var bridge = new PermissionBridge();
+        var req = new PermissionBridge.PermissionRequest("1", "bash", "run script", "req-ext");
+
+        var pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<PermissionBridge.PermissionAnswer> future = pool.submit(() -> bridge.requestPermission(req));
+            // Drain the pending queue so the modal-equivalent has "seen" it.
+            var pending = bridge.pollPending(1, TimeUnit.SECONDS);
+            assertThat(pending).isNotNull();
+
+            bridge.cancelExternal("req-ext",
+                    new PermissionBridge.PermissionAnswer(true, false, true));
+
+            var answer = future.get(2, TimeUnit.SECONDS);
+            assertThat(answer.approved()).isTrue();
+            assertThat(answer.external())
+                    .as("external flag flows through so TaskStreamReader skips the stale UDS send")
+                    .isTrue();
+        } finally {
+            releasePendingRequests(bridge);
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void consumeExternalCancellation_isOneShot() {
+        // Modal's polling loop calls consumeExternalCancellation per
+        // tick — the entry must clear on first read so the next tick
+        // doesn't see a stale cancellation. Subsequent reads return null.
+        var bridge = new PermissionBridge();
+        bridge.cancelExternal("req-once",
+                new PermissionBridge.PermissionAnswer(false, false, true));
+
+        var first = bridge.consumeExternalCancellation("req-once");
+        assertThat(first).isNotNull();
+        assertThat(first.approved()).isFalse();
+        assertThat(first.external()).isTrue();
+
+        assertThat(bridge.consumeExternalCancellation("req-once")).isNull();
+    }
+
+    @Test
+    void consumeResolvedAnswer_clearsExternalCancellation_whenAnswerWasResolved() throws Exception {
+        // When the modal completes the local way (user typed y) but a
+        // cancellation arrives a millisecond later from the daemon, the
+        // cleanup hook in consumeResolvedAnswer drops the stale external
+        // entry so the externalCancellations map doesn't leak.
+        var bridge = new PermissionBridge();
+        var req = new PermissionBridge.PermissionRequest("1", "bash", "run", "req-leak");
+        var pool = Executors.newSingleThreadExecutor();
+        try {
+            // requestPermission registers the future so submitAnswer can
+            // populate resolvedAnswers (no-op without a registered future).
+            Future<PermissionBridge.PermissionAnswer> f =
+                    pool.submit(() -> bridge.requestPermission(req));
+            assertThat(bridge.pollPending(1, TimeUnit.SECONDS)).isNotNull();
+            // External cancel arrives a millisecond after the user typed y.
+            bridge.submitAnswer("req-leak",
+                    new PermissionBridge.PermissionAnswer(false, false));
+            f.get(2, TimeUnit.SECONDS);
+            bridge.cancelExternal("req-leak",
+                    new PermissionBridge.PermissionAnswer(true, false, true));
+
+            // Modal cleanup runs consumeResolvedAnswer; it returns the
+            // user's answer AND wipes the stale external entry.
+            assertThat(bridge.consumeResolvedAnswer("req-leak")).isNotNull();
+            assertThat(bridge.consumeExternalCancellation("req-leak")).isNull();
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void consumeResolvedAnswer_preservesExternalCancellation_whenNothingResolved() {
+        // P1 race (Codex): drainPermissions polls a request and calls
+        // consumeResolvedAnswer immediately. If the dashboard cancellation
+        // lands in that narrow window — externalCancellations gets the
+        // entry but submitAnswer hasn't run yet — the cleanup MUST NOT
+        // wipe externalCancellations, otherwise the modal's polling tick
+        // can't see it and waits 120 s on stdin for nothing.
+        var bridge = new PermissionBridge();
+        bridge.cancelExternal("req-race",
+                new PermissionBridge.PermissionAnswer(true, false, true));
+
+        // User hasn't typed anything — no resolved answer to return.
+        assertThat(bridge.consumeResolvedAnswer("req-race")).isNull();
+        // External entry MUST still be available for the modal to pick up.
+        var external = bridge.consumeExternalCancellation("req-race");
+        assertThat(external).isNotNull();
+        assertThat(external.external()).isTrue();
+    }
+
+    @Test
+    void cancelExternal_arrivingBeforeRequestPermission_unblocksImmediately() throws Exception {
+        // Race the codex P1 review caught: TaskStreamReader handles
+        // permission.request on a virtual thread (#437), so the read
+        // loop's permission.cancelled handler can race ahead of the
+        // virtual thread's requestPermission call. cancelExternal
+        // stores the answer in externalCancellations either way; the
+        // requestPermission early-check then drains it instead of
+        // blocking until the 115 s timeout.
+        var bridge = new PermissionBridge();
+        bridge.cancelExternal("req-early",
+                new PermissionBridge.PermissionAnswer(true, false, true));
+
+        var req = new PermissionBridge.PermissionRequest("1", "bash", "run script", "req-early");
+        var pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<PermissionBridge.PermissionAnswer> future = pool.submit(
+                    () -> bridge.requestPermission(req, 1, TimeUnit.SECONDS));
+            var answer = future.get(2, TimeUnit.SECONDS);
+            assertThat(answer.approved()).isTrue();
+            assertThat(answer.external()).isTrue();
+            // External entry consumed → not lingering.
+            assertThat(bridge.consumeExternalCancellation("req-early")).isNull();
+        } finally {
+            releasePendingRequests(bridge);
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void cancelExternal_isIdempotent() {
+        // Daemon could conceivably send two permission.cancelled frames
+        // for the same requestId (rare, but possible across reconnects).
+        // The second call must not flip the answer or throw.
+        var bridge = new PermissionBridge();
+        bridge.cancelExternal("req-dup",
+                new PermissionBridge.PermissionAnswer(true, false, true));
+        bridge.cancelExternal("req-dup",
+                new PermissionBridge.PermissionAnswer(false, false, true));
+
+        var consumed = bridge.consumeExternalCancellation("req-dup");
+        assertThat(consumed).isNotNull();
+        // First write wins (putIfAbsent semantics).
+        assertThat(consumed.approved()).isTrue();
+    }
 }

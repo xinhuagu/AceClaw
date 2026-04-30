@@ -135,7 +135,7 @@ class SkillIntegrationTest {
     @BeforeEach
     void resetMock() {
         mockLlm.reset();
-        permissionManager.clearSessionApprovals();
+        permissionManager.clearAllSessionApprovals();
         channelLineBuffer.setLength(0);
         deleteMetricsFiles(workDir.resolve(".aceclaw/skills"));
         memoryStore.replaceEntries(List.of(), workDir);

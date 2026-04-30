@@ -17,25 +17,95 @@ import { AnimatePresence } from 'framer-motion';
 import {
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from 'react';
-import type { ExecutionTree as ExecutionTreeState } from '../types/tree';
+import type { ExecutionTree as ExecutionTreeState, LayoutNode } from '../types/tree';
 import { useTreeLayout } from '../hooks/useTreeLayout';
 import { GrowingEdge } from './GrowingEdge';
 import { GrowingNode } from './GrowingNode';
+import { PermissionPanel } from './PermissionPanel';
 
 interface ExecutionTreeProps {
   tree: ExecutionTreeState;
+  /**
+   * Approve/AlwaysAllow/Deny/Dismiss handlers for the inline
+   * {@link PermissionPanel} (issue #437). Optional so test scaffolding
+   * and the empty state can still render the tree without wiring
+   * permission flows. App.tsx wires these to the WS hook's
+   * {@code sendCommand}, {@code resolvePermission}, and
+   * {@code dismissPermission}.
+   */
+  onApprovePermission?: (requestId: string) => void;
+  onAlwaysAllowPermission?: (requestId: string) => void;
+  onDenyPermission?: (requestId: string) => void;
+  onDismissPermission?: (requestId: string) => void;
 }
 
 const ZOOM_MIN = 0.2;
 const ZOOM_MAX = 3;
 const ZOOM_STEP = 0.0015;
 
-interface ViewportTransform {
+/**
+ * Vertical real estate every {@link PermissionPanel} reserves when
+ * stacked. The actual rendered height varies (subject line wraps,
+ * resolved-state collapses the buttons), but ~170 px is a safe lower
+ * bound for the awaiting-state panel's full content. Used by
+ * {@link computePanelAnchors} to cascade colliding panels.
+ */
+const PANEL_STACK_MIN_HEIGHT = 170;
+/** Gap between cascaded panels. */
+const PANEL_STACK_GAP = 12;
+/**
+ * Horizontal offset from the node's right edge to the panel's left
+ * edge. Wide enough that the panel's connector notch clears the node
+ * border without overlapping it.
+ */
+const PANEL_HORIZONTAL_OFFSET = 12;
+
+/** Container-space anchor for one panel. */
+export interface PanelAnchor {
+  node: LayoutNode;
+  x: number;
+  y: number;
+}
+
+/**
+ * Computes screen-space anchors for the given awaiting nodes, cascading
+ * panels downward when their natural Y would cause vertical overlap.
+ *
+ * Dagre's LR layout puts parallel sibling tools ~94 px apart vertically
+ * (NODE_HEIGHT 44 + nodesep 50), but a panel renders at ~170 px tall —
+ * two siblings asking for permission would otherwise overlap by ~75 px.
+ * Sort by desired Y and floor each subsequent panel at the previous
+ * panel's bottom + GAP. The X coordinate stays at the node's right edge
+ * so the connector notch on a shifted panel still points roughly toward
+ * its source node.
+ *
+ * Pure function — exported for direct unit testing.
+ */
+export function computePanelAnchors(
+  awaitingNodes: LayoutNode[],
+  viewport: ViewportTransform,
+): PanelAnchor[] {
+  const sorted = [...awaitingNodes].sort((a, b) => a.y - b.y);
+  let lastBottom = -Infinity;
+  return sorted.map((node) => {
+    const x =
+      viewport.x +
+      (node.x + node.width / 2) * viewport.scale +
+      PANEL_HORIZONTAL_OFFSET;
+    const desiredY = viewport.y + node.y * viewport.scale;
+    const y = Math.max(desiredY, lastBottom + PANEL_STACK_GAP);
+    lastBottom = y + PANEL_STACK_MIN_HEIGHT;
+    return { node, x, y };
+  });
+}
+
+export interface ViewportTransform {
   x: number;
   y: number;
   scale: number;
@@ -43,7 +113,13 @@ interface ViewportTransform {
 
 const INITIAL_TRANSFORM: ViewportTransform = { x: 0, y: 0, scale: 1 };
 
-export function ExecutionTree({ tree }: ExecutionTreeProps) {
+export function ExecutionTree({
+  tree,
+  onApprovePermission,
+  onAlwaysAllowPermission,
+  onDenyPermission,
+  onDismissPermission,
+}: ExecutionTreeProps) {
   const layout = useTreeLayout(tree);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [viewport, setViewport] = useState<ViewportTransform>(INITIAL_TRANSFORM);
@@ -103,12 +179,45 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
     const el = containerRef.current;
     if (!el) return;
     const { width: cw, height: ch } = el.getBoundingClientRect();
-    setViewport((prev) => ({
-      scale: prev.scale,
-      x: cw / 2 - target.x * prev.scale,
-      y: ch / 2 - target.y * prev.scale,
-    }));
+    setViewport((prev) => {
+      // "Comfort zone" — when the active node is already inside this
+      // inner rect, do nothing. This keeps the camera still while a
+      // turn produces nodes that fit on screen, and only pans when
+      // activity reaches the viewport edge. Without this, every new
+      // event (thinking → tool → text → next iteration) triggered
+      // a re-center, and the user's just-clicked node visibly slid
+      // out from under their cursor.
+      const COMFORT_MARGIN_X = 80;
+      const COMFORT_MARGIN_Y = 40;
+      const screenX = prev.x + target.x * prev.scale;
+      const screenY = prev.y + target.y * prev.scale;
+      const halfW = (target.width / 2) * prev.scale;
+      const halfH = (target.height / 2) * prev.scale;
+      const insideX =
+        screenX - halfW >= COMFORT_MARGIN_X &&
+        screenX + halfW <= cw - COMFORT_MARGIN_X;
+      const insideY =
+        screenY - halfH >= COMFORT_MARGIN_Y &&
+        screenY + halfH <= ch - COMFORT_MARGIN_Y;
+      if (insideX && insideY) return prev;
+      // Out of comfort zone on at least one axis — re-center the
+      // active node. Centring (rather than nudging) means a single
+      // smooth pan handles bursts of distant activity without
+      // chasing every event.
+      return {
+        scale: prev.scale,
+        x: cw / 2 - target.x * prev.scale,
+        y: ch / 2 - target.y * prev.scale,
+      };
+    });
   }, [tree.activeNodeId, layout.nodes]);
+
+  // Wheel zoom should stay snappy: each wheel tick is a discrete user
+  // gesture, not an event we want to spring-animate. Track recent wheel
+  // activity and suppress the auto-scroll transition during it the
+  // same way pointer drag does.
+  const wheelIdleTimer = useRef<number | null>(null);
+  const [isWheeling, setIsWheeling] = useState<boolean>(false);
 
   const handleWheel = (e: ReactWheelEvent<HTMLDivElement>): void => {
     // Stop the page from scrolling while the operator is zooming the tree.
@@ -130,7 +239,27 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
         y: cy - (cy - prev.y) * ratio,
       };
     });
+    // Mark the user as actively wheeling for ~150 ms so the
+    // transition-on-viewport-change effect doesn't try to spring-
+    // animate consecutive zoom ticks (would feel laggy). After the
+    // wheel goes idle we switch back to smooth-transition mode.
+    setIsWheeling(true);
+    if (wheelIdleTimer.current !== null) {
+      window.clearTimeout(wheelIdleTimer.current);
+    }
+    wheelIdleTimer.current = window.setTimeout(() => {
+      setIsWheeling(false);
+      wheelIdleTimer.current = null;
+    }, 150);
   };
+
+  // Tracks whether the user is currently dragging the canvas. When
+  // true, the SVG/panel CSS transitions are disabled so the canvas
+  // stays glued to the cursor; when false, viewport changes (driven
+  // by auto-scroll-to-active-node) animate smoothly so a freshly-
+  // arrived node off the right edge slides into view rather than the
+  // camera teleporting to it.
+  const [isDragging, setIsDragging] = useState<boolean>(false);
 
   const handlePointerDown = (e: ReactPointerEvent<HTMLDivElement>): void => {
     if (e.button !== 0) return;
@@ -140,6 +269,7 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
       baseX: viewport.x,
       baseY: viewport.y,
     };
+    setIsDragging(true);
     e.currentTarget.setPointerCapture(e.pointerId);
   };
 
@@ -157,14 +287,73 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
     if (dragRef.current) {
       e.currentTarget.releasePointerCapture(e.pointerId);
       dragRef.current = null;
+      setIsDragging(false);
     }
   };
 
-  // Stable transform string — useMemo because it's used inside <g>.
-  const transform = useMemo(
-    () => `translate(${viewport.x}, ${viewport.y}) scale(${viewport.scale})`,
+  // Stable transform — used as style.transform (NOT the SVG attribute)
+  // so CSS transitions on it actually animate. style.transform on SVG
+  // wants CSS units (px) and the standard CSS transform syntax;
+  // the SVG `transform` attribute is unitless and isn't reliably
+  // transitionable across browsers (Safari especially).
+  const transformStyle = useMemo(
+    () => `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`,
     [viewport.x, viewport.y, viewport.scale],
   );
+  // The canvas transition is enabled only when no user interaction
+  // (drag/wheel) is in flight — so a pan or zoom feels direct, but a
+  // newly-arrived node sliding into focus is animated.
+  const transformTransition =
+    isDragging || isWheeling
+      ? 'none'
+      : 'transform 0.4s cubic-bezier(0.22, 1, 0.36, 1)';
+
+  /**
+   * Click-to-open panel state. Earlier versions auto-mounted the panel
+   * the moment a {@code permission.request} arrived — but on a daemon
+   * with an auto-accept policy the panel would flash for ~1.5 s and
+   * vanish before the user could read it. New UX: nodes that need
+   * permission show their paused glyph + cursor:pointer in the tree,
+   * and the panel only opens when the user clicks the node. Resolves
+   * to {@code null} either by user action (Approve/Deny/Esc/×) or
+   * because the underlying node lost {@code awaitingInput} (CLI raced
+   * to answer first).
+   */
+  const [openPanelRequestId, setOpenPanelRequestId] = useState<string | null>(
+    null,
+  );
+  const handleAwaitingNodeClick = useCallback((requestId: string) => {
+    setOpenPanelRequestId((prev) => (prev === requestId ? null : requestId));
+  }, []);
+  // Auto-close when the underlying request is no longer pending — e.g.
+  // the CLI answered while the panel was open, or the daemon timed out.
+  useEffect(() => {
+    if (!openPanelRequestId) return;
+    const stillPending = layout.nodes.some(
+      (n) =>
+        n.permissionRequestId === openPanelRequestId &&
+        n.awaitingInput === true,
+    );
+    if (!stillPending) setOpenPanelRequestId(null);
+  }, [layout.nodes, openPanelRequestId]);
+
+  // Single open panel — find its node + compute anchor coords.
+  const openPanelNode = useMemo<LayoutNode | null>(() => {
+    if (!openPanelRequestId) return null;
+    return (
+      layout.nodes.find(
+        (n) => n.permissionRequestId === openPanelRequestId,
+      ) ?? null
+    );
+  }, [layout.nodes, openPanelRequestId]);
+  // Reuse the same anchor math the cascade tests pin so this single-
+  // panel path can't drift from the (future) multi-panel one. Single-
+  // element array → no cascading happens; just the right-edge offset.
+  const openPanelAnchor = useMemo(() => {
+    if (!openPanelNode) return null;
+    const [anchor] = computePanelAnchors([openPanelNode], viewport);
+    return anchor ?? null;
+  }, [openPanelNode, viewport]);
 
   if (layout.nodes.length === 0) {
     return (
@@ -187,6 +376,60 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
       onPointerCancel={handlePointerUp}
       className="relative h-full w-full cursor-grab overflow-hidden bg-zinc-950 active:cursor-grabbing"
     >
+      {/*
+        Permission panel sits ABOVE the SVG canvas as an HTML overlay, so
+        buttons and pointer interactions don't fight with foreignObject
+        quirks. The container has pointer-events on; we still want the
+        background SVG to receive wheel/drag, so the overlay layer is
+        pointer-events:none and the panel itself opts back in.
+      */}
+      <div className="pointer-events-none absolute inset-0 z-20">
+        <AnimatePresence>
+          {openPanelNode &&
+          openPanelAnchor &&
+          onApprovePermission &&
+          onAlwaysAllowPermission &&
+          onDenyPermission &&
+          onDismissPermission ? (
+            <PermissionPanel
+              key={openPanelNode.permissionRequestId ?? openPanelNode.id}
+              node={openPanelNode}
+              anchorX={openPanelAnchor.x}
+              anchorY={openPanelAnchor.y}
+              onApprove={(rid) => {
+                onApprovePermission(rid);
+                setOpenPanelRequestId(null);
+              }}
+              onAlwaysAllow={(rid) => {
+                onAlwaysAllowPermission(rid);
+                setOpenPanelRequestId(null);
+              }}
+              onDeny={(rid) => {
+                onDenyPermission(rid);
+                setOpenPanelRequestId(null);
+              }}
+              onDismiss={(_rid) => {
+                // User Esc / × close: just close the panel locally.
+                // Do NOT call onDismissPermission — that would strip
+                // awaitingInput / permissionRequestId from the node,
+                // which means the user couldn't reopen the panel and
+                // the daemon would keep waiting until its 120 s
+                // timeout. The request stays addressable; the user can
+                // click the node again to bring the panel back.
+                void _rid;
+                setOpenPanelRequestId(null);
+              }}
+              onTimeout={(rid) => {
+                // Deadline elapsed — daemon will reject any further
+                // response, so clear the node's awaiting flag so the
+                // user can't reopen and click on a stale request.
+                setOpenPanelRequestId(null);
+                onDismissPermission(rid);
+              }}
+            />
+          ) : null}
+        </AnimatePresence>
+      </div>
       <svg className="h-full w-full" role="img" aria-label="execution tree">
         {/*
           Arrowhead marker for sequence/flow edges. Shape: a thin triangle
@@ -216,7 +459,13 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8" opacity={0.95} />
           </marker>
         </defs>
-        <g transform={transform}>
+        <g
+          style={{
+            transform: transformStyle,
+            transformOrigin: '0 0',
+            transition: transformTransition,
+          }}
+        >
           <AnimatePresence>
             {layout.edges.map((e) => (
               <GrowingEdge key={e.id} edge={e} />
@@ -224,7 +473,15 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
           </AnimatePresence>
           <AnimatePresence>
             {layout.nodes.map((n) => (
-              <GrowingNode key={n.id} node={n} />
+              <GrowingNode
+                key={n.id}
+                node={n}
+                onAwaitingClick={handleAwaitingNodeClick}
+                isOpenPanel={
+                  n.permissionRequestId !== undefined &&
+                  n.permissionRequestId === openPanelRequestId
+                }
+              />
             ))}
           </AnimatePresence>
         </g>

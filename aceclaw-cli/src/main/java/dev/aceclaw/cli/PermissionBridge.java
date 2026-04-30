@@ -31,6 +31,16 @@ public final class PermissionBridge {
             new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, PermissionAnswer> resolvedAnswers =
             new ConcurrentHashMap<>();
+    /**
+     * Tracks externally resolved request ids — answered by another client
+     * (typically the dashboard via the WebSocket bridge, issue #437) while
+     * a CLI prompt was still showing. The TUI's blocking terminal-read
+     * loop polls {@link #consumeExternalCancellation(String)} each
+     * iteration so it can dismiss the y/n prompt instead of waiting on
+     * stdin that has no effect anymore.
+     */
+    private final ConcurrentHashMap<String, PermissionAnswer> externalCancellations =
+            new ConcurrentHashMap<>();
     private volatile RequestListener requestListener;
 
     /**
@@ -77,10 +87,35 @@ public final class PermissionBridge {
     public PermissionAnswer requestPermission(PermissionRequest request, long timeout, TimeUnit unit)
             throws InterruptedException, TimeoutException {
         Objects.requireNonNull(request, "request");
+        // Race window: TaskStreamReader handles permission.request on a
+        // virtual thread now (#437), so an out-of-order
+        // permission.cancelled from the daemon can land BEFORE this
+        // call registers its future. cancelExternal stores the answer
+        // in externalCancellations either way; here we drain that map
+        // before blocking. Pre-check + post-register re-check closes
+        // the sub-millisecond gap where a cancellation lands between
+        // the two operations.
+        var earlyCancel = externalCancellations.remove(request.requestId());
+        if (earlyCancel != null) {
+            return earlyCancel;
+        }
         var future = new CompletableFuture<PermissionAnswer>();
         futures.put(request.requestId(), future);
         boolean enqueued = false;
         try {
+            // Re-check after register: covers the race where
+            // cancelExternal ran concurrently and saw no future, but
+            // its externalCancellations entry was added between our
+            // pre-check and futures.put. Without this, requestPermission
+            // would block until timeout for a dashboard answer that
+            // already landed. Return immediately so the modal doesn't
+            // briefly show — pending.put hasn't run yet, so the TUI
+            // never sees a request that was already resolved.
+            var lateCancel = externalCancellations.remove(request.requestId());
+            if (lateCancel != null) {
+                future.complete(lateCancel);
+                return lateCancel;
+            }
             pending.put(request);
             enqueued = true;
             var listener = requestListener;
@@ -100,6 +135,19 @@ public final class PermissionBridge {
             throw new IllegalStateException("Permission request failed unexpectedly", e);
         } finally {
             futures.remove(request.requestId());
+            // DO NOT remove externalCancellations here. The modal's
+            // terminal-read loop polls consumeExternalCancellation
+            // every ~250 ms; if cancelExternal completed our future
+            // and we ran the finally before the modal's next tick,
+            // clearing the entry here would race the modal and leave
+            // it blocking on stdin until the daemon's 120 s deadline
+            // (the user's "CLI stuck" report). Cleanup happens through
+            // either the modal's consumeExternalCancellation (when it
+            // picks up the cancellation) or consumeResolvedAnswer's
+            // clearExternalCancellation hook (when the modal exits via
+            // user input). Edge case where neither runs (cancel arrives
+            // AFTER the modal already exited via submitAnswer) leaks
+            // one entry — bounded and rare.
             if (enqueued) {
                 pending.remove(request);
             }
@@ -170,6 +218,52 @@ public final class PermissionBridge {
     }
 
     /**
+     * Records that {@code requestId} has been resolved externally — the
+     * daemon completed its tool-execution future via another path (e.g.
+     * the dashboard answered first via the WebSocket bridge, #437). The
+     * task thread's pending {@link #requestPermission} call is unblocked
+     * with {@code answer}, and the TUI's blocking terminal-read loop
+     * picks up the cancellation via
+     * {@link #consumeExternalCancellation(String)} so it can dismiss
+     * its modal instead of waiting on stdin that no longer matters.
+     *
+     * <p>Idempotent: repeating the call for an already-cancelled
+     * requestId is a no-op.
+     */
+    public void cancelExternal(String requestId, PermissionAnswer answer) {
+        Objects.requireNonNull(requestId, "requestId");
+        Objects.requireNonNull(answer, "answer");
+        externalCancellations.putIfAbsent(requestId, answer);
+        var future = futures.get(requestId);
+        if (future != null) {
+            future.complete(answer);
+        }
+    }
+
+    /**
+     * Returns and clears any pending external cancellation for the given
+     * request id. The TUI's modal calls this once per polling tick so a
+     * cancellation that arrives mid-prompt can dismiss the modal.
+     */
+    public PermissionAnswer consumeExternalCancellation(String requestId) {
+        Objects.requireNonNull(requestId, "requestId");
+        return externalCancellations.remove(requestId);
+    }
+
+    /**
+     * Drops any external-cancellation entry left over for {@code requestId}.
+     * Invoked by {@link #consumeResolvedAnswer} (the path the modal
+     * cleanup goes through) so a cancellation that arrived AFTER the
+     * user already typed y/n — i.e. {@link #cancelExternal} completed
+     * the future a millisecond too late and there's no longer anything
+     * waiting to consume it — doesn't leak into the map for the
+     * lifetime of the CLI process. Idempotent.
+     */
+    private void clearExternalCancellation(String requestId) {
+        externalCancellations.remove(requestId);
+    }
+
+    /**
      * Returns and clears a previously resolved answer for a request, if present.
      *
      * <p>This is used by the UI polling loop to detect requests that were
@@ -177,7 +271,21 @@ public final class PermissionBridge {
      */
     public PermissionAnswer consumeResolvedAnswer(String requestId) {
         if (requestId == null || requestId.isBlank()) return null;
-        return resolvedAnswers.remove(requestId);
+        var resolved = resolvedAnswers.remove(requestId);
+        // Only drop the external-cancellation entry when we actually
+        // returned a resolved answer — i.e. the user already typed y/n
+        // and we're cleaning up after submitAnswer. If resolved is
+        // null we MUST leave externalCancellations alone: a dashboard
+        // cancel can land in the narrow window between drainPermissions
+        // polling the request and getting here, and wiping the entry
+        // would leave the modal stuck on stdin until the daemon's 120 s
+        // deadline (the modal's polling tick is the only consumer left).
+        // Worst case is a leaked entry per orphaned cancel — bounded
+        // and rare.
+        if (resolved != null) {
+            clearExternalCancellation(requestId);
+        }
+        return resolved;
     }
 
     /**
@@ -197,6 +305,17 @@ public final class PermissionBridge {
 
     /**
      * The user's answer to a permission request.
+     *
+     * <p>{@code external = true} means the daemon already resolved the
+     * request via another client (typically the dashboard, #437). The
+     * task thread receiving this answer must NOT re-send a
+     * permission.response over UDS — the daemon-side future is already
+     * done and a duplicate is dropped on the floor by the cancel
+     * monitor's stale-response guard.
      */
-    public record PermissionAnswer(boolean approved, boolean remember) {}
+    public record PermissionAnswer(boolean approved, boolean remember, boolean external) {
+        public PermissionAnswer(boolean approved, boolean remember) {
+            this(approved, remember, false);
+        }
+    }
 }

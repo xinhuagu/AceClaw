@@ -151,12 +151,56 @@ interface DashboardConnectedProps {
 }
 
 function DashboardConnected({ sessionId, wsUrl }: DashboardConnectedProps) {
-  const { tree, status } = useExecutionTree(wsUrl, sessionId);
+  const { tree, status, sendCommand, resolvePermission, dismissPermission } =
+    useExecutionTree(wsUrl, sessionId);
+
+  // The Approve / Deny click does TWO things:
+  //   1. POST permission.response to the daemon over the WS so the
+  //      blocked tool resumes (or returns "Permission denied").
+  //   2. Optimistically update the local tree so the panel disappears
+  //      and the tool node returns to the running/cancelled state
+  //      without waiting for the daemon's tool_completed echo.
+  // First-response-wins on the daemon (#433) makes a duplicate fine —
+  // if the CLI already answered, our send is dropped server-side and
+  // the local optimistic update gets superseded by the next
+  // tool_completed event. Stamping resolvedBy='browser' beforehand also
+  // guards against the reducer mistaking that completion for a CLI
+  // resolution.
+  //
+  // Dropped sends (pre-open queue full) skip the optimistic resolve so
+  // the panel keeps rendering and the user can re-try once the socket
+  // reconnects — eating the click silently while clearing the panel
+  // would leave the daemon waiting until its 120 s timeout.
+  const respond = (
+    requestId: string,
+    approved: boolean,
+    remember = false,
+  ): void => {
+    const result = sendCommand({
+      method: 'permission.response',
+      params: remember
+        ? { requestId, approved, remember: true }
+        : { requestId, approved },
+    });
+    if (result === 'dropped') return;
+    resolvePermission(requestId, approved);
+  };
+  const handleApprove = (requestId: string): void => respond(requestId, true);
+  const handleAlwaysAllow = (requestId: string): void =>
+    respond(requestId, true, true);
+  const handleDeny = (requestId: string): void => respond(requestId, false);
+
   return (
     <>
       <StatusBar sessionId={sessionId} status={status} stats={tree.stats} />
       <div className="flex-1">
-        <ExecutionTree tree={tree} />
+        <ExecutionTree
+          tree={tree}
+          onApprovePermission={handleApprove}
+          onAlwaysAllowPermission={handleAlwaysAllow}
+          onDenyPermission={handleDeny}
+          onDismissPermission={dismissPermission}
+        />
       </div>
     </>
   );

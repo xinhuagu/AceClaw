@@ -42,6 +42,7 @@ import java.util.Objects;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
 
 import static dev.aceclaw.cli.TerminalTheme.*;
@@ -118,6 +119,18 @@ public final class TerminalRepl {
     private final Object uiRenderLock = new Object();
     private final AtomicBoolean permissionInterruptRequested = new AtomicBoolean(false);
     private final AtomicBoolean uiRenderRequested = new AtomicBoolean(true);
+    /**
+     * Wall-clock nanos of the most recent Ctrl-C. The SIGINT handler
+     * uses this to detect a "double-tap": two Ctrl-Cs within
+     * {@link #SIGINT_DOUBLE_TAP_NANOS} while a foreground task is
+     * still running force an immediate process exit, so a daemon that
+     * isn't honouring the cancel can't trap the operator in the TUI.
+     * {@code 0} means "never pressed" — first hit always primes; the
+     * double-tap branch fires on the second hit only.
+     */
+    private final AtomicLong lastSigintNanos = new AtomicLong(0);
+    private static final long SIGINT_DOUBLE_TAP_NANOS =
+            TimeUnit.SECONDS.toNanos(2);
 
     /** Tracks the effective model, updated after successful model switches. */
     private volatile String effectiveModel;
@@ -182,7 +195,25 @@ public final class TerminalRepl {
     private record UiNotice(Instant at, String text) {}
     private record ForegroundPause(TaskHandle handle, ForegroundOutputSink sink,
                                    BackgroundOutputBuffer buffer) {}
-    private record PermissionDecision(boolean approved, boolean remember, boolean timedOut) {}
+    /**
+     * Result of a single permission modal interaction.
+     *
+     * <p>{@code externalCancel = true} means the daemon resolved the
+     * request via another client (dashboard via WS, #437) while the
+     * modal was on screen — the modal should dismiss with a "Resolved
+     * via dashboard" indicator and the caller must not call
+     * {@link PermissionBridge#submitAnswer} (the bridge future was
+     * already completed by {@code cancelExternal}).
+     */
+    private record PermissionDecision(
+            boolean approved,
+            boolean remember,
+            boolean timedOut,
+            boolean externalCancel) {
+        PermissionDecision(boolean approved, boolean remember, boolean timedOut) {
+            this(approved, remember, timedOut, false);
+        }
+    }
 
     private record CronJobStatus(
             String id,
@@ -443,12 +474,63 @@ public final class TerminalRepl {
             reader.getKeyMaps().get(LineReader.MAIN)
                     .bind(new Reference("aceclaw-clear-screen"), KeyMap.ctrl('L'));
 
-            // Install Ctrl+C handler: cancel foreground task or exit REPL
+            // Install Ctrl+C handler with double-tap escape:
+            //   1st Ctrl-C while a task runs → cancel the task gracefully.
+            //   2nd Ctrl-C within 2 s while the task is STILL alive →
+            //     force-exit the JVM with code 130 (128+SIGINT). This
+            //     unblocks the operator when the daemon stops honouring
+            //     stream.cancelled (e.g. blocked on a permission future
+            //     no other client can answer) — without it, the
+            //     foreground polling loop's `while (hasForegroundTask())`
+            //     never terminates and Ctrl-C feels like it does
+            //     nothing.
+            //   At the prompt with no task: JLine throws
+            //     UserInterruptException from readLine() and the main
+            //     loop breaks out gracefully.
             terminal.handle(Terminal.Signal.INT, _ -> {
                 if (taskManager.hasForegroundTask()) {
+                    long now = System.nanoTime();
+                    long prev = lastSigintNanos.getAndSet(now);
+                    boolean doubleTap = prev != 0
+                            && (now - prev) < SIGINT_DOUBLE_TAP_NANOS;
+                    if (doubleTap) {
+                        out.println();
+                        out.println(WARNING
+                                + "Ctrl-C twice — force-exiting AceClaw."
+                                + RESET);
+                        out.flush();
+                        // Restore the terminal before exiting — System.exit
+                        // skips finally blocks in waitForForeground /
+                        // readPermissionAnswer, so without this the user's
+                        // shell would inherit raw mode (no echo, no canonical
+                        // line edit) until they ran `stty sane`.
+                        try {
+                            terminal.close();
+                        } catch (Exception ignored) {
+                            // Best-effort — we're exiting anyway.
+                        }
+                        // Daemon cleanup (session.destroy) runs from the
+                        // JVM shutdown hook installed in AceClawMain so
+                        // it covers ALL force-exit paths (Ctrl-C×2,
+                        // SIGTERM, uncaught exception bubbling out of
+                        // repl.run, …). Without that hook the daemon
+                        // would still think this workspace's TUI is
+                        // attached and the next `aceclaw` from the
+                        // same directory would fail with "another TUI
+                        // session is already active".
+                        // 128 + SIGINT (2) — POSIX convention for
+                        // exits triggered by an interrupt signal.
+                        System.exit(130);
+                    }
                     cancelForegroundTask(out);
+                } else {
+                    // No active task. Reset the double-tap timestamp
+                    // so a stale Ctrl-C from a previous task doesn't
+                    // pair with a fresh one to trigger force-exit on
+                    // the next task. JLine's UserInterruptException
+                    // will break out of readLine() for prompt exit.
+                    lastSigintNanos.set(0);
                 }
-                // If no foreground task, JLine throws UserInterruptException from readLine()
             });
 
             while (true) {
@@ -1114,6 +1196,10 @@ public final class TerminalRepl {
             return;
         }
         consoleMode = ConsoleMode.FOREGROUND_WAIT;
+        // Fresh task: clear the double-tap timestamp so a Ctrl-C that
+        // landed during this task doesn't pair with one from a prior
+        // task and force-exit on the first hit.
+        lastSigintNanos.set(0);
 
         // Enter raw mode: ICANON off (char-at-a-time), ECHO off
         Attributes savedAttrs = terminal.getAttributes();
@@ -1172,6 +1258,9 @@ public final class TerminalRepl {
      */
     private void simplePollForeground(PrintWriter out, LineReader reader) {
         consoleMode = ConsoleMode.FOREGROUND_WAIT;
+        // Same double-tap reset as in the rich-terminal foreground wait
+        // path — entering a fresh task clears any stale Ctrl-C window.
+        lastSigintNanos.set(0);
         while (taskManager.hasForegroundTask()) {
             try {
                 var permReq = permissionBridge.pollPending(50, TimeUnit.MILLISECONDS);
@@ -1390,11 +1479,20 @@ public final class TerminalRepl {
             out.print(PERMISSION + " > " + RESET);
             out.flush();
 
-            var answer = readPermissionAnswer(reader);
+            var answer = readPermissionAnswer(reader, req.requestId());
             boolean approved = answer.approved();
             boolean remember = answer.remember();
 
-            if (answer.timedOut()) {
+            if (answer.externalCancel()) {
+                // Pick styling by outcome — green check for approved,
+                // red glyph for denied — so a quick visual scan can't
+                // misread a remote denial as an approval.
+                String color = approved ? APPROVED : DENIED;
+                String glyph = approved ? CHECKMARK : "✗";
+                out.printf("%s%s Resolved via dashboard%s (%s)%s%n",
+                        color, glyph, RESET,
+                        approved ? "approved" : "denied", RESET);
+            } else if (answer.timedOut()) {
                 out.printf("%sTimed out%s%n", WARNING, RESET);
             } else if (approved) {
                 out.printf("%s%s Approved%s%s%n", APPROVED, CHECKMARK,
@@ -1404,8 +1502,14 @@ public final class TerminalRepl {
             }
             out.flush();
 
-            permissionBridge.submitAnswer(req.requestId(),
-                    new PermissionBridge.PermissionAnswer(approved, remember));
+            // External cancel already completed the bridge future via
+            // cancelExternal — don't double-submit, that would override
+            // the external answer with the local default and confuse
+            // any caller that inspects the resolved answer afterwards.
+            if (!answer.externalCancel()) {
+                permissionBridge.submitAnswer(req.requestId(),
+                        new PermissionBridge.PermissionAnswer(approved, remember));
+            }
             permissionBridge.consumeResolvedAnswer(req.requestId());
             var task = taskManager.get(req.taskId());
             if (task != null) {
@@ -1420,6 +1524,19 @@ public final class TerminalRepl {
     }
 
     private PermissionDecision readPermissionAnswer(LineReader reader) {
+        return readPermissionAnswer(reader, null);
+    }
+
+    /**
+     * Reads the user's y/n/a answer from the terminal for the modal
+     * currently on screen. When {@code requestId} is non-null, the
+     * polling loop also checks {@link PermissionBridge#consumeExternalCancellation}
+     * each tick so a {@code permission.cancelled} arriving from the
+     * daemon (because the dashboard answered first, #437) can dismiss
+     * the modal immediately instead of leaving the user typing into a
+     * prompt with no effect.
+     */
+    private PermissionDecision readPermissionAnswer(LineReader reader, String requestId) {
         var terminal = activeTerminal != null ? activeTerminal : reader.getTerminal();
         if (terminal == null) {
             return new PermissionDecision(false, false, true);
@@ -1436,6 +1553,18 @@ public final class TerminalRepl {
         terminal.setAttributes(rawAttrs);
         try {
             while (true) {
+                // External cancellation (dashboard answered first via WS):
+                // bail out of the read loop with a synthetic decision
+                // tagged externalCancel=true so handlePermissionFromBridge
+                // can render the right "Resolved via dashboard" copy and
+                // skip submitAnswer.
+                if (requestId != null) {
+                    var external = permissionBridge.consumeExternalCancellation(requestId);
+                    if (external != null) {
+                        return new PermissionDecision(
+                                external.approved(), external.remember(), false, true);
+                    }
+                }
                 long remainingNanos = deadlineNanos - System.nanoTime();
                 if (remainingNanos <= 0) {
                     return new PermissionDecision(false, false, true);

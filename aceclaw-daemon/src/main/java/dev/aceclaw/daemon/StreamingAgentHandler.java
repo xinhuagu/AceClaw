@@ -199,7 +199,21 @@ public final class StreamingAgentHandler {
      * session and the future to complete. Used by the WS routing
      * path to validate cross-session attempts.
      */
-    private record PendingPermission(String sessionId, CompletableFuture<JsonNode> future) {}
+    /**
+     * Tracks a pending permission request keyed by {@code requestId} in
+     * {@link #permissionRegistry}. The {@code context} reference lets the
+     * WS-side router ({@link #routePermissionResponse}) push a
+     * {@code permission.cancelled} notification back to the originating
+     * CLI's UDS connection so a TUI prompt blocking on local stdin can
+     * dismiss itself when a browser tab has already answered (issue #437).
+     * Without that signal, the daemon-side future completes but the
+     * CLI's local {@code PermissionBridge} future stays pending until
+     * the user types y/n into a prompt that has no effect.
+     */
+    private record PendingPermission(
+            String sessionId,
+            CompletableFuture<JsonNode> future,
+            StreamContext context) {}
 
     /** Per-session turn locks for serializing main turns within a session. */
     private final ConcurrentHashMap<String, ReentrantLock> sessionTurnLocks =
@@ -298,7 +312,34 @@ public final class StreamingAgentHandler {
         // remove returns false and we leave the pre-existing completion
         // alone.
         if (!permissionRegistry.remove(requestId, pending)) return false;
-        return pending.future().complete(message);
+        boolean completed = pending.future().complete(message);
+        log.debug("WS routePermissionResponse: requestId={}, sessionId={}, completed={}",
+                requestId, responseSessionId, completed);
+        if (completed) {
+            // Notify the originating CLI's UDS context so its TUI can
+            // dismiss the in-progress y/n prompt — without this signal
+            // the daemon-side tool resumes but the CLI prompt sits
+            // there waiting for stdin that has no effect anymore. The
+            // notification carries the resolved answer so the CLI can
+            // show "Approved via dashboard" rather than a generic
+            // dismissal. Best-effort: failures here don't roll back
+            // the resolution that already took the daemon-side path.
+            try {
+                var approvedNode = params.get("approved");
+                boolean approved = approvedNode != null && approvedNode.asBoolean(false);
+                var cancelParams = objectMapper.createObjectNode();
+                cancelParams.put("requestId", requestId);
+                cancelParams.put("approved", approved);
+                cancelParams.put("via", "websocket");
+                pending.context().sendNotification("permission.cancelled", cancelParams);
+                log.debug("Sent permission.cancelled to originating CLI (requestId={})",
+                        requestId);
+            } catch (IOException e) {
+                log.warn("Failed to notify originating CLI of WS-resolved permission "
+                        + "(requestId={}): {}", requestId, e.getMessage());
+            }
+        }
+        return completed;
     }
 
     /**
@@ -3489,7 +3530,7 @@ public final class StreamingAgentHandler {
                 // the same future without knowing which context owns it.
                 // Tag with sessionId for the cross-session guard.
                 if (globalPermissionRegistry != null) {
-                    globalPermissionRegistry.put(requestId, new PendingPermission(sessionId, future));
+                    globalPermissionRegistry.put(requestId, new PendingPermission(sessionId, future, this));
                 }
             }
             return future;
@@ -3543,7 +3584,19 @@ public final class StreamingAgentHandler {
                         // other concurrent prompts may still have pending
                         // permissions there. Iterating pendingPermissions
                         // (per-context) gives us the correct subset.
-                        globalPermissionRegistry.remove(rid, future);
+                        //
+                        // Match by future identity (not the wrapping
+                        // PendingPermission record): the registry value
+                        // wraps the same future together with sessionId
+                        // and context, so a naive remove(rid, future)
+                        // wouldn't equal the wrapper and would silently
+                        // leak stale entries. Look up first, then remove
+                        // by record-equality only when the contained
+                        // future matches.
+                        var pending = globalPermissionRegistry.get(rid);
+                        if (pending != null && pending.future() == future) {
+                            globalPermissionRegistry.remove(rid, pending);
+                        }
                     }
                 });
                 pendingPermissions.clear();
@@ -3822,7 +3875,7 @@ public final class StreamingAgentHandler {
             final String finalInputJson = effectiveInputJson;
 
             var permRequest = new PermissionRequest(delegate.name(), toolDescription, level);
-            var decision = permissionManager.check(permRequest);
+            var decision = permissionManager.check(permRequest, sessionId);
             var overrideStatus = antiPatternOverrideSupplier != null
                     ? antiPatternOverrideSupplier.get()
                     : new AntiPatternGateOverrideStatus(sessionId, delegate.name(), false, 0L, "");
@@ -3884,6 +3937,20 @@ public final class StreamingAgentHandler {
                         params.put("tool", delegate.name());
                         params.put("description", approval.prompt());
                         params.put("requestId", requestId);
+                        // Stamp the originating tool_use id so the
+                        // dashboard reducer can mark the SPECIFIC tool
+                        // node as awaiting (instead of falling back to
+                        // activeNodeId, which collapses onto whichever
+                        // parallel tool_use was emitted last). Without
+                        // this, parallel tool calls each fire their own
+                        // permission.request but only one node shows
+                        // the "click ✓/✗" chip — the user can only
+                        // approve one from the dashboard.
+                        var toolUseId =
+                                dev.aceclaw.core.agent.ToolExecutionContext.currentToolUseId();
+                        if (toolUseId != null) {
+                            params.put("toolUseId", toolUseId);
+                        }
                         context.sendNotification("permission.request", params);
 
                         // Each thread waits on its own future — no cross-delivery possible
@@ -3907,9 +3974,12 @@ public final class StreamingAgentHandler {
                         }
                         if (metricsExporter != null) metricsExporter.recordPermissionDecision(false);
 
-                        // If user chose "remember", grant session-level approval
+                        // If user chose "remember", grant session-level approval.
+                        // Per-session scope (issue #456): the allow only applies
+                        // to THIS session — clicking Always Allow in workspace A
+                        // no longer silently disables the prompt in workspace B.
                         if (remember) {
-                            permissionManager.approveForSession(delegate.name());
+                            permissionManager.approveForSession(sessionId, delegate.name());
                         }
 
                         log.info("Tool {} approved by user (requestId={}, remember={})",

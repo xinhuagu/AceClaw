@@ -165,7 +165,22 @@ public final class TaskStreamReader implements Runnable {
                     sink.onToolCompleted(toolId, toolName, durationMs, isError, error);
                 }
             }
-            case "permission.request" -> handlePermissionRequest(params);
+            case "permission.request" ->
+                    // Run the blocking permission flow off the read loop on
+                    // a virtual thread. handlePermissionRequest waits on
+                    // permissionBridge.requestPermission(...) until the
+                    // user types y/n in the TUI; if we ran it inline, the
+                    // read loop couldn't drain the connection and the
+                    // daemon's permission.cancelled notification (sent
+                    // when a dashboard tab answered first, #437) would
+                    // sit on the wire while the modal sat on screen
+                    // waiting for stdin that no longer matters. Virtual
+                    // threads are cheap, and parallel permission.requests
+                    // queue naturally inside PermissionBridge.
+                    Thread.ofVirtual()
+                            .name("aceclaw-cli-permission-" + handle.taskId())
+                            .start(() -> handlePermissionRequest(params));
+            case "permission.cancelled" -> handlePermissionCancelled(params);
             case "stream.error" -> {
                 if (params != null && params.has("error")) {
                     handle.appendToolEvent("stream", "error", true, 0, params.get("error").asText());
@@ -255,12 +270,24 @@ public final class TaskStreamReader implements Runnable {
             var answer = permissionBridge.requestPermission(
                     request, CLIENT_PERMISSION_WAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
 
-            // Send permission response back to daemon on this task's connection
-            ObjectNode responseParams = connection.objectMapper().createObjectNode();
-            responseParams.put("requestId", requestId);
-            responseParams.put("approved", answer.approved());
-            responseParams.put("remember", answer.remember());
-            connection.sendNotification("permission.response", responseParams);
+            // External resolution (e.g. dashboard answered first via the
+            // WebSocket bridge, #437): the daemon already routed the
+            // response and resumed the tool, so re-sending a stale
+            // permission.response over UDS would just be noise the
+            // daemon's cancel monitor logs as a duplicate. Skip the
+            // wire send; the bridge future was completed with the
+            // external answer just so this thread could unblock.
+            if (!answer.external()) {
+                ObjectNode responseParams = connection.objectMapper().createObjectNode();
+                responseParams.put("requestId", requestId);
+                responseParams.put("approved", answer.approved());
+                responseParams.put("remember", answer.remember());
+                connection.sendNotification("permission.response", responseParams);
+            } else {
+                log.debug("Task {}: permission for requestId={} resolved externally "
+                        + "(approved={}); skipping local response send",
+                        handle.taskId(), requestId, answer.approved());
+            }
             handle.clearWaitingPermission();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -275,5 +302,35 @@ public final class TaskStreamReader implements Runnable {
                     handle.taskId(), e.getMessage());
             handle.markActivity("permission response failed");
         }
+    }
+
+    /**
+     * The daemon emits {@code permission.cancelled} when a permission
+     * request was resolved by another client (e.g. a dashboard tab
+     * answered first via the WebSocket bridge — #437). Without this
+     * notification the CLI's TUI would keep blocking on stdin for an
+     * answer that no longer matters; with it, the TUI can dismiss the
+     * y/n modal and the task thread's
+     * {@code permissionBridge.requestPermission(...)} returns with the
+     * external answer so the rest of its bookkeeping (clear waiting
+     * state, etc.) runs normally.
+     */
+    private void handlePermissionCancelled(JsonNode params) {
+        if (params == null) return;
+        String requestId = params.path("requestId").asText("");
+        if (requestId.isEmpty()) {
+            log.warn("Task {}: permission.cancelled missing requestId, dropping",
+                    handle.taskId());
+            return;
+        }
+        boolean approved = params.path("approved").asBoolean(false);
+        // remember is intentionally left at the local-prompt default of
+        // false — the dashboard's "always allow" already took effect on
+        // the daemon side; we don't want to double-record it locally.
+        var externalAnswer = new PermissionBridge.PermissionAnswer(approved, false, true);
+        permissionBridge.cancelExternal(requestId, externalAnswer);
+        log.debug("Task {}: permission.cancelled requestId={} (approved={}, via={})",
+                handle.taskId(), requestId, approved,
+                params.path("via").asText("unknown"));
     }
 }

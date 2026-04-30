@@ -5,7 +5,12 @@ import type {
   EventParams,
 } from '../src/types/events';
 import { emptyTree, type ExecutionNode, type ExecutionTree } from '../src/types/tree';
-import { executionTreeReducer, stepNodeId } from '../src/reducers/treeReducer';
+import {
+  dismissPermissionPanel,
+  executionTreeReducer,
+  resolvePermissionLocally,
+  stepNodeId,
+} from '../src/reducers/treeReducer';
 
 /**
  * Acceptance-criteria coverage for issue #435. Each describe block maps to
@@ -38,6 +43,30 @@ function freshTree(): ExecutionTree {
 
 function runAll(state: ExecutionTree, ...envs: DaemonEventEnvelope[]): ExecutionTree {
   return envs.reduce(executionTreeReducer, state);
+}
+
+/**
+ * Walk the whole tree and return the first node matching {@code id}.
+ * Used by tests that want to be agnostic to whether a synthetic
+ * thinking sits between turn and tool (the reducer mints one when no
+ * stream.thinking arrived for the iteration — see addToolNode and
+ * appendTextToCurrentTurn). Mechanical depth navigation in tests was
+ * coupling them to the exact synthesis layout, which made the test
+ * suite churn every time the reducer's iteration-boundary detection
+ * grew a new clause.
+ */
+function findById(state: ExecutionTree, id: string): ExecutionNode {
+  function search(nodes: ExecutionNode[]): ExecutionNode | null {
+    for (const n of nodes) {
+      if (n.id === id) return n;
+      const found = search(n.children);
+      if (found) return found;
+    }
+    return null;
+  }
+  const found = search(state.rootNodes);
+  if (!found) throw new Error(`node ${id} not found in tree`);
+  return found;
 }
 
 // ---------------------------------------------------------------------------
@@ -118,7 +147,13 @@ describe('parallel tools', () => {
     );
     const turn = state.rootNodes[0]!.children[0]!;
     expect(turn.parallel).toBe(true);
-    expect(turn.children).toHaveLength(2);
+    // Without a stream.thinking event, both parallel tools share a
+    // synthetic thinking parent (addToolNode synthesises one for the
+    // first tool, the second tool is a parallel sibling under the
+    // same anchor). Turn → 1 thinking → 2 tools.
+    expect(turn.children).toHaveLength(1);
+    expect(turn.children[0]!.type).toBe('thinking');
+    expect(turn.children[0]!.children).toHaveLength(2);
   });
 
   it('parallel flag persists after both tools complete', () => {
@@ -333,11 +368,418 @@ describe('permission pause', () => {
         requestId: 'perm-1',
       }),
     );
-    const tool = state.rootNodes[0]!.children[0]!.children[0]!;
+    const tool = findById(state, 't1');
     expect(tool.status).toBe('paused');
     expect(tool.awaitingInput).toBe(true);
     expect(tool.inputPrompt).toBe('rm -rf /');
     expect(tool.permissionRequestId).toBe('perm-1');
+    // Stamp time the daemon paused — the panel uses this to drive the
+    // countdown ring without a separate "I started waiting at X" event.
+    expect(typeof tool.metadata?.['permissionRequestedAt']).toBe('number');
+  });
+
+  it('uses envelope.receivedAt (not Date.now) for permissionRequestedAt', () => {
+    // Snapshot replay re-feeds aged events; using Date.now() in the
+    // reducer would re-stamp every replayed permission.request with the
+    // current wall clock and the panel's countdown would always show
+    // the full 120 s for an already-aged request. Pin envelope-time
+    // sourcing so the panel's deadline math survives reconnects.
+    const aged = '2026-04-30T10:00:00.000Z';
+    const state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: aged,
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: aged,
+      }),
+      envelope('stream.tool_use', { id: 't1', name: 'bash' }),
+      {
+        eventId: nextEventId++,
+        sessionId: 'sess-1',
+        receivedAt: aged,
+        event: {
+          method: 'permission.request',
+          params: { tool: 'bash', description: 'rm', requestId: 'perm-aged' },
+        },
+      } as DaemonEventEnvelope,
+    );
+    const tool = findById(state, 't1');
+    expect(tool.metadata?.['permissionRequestedAt']).toBe(Date.parse(aged));
+  });
+
+  it('marks each parallel tool node awaiting via toolUseId disambiguation', () => {
+    // User-reported (#437): three parallel wiki_search calls fired
+    // three permission.requests, but the dashboard only marked ONE
+    // node as awaiting (the most-recent activeNodeId) — operator
+    // could only approve one from the dashboard. Daemon now stamps
+    // toolUseId on each permission.request; reducer marks THAT node
+    // instead of activeNodeId. All three should get awaitingInput.
+    const state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.tool_use', { id: 't1', name: 'wiki_search' }),
+      envelope('stream.tool_use', { id: 't2', name: 'wiki_search' }),
+      envelope('stream.tool_use', { id: 't3', name: 'wiki_search' }),
+      envelope('permission.request', {
+        tool: 'wiki_search',
+        description: 'wiki_search 1',
+        requestId: 'perm-1',
+        toolUseId: 't1',
+      }),
+      envelope('permission.request', {
+        tool: 'wiki_search',
+        description: 'wiki_search 2',
+        requestId: 'perm-2',
+        toolUseId: 't2',
+      }),
+      envelope('permission.request', {
+        tool: 'wiki_search',
+        description: 'wiki_search 3',
+        requestId: 'perm-3',
+        toolUseId: 't3',
+      }),
+    );
+    expect(findById(state, 't1').awaitingInput).toBe(true);
+    expect(findById(state, 't1').permissionRequestId).toBe('perm-1');
+    expect(findById(state, 't2').awaitingInput).toBe(true);
+    expect(findById(state, 't2').permissionRequestId).toBe('perm-2');
+    expect(findById(state, 't3').awaitingInput).toBe(true);
+    expect(findById(state, 't3').permissionRequestId).toBe('perm-3');
+  });
+
+  it('moves activeNodeId to the awaiting node so the camera can pan it into view (#437)', () => {
+    // User-reported: a permission-awaiting node off the right edge
+    // had no visible chip — the operator couldn't see what to click.
+    // Cause: pauseForPermission marked the node awaiting but didn't
+    // touch activeNodeId, so the auto-scroll effect (which depends
+    // on [activeNodeId, layout.nodes]) didn't re-evaluate. The
+    // ExecutionTree comfort-zone guard handles the "no-op when
+    // already in view" case; the reducer just needs to make the
+    // awaiting node the auto-scroll target.
+    const state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.tool_use', { id: 't-prior', name: 'read_file' }),
+      envelope('stream.tool_completed', {
+        id: 't-prior',
+        name: 'read_file',
+        durationMs: 1,
+        isError: false,
+      }),
+      envelope('stream.tool_use', { id: 't-perm', name: 'bash' }),
+      envelope('permission.request', {
+        tool: 'bash',
+        description: 'rm -rf',
+        requestId: 'perm-1',
+        toolUseId: 't-perm',
+      }),
+    );
+    expect(state.activeNodeId).toBe('t-perm');
+    const tool = findById(state, 't-perm');
+    expect(tool.awaitingInput).toBe(true);
+  });
+
+  it('disambiguates 8 parallel permissions even with arbitrary wire interleaving', () => {
+    // Stress version of the parallel-permission test. Daemon's parallel
+    // virtual threads can interleave stream.tool_use and
+    // permission.request in any order; the reducer must produce a
+    // tree where EVERY tool node ends up awaiting its OWN permission
+    // request — no collisions, no missing chips, no buffered leftovers.
+    //
+    // Wire order constructed below mixes:
+    //   - some tools whose tool_use arrives BEFORE their permission
+    //   - some whose permission arrives BEFORE their tool_use (buffer path)
+    //   - bursts of consecutive same-direction events
+    //
+    // Asserts each of the 8 nodes ends up with the expected
+    // awaitingInput + permissionRequestId pairing — a UI consumer
+    // walking the tree gets one chip per tool, addressable.
+    const ids = ['t1', 't2', 't3', 't4', 't5', 't6', 't7', 't8'] as const;
+    function tu(id: string) {
+      return envelope('stream.tool_use', { id, name: 'wiki_search' });
+    }
+    function pr(toolUseId: string, requestId: string) {
+      return envelope('permission.request', {
+        tool: 'wiki_search',
+        description: `wiki_search ${toolUseId}`,
+        requestId,
+        toolUseId,
+      });
+    }
+    const state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      // Adversarial interleaving covering every order pattern:
+      tu('t1'),  pr('t1', 'p1'),                  // tu then perm (immediate)
+      pr('t2', 'p2'),  tu('t2'),                   // perm then tu (buffer)
+      tu('t3'),  tu('t4'),  pr('t3', 'p3'),        // burst of tus, then perms in order
+      pr('t4', 'p4'),
+      pr('t5', 'p5'),  pr('t6', 'p6'),             // burst of perms BEFORE their tus
+      tu('t5'),  tu('t6'),                         // tus catch up — buffer drains both
+      pr('t7', 'p7'),  tu('t8'),  tu('t7'),        // mixed: p7 buffered, t8 in, then t7
+      pr('t8', 'p8'),                              // p8 immediate (t8 already exists)
+    );
+
+    for (let i = 0; i < ids.length; i += 1) {
+      const id = ids[i]!;
+      const expectedRid = `p${i + 1}`;
+      const tool = findById(state, id);
+      expect(tool.type).toBe('tool');
+      expect(tool.awaitingInput).toBe(true);
+      expect(tool.permissionRequestId).toBe(expectedRid);
+      expect(tool.inputPrompt).toBe(`wiki_search ${id}`);
+    }
+    // Every buffered request was drained — no orphans hanging around
+    // for tool nodes that never arrived.
+    expect(state.pendingPermissionsByToolUseId).toEqual({});
+  });
+
+  it('buffers a permission.request whose tool node has not arrived yet', () => {
+    // Race: parallel virtual threads on the daemon dispatch
+    // permission.request and stream.tool_use independently — wire
+    // order is not deterministic. If permission.request lands BEFORE
+    // its corresponding stream.tool_use, the reducer must NOT fall
+    // back to activeNodeId (would mark the wrong node). It buffers
+    // the request keyed by toolUseId, and addToolNode applies the
+    // marker when the matching node arrives. User symptom of the
+    // unbuffered version: 3 permissions fired but only 2 chips
+    // appeared in the dashboard (the third's permission silently
+    // landed on the wrong node).
+    const state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      // permission arrives FIRST, no node t-late yet — must buffer.
+      envelope('permission.request', {
+        tool: 'wiki_search',
+        description: 'wiki_search early',
+        requestId: 'perm-late',
+        toolUseId: 't-late',
+      }),
+      // Then the tool_use arrives — addToolNode drains the buffer.
+      envelope('stream.tool_use', { id: 't-late', name: 'wiki_search' }),
+    );
+    const tool = findById(state, 't-late');
+    expect(tool.awaitingInput).toBe(true);
+    expect(tool.permissionRequestId).toBe('perm-late');
+    // Buffer is empty after drain.
+    expect(state.pendingPermissionsByToolUseId).toEqual({});
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Permission resolution — local approve/deny + CLI-resolved + dismiss
+// (issue #437 — browser-side panel; complements daemon-side #433)
+// ---------------------------------------------------------------------------
+
+describe('permission resolution (issue #437)', () => {
+  /**
+   * Helper: build the standard "session → turn → tool with pending
+   * permission" tree all permission-resolution tests below start from.
+   */
+  function pausedToolTree(): ExecutionTree {
+    return runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.tool_use', { id: 't1', name: 'edit_file' }),
+      envelope('permission.request', {
+        tool: 'edit_file',
+        description: 'edit_file wants to write to /tmp/foo.txt',
+        requestId: 'perm-1',
+      }),
+    );
+  }
+
+  it('approve flips paused → running, strips awaitingInput, records resolvedBy', () => {
+    const before = pausedToolTree();
+    const after = resolvePermissionLocally(before, 'perm-1', true);
+    const tool = findById(after, 't1');
+    expect(tool.status).toBe('running');
+    expect(tool.awaitingInput).toBeUndefined();
+    expect(tool.inputPrompt).toBeUndefined();
+    expect(tool.permissionRequestId).toBeUndefined();
+    expect(tool.metadata?.['resolvedBy']).toBe('browser');
+    expect(tool.metadata?.['resolvedApproved']).toBe(true);
+  });
+
+  it('deny flips paused → cancelled', () => {
+    const after = resolvePermissionLocally(pausedToolTree(), 'perm-1', false);
+    const tool = findById(after, 't1');
+    expect(tool.status).toBe('cancelled');
+    expect(tool.metadata?.['resolvedApproved']).toBe(false);
+  });
+
+  it('is a no-op for an unknown requestId (idempotent on double-click)', () => {
+    const before = pausedToolTree();
+    const ghost = resolvePermissionLocally(before, 'perm-never', true);
+    expect(ghost).toBe(before);
+    // Second resolve on the same id post-strip is also a no-op — once
+    // awaitingInput is gone, the find-by-permissionRequestId visit
+    // returns null and the state is returned unchanged.
+    const once = resolvePermissionLocally(before, 'perm-1', true);
+    const twice = resolvePermissionLocally(once, 'perm-1', false);
+    expect(twice).toBe(once);
+  });
+
+  it('detects CLI-resolved permission via stream.tool_completed (success)', () => {
+    // CLI answered the permission first → daemon ran the tool → tool_completed
+    // arrives while the node was awaitingInput. Reducer stamps
+    // resolvedBy='cli' for diagnostics AND strips the panel-trigger
+    // fields so the node stops advertising "click to approve" in the
+    // tree. (Earlier behaviour kept awaitingInput=true to support a
+    // brief "Approved via CLI" reveal in the panel; that flow caused
+    // the panel to flash on auto-accept policies, so the new
+    // click-to-open UX simply self-corrects to the daemon's verdict.)
+    const before = pausedToolTree();
+    const after = runAll(
+      before,
+      envelope('stream.tool_completed', {
+        id: 't1',
+        name: 'edit_file',
+        durationMs: 42,
+        isError: false,
+      }),
+    );
+    const tool = findById(after, 't1');
+    expect(tool.status).toBe('completed');
+    expect(tool.metadata?.['resolvedBy']).toBe('cli');
+    expect(tool.metadata?.['resolvedApproved']).toBe(true);
+    expect(tool.awaitingInput).toBeUndefined();
+    expect(tool.permissionRequestId).toBeUndefined();
+  });
+
+  it('detects CLI-resolved permission via stream.tool_completed (denied)', () => {
+    const before = pausedToolTree();
+    const after = runAll(
+      before,
+      envelope('stream.tool_completed', {
+        id: 't1',
+        name: 'edit_file',
+        durationMs: 42,
+        isError: true,
+        error: 'Permission denied',
+      }),
+    );
+    const tool = findById(after, 't1');
+    expect(tool.status).toBe('failed');
+    expect(tool.metadata?.['resolvedBy']).toBe('cli');
+    expect(tool.metadata?.['resolvedApproved']).toBe(false);
+    expect(tool.awaitingInput).toBeUndefined();
+  });
+
+  it('does not corrupt a CLI-resolved node when a tardy browser click arrives', () => {
+    // Race scenario: tool_completed lands first (CLI raced and won).
+    // completeToolNode strips awaitingInput / permissionRequestId and
+    // stamps resolvedBy='cli'. A tardy resolvePermissionLocally call
+    // (e.g. from click-to-open state that hasn't unmounted yet) finds
+    // no awaiting node by id and is a no-op — the daemon's verdict
+    // stays untouched.
+    const cliResolved = runAll(
+      pausedToolTree(),
+      envelope('stream.tool_completed', {
+        id: 't1',
+        name: 'edit_file',
+        durationMs: 42,
+        isError: false,
+      }),
+    );
+    const after = resolvePermissionLocally(cliResolved, 'perm-1', false);
+    expect(after).toBe(cliResolved); // referentially identical → no-op
+    const tool = findById(after, 't1');
+    expect(tool.status).toBe('completed');
+    expect(tool.metadata?.['resolvedBy']).toBe('cli');
+    expect(tool.metadata?.['resolvedApproved']).toBe(true);
+  });
+
+  it('does not stamp resolvedBy=cli when local resolve already won the race', () => {
+    // Local Approve fires → resolvedBy='browser' stamped, awaitingInput
+    // stripped. Daemon emits tool_completed afterwards (the tool ran
+    // because we approved). Reducer must not overwrite resolvedBy.
+    const after = runAll(
+      resolvePermissionLocally(pausedToolTree(), 'perm-1', true),
+      envelope('stream.tool_completed', {
+        id: 't1',
+        name: 'edit_file',
+        durationMs: 42,
+        isError: false,
+      }),
+    );
+    const tool = findById(after, 't1');
+    expect(tool.status).toBe('completed');
+    expect(tool.metadata?.['resolvedBy']).toBe('browser');
+  });
+
+  it('dismissPermissionPanel strips panel-trigger fields without touching status', () => {
+    // Used by the panel's × button when the user closes without
+    // responding. Status remains paused until the daemon resolves; we
+    // only clear the panel-mounting flags so the overlay unmounts.
+    const dismissed = dismissPermissionPanel(pausedToolTree(), 'perm-1');
+    const tool = findById(dismissed, 't1');
+    expect(tool.awaitingInput).toBeUndefined();
+    expect(tool.inputPrompt).toBeUndefined();
+    expect(tool.permissionRequestId).toBeUndefined();
+    expect(tool.status).toBe('paused');
+  });
+
+  it('dismiss is a no-op for unknown requestId', () => {
+    const before = pausedToolTree();
+    const dismissed = dismissPermissionPanel(before, 'perm-never');
+    expect(dismissed).toBe(before);
   });
 });
 
@@ -432,9 +874,12 @@ describe('activeNodeId tracking', () => {
         isError: false,
       }),
     );
-    // After tool completes, focus returns to the parent turn so the next
-    // tool_use under the same turn becomes active naturally.
-    expect(state.activeNodeId).toBe('req-1');
+    // After tool completes, focus returns to the tool's parent. The
+    // tool was minted under a synthetic thinking (no stream.thinking
+    // arrived for this iteration), so the parent is `req-1:thinking`,
+    // not the turn directly. The next tool_use under the same turn
+    // still attaches to the same synthetic anchor naturally.
+    expect(state.activeNodeId).toBe('req-1:thinking');
   });
 });
 
@@ -1010,16 +1455,90 @@ describe('thinking-anchored tool grouping (ReAct iterations)', () => {
     expect(thinking.status).toBe('completed');
   });
 
-  it('falls back to attaching tools to the turn when no thinking has been emitted', () => {
-    // Extended thinking disabled: stream.thinking never fires, so tools
-    // attach to the turn directly (preserves the pre-anchor shape).
+  it('moves activeNodeId to the new thinking so the camera follows it (#437)', () => {
+    // Without this, the camera stayed on the just-completed tool when
+    // a new ReAct iteration's thinking arrived — the new thinking
+    // landed off the right edge of the viewport (downstream of the
+    // tool) and only became visible when a later text delta moved
+    // activeNodeId, by which point the canvas appeared to "jump".
+    // mintIterationThinking now sets activeNodeId = synth_id so the
+    // auto-scroll effect pans to the new node as it arrives. The
+    // append-delta path keeps activeNodeId on the streaming thinking
+    // so a long thought doesn't drift off-screen.
+    const state = runAll(
+      startedTurn(),
+      envelope('stream.thinking', { delta: 'iter 1 thought' }),
+      envelope('stream.tool_use', { id: 't1', name: 'bash' }),
+      envelope('stream.tool_completed', {
+        id: 't1',
+        name: 'bash',
+        durationMs: 12,
+        isError: false,
+      }),
+      envelope('stream.thinking', { delta: 'iter 2 thought' }),
+    );
+    // After iter-2 thinking arrives, activeNodeId should point at the
+    // new thinking (req-1:thinking:1 — the second thinking under the
+    // turn) so the auto-scroll effect in ExecutionTree pans there.
+    expect(state.activeNodeId).toBe('req-1:thinking:1');
+    // Same-iteration delta keeps focus on the same thinking.
+    const after = executionTreeReducer(
+      state,
+      envelope('stream.thinking', { delta: ' more' }),
+    );
+    expect(after.activeNodeId).toBe('req-1:thinking:1');
+  });
+
+  it('synthesises a thinking parent when a tool_use arrives with no preceding thinking', () => {
+    // Extended thinking disabled (or model emitted tool_use without
+    // any thinking delta): addToolNode mints a synthetic thinking
+    // (status=completed) under the turn so the tool has a proper
+    // ReAct parent. Without this the tool became a direct child of
+    // the turn and the next iteration's text → minted-thinking pair
+    // appeared visually parallel to the tool — the user's complaint
+    // on the "after permission" diagram (#437).
     const state = runAll(
       startedTurn(),
       envelope('stream.tool_use', { id: 't1', name: 'bash' }),
     );
     const turn = state.rootNodes[0]!.children[0]!;
+    // turn → synthetic thinking → tool
     expect(turn.children).toHaveLength(1);
-    expect(turn.children[0]!.id).toBe('t1');
+    const thinking = turn.children[0]!;
+    expect(thinking.type).toBe('thinking');
+    expect(thinking.status).toBe('completed');
+    expect(thinking.children).toHaveLength(1);
+    expect(thinking.children[0]!.id).toBe('t1');
+    expect(thinking.children[0]!.type).toBe('tool');
+  });
+
+  it('chains a synthesised thinking into the next iteration when no real thinking arrives', () => {
+    // First tool_use minted thinking_1; the final text arrives with
+    // no real thinking either, so appendTextToCurrentTurn mints
+    // thinking_2. The two synthetic thinkings under the turn give
+    // addReActFlowEdges what it needs to draw the horizontal flow
+    // chain (thinking_1 → tool → thinking_2 → text).
+    const state = runAll(
+      startedTurn(),
+      envelope('stream.tool_use', { id: 't1', name: 'bash' }),
+      envelope('stream.tool_completed', {
+        id: 't1',
+        name: 'bash',
+        durationMs: 12,
+        isError: false,
+      }),
+      envelope('stream.text', { delta: 'd.txt 已创建' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const thinkings = turn.children.filter((c) => c.type === 'thinking');
+    expect(thinkings).toHaveLength(2);
+    // Tool lives under thinking_1; text lives under thinking_2.
+    const t1 = findById(state, 't1');
+    expect(t1.type).toBe('tool');
+    const text = turn.children.find(
+      (c) => c.type === 'thinking' && c.children.some((cc) => cc.type === 'text'),
+    );
+    expect(text).toBeDefined();
   });
 
   it('resets the anchor across turns so a new turn starts a fresh ReAct loop', () => {
@@ -1046,14 +1565,16 @@ describe('thinking-anchored tool grouping (ReAct iterations)', () => {
       }),
       envelope('stream.tool_use', { id: 't2', name: 'read' }),
     );
-    // currentThinkingId stays null because turn 2 had no thinking event
-    // before its tool_use — and addTurnNode wiped turn 1's anchor on entry.
-    // The tool fell back to the turn-as-anchor branch.
-    expect(state.currentThinkingId).toBeNull();
+    // Turn 2's first tool synthesises ITS OWN thinking — addToolNode
+    // does this when no real thinking event arrived for the new
+    // iteration. The synthetic thinking is fresh-per-turn (turn 1's
+    // anchor was wiped by addTurnNode), so currentThinkingId now
+    // points at turn 2's synthetic thinking, not turn 1's real one.
+    expect(state.currentThinkingId).toBe('req-2:thinking');
     const turn2 = state.rootNodes[0]!.children[1]!;
     expect(turn2.children).toHaveLength(1);
-    expect(turn2.children[0]!.id).toBe('t2');
-    expect(turn2.children[0]!.type).toBe('tool');
+    expect(turn2.children[0]!.type).toBe('thinking');
+    expect(turn2.children[0]!.children[0]!.id).toBe('t2');
   });
 });
 
