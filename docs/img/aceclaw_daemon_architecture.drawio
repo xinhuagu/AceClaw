@@ -13,18 +13,31 @@
       <mxGeometry x="100" y="10" width="500" height="30" as="geometry"/>
     </mxCell>
 
-    <!-- CLI / REPL bar -->
+    <!-- CLI / REPL — left half of the client row -->
     <mxCell id="cli" value="CLI / REPL" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;fontStyle=1;align=center;" vertex="1" parent="1">
-      <mxGeometry x="100" y="50" width="500" height="35" as="geometry"/>
+      <mxGeometry x="100" y="50" width="240" height="35" as="geometry"/>
     </mxCell>
 
-    <!-- UDS label -->
-    <mxCell id="uds" value="UDS only (no network surface)" style="text;html=1;fontSize=10;align=center;fillColor=none;strokeColor=none;fontColor=#888888;" vertex="1" parent="1">
-      <mxGeometry x="200" y="87" width="300" height="18" as="geometry"/>
+    <!-- Dashboard (Browser) — right half of the client row -->
+    <mxCell id="dashboard" value="Dashboard (Browser)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=13;fontStyle=1;align=center;" vertex="1" parent="1">
+      <mxGeometry x="360" y="50" width="240" height="35" as="geometry"/>
     </mxCell>
 
-    <!-- Arrow CLI to Daemon -->
+    <!-- Transport labels — distinct colours match the link strokes below -->
+    <mxCell id="uds" value="JSON-RPC over UDS" style="text;html=1;fontSize=10;align=center;fillColor=none;strokeColor=none;fontColor=#6c8ebf;" vertex="1" parent="1">
+      <mxGeometry x="120" y="87" width="200" height="18" as="geometry"/>
+    </mxCell>
+    <mxCell id="ws-label" value="WebSocket (loopback-only)" style="text;html=1;fontSize=10;align=center;fillColor=none;strokeColor=none;fontColor=#d79b00;" vertex="1" parent="1">
+      <mxGeometry x="380" y="87" width="200" height="18" as="geometry"/>
+    </mxCell>
+
+    <!-- Arrow CLI ↔ Daemon (UDS, blue) -->
     <mxCell id="arrow1" value="" style="endArrow=classic;startArrow=classic;strokeColor=#6c8ebf;strokeWidth=2;" edge="1" parent="1" source="cli" target="daemon">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+
+    <!-- Arrow Dashboard ↔ Daemon (WebSocket, orange) -->
+    <mxCell id="arrow-ws" value="" style="endArrow=classic;startArrow=classic;strokeColor=#d79b00;strokeWidth=2;" edge="1" parent="1" source="dashboard" target="daemon">
       <mxGeometry relative="1" as="geometry"/>
     </mxCell>
 
@@ -88,8 +101,8 @@
     </mxCell>
 
     <!-- Bottom footer -->
-    <mxCell id="footer" value="Sealed local daemon • JVM • UDS-only • zero network surface • security-first" style="text;html=1;fontSize=10;align=center;fillColor=none;strokeColor=none;fontColor=#888888;fontStyle=2;" vertex="1" parent="1">
-      <mxGeometry x="80" y="520" width="540" height="20" as="geometry"/>
+    <mxCell id="footer" value="Sealed local daemon • JVM • UDS for CLI • loopback-only WebSocket for Dashboard • security-first" style="text;html=1;fontSize=10;align=center;fillColor=none;strokeColor=none;fontColor=#888888;fontStyle=2;" vertex="1" parent="1">
+      <mxGeometry x="40" y="520" width="620" height="20" as="geometry"/>
     </mxCell>
 
   </root>

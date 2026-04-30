@@ -11,11 +11,11 @@
 
 AceClaw is two things in one project:
 
-1. **A Java agent runtime** — a persistent JVM daemon that runs the ReAct + Plan/Replan loop, tools, permissions, memory, and self-learning. Pure Java 21, zero AI framework, zero network attack surface.
-2. **A visual agent harness** — a React dashboard that streams the daemon's event bus and lets you watch — and intervene in — the agent in real time.
+1. **A Java agent runtime** — a persistent JVM daemon that runs the ReAct + Plan/Replan loop, tools, permissions, memory, and self-learning. Pure Java 21, zero AI framework. The CLI talks to it over a Unix Domain Socket (no network surface).
+2. **A visual agent harness** — a React dashboard that talks to the same daemon over a loopback-only WebSocket bridge, so you can watch — and intervene in — the agent in real time.
 
 <p align="center">
-  <img src="docs/img/aceclaw_daemon_architecture.drawio.png" alt="AceClaw daemon architecture" width="560">
+  <img src="docs/img/aceclaw_daemon_architecture.drawio.png" alt="AceClaw architecture: CLI over UDS and Dashboard over WebSocket, both connected to the JVM daemon" width="640">
 </p>
 
 > Memory helps an agent remember. Self-learning helps an agent improve. Visualization makes both legible.
