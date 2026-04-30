@@ -45,8 +45,14 @@ function straightPath(edge: LayoutEdge): string {
   return `M ${from.x} ${from.y} L ${to.x} ${to.y}`;
 }
 
-/** Muted neutral for sequence edges so they recede behind containment edges. */
-const SEQUENCE_STROKE = '#52525b';
+/**
+ * Stroke colour for sequence/flow edges. Picked light enough to read on
+ * the bg-zinc-950 canvas without competing visually with the saturated
+ * status colours on containment edges. zinc-400 (#94a3b8 → slate-400)
+ * survives the dark background; the 0.5 opacity earlier rendered as
+ * near-invisible.
+ */
+const SEQUENCE_STROKE = '#94a3b8';
 
 export function GrowingEdge({ edge }: GrowingEdgeProps) {
   const isSequence = edge.kind === 'sequence';
@@ -63,11 +69,15 @@ export function GrowingEdge({ edge }: GrowingEdgeProps) {
     <motion.path
       d={d}
       stroke={stroke}
-      strokeWidth={isSequence ? 1.25 : 1.75}
-      strokeDasharray={isSequence ? '4 4' : undefined}
+      // Sequence edges get the SAME stroke width as containment edges
+      // and a longer dash gap so they read as a clear, intentional
+      // dashed line on a dark background — not a faint hint.
+      strokeWidth={isSequence ? 1.75 : 1.75}
+      strokeDasharray={isSequence ? '7 5' : undefined}
+      strokeLinecap={isSequence ? 'round' : 'butt'}
       fill="none"
       initial={{ pathLength: 0, opacity: 0 }}
-      animate={{ pathLength: 1, opacity: isSequence ? 0.5 : 0.85 }}
+      animate={{ pathLength: 1, opacity: isSequence ? 0.85 : 0.85 }}
       transition={{ duration: 0.4, ease: 'easeOut' }}
       // exactOptionalPropertyTypes: avoid passing undefined to the
       // optional markerEnd attribute.
