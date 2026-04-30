@@ -328,11 +328,28 @@ export function useExecutionTree(
         // (e.g. clicked Approve while the tab was reconnecting). Drained
         // in arrival order — the daemon's first-response-wins (#433)
         // makes back-to-back duplicates safe.
+        //
+        // Preserve unsent commands on failure: if ws.send throws
+        // mid-loop (the socket can transition to CLOSING during
+        // reconnect churn), don't drop the rest of the queue.
+        // Optimistic local resolves have already run for permission
+        // decisions, so a silent drop here would leave the dashboard
+        // showing "approved" while the daemon waits 120 s for a
+        // response that never lands.
         if (pendingSendRef.current.length > 0) {
           const queued = pendingSendRef.current;
           pendingSendRef.current = [];
-          for (const cmd of queued) {
-            ws?.send(JSON.stringify(cmd));
+          for (let i = 0; i < queued.length; i += 1) {
+            try {
+              ws?.send(JSON.stringify(queued[i]!));
+            } catch {
+              // Re-queue this command and everything after it so a
+              // subsequent reconnect's flush picks them up. Order is
+              // preserved (slice preserves indices) and the dedup
+              // check in sendCommand keeps duplicates from accumulating.
+              pendingSendRef.current.unshift(...queued.slice(i));
+              break;
+            }
           }
         }
       };

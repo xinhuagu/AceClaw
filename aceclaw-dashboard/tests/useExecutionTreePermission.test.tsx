@@ -54,7 +54,15 @@ class FakeWebSocket {
     this.onmessage?.({ data: JSON.stringify(payload) });
   }
 
+  /**
+   * If set, every send() call throws this error instead of recording.
+   * Used by the flush-failure test to simulate a socket transitioning
+   * to CLOSING mid-flush.
+   */
+  throwOnSend: Error | null = null;
+
   send(message: string): void {
+    if (this.throwOnSend) throw this.throwOnSend;
     this.sent.push(message);
   }
 
@@ -221,6 +229,76 @@ describe('useExecutionTree permission flow (issue #437)', () => {
     // First 32 queue, the 33rd drops.
     expect(dispositions.slice(0, 32).every((d) => d === 'queued')).toBe(true);
     expect(dispositions[32]).toBe('dropped');
+  });
+
+  it('preserves unsent commands when ws.send throws mid-flush', () => {
+    // Real bug from review (codex P2): the flush loop cleared the
+    // queue BEFORE iterating, so a ws.send throw mid-flush (socket
+    // transitioning to CLOSING during reconnect churn) silently
+    // dropped the remaining commands. With optimistic local resolves
+    // already applied for those clicks, the daemon would never get
+    // the decision and would 120s-timeout the tool.
+    const { result } = renderHook(() =>
+      useExecutionTree('ws://test/ws', 'sess-1'),
+    );
+    const ws = FakeWebSocket.last!;
+    // Queue three commands while socket is closed.
+    act(() => {
+      result.current.sendCommand({
+        method: 'permission.response',
+        params: { requestId: 'perm-1', approved: true },
+      });
+      result.current.sendCommand({
+        method: 'permission.response',
+        params: { requestId: 'perm-2', approved: false },
+      });
+      result.current.sendCommand({
+        method: 'permission.response',
+        params: { requestId: 'perm-3', approved: true },
+      });
+    });
+    // Flip send to throw on the SECOND call: snapshot.request goes
+    // through (call 1), perm-1 goes through (call 2 — but throws
+    // because of our trigger), so set throwOnSend BEFORE perm-2 by
+    // counting via a custom wrapper.
+    const originalSend = ws.send.bind(ws);
+    let callCount = 0;
+    ws.send = (message: string) => {
+      callCount += 1;
+      // Throw on the perm-2 attempt (call sequence: snapshot.request,
+      // perm-1, perm-2). Specifically throw when the message is
+      // perm-2's response.
+      if (message.includes('"requestId":"perm-2"')) {
+        throw new Error('socket CLOSING');
+      }
+      originalSend(message);
+    };
+    // Open the socket — flush runs, perm-2 throws, perm-3 should
+    // remain queued.
+    act(() => ws.open());
+    // perm-1 made it to the wire; perm-3 should not have, and should
+    // remain in the pendingSendRef for next flush.
+    const sent = ws.sent.filter((s) => s.includes('permission.response'));
+    expect(sent.some((s) => s.includes('"requestId":"perm-1"'))).toBe(true);
+    expect(sent.some((s) => s.includes('"requestId":"perm-3"'))).toBe(false);
+    // Now restore send and trigger a flush by sending one more
+    // command — sendCommand sees socket OPEN so writes immediately,
+    // but the previously-failed perm-2/perm-3 are still queued.
+    // Verify by inspecting that the next reconnect would flush them
+    // (we close + open to trigger).
+    ws.send = originalSend;
+    act(() => ws.close());
+    // New socket on reconnect:
+    act(() => {
+      const next = FakeWebSocket.last!;
+      next.open();
+    });
+    const sentAfter = FakeWebSocket.last!.sent.filter((s) =>
+      s.includes('permission.response'),
+    );
+    // perm-2 and perm-3 land on the new socket.
+    expect(sentAfter.some((s) => s.includes('"requestId":"perm-2"'))).toBe(true);
+    expect(sentAfter.some((s) => s.includes('"requestId":"perm-3"'))).toBe(true);
   });
 
   it('dedups queued permission.response by requestId so back-to-back clicks collapse', () => {
