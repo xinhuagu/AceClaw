@@ -834,6 +834,33 @@ describe('thinking-anchored tool grouping (ReAct iterations)', () => {
     expect(thinking.status).toBe('completed');
   });
 
+  it('attaches tool_use as a child of the iteration narration when text exists', () => {
+    // Causal chain: thinking → narration ("I'll call A and B") → tools
+    // (the actions that narration described). When the iteration emits
+    // text before tools, the tools structurally hang off the text node,
+    // not the bare thinking — that puts narration in the right place
+    // visually as the immediate cause of the tools.
+    const state = runAll(
+      startedTurn(),
+      envelope('stream.thinking', { delta: 'plan: call A and B' }),
+      envelope('stream.text', { delta: "I'll call A and B" }),
+      envelope('stream.tool_use', { id: 'tA', name: 'bash' }),
+      envelope('stream.tool_use', { id: 'tB', name: 'read' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const thinking = turn.children[0]!;
+    const text = thinking.children.find((c) => c.type === 'text')!;
+    // Tools hang off text, NOT off thinking.
+    const toolsUnderText = text.children.filter((c) => c.type === 'tool');
+    expect(toolsUnderText.map((t) => t.id).sort()).toEqual(['tA', 'tB']);
+    const toolsUnderThinking = thinking.children.filter((c) => c.type === 'tool');
+    expect(toolsUnderThinking).toHaveLength(0);
+    // Narration is marked completed once tools start (the model stopped
+    // talking and started acting); pulse stops in sync with thinking.
+    expect(text.status).toBe('completed');
+    expect(thinking.status).toBe('completed');
+  });
+
   it('falls back to attaching tools to the turn when no thinking has been emitted', () => {
     // Extended thinking disabled: stream.thinking never fires, so tools
     // attach to the turn directly (preserves the pre-anchor shape).

@@ -126,14 +126,23 @@ function addReActFlowEdges(
       for (let i = 0; i < thinkings.length - 1; i += 1) {
         const curr = thinkings[i]!;
         const next = thinkings[i + 1]!;
-        const tools = curr.children.filter((c) => c.type === 'tool');
+        // Tools can live either as direct children of the thinking
+        // (no narration this iteration) or under the iteration's text
+        // node (narration → tools chain). Either way, the iteration's
+        // "leaves" are what flow into the next thinking.
+        const text = curr.children.find((c) => c.type === 'text');
+        const directTools = curr.children.filter((c) => c.type === 'tool');
+        const narratedTools =
+          text?.children.filter((c) => c.type === 'tool') ?? [];
+        const tools = [...directTools, ...narratedTools];
         if (tools.length > 0) {
           for (const t of tools) {
             graph.setEdge(t.id, next.id, { flow: true });
           }
           continue;
         }
-        const text = curr.children.find((c) => c.type === 'text');
+        // No tools this iteration. Bridge via text when present (pure
+        // narration), else direct thinking → thinking.
         if (text) {
           graph.setEdge(text.id, next.id, { flow: true });
         } else {

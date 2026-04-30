@@ -364,18 +364,28 @@ function addToolNode(
   state: ExecutionTree,
   params: ToolUseParams,
 ): ExecutionTree {
-  // Tools attach to the most recent thinking anchor under the running turn
-  // when extended thinking is enabled — that captures the ReAct semantic of
-  // "thinking is the cause, tool calls are its effects" and groups parallel
-  // tools from one LLM response under one parent. With no thinking events
-  // (e.g. extended thinking disabled), tools fall back to attaching to the
-  // turn itself, preserving the pre-thinking-anchor behaviour.
+  // Tools attach to the deepest causal node of the current iteration:
+  //   1. The iteration's narration (text) when one exists — narration is
+  //      the model verbalising its plan ("I'll call A and B"), and the
+  //      tools that follow are the execution of that plan. Parent → child.
+  //   2. Otherwise the iteration's thinking — when the model went straight
+  //      from reasoning to acting with no narration, thinking is the cause.
+  //   3. Otherwise the running turn — extended thinking off, or events
+  //      arrived out of order. Fallback so the tool still surfaces.
+  // Parallel tools from one LLM response don't get a thinking delta or
+  // a text delta between them, so they share the same anchor — they
+  // attach as siblings to whichever anchor was selected for the first
+  // tool of the call.
   const turn = findNearestAncestor(
     state.rootNodes,
     state.activeNodeId,
     (n) => n.type === 'turn' && n.status === 'running',
   );
-  const anchorId = state.currentThinkingId ?? (turn ? turn.id : null);
+  const narrationId = state.currentThinkingId
+    ? (findNode(state.rootNodes, textNodeId(state.currentThinkingId))?.id ?? null)
+    : null;
+  const anchorId =
+    narrationId ?? state.currentThinkingId ?? (turn ? turn.id : null);
 
   const tool: ExecutionNode = {
     id: params.id,
@@ -411,13 +421,18 @@ function addToolNode(
     rootNodes = [...state.rootNodes, tool];
   }
 
-  // Mark the thinking anchor as completed: the LLM has stopped thinking
-  // and is now acting. Without this, the thinking node would keep its
-  // running-status pulse indefinitely while tools execute, even though
-  // the model is no longer actively thinking. Only flip 'running' →
-  // 'completed' so we don't clobber a thinking that already failed/etc.
+  // Mark the thinking AND any narration text as completed: once
+  // tool_use starts, the LLM has stopped both reasoning and talking
+  // for this iteration — both should stop pulsing immediately so the
+  // visual state matches reality. Only flip 'running' → 'completed'
+  // so a node that already failed/etc. isn't clobbered.
   if (state.currentThinkingId) {
     rootNodes = mapNode(rootNodes, state.currentThinkingId, (t) =>
+      t.status === 'running' ? { ...t, status: 'completed' as const } : t,
+    );
+  }
+  if (narrationId) {
+    rootNodes = mapNode(rootNodes, narrationId, (t) =>
       t.status === 'running' ? { ...t, status: 'completed' as const } : t,
     );
   }
