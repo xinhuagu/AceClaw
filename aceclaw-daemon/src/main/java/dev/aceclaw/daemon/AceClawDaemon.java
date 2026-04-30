@@ -494,6 +494,12 @@ public final class AceClawDaemon {
                 switch (method) {
                     case "sessions.list" -> handleSessionsList(ctx, mapperRef, sessionsRef, agentHandler);
                     case "snapshot.request" -> handleSnapshotRequest(ctx, message, mapperRef, bridgeRef);
+                    // Browser approve/deny → route to the same per-context
+                    // CompletableFuture the CLI socket monitor would (issue
+                    // #433). First response wins; the loser is logged and
+                    // dropped. Per-context map cleanup is handled inside
+                    // routePermissionResponse via the daemon-wide registry.
+                    case "permission.response" -> agentHandler.routePermissionResponse(message);
                     default -> { /* unknown method: drop */ }
                 }
             });
