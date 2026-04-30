@@ -45,9 +45,15 @@ interface PermissionPanelProps {
   anchorY: number;
   /** Called when the user clicks Approve. */
   onApprove: (requestId: string) => void;
+  /**
+   * Called when the user clicks Always Allow — same as approve plus
+   * {@code remember: true} on the wire so the daemon grants
+   * session-level approval for this tool and stops asking.
+   */
+  onAlwaysAllow: (requestId: string) => void;
   /** Called when the user clicks Deny. */
   onDeny: (requestId: string) => void;
-  /** Called when the panel times out OR the CLI-resolved fade-out elapses. */
+  /** Called when the panel times out OR the user dismisses it without responding. */
   onDismiss: (requestId: string) => void;
   /**
    * When multiple panels are mounted (parallel tools each holding a
@@ -113,6 +119,7 @@ export function PermissionPanel({
   anchorX,
   anchorY,
   onApprove,
+  onAlwaysAllow,
   onDeny,
   onDismiss,
   primary = true,
@@ -225,6 +232,17 @@ export function PermissionPanel({
       }}
       role="dialog"
       aria-label={`Permission required for ${tool}`}
+      // Stop pointer/click events from bubbling to the parent
+      // ExecutionTree's pan handler. Without this, pressing Approve
+      // bubbles up, the canvas div's onPointerDown calls
+      // setPointerCapture, and the resulting click fires on the canvas
+      // — so the button's onClick never runs. Stopping at the panel
+      // boundary keeps panning intact for the rest of the canvas.
+      onPointerDown={(e) => e.stopPropagation()}
+      onPointerMove={(e) => e.stopPropagation()}
+      onPointerUp={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+      onWheel={(e) => e.stopPropagation()}
     >
       {/* Connector — small triangular notch pointing back to the node so the
           panel reads as visually attached. Positioned just to the panel's
@@ -269,7 +287,26 @@ export function PermissionPanel({
             <div className="font-mono text-sm text-zinc-100">{tool}</div>
           </div>
           {state.kind === 'awaiting' ? (
-            <CountdownRing ratio={ratio} seconds={remainingS} urgent={urgent} />
+            <div className="flex items-center gap-2">
+              <CountdownRing ratio={ratio} seconds={remainingS} urgent={urgent} />
+              <button
+                type="button"
+                onClick={() => onDismiss(requestId)}
+                aria-label="Close panel without responding"
+                title="Close (Esc)"
+                className="text-zinc-500 transition hover:text-zinc-200 focus-visible:outline focus-visible:outline-1 focus-visible:outline-zinc-400"
+              >
+                <svg viewBox="0 0 14 14" className="h-3.5 w-3.5" aria-hidden>
+                  <path
+                    d="M3 3 L11 11 M11 3 L3 11"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    fill="none"
+                  />
+                </svg>
+              </button>
+            </div>
           ) : null}
         </div>
 
@@ -283,38 +320,54 @@ export function PermissionPanel({
         </div>
 
         {state.kind === 'awaiting' ? (
-          <div className="flex gap-2 border-t border-zinc-800/60 px-4 py-3">
+          <div className="flex flex-col gap-2 border-t border-zinc-800/60 px-4 py-3">
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => onApprove(requestId)}
+                className={[
+                  'flex-1 rounded-md px-3 py-1.5 text-xs font-semibold tracking-wide',
+                  'bg-emerald-500/90 text-emerald-50 shadow-sm',
+                  'transition hover:bg-emerald-400 hover:shadow-emerald-500/40',
+                  'focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300',
+                ].join(' ')}
+                aria-label="Approve permission"
+              >
+                <span>Approve</span>
+                <kbd className="ml-2 rounded bg-emerald-900/50 px-1 py-0 font-mono text-[10px] opacity-80">
+                  A
+                </kbd>
+              </button>
+              <button
+                type="button"
+                onClick={() => onDeny(requestId)}
+                className={[
+                  'flex-1 rounded-md px-3 py-1.5 text-xs font-semibold tracking-wide',
+                  'border border-zinc-700/80 bg-zinc-900/40 text-zinc-200',
+                  'transition hover:border-rose-500/70 hover:bg-rose-500/10 hover:text-rose-200',
+                  'focus-visible:outline focus-visible:outline-2 focus-visible:outline-rose-400',
+                ].join(' ')}
+                aria-label="Deny permission"
+              >
+                <span>Deny</span>
+                <kbd className="ml-2 rounded bg-zinc-800/80 px-1 py-0 font-mono text-[10px] opacity-80">
+                  D
+                </kbd>
+              </button>
+            </div>
             <button
               type="button"
-              onClick={() => onApprove(requestId)}
+              onClick={() => onAlwaysAllow(requestId)}
               className={[
-                'flex-1 rounded-md px-3 py-1.5 text-xs font-semibold tracking-wide',
-                'bg-emerald-500/90 text-emerald-50 shadow-sm',
-                'transition hover:bg-emerald-400 hover:shadow-emerald-500/40',
+                'w-full rounded-md px-3 py-1.5 text-[11px] font-medium tracking-wide',
+                'border border-emerald-700/40 bg-emerald-500/5 text-emerald-200/90',
+                'transition hover:border-emerald-500/60 hover:bg-emerald-500/15 hover:text-emerald-100',
                 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300',
               ].join(' ')}
-              aria-label="Approve permission"
+              aria-label="Always allow this tool for the rest of the session"
+              title="Approve and remember for the rest of this session"
             >
-              <span>Approve</span>
-              <kbd className="ml-2 rounded bg-emerald-900/50 px-1 py-0 font-mono text-[10px] opacity-80">
-                A
-              </kbd>
-            </button>
-            <button
-              type="button"
-              onClick={() => onDeny(requestId)}
-              className={[
-                'flex-1 rounded-md px-3 py-1.5 text-xs font-semibold tracking-wide',
-                'border border-zinc-700/80 bg-zinc-900/40 text-zinc-200',
-                'transition hover:border-rose-500/70 hover:bg-rose-500/10 hover:text-rose-200',
-                'focus-visible:outline focus-visible:outline-2 focus-visible:outline-rose-400',
-              ].join(' ')}
-              aria-label="Deny permission"
-            >
-              <span>Deny</span>
-              <kbd className="ml-2 rounded bg-zinc-800/80 px-1 py-0 font-mono text-[10px] opacity-80">
-                D
-              </kbd>
+              ✓ Always allow {tool} this session
             </button>
           </div>
         ) : (

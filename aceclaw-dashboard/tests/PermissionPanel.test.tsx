@@ -50,8 +50,9 @@ describe('PermissionPanel — awaiting state', () => {
     vi.useRealTimers();
   });
 
-  it('renders Approve / Deny and routes clicks back with the requestId', () => {
+  it('renders Approve / Deny / Always Allow and routes clicks back with the requestId', () => {
     const onApprove = vi.fn();
+    const onAlwaysAllow = vi.fn();
     const onDeny = vi.fn();
     const onDismiss = vi.fn();
     render(
@@ -60,16 +61,22 @@ describe('PermissionPanel — awaiting state', () => {
         anchorX={100}
         anchorY={100}
         onApprove={onApprove}
+        onAlwaysAllow={onAlwaysAllow}
         onDeny={onDeny}
         onDismiss={onDismiss}
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /approve permission/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^approve permission$/i }));
     expect(onApprove).toHaveBeenCalledWith('perm-1');
 
     fireEvent.click(screen.getByRole('button', { name: /deny permission/i }));
     expect(onDeny).toHaveBeenCalledWith('perm-1');
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /always allow this tool/i }),
+    );
+    expect(onAlwaysAllow).toHaveBeenCalledWith('perm-1');
   });
 
   it('extracts a path-like subject from the prompt and renders it as code', () => {
@@ -78,7 +85,7 @@ describe('PermissionPanel — awaiting state', () => {
         node={awaitingNode()}
         anchorX={0}
         anchorY={0}
-        onApprove={vi.fn()}
+        onApprove={vi.fn()} onAlwaysAllow={vi.fn()}
         onDeny={vi.fn()}
         onDismiss={vi.fn()}
       />,
@@ -99,7 +106,7 @@ describe('PermissionPanel — awaiting state', () => {
         node={awaitingNode()}
         anchorX={0}
         anchorY={0}
-        onApprove={onApprove}
+        onApprove={onApprove} onAlwaysAllow={vi.fn()}
         onDeny={onDeny}
         onDismiss={onDismiss}
       />,
@@ -119,7 +126,7 @@ describe('PermissionPanel — awaiting state', () => {
         node={awaitingNode()}
         anchorX={0}
         anchorY={0}
-        onApprove={vi.fn()}
+        onApprove={vi.fn()} onAlwaysAllow={vi.fn()}
         onDeny={vi.fn()}
         onDismiss={onDismiss}
       />,
@@ -150,7 +157,7 @@ describe('PermissionPanel — awaiting state', () => {
         node={stale}
         anchorX={0}
         anchorY={0}
-        onApprove={vi.fn()}
+        onApprove={vi.fn()} onAlwaysAllow={vi.fn()}
         onDeny={vi.fn()}
         onDismiss={onDismiss}
       />,
@@ -169,7 +176,7 @@ describe('PermissionPanel — awaiting state', () => {
         node={awaitingNode()}
         anchorX={0}
         anchorY={0}
-        onApprove={onApprove}
+        onApprove={onApprove} onAlwaysAllow={vi.fn()}
         onDeny={vi.fn()}
         onDismiss={vi.fn()}
         primary={false}
@@ -204,7 +211,7 @@ describe('PermissionPanel — awaiting state', () => {
           node={primaryNode}
           anchorX={0}
           anchorY={0}
-          onApprove={primaryApprove}
+          onApprove={primaryApprove} onAlwaysAllow={vi.fn()}
           onDeny={vi.fn()}
           onDismiss={vi.fn()}
           primary
@@ -213,7 +220,7 @@ describe('PermissionPanel — awaiting state', () => {
           node={secondaryNode}
           anchorX={400}
           anchorY={200}
-          onApprove={secondaryApprove}
+          onApprove={secondaryApprove} onAlwaysAllow={vi.fn()}
           onDeny={vi.fn()}
           onDismiss={vi.fn()}
           primary={false}
@@ -255,7 +262,7 @@ describe('PermissionPanel — CLI-resolved state', () => {
         node={cliResolvedNode(true)}
         anchorX={0}
         anchorY={0}
-        onApprove={vi.fn()}
+        onApprove={vi.fn()} onAlwaysAllow={vi.fn()}
         onDeny={vi.fn()}
         onDismiss={onDismiss}
       />,
@@ -281,7 +288,7 @@ describe('PermissionPanel — CLI-resolved state', () => {
         node={cliResolvedNode(false)}
         anchorX={0}
         anchorY={0}
-        onApprove={vi.fn()}
+        onApprove={vi.fn()} onAlwaysAllow={vi.fn()}
         onDeny={vi.fn()}
         onDismiss={vi.fn()}
       />,

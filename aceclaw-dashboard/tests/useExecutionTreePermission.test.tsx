@@ -89,6 +89,29 @@ describe('useExecutionTree permission flow (issue #437)', () => {
     };
   }
 
+  it('sendCommand can carry remember:true for the Always Allow button', () => {
+    // The "Always Allow this tool this session" button sends a
+    // permission.response with remember=true so the daemon stops asking
+    // about this tool for the rest of the session. Verify the flag
+    // makes it onto the wire — the optional shape was never the
+    // default, and silently dropping it would defeat the feature.
+    const { result } = renderHook(() =>
+      useExecutionTree('ws://test/ws', 'sess-1'),
+    );
+    const ws = FakeWebSocket.last!;
+    act(() => ws.open());
+    act(() => {
+      result.current.sendCommand({
+        method: 'permission.response',
+        params: { requestId: 'perm-1', approved: true, remember: true },
+      });
+    });
+    const parsed = JSON.parse(ws.sent[ws.sent.length - 1]!) as {
+      params: { remember?: boolean };
+    };
+    expect(parsed.params.remember).toBe(true);
+  });
+
   it('sendCommand writes a permission.response frame once open', () => {
     const { result } = renderHook(() =>
       useExecutionTree('ws://test/ws', 'sess-1'),

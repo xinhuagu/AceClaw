@@ -17,6 +17,7 @@ import { AnimatePresence } from 'framer-motion';
 import {
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -31,13 +32,15 @@ import { PermissionPanel } from './PermissionPanel';
 interface ExecutionTreeProps {
   tree: ExecutionTreeState;
   /**
-   * Approve/Deny/Dismiss handlers for the inline {@link PermissionPanel}
-   * (issue #437). Optional so test scaffolding and the empty state can
-   * still render the tree without wiring permission flows. App.tsx wires
-   * these to the WS hook's {@code sendCommand}, {@code resolvePermission},
-   * and {@code dismissPermission}.
+   * Approve/AlwaysAllow/Deny/Dismiss handlers for the inline
+   * {@link PermissionPanel} (issue #437). Optional so test scaffolding
+   * and the empty state can still render the tree without wiring
+   * permission flows. App.tsx wires these to the WS hook's
+   * {@code sendCommand}, {@code resolvePermission}, and
+   * {@code dismissPermission}.
    */
   onApprovePermission?: (requestId: string) => void;
+  onAlwaysAllowPermission?: (requestId: string) => void;
   onDenyPermission?: (requestId: string) => void;
   onDismissPermission?: (requestId: string) => void;
 }
@@ -113,6 +116,7 @@ const INITIAL_TRANSFORM: ViewportTransform = { x: 0, y: 0, scale: 1 };
 export function ExecutionTree({
   tree,
   onApprovePermission,
+  onAlwaysAllowPermission,
   onDenyPermission,
   onDismissPermission,
 }: ExecutionTreeProps) {
@@ -239,40 +243,53 @@ export function ExecutionTree({
   );
 
   /**
-   * Find every node that should host an inline {@link PermissionPanel}.
-   * Panels mount on any node carrying {@code awaitingInput} — this is
-   * true both for the interactive paused state AND for the brief
-   * "resolved via CLI" reveal (the panel disambiguates via
-   * metadata.resolvedBy). Parallel tools that each open a permission
-   * gate produce multiple awaiting nodes — render one panel per node so
-   * the user can see and answer all of them; without this they'd
-   * collapse to a single panel and the rest would be invisible.
-   *
-   * "Primary" is the most-recently activated awaiting node — it owns
-   * the global A/D/Esc keyboard shortcuts so keystrokes always have a
-   * single target. Click targeting works on any panel.
+   * Click-to-open panel state. Earlier versions auto-mounted the panel
+   * the moment a {@code permission.request} arrived — but on a daemon
+   * with an auto-accept policy the panel would flash for ~1.5 s and
+   * vanish before the user could read it. New UX: nodes that need
+   * permission show their paused glyph + cursor:pointer in the tree,
+   * and the panel only opens when the user clicks the node. Resolves
+   * to {@code null} either by user action (Approve/Deny/Esc/×) or
+   * because the underlying node lost {@code awaitingInput} (CLI raced
+   * to answer first).
    */
-  const awaitingNodes = useMemo<LayoutNode[]>(
-    () => layout.nodes.filter((n) => n.awaitingInput === true),
-    [layout.nodes],
+  const [openPanelRequestId, setOpenPanelRequestId] = useState<string | null>(
+    null,
   );
-  const primaryAwaitingId = useMemo<string | null>(() => {
-    if (awaitingNodes.length === 0) return null;
-    if (tree.activeNodeId) {
-      const active = awaitingNodes.find((n) => n.id === tree.activeNodeId);
-      if (active) return active.id;
-    }
-    // Fall back to the first match in pre-order. Stable across re-renders
-    // because layout.nodes order is itself stable.
-    return awaitingNodes[0]!.id;
-  }, [awaitingNodes, tree.activeNodeId]);
+  const handleAwaitingNodeClick = useCallback((requestId: string) => {
+    setOpenPanelRequestId((prev) => (prev === requestId ? null : requestId));
+  }, []);
+  // Auto-close when the underlying request is no longer pending — e.g.
+  // the CLI answered while the panel was open, or the daemon timed out.
+  useEffect(() => {
+    if (!openPanelRequestId) return;
+    const stillPending = layout.nodes.some(
+      (n) =>
+        n.permissionRequestId === openPanelRequestId &&
+        n.awaitingInput === true,
+    );
+    if (!stillPending) setOpenPanelRequestId(null);
+  }, [layout.nodes, openPanelRequestId]);
 
-  // Convert each awaiting node's layout (graph-space) coords to overlay
-  // (container-space) coords so its panel sits next to it on screen.
-  const panelAnchors = useMemo(
-    () => computePanelAnchors(awaitingNodes, viewport),
-    [awaitingNodes, viewport],
-  );
+  // Single open panel — find its node + compute anchor coords.
+  const openPanelNode = useMemo<LayoutNode | null>(() => {
+    if (!openPanelRequestId) return null;
+    return (
+      layout.nodes.find(
+        (n) => n.permissionRequestId === openPanelRequestId,
+      ) ?? null
+    );
+  }, [layout.nodes, openPanelRequestId]);
+  const openPanelAnchor = useMemo(() => {
+    if (!openPanelNode) return null;
+    return {
+      x:
+        viewport.x +
+        (openPanelNode.x + openPanelNode.width / 2) * viewport.scale +
+        12,
+      y: viewport.y + openPanelNode.y * viewport.scale,
+    };
+  }, [openPanelNode, viewport]);
 
   if (layout.nodes.length === 0) {
     return (
@@ -304,20 +321,35 @@ export function ExecutionTree({
       */}
       <div className="pointer-events-none absolute inset-0 z-20">
         <AnimatePresence>
-          {onApprovePermission && onDenyPermission && onDismissPermission
-            ? panelAnchors.map(({ node, x, y }) => (
-                <PermissionPanel
-                  key={node.permissionRequestId ?? node.id}
-                  node={node}
-                  anchorX={x}
-                  anchorY={y}
-                  onApprove={onApprovePermission}
-                  onDeny={onDenyPermission}
-                  onDismiss={onDismissPermission}
-                  primary={node.id === primaryAwaitingId}
-                />
-              ))
-            : null}
+          {openPanelNode &&
+          openPanelAnchor &&
+          onApprovePermission &&
+          onAlwaysAllowPermission &&
+          onDenyPermission &&
+          onDismissPermission ? (
+            <PermissionPanel
+              key={openPanelNode.permissionRequestId ?? openPanelNode.id}
+              node={openPanelNode}
+              anchorX={openPanelAnchor.x}
+              anchorY={openPanelAnchor.y}
+              onApprove={(rid) => {
+                onApprovePermission(rid);
+                setOpenPanelRequestId(null);
+              }}
+              onAlwaysAllow={(rid) => {
+                onAlwaysAllowPermission(rid);
+                setOpenPanelRequestId(null);
+              }}
+              onDeny={(rid) => {
+                onDenyPermission(rid);
+                setOpenPanelRequestId(null);
+              }}
+              onDismiss={(rid) => {
+                onDismissPermission(rid);
+                setOpenPanelRequestId(null);
+              }}
+            />
+          ) : null}
         </AnimatePresence>
       </div>
       <svg className="h-full w-full" role="img" aria-label="execution tree">
@@ -357,7 +389,15 @@ export function ExecutionTree({
           </AnimatePresence>
           <AnimatePresence>
             {layout.nodes.map((n) => (
-              <GrowingNode key={n.id} node={n} />
+              <GrowingNode
+                key={n.id}
+                node={n}
+                onAwaitingClick={handleAwaitingNodeClick}
+                isOpenPanel={
+                  n.permissionRequestId !== undefined &&
+                  n.permissionRequestId === openPanelRequestId
+                }
+              />
             ))}
           </AnimatePresence>
         </g>

@@ -450,9 +450,13 @@ describe('permission resolution (issue #437)', () => {
 
   it('detects CLI-resolved permission via stream.tool_completed (success)', () => {
     // CLI answered the permission first → daemon ran the tool → tool_completed
-    // arrives while the node is still awaitingInput. Reducer stamps
-    // resolvedBy='cli' so the panel shows "Approved via CLI" before its
-    // dismiss timer tears it down.
+    // arrives while the node was awaitingInput. Reducer stamps
+    // resolvedBy='cli' for diagnostics AND strips the panel-trigger
+    // fields so the node stops advertising "click to approve" in the
+    // tree. (Earlier behaviour kept awaitingInput=true to support a
+    // brief "Approved via CLI" reveal in the panel; that flow caused
+    // the panel to flash on auto-accept policies, so the new
+    // click-to-open UX simply self-corrects to the daemon's verdict.)
     const before = pausedToolTree();
     const after = runAll(
       before,
@@ -467,10 +471,8 @@ describe('permission resolution (issue #437)', () => {
     expect(tool.status).toBe('completed');
     expect(tool.metadata?.['resolvedBy']).toBe('cli');
     expect(tool.metadata?.['resolvedApproved']).toBe(true);
-    // The panel still has its trigger fields — they're stripped by the
-    // panel's dismiss timer via dismissPermissionPanel, not by the
-    // reducer's tool_completed handler.
-    expect(tool.awaitingInput).toBe(true);
+    expect(tool.awaitingInput).toBeUndefined();
+    expect(tool.permissionRequestId).toBeUndefined();
   });
 
   it('detects CLI-resolved permission via stream.tool_completed (denied)', () => {
@@ -489,16 +491,16 @@ describe('permission resolution (issue #437)', () => {
     expect(tool.status).toBe('failed');
     expect(tool.metadata?.['resolvedBy']).toBe('cli');
     expect(tool.metadata?.['resolvedApproved']).toBe(false);
+    expect(tool.awaitingInput).toBeUndefined();
   });
 
   it('does not corrupt a CLI-resolved node when a tardy browser click arrives', () => {
-    // The race the codex review caught: tool_completed lands first
-    // (resolvedBy='cli', status='completed', awaitingInput still true so
-    // the panel shows "Approved via CLI"). The user, having seen the
-    // panel mid-flicker, clicks Approve before the dismiss timer fires.
-    // Without the guard, resolvePermissionLocally would overwrite
-    // resolvedBy back to 'browser' and reset status from 'completed' to
-    // 'running' — resurrecting a node the daemon already finished.
+    // Race scenario: tool_completed lands first (CLI raced and won).
+    // completeToolNode strips awaitingInput / permissionRequestId and
+    // stamps resolvedBy='cli'. A tardy resolvePermissionLocally call
+    // (e.g. from click-to-open state that hasn't unmounted yet) finds
+    // no awaiting node by id and is a no-op — the daemon's verdict
+    // stays untouched.
     const cliResolved = runAll(
       pausedToolTree(),
       envelope('stream.tool_completed', {
@@ -509,15 +511,11 @@ describe('permission resolution (issue #437)', () => {
       }),
     );
     const after = resolvePermissionLocally(cliResolved, 'perm-1', false);
+    expect(after).toBe(cliResolved); // referentially identical → no-op
     const tool = after.rootNodes[0]!.children[0]!.children[0]!;
-    // Status stays at the daemon's verdict; resolvedBy stays 'cli'.
     expect(tool.status).toBe('completed');
     expect(tool.metadata?.['resolvedBy']).toBe('cli');
     expect(tool.metadata?.['resolvedApproved']).toBe(true);
-    // Panel-trigger fields are stripped — the click DID dismiss the
-    // panel, just without rewriting the resolution.
-    expect(tool.awaitingInput).toBeUndefined();
-    expect(tool.permissionRequestId).toBeUndefined();
   });
 
   it('does not stamp resolvedBy=cli when local resolve already won the race', () => {
@@ -539,25 +537,15 @@ describe('permission resolution (issue #437)', () => {
   });
 
   it('dismissPermissionPanel strips panel-trigger fields without touching status', () => {
-    // Used by the panel's dismiss timer after the CLI-resolved reveal.
-    // Status was already set by tool_completed; we only clear the
-    // panel-mounting flags so the overlay unmounts.
-    const cliResolved = runAll(
-      pausedToolTree(),
-      envelope('stream.tool_completed', {
-        id: 't1',
-        name: 'edit_file',
-        durationMs: 42,
-        isError: false,
-      }),
-    );
-    const dismissed = dismissPermissionPanel(cliResolved, 'perm-1');
+    // Used by the panel's × button when the user closes without
+    // responding. Status remains paused until the daemon resolves; we
+    // only clear the panel-mounting flags so the overlay unmounts.
+    const dismissed = dismissPermissionPanel(pausedToolTree(), 'perm-1');
     const tool = dismissed.rootNodes[0]!.children[0]!.children[0]!;
     expect(tool.awaitingInput).toBeUndefined();
     expect(tool.inputPrompt).toBeUndefined();
     expect(tool.permissionRequestId).toBeUndefined();
-    expect(tool.status).toBe('completed');
-    expect(tool.metadata?.['resolvedBy']).toBe('cli');
+    expect(tool.status).toBe('paused');
   });
 
   it('dismiss is a no-op for unknown requestId', () => {

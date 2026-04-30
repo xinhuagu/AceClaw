@@ -171,15 +171,23 @@ function DashboardConnected({ sessionId, wsUrl }: DashboardConnectedProps) {
   // the panel keeps rendering and the user can re-try once the socket
   // reconnects — eating the click silently while clearing the panel
   // would leave the daemon waiting until its 120 s timeout.
-  const respond = (requestId: string, approved: boolean): void => {
+  const respond = (
+    requestId: string,
+    approved: boolean,
+    remember = false,
+  ): void => {
     const result = sendCommand({
       method: 'permission.response',
-      params: { requestId, approved },
+      params: remember
+        ? { requestId, approved, remember: true }
+        : { requestId, approved },
     });
     if (result === 'dropped') return;
     resolvePermission(requestId, approved);
   };
   const handleApprove = (requestId: string): void => respond(requestId, true);
+  const handleAlwaysAllow = (requestId: string): void =>
+    respond(requestId, true, true);
   const handleDeny = (requestId: string): void => respond(requestId, false);
 
   return (
@@ -189,6 +197,7 @@ function DashboardConnected({ sessionId, wsUrl }: DashboardConnectedProps) {
         <ExecutionTree
           tree={tree}
           onApprovePermission={handleApprove}
+          onAlwaysAllowPermission={handleAlwaysAllow}
           onDenyPermission={handleDeny}
           onDismissPermission={dismissPermission}
         />

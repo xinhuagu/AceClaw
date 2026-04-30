@@ -480,26 +480,38 @@ function completeToolNode(
     // If the tool completes while still awaitingInput AND no local click
     // resolved it, the CLI must have answered the permission first
     // (first-response-wins via the daemon's permissionRegistry, #433).
-    // Stamp resolvedBy so the panel can render the "Approved/Denied via
-    // CLI" indicator before its own dismiss timer tears it down. Don't
-    // strip awaitingInput here — the panel needs it to know it should
-    // still render in resolved state for ~1.5s.
+    // Stamp resolvedBy='cli' for diagnostics + strip the panel-trigger
+    // fields so the node stops looking "click to approve" in the tree.
+    // Keeping awaitingInput here would leave a forever-clickable node
+    // (the original click-to-open UX flowed via that flag); strip it
+    // and the dashboard self-corrects to the daemon's verdict.
     const isExternalResolution =
       n.awaitingInput === true && (n.metadata?.['resolvedBy'] ?? null) === null;
+    if (isExternalResolution) {
+      const {
+        awaitingInput: _ai,
+        inputPrompt: _ip,
+        permissionRequestId: _pid,
+        ...rest
+      } = n;
+      void _ai; void _ip; void _pid;
+      return {
+        ...rest,
+        status,
+        duration: params.durationMs,
+        ...(error !== undefined ? { error } : {}),
+        metadata: {
+          ...(n.metadata ?? {}),
+          resolvedBy: 'cli',
+          resolvedApproved: !params.isError,
+        },
+      };
+    }
     return {
       ...n,
       status,
       duration: params.durationMs,
       ...(error !== undefined ? { error } : {}),
-      ...(isExternalResolution
-        ? {
-            metadata: {
-              ...(n.metadata ?? {}),
-              resolvedBy: 'cli',
-              resolvedApproved: !params.isError,
-            },
-          }
-        : {}),
     };
   });
 

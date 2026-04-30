@@ -83,6 +83,19 @@ const FILL_ALPHA: Record<string, number> = {
 
 interface GrowingNodeProps {
   node: LayoutNode;
+  /**
+   * Click handler for nodes that are awaiting permission (#437). When
+   * the user clicks an awaiting node the parent opens its
+   * {@link PermissionPanel}; non-awaiting clicks are no-ops. Optional
+   * so test scaffolding can render without wiring panel state.
+   */
+  onAwaitingClick?: (requestId: string) => void;
+  /**
+   * True when this node's permission panel is currently open. Used to
+   * show a "panel open" visual hint (different border / cursor) so the
+   * user can tell which node owns the floating panel they're looking at.
+   */
+  isOpenPanel?: boolean;
 }
 
 /**
@@ -93,7 +106,7 @@ function truncate(s: string, max = 24): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
-export function GrowingNode({ node }: GrowingNodeProps) {
+export function GrowingNode({ node, onAwaitingClick, isOpenPanel }: GrowingNodeProps) {
   const palette = TYPE_ACCENT[node.type] ?? TYPE_ACCENT['default']!;
   // The accent picks per-type-and-status; if a type is missing a status
   // fallback (shouldn't happen with the palette above), drop back to the
@@ -130,13 +143,33 @@ export function GrowingNode({ node }: GrowingNodeProps) {
       }
     : {};
 
+  // Awaiting nodes get an interactive cursor and a click handler that
+  // opens the permission panel. Stop pointer/click propagation so the
+  // parent's pan handler doesn't grab pointer capture and swallow the
+  // click — same fix applied inside PermissionPanel for its buttons.
+  const isAwaiting =
+    node.awaitingInput === true && node.permissionRequestId !== undefined;
+  const interactive = isAwaiting && onAwaitingClick !== undefined;
+
   return (
     <motion.g
       initial={{ opacity: 0, scale: 0.6, x: -40 }}
       animate={{ opacity: 1, scale: 1, x: 0 }}
       exit={{ opacity: 0, scale: 0.6, transition: { duration: 0.15 } }}
       transition={{ type: 'spring', stiffness: 350, damping: 28 }}
-      style={{ transformOrigin: `${node.x}px ${node.y}px` }}
+      style={{
+        transformOrigin: `${node.x}px ${node.y}px`,
+        cursor: interactive ? 'pointer' : 'default',
+      }}
+      onPointerDown={interactive ? (e) => e.stopPropagation() : undefined}
+      onClick={
+        interactive
+          ? (e) => {
+              e.stopPropagation();
+              onAwaitingClick!(node.permissionRequestId!);
+            }
+          : undefined
+      }
     >
       <motion.rect
         x={left}
@@ -147,9 +180,39 @@ export function GrowingNode({ node }: GrowingNodeProps) {
         fill={accent}
         fillOpacity={fillAlpha}
         stroke={accent}
-        strokeWidth={1.5}
+        strokeWidth={isOpenPanel ? 2.5 : 1.5}
         {...pulseProps}
       />
+      {/*
+        "Click to review" hint for awaiting nodes (#437). A small amber
+        chip on the top-right of the node so the operator can spot
+        permission gates at a glance and knows the node is interactive.
+        Hidden once the panel is open or the request resolves.
+      */}
+      {isAwaiting && !isOpenPanel ? (
+        <g pointerEvents="none">
+          <rect
+            x={left + node.width - 64}
+            y={top - 10}
+            width={62}
+            height={16}
+            rx={8}
+            fill="#fbbf24"
+            fillOpacity={0.95}
+          />
+          <text
+            x={left + node.width - 33}
+            y={top + 1}
+            textAnchor="middle"
+            fontFamily="ui-monospace, 'JetBrains Mono', monospace"
+            fontSize={9}
+            fontWeight={600}
+            fill="#451a03"
+          >
+            click ✓/✗
+          </text>
+        </g>
+      ) : null}
       <StatusIcon status={node.status} cx={left + 16} cy={node.y} color={accent} />
       <text
         x={left + 30}
