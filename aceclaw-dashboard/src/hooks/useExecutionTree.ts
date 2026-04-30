@@ -235,7 +235,11 @@ export function useExecutionTree(
     //      clicks Approve, then quickly Deny while the WS is reconnecting,
     //      both would otherwise queue and the daemon's first-response-wins
     //      would honour whichever arrived first; on a daemon without #433
-    //      the second click never lands. Replace the prior entry instead.
+    //      the second click never lands. Replace the prior entry IN PLACE
+    //      so dedup preserves arrival order against any unrelated commands
+    //      that may sit between the two clicks. Today {@link ClientCommand}
+    //      only has permission.response, so this is theoretical — but
+    //      future command types must keep this invariant in mind.
     //   2. Hard cap at PENDING_SEND_CAP — beyond that, drop and signal
     //      back to the caller so it can avoid optimistic local updates.
     const queue = pendingSendRef.current;

@@ -182,6 +182,48 @@ describe('PermissionPanel — awaiting state', () => {
     fireEvent.click(screen.getByRole('button', { name: /approve permission/i }));
     expect(onApprove).toHaveBeenCalledWith('perm-1');
   });
+
+  it('with a primary AND a secondary mounted, A only fires the primary handler', () => {
+    // Concurrent-mount regression test: a previous version routed every
+    // keystroke to every mounted panel because the listener was bound
+    // unconditionally. Verify that only the primary's handler runs when
+    // both are alive at the same time, and the secondary stays silent.
+    const primaryApprove = vi.fn();
+    const secondaryApprove = vi.fn();
+    const primaryNode = awaitingNode({
+      id: 'tA',
+      permissionRequestId: 'perm-A',
+    });
+    const secondaryNode = awaitingNode({
+      id: 'tB',
+      permissionRequestId: 'perm-B',
+    });
+    render(
+      <>
+        <PermissionPanel
+          node={primaryNode}
+          anchorX={0}
+          anchorY={0}
+          onApprove={primaryApprove}
+          onDeny={vi.fn()}
+          onDismiss={vi.fn()}
+          primary
+        />
+        <PermissionPanel
+          node={secondaryNode}
+          anchorX={400}
+          anchorY={200}
+          onApprove={secondaryApprove}
+          onDeny={vi.fn()}
+          onDismiss={vi.fn()}
+          primary={false}
+        />
+      </>,
+    );
+    fireEvent.keyDown(window, { key: 'a' });
+    expect(primaryApprove).toHaveBeenCalledWith('perm-A');
+    expect(secondaryApprove).not.toHaveBeenCalled();
+  });
 });
 
 describe('PermissionPanel — CLI-resolved state', () => {

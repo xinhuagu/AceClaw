@@ -46,7 +46,63 @@ const ZOOM_MIN = 0.2;
 const ZOOM_MAX = 3;
 const ZOOM_STEP = 0.0015;
 
-interface ViewportTransform {
+/**
+ * Vertical real estate every {@link PermissionPanel} reserves when
+ * stacked. The actual rendered height varies (subject line wraps,
+ * resolved-state collapses the buttons), but ~170 px is a safe lower
+ * bound for the awaiting-state panel's full content. Used by
+ * {@link computePanelAnchors} to cascade colliding panels.
+ */
+const PANEL_STACK_MIN_HEIGHT = 170;
+/** Gap between cascaded panels. */
+const PANEL_STACK_GAP = 12;
+/**
+ * Horizontal offset from the node's right edge to the panel's left
+ * edge. Wide enough that the panel's connector notch clears the node
+ * border without overlapping it.
+ */
+const PANEL_HORIZONTAL_OFFSET = 12;
+
+/** Container-space anchor for one panel. */
+export interface PanelAnchor {
+  node: LayoutNode;
+  x: number;
+  y: number;
+}
+
+/**
+ * Computes screen-space anchors for the given awaiting nodes, cascading
+ * panels downward when their natural Y would cause vertical overlap.
+ *
+ * Dagre's LR layout puts parallel sibling tools ~94 px apart vertically
+ * (NODE_HEIGHT 44 + nodesep 50), but a panel renders at ~170 px tall —
+ * two siblings asking for permission would otherwise overlap by ~75 px.
+ * Sort by desired Y and floor each subsequent panel at the previous
+ * panel's bottom + GAP. The X coordinate stays at the node's right edge
+ * so the connector notch on a shifted panel still points roughly toward
+ * its source node.
+ *
+ * Pure function — exported for direct unit testing.
+ */
+export function computePanelAnchors(
+  awaitingNodes: LayoutNode[],
+  viewport: ViewportTransform,
+): PanelAnchor[] {
+  const sorted = [...awaitingNodes].sort((a, b) => a.y - b.y);
+  let lastBottom = -Infinity;
+  return sorted.map((node) => {
+    const x =
+      viewport.x +
+      (node.x + node.width / 2) * viewport.scale +
+      PANEL_HORIZONTAL_OFFSET;
+    const desiredY = viewport.y + node.y * viewport.scale;
+    const y = Math.max(desiredY, lastBottom + PANEL_STACK_GAP);
+    lastBottom = y + PANEL_STACK_MIN_HEIGHT;
+    return { node, x, y };
+  });
+}
+
+export interface ViewportTransform {
   x: number;
   y: number;
   scale: number;
@@ -213,15 +269,10 @@ export function ExecutionTree({
 
   // Convert each awaiting node's layout (graph-space) coords to overlay
   // (container-space) coords so its panel sits next to it on screen.
-  // Panel anchors at the node's right edge; the +12 px shifts past the
-  // node border so the connector notch lands cleanly on the panel side.
-  const panelAnchors = useMemo(() => {
-    return awaitingNodes.map((node) => ({
-      node,
-      x: viewport.x + (node.x + node.width / 2) * viewport.scale + 12,
-      y: viewport.y + node.y * viewport.scale,
-    }));
-  }, [awaitingNodes, viewport]);
+  const panelAnchors = useMemo(
+    () => computePanelAnchors(awaitingNodes, viewport),
+    [awaitingNodes, viewport],
+  );
 
   if (layout.nodes.length === 0) {
     return (
