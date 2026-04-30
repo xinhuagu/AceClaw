@@ -434,6 +434,13 @@ export function useExecutionTree(
     return () => {
       cancelled = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      // Drop any queued outbound commands so a session switch (the
+      // sidebar's session selector reuses this hook instance) doesn't
+      // flush stale permission.responses from session A onto session
+      // B's brand-new socket. Each new session re-opens with an empty
+      // queue; pending approvals from the prior session would land on
+      // the wrong session's daemon path otherwise.
+      pendingSendRef.current = [];
       if (ws) {
         ws.onclose = null;
         ws.onerror = null;

@@ -87,8 +87,29 @@ public final class PermissionBridge {
     public PermissionAnswer requestPermission(PermissionRequest request, long timeout, TimeUnit unit)
             throws InterruptedException, TimeoutException {
         Objects.requireNonNull(request, "request");
+        // Race window: TaskStreamReader handles permission.request on a
+        // virtual thread now (#437), so an out-of-order
+        // permission.cancelled from the daemon can land BEFORE this
+        // call registers its future. cancelExternal stores the answer
+        // in externalCancellations either way; here we drain that map
+        // before blocking. Pre-check + post-register re-check closes
+        // the sub-millisecond gap where a cancellation lands between
+        // the two operations.
+        var earlyCancel = externalCancellations.remove(request.requestId());
+        if (earlyCancel != null) {
+            return earlyCancel;
+        }
         var future = new CompletableFuture<PermissionAnswer>();
         futures.put(request.requestId(), future);
+        // Re-check after register: covers the race where cancelExternal
+        // ran concurrently and saw no future, but its externalCancellations
+        // entry was added between our pre-check and futures.put. Without
+        // this, requestPermission would block until timeout for a
+        // dashboard answer that already landed.
+        var lateCancel = externalCancellations.remove(request.requestId());
+        if (lateCancel != null) {
+            future.complete(lateCancel);
+        }
         boolean enqueued = false;
         try {
             pending.put(request);

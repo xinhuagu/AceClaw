@@ -242,6 +242,35 @@ class PermissionBridgeTest {
     }
 
     @Test
+    void cancelExternal_arrivingBeforeRequestPermission_unblocksImmediately() throws Exception {
+        // Race the codex P1 review caught: TaskStreamReader handles
+        // permission.request on a virtual thread (#437), so the read
+        // loop's permission.cancelled handler can race ahead of the
+        // virtual thread's requestPermission call. cancelExternal
+        // stores the answer in externalCancellations either way; the
+        // requestPermission early-check then drains it instead of
+        // blocking until the 115 s timeout.
+        var bridge = new PermissionBridge();
+        bridge.cancelExternal("req-early",
+                new PermissionBridge.PermissionAnswer(true, false, true));
+
+        var req = new PermissionBridge.PermissionRequest("1", "bash", "run script", "req-early");
+        var pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<PermissionBridge.PermissionAnswer> future = pool.submit(
+                    () -> bridge.requestPermission(req, 1, TimeUnit.SECONDS));
+            var answer = future.get(2, TimeUnit.SECONDS);
+            assertThat(answer.approved()).isTrue();
+            assertThat(answer.external()).isTrue();
+            // External entry consumed → not lingering.
+            assertThat(bridge.consumeExternalCancellation("req-early")).isNull();
+        } finally {
+            releasePendingRequests(bridge);
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
     void cancelExternal_isIdempotent() {
         // Daemon could conceivably send two permission.cancelled frames
         // for the same requestId (rare, but possible across reconnects).

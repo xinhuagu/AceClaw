@@ -342,8 +342,15 @@ export function ExecutionTree({
                 onDenyPermission(rid);
                 setOpenPanelRequestId(null);
               }}
-              onDismiss={(rid) => {
-                onDismissPermission(rid);
+              onDismiss={(_rid) => {
+                // User Esc / × close: just close the panel locally.
+                // Do NOT call onDismissPermission — that would strip
+                // awaitingInput / permissionRequestId from the node,
+                // which means the user couldn't reopen the panel and
+                // the daemon would keep waiting until its 120 s
+                // timeout. The request stays addressable; the user can
+                // click the node again to bring the panel back.
+                void _rid;
                 setOpenPanelRequestId(null);
               }}
             />

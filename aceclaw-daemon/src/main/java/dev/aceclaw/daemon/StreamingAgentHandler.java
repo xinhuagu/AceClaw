@@ -3584,7 +3584,19 @@ public final class StreamingAgentHandler {
                         // other concurrent prompts may still have pending
                         // permissions there. Iterating pendingPermissions
                         // (per-context) gives us the correct subset.
-                        globalPermissionRegistry.remove(rid, future);
+                        //
+                        // Match by future identity (not the wrapping
+                        // PendingPermission record): the registry value
+                        // wraps the same future together with sessionId
+                        // and context, so a naive remove(rid, future)
+                        // wouldn't equal the wrapper and would silently
+                        // leak stale entries. Look up first, then remove
+                        // by record-equality only when the contained
+                        // future matches.
+                        var pending = globalPermissionRegistry.get(rid);
+                        if (pending != null && pending.future() == future) {
+                            globalPermissionRegistry.remove(rid, pending);
+                        }
                     }
                 });
                 pendingPermissions.clear();
