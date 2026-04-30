@@ -607,9 +607,29 @@ function appendThinkingToCurrentTurn(
     };
   }
 
-  // New iteration: mint a new thinking node. Use a synthetic id keyed on
-  // the turn + an index so multiple thinking nodes per turn each get a
-  // unique id (the first uses the existing `${turnId}:thinking` id; later
+  // New iteration boundary. The model has gathered the previous
+  // iteration's tool results and is now reasoning about the next step
+  // — by API definition, every tool from the previous iteration MUST
+  // have completed (otherwise the model wouldn't have results to
+  // reason about). Daemon's tool_completed events sometimes arrive
+  // AFTER the next iteration's first thinking deltas (the daemon
+  // kicks off the next LLM call before broadcasting completion), so
+  // without reconciliation here the previous iteration's tools would
+  // keep pulsing alongside the new thinking — visually looking
+  // "parallel" when they're really sequential. Provisionally complete
+  // the prior subtree's running tools/text now; when the real
+  // tool_completed event arrives it'll overwrite with the correct
+  // status (failed vs completed) plus duration/error metadata.
+  let preparedRootNodes = state.rootNodes;
+  if (state.currentThinkingId) {
+    preparedRootNodes = mapNode(state.rootNodes, state.currentThinkingId, (n) =>
+      provisionallyCompleteRunningWork(n),
+    );
+  }
+
+  // Mint a new thinking node. Use a synthetic id keyed on the turn +
+  // an index so multiple thinking nodes per turn each get a unique id
+  // (the first uses the existing `${turnId}:thinking` id; later
   // iterations append a counter).
   const existingThinkingCount = countDescendantsOfType(turn, 'thinking');
   const id =
@@ -626,10 +646,36 @@ function appendThinkingToCurrentTurn(
   };
   return {
     ...state,
-    rootNodes: appendChild(state.rootNodes, turn.id, thinkingNode),
+    rootNodes: appendChild(preparedRootNodes, turn.id, thinkingNode),
     currentThinkingId: id,
     thinkingSealed: false,
   };
+}
+
+/**
+ * Returns {@code node} with every still-running {@code tool} or
+ * {@code text} descendant flipped to {@code completed}. Used at
+ * iteration boundaries to absorb the timing slop between a tool
+ * finishing on the daemon side and its {@code tool_completed} event
+ * arriving on the wire — the next iteration's events frequently
+ * overtake the completion broadcast, leaving previous-iteration tools
+ * stuck pulsing in the dashboard. The real tool_completed event is
+ * still applied normally when it arrives; this just removes the
+ * visual ambiguity in the gap.
+ */
+function provisionallyCompleteRunningWork(node: ExecutionNode): ExecutionNode {
+  if (node.children.length === 0) return node;
+  const updated = node.children.map((c) => {
+    const child = provisionallyCompleteRunningWork(c);
+    if (
+      (child.type === 'tool' || child.type === 'text') &&
+      child.status === 'running'
+    ) {
+      return { ...child, status: 'completed' as const };
+    }
+    return child;
+  });
+  return { ...node, children: updated };
 }
 
 /**

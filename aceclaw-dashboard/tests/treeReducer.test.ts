@@ -834,6 +834,58 @@ describe('thinking-anchored tool grouping (ReAct iterations)', () => {
     expect(thinking.status).toBe('completed');
   });
 
+  it("provisionally completes previous iteration's running tools when next thinking starts", () => {
+    // The daemon races: a new iteration's thinking deltas often
+    // arrive before the previous iteration's tool_completed event.
+    // Without reconciliation the previous tool would keep pulsing
+    // while the new thinking pulses, looking visually parallel.
+    // Mint-time sweep flips any still-running tool/text in the prior
+    // subtree to completed; the real tool_completed event still
+    // applies normally when it arrives (with duration / isError).
+    const state = runAll(
+      startedTurn(),
+      envelope('stream.thinking', { delta: 'iter 1' }),
+      envelope('stream.tool_use', { id: 'tool-A', name: 'bash' }),
+      // No tool_completed yet — the daemon hasn't broadcast it. But
+      // the next iteration's thinking delta arrives:
+      envelope('stream.thinking', { delta: 'iter 2 (next call)' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const thinking1 = turn.children[0]!;
+    const tool = thinking1.children.find((c) => c.id === 'tool-A')!;
+    // Tool is now completed (provisionally) even though no
+    // tool_completed event has arrived. New thinking is running.
+    expect(tool.status).toBe('completed');
+    const thinking2 = turn.children[1]!;
+    expect(thinking2.status).toBe('running');
+  });
+
+  it('lets a real tool_completed event overwrite the provisional status', () => {
+    // The provisional sweep marks running tools as 'completed'; a
+    // later tool_completed event with isError=true must still flip
+    // the tool to 'failed' (with the real error metadata).
+    const state = runAll(
+      startedTurn(),
+      envelope('stream.thinking', { delta: 'iter 1' }),
+      envelope('stream.tool_use', { id: 'tool-A', name: 'bash' }),
+      envelope('stream.thinking', { delta: 'iter 2' }),
+      // Real completion arrives late, with a failure result:
+      envelope('stream.tool_completed', {
+        id: 'tool-A',
+        name: 'bash',
+        durationMs: 1234,
+        isError: true,
+        error: 'exit code 1',
+      }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const thinking1 = turn.children[0]!;
+    const tool = thinking1.children.find((c) => c.id === 'tool-A')!;
+    expect(tool.status).toBe('failed');
+    expect(tool.error).toBe('exit code 1');
+    expect(tool.duration).toBe(1234);
+  });
+
   it('attaches tool_use as a child of the iteration narration when text exists', () => {
     // Causal chain: thinking → narration ("I'll call A and B") → tools
     // (the actions that narration described). When the iteration emits
