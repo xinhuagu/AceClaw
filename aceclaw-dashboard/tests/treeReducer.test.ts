@@ -4,7 +4,7 @@ import type {
   DaemonEventEnvelope,
   EventParams,
 } from '../src/types/events';
-import { emptyTree, type ExecutionTree } from '../src/types/tree';
+import { emptyTree, type ExecutionNode, type ExecutionTree } from '../src/types/tree';
 import { executionTreeReducer, stepNodeId } from '../src/reducers/treeReducer';
 
 /**
@@ -541,8 +541,13 @@ describe('text accumulation', () => {
       envelope('stream.text', { delta: 'world' }),
       envelope('stream.text', { delta: '!' }),
     );
+    // Text-without-thinking now anchors on a synthetic thinking node
+    // (so it stays in the ReAct chain instead of orphaning at the
+    // turn level — see addReActFlowEdges in useTreeLayout).
     const turn = state.rootNodes[0]!.children[0]!;
-    const textChildren = turn.children.filter((c) => c.type === 'text');
+    const thinking = turn.children.find((c) => c.type === 'thinking')!;
+    expect(thinking).toBeDefined();
+    const textChildren = thinking.children.filter((c) => c.type === 'text');
     expect(textChildren).toHaveLength(1);
     expect(textChildren[0]!.text).toBe('Hello, world!');
   });
@@ -583,10 +588,11 @@ describe('text accumulation', () => {
     expect(thinkingChildren[0]!.label).toBe('thinking');
   });
 
-  it('keeps thinking and text as siblings under the same turn', () => {
-    // A real turn often thinks then responds; both nodes should hang off
-    // the turn so the layout shows two distinct children rather than one
-    // collapsing into the other.
+  it('places text inside its iteration thinking, not as a sibling of the turn', () => {
+    // Text in a Claude streaming response is per-LLM-call. Anchoring
+    // it on the iteration's thinking lets multi-iteration turns keep
+    // each call's narration locally bound — the text node doesn't
+    // visually drift across the diagram as later iterations append.
     const state = runAll(
       freshTree(),
       envelope('stream.session_started', {
@@ -604,8 +610,108 @@ describe('text accumulation', () => {
       envelope('stream.text', { delta: 'response' }),
     );
     const turn = state.rootNodes[0]!.children[0]!;
-    const childTypes = turn.children.map((c) => c.type).sort();
-    expect(childTypes).toEqual(['text', 'thinking']);
+    expect(turn.children.map((c) => c.type)).toEqual(['thinking']);
+    const thinking = turn.children[0]!;
+    const textChildren = thinking.children.filter((c) => c.type === 'text');
+    expect(textChildren).toHaveLength(1);
+    expect(textChildren[0]!.text).toBe('response');
+  });
+
+  it('mints a separate text node per ReAct iteration (no cross-iteration accumulation)', () => {
+    // The bug this guards against: with text keyed on the turn, every
+    // iteration's text deltas would pile into one node that survives
+    // all the layout reshuffles. Per-iteration text bubbles stay where
+    // their iteration is.
+    const state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      // Iter 1: thinking → text → tool
+      envelope('stream.thinking', { delta: 'iter 1 thought' }),
+      envelope('stream.text', { delta: 'iter 1 narration' }),
+      envelope('stream.tool_use', { id: 't1', name: 'bash' }),
+      // Iter 2: thinking → text (final response)
+      envelope('stream.thinking', { delta: 'iter 2 thought' }),
+      envelope('stream.text', { delta: 'iter 2 final answer' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const thinkings = turn.children.filter((c) => c.type === 'thinking');
+    expect(thinkings).toHaveLength(2);
+    const text1 = thinkings[0]!.children.find((c) => c.type === 'text')!;
+    const text2 = thinkings[1]!.children.find((c) => c.type === 'text')!;
+    expect(text1.text).toBe('iter 1 narration');
+    expect(text2.text).toBe('iter 2 final answer');
+    // Texts have distinct ids — no leakage across iterations.
+    expect(text1.id).not.toBe(text2.id);
+  });
+
+  it('attaches text to a synthetic thinking when no real thinking has been emitted', () => {
+    // Extended thinking off, or model emitted text without any prior
+    // thinking block. The reducer mints a synthetic thinking so the
+    // text stays in the ReAct chain (addReActFlowEdges only iterates
+    // thinking children of a turn — text directly under a turn would
+    // be orphaned from the layout flow).
+    const state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.text', { delta: 'no thinking, just talk' }),
+      envelope('stream.text', { delta: ' more talk' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    expect(turn.children.map((c) => c.type)).toEqual(['thinking']);
+    const synthThinking = turn.children[0]!;
+    expect(synthThinking.status).toBe('completed'); // synthetic, no real reasoning streamed
+    const textChildren = synthThinking.children.filter((c) => c.type === 'text');
+    expect(textChildren).toHaveLength(1);
+    expect(textChildren[0]!.text).toBe('no thinking, just talk more talk');
+  });
+
+  it('uses a truncated text preview as the node label', () => {
+    const state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.thinking', { delta: 't' }),
+      envelope('stream.text', {
+        delta: 'this is a much longer response that exceeds the preview cap',
+      }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const text = turn.children[0]!.children.find((c) => c.type === 'text')!;
+    // Label is truncated and ends with the ellipsis sentinel.
+    expect(text.label.length).toBeLessThanOrEqual(22);
+    expect(text.label.endsWith('…')).toBe(true);
+    // But the full text is preserved on the node itself for the
+    // detail view / debugging.
+    expect(text.text!.length).toBeGreaterThan(text.label.length);
   });
 });
 
@@ -714,6 +820,45 @@ describe('thinking-anchored tool grouping (ReAct iterations)', () => {
     expect(thinking.status).toBe('completed');
   });
 
+  it('captures stopReason on the turn metadata for the renderer to badge', () => {
+    // The dashboard's GrowingNode renders a small amber "⚠ max_tokens"
+    // tag on truncated turns. The reducer just stamps the value onto
+    // metadata; the renderer decides what to do with it.
+    const state = runAll(
+      startedTurn(),
+      envelope('stream.tool_use', { id: 't1', name: 'bash' }),
+      envelope('stream.turn_completed', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+        durationMs: 9999,
+        toolCount: 1,
+        stopReason: 'MAX_TOKENS',
+      }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    expect(turn.status).toBe('completed');
+    expect(turn.metadata?.['stopReason']).toBe('MAX_TOKENS');
+  });
+
+  it('omits stopReason when the daemon does not emit it (older versions)', () => {
+    const state = runAll(
+      startedTurn(),
+      envelope('stream.tool_use', { id: 't1', name: 'bash' }),
+      envelope('stream.turn_completed', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+        durationMs: 100,
+        toolCount: 1,
+      }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    expect(turn.metadata?.['stopReason']).toBeUndefined();
+  });
+
   it('marks remaining running thinking/text nodes completed when the turn ends', () => {
     // Edge case: a turn ends while a delta-stream child is still
     // 'running' (for example, the model emitted thinking but the turn
@@ -735,6 +880,133 @@ describe('thinking-anchored tool grouping (ReAct iterations)', () => {
     const turn = state.rootNodes[0]!.children[0]!;
     expect(turn.status).toBe('completed');
     const thinking = turn.children.find((c) => c.type === 'thinking')!;
+    expect(thinking.status).toBe('completed');
+  });
+
+  it("provisionally completes previous iteration's running tools when next thinking starts", () => {
+    // The daemon races: a new iteration's thinking deltas often
+    // arrive before the previous iteration's tool_completed event.
+    // Without reconciliation the previous tool would keep pulsing
+    // while the new thinking pulses, looking visually parallel.
+    // Mint-time sweep flips any still-running tool/text in the prior
+    // subtree to completed; the real tool_completed event still
+    // applies normally when it arrives (with duration / isError).
+    const state = runAll(
+      startedTurn(),
+      envelope('stream.thinking', { delta: 'iter 1' }),
+      envelope('stream.tool_use', { id: 'tool-A', name: 'bash' }),
+      // No tool_completed yet — the daemon hasn't broadcast it. But
+      // the next iteration's thinking delta arrives:
+      envelope('stream.thinking', { delta: 'iter 2 (next call)' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const thinking1 = turn.children[0]!;
+    const tool = thinking1.children.find((c) => c.id === 'tool-A')!;
+    // Tool is now completed (provisionally) even though no
+    // tool_completed event has arrived. New thinking is running.
+    expect(tool.status).toBe('completed');
+    const thinking2 = turn.children[1]!;
+    expect(thinking2.status).toBe('running');
+  });
+
+  it('lets a real tool_completed event overwrite the provisional status', () => {
+    // The provisional sweep marks running tools as 'completed'; a
+    // later tool_completed event with isError=true must still flip
+    // the tool to 'failed' (with the real error metadata).
+    const state = runAll(
+      startedTurn(),
+      envelope('stream.thinking', { delta: 'iter 1' }),
+      envelope('stream.tool_use', { id: 'tool-A', name: 'bash' }),
+      envelope('stream.thinking', { delta: 'iter 2' }),
+      // Real completion arrives late, with a failure result:
+      envelope('stream.tool_completed', {
+        id: 'tool-A',
+        name: 'bash',
+        durationMs: 1234,
+        isError: true,
+        error: 'exit code 1',
+      }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const thinking1 = turn.children[0]!;
+    const tool = thinking1.children.find((c) => c.id === 'tool-A')!;
+    expect(tool.status).toBe('failed');
+    expect(tool.error).toBe('exit code 1');
+    expect(tool.duration).toBe(1234);
+  });
+
+  it('mints a synthetic thinking + text node when the next iteration emits text without a preceding thinking event', () => {
+    // The bug this guards against: an iteration that emits text
+    // WITHOUT a preceding thinking event (extended thinking off or
+    // budget exhausted) used to silently merge into the previous
+    // iteration's text node — the dashboard rendered all iterations'
+    // narrations as siblings of one fat thinking, which dagre laid
+    // out as a vertical stack that read as "5 parallel responses".
+    //
+    // Fix: when text starts a new iteration without a fresh thinking
+    // delta, mint a SYNTHETIC thinking node (status=completed, since
+    // the model already finished thinking by the time we infer the
+    // boundary) so the new text/tools attach to a dedicated anchor.
+    // The result is a chain shape: th_1 → text_1 → tool → synth_th_2 →
+    // text_2 — exactly what the user expects from a multi-iteration
+    // ReAct turn.
+    const state = runAll(
+      startedTurn(),
+      envelope('stream.thinking', { delta: 'iter 1' }),
+      envelope('stream.text', { delta: 'narration before tool' }),
+      envelope('stream.tool_use', { id: 't1', name: 'bash' }),
+      envelope('stream.tool_completed', {
+        id: 't1',
+        name: 'bash',
+        durationMs: 100,
+        isError: false,
+      }),
+      // No stream.thinking before this — model went straight from
+      // tool result to final response.
+      envelope('stream.text', { delta: 'final answer line 1' }),
+      envelope('stream.text', { delta: ' line 2' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const thinkings = turn.children.filter((c) => c.type === 'thinking');
+    expect(thinkings).toHaveLength(2);
+    const realThinking = thinkings[0]!;
+    const syntheticThinking = thinkings[1]!;
+    // Real thinking has its narration text + its tool child (under text)
+    expect(realThinking.text).toBe('iter 1');
+    const realText = realThinking.children.find((c) => c.type === 'text')!;
+    expect(realText.text).toBe('narration before tool');
+    // Synthetic thinking has the final response under it
+    expect(syntheticThinking.text).toBe('');
+    expect(syntheticThinking.status).toBe('completed');
+    const synthText = syntheticThinking.children.find((c) => c.type === 'text')!;
+    expect(synthText.text).toBe('final answer line 1 line 2');
+    expect(realText.id).not.toBe(synthText.id);
+  });
+
+  it('attaches tool_use as a child of the iteration narration when text exists', () => {
+    // Causal chain: thinking → narration ("I'll call A and B") → tools
+    // (the actions that narration described). When the iteration emits
+    // text before tools, the tools structurally hang off the text node,
+    // not the bare thinking — that puts narration in the right place
+    // visually as the immediate cause of the tools.
+    const state = runAll(
+      startedTurn(),
+      envelope('stream.thinking', { delta: 'plan: call A and B' }),
+      envelope('stream.text', { delta: "I'll call A and B" }),
+      envelope('stream.tool_use', { id: 'tA', name: 'bash' }),
+      envelope('stream.tool_use', { id: 'tB', name: 'read' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const thinking = turn.children[0]!;
+    const text = thinking.children.find((c) => c.type === 'text')!;
+    // Tools hang off text, NOT off thinking.
+    const toolsUnderText = text.children.filter((c) => c.type === 'tool');
+    expect(toolsUnderText.map((t) => t.id).sort()).toEqual(['tA', 'tB']);
+    const toolsUnderThinking = thinking.children.filter((c) => c.type === 'tool');
+    expect(toolsUnderThinking).toHaveLength(0);
+    // Narration is marked completed once tools start (the model stopped
+    // talking and started acting); pulse stops in sync with thinking.
+    expect(text.status).toBe('completed');
     expect(thinking.status).toBe('completed');
   });
 

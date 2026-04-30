@@ -145,10 +145,13 @@ describe('useTreeLayout', () => {
   it('chains thinking → tools → next thinking via flow edges (ReAct pipeline)', () => {
     // Two ReAct iterations under one turn:
     //   thinking1 ─┬─ toolA
-    //              └─ toolB ─ ─ ─ ─ ─ thinking2 ─── toolC ─ ─ ─ response
-    // The dashed flow edges from each tool of thinking1 land on thinking2,
-    // expressing "tool results feed the next LLM call". Same idea for
-    // toolC → response: response is the final output of the chain.
+    //              └─ toolB ─ ─ ─ ─ ─ thinking2 ─── toolC
+    //                                              └─── response (under th2)
+    // The dashed flow edges from each tool of thinking1 land on
+    // thinking2, expressing "tool results feed the next LLM call".
+    // The response is a child of its iteration's thinking (th2), so
+    // the layout reaches it via the regular thinking→text containment
+    // — no separate response-flow edge is needed.
     const turn: ExecutionNode = {
       id: 't',
       type: 'turn',
@@ -167,14 +170,16 @@ describe('useTreeLayout', () => {
           type: 'thinking',
           status: 'running',
           label: 'thinking',
-          children: [leaf('toolC')],
-        },
-        {
-          id: 'resp',
-          type: 'text',
-          status: 'running',
-          label: 'response',
-          children: [],
+          children: [
+            leaf('toolC'),
+            {
+              id: 'resp',
+              type: 'text',
+              status: 'running',
+              label: 'response',
+              children: [],
+            },
+          ],
         },
       ],
     };
@@ -182,22 +187,142 @@ describe('useTreeLayout', () => {
     const flow = result.current.edges.filter((e) => e.kind === 'sequence');
     const flowIds = flow.map((e) => e.id).sort();
     // Two flows from thinking1's tools to thinking2 (toolA→th2, toolB→th2).
-    // One flow from thinking2's tool to response (toolC→resp).
     expect(flowIds).toContain('toolA->th2');
     expect(flowIds).toContain('toolB->th2');
-    expect(flowIds).toContain('toolC->resp');
+    // The response no longer gets its own flow edge — it's a child of
+    // th2 reached via plain containment.
+    expect(flowIds).not.toContain('toolC->resp');
 
-    // Containment edges shouldn't include redundant turn→thinking2 or
-    // turn→response — those paths are reached via the flow chain.
     const containment = result.current.edges.filter((e) => e.kind === 'containment');
     const containmentIds = containment.map((e) => e.id);
     expect(containmentIds).toContain('t->th1');
-    expect(containmentIds).not.toContain('t->th2');
-    expect(containmentIds).not.toContain('t->resp');
-    // But thinking → tool containments are intact.
+    expect(containmentIds).not.toContain('t->th2'); // reached via flow
+    // text under thinking IS containment now.
+    expect(containmentIds).toContain('th2->resp');
     expect(containmentIds).toContain('th1->toolA');
     expect(containmentIds).toContain('th1->toolB');
     expect(containmentIds).toContain('th2->toolC');
+  });
+
+  it('does not draw a flow edge from a failed tool — only successful tools carry the chain', () => {
+    // Failed tools render as dead-end leaves: visually clearer that
+    // they didn't drive the next iteration, even though their error
+    // is what the model adapted to. With one tool succeeding and one
+    // failing, only the successful one gets a flow edge.
+    const turn: ExecutionNode = {
+      id: 't',
+      type: 'turn',
+      status: 'running',
+      label: 'turn',
+      children: [
+        {
+          id: 'th1',
+          type: 'thinking',
+          status: 'completed',
+          label: 'thinking',
+          children: [
+            { id: 'good', type: 'tool', status: 'completed', label: 'bash', children: [] },
+            { id: 'bad', type: 'tool', status: 'failed', label: 'bash', children: [] },
+          ],
+        },
+        {
+          id: 'th2',
+          type: 'thinking',
+          status: 'running',
+          label: 'thinking',
+          children: [],
+        },
+      ],
+    };
+    const { result } = renderHook(() => useTreeLayout(tree([turn])));
+    const flowIds = result.current.edges
+      .filter((e) => e.kind === 'sequence')
+      .map((e) => e.id);
+    expect(flowIds).toContain('good->th2');
+    expect(flowIds).not.toContain('bad->th2');
+  });
+
+  it('falls back to thinking-bridge when every tool in an iteration failed', () => {
+    // All-failed iteration: model recovered from a total failure.
+    // The chain still needs to reach the next thinking, so we bridge
+    // via the iteration's text/thinking instead of leaving it
+    // disconnected.
+    const turn: ExecutionNode = {
+      id: 't',
+      type: 'turn',
+      status: 'running',
+      label: 'turn',
+      children: [
+        {
+          id: 'th1',
+          type: 'thinking',
+          status: 'completed',
+          label: 'thinking',
+          children: [
+            { id: 'bad1', type: 'tool', status: 'failed', label: 'bash', children: [] },
+            { id: 'bad2', type: 'tool', status: 'failed', label: 'bash', children: [] },
+          ],
+        },
+        {
+          id: 'th2',
+          type: 'thinking',
+          status: 'running',
+          label: 'thinking',
+          children: [],
+        },
+      ],
+    };
+    const { result } = renderHook(() => useTreeLayout(tree([turn])));
+    const flowIds = result.current.edges
+      .filter((e) => e.kind === 'sequence')
+      .map((e) => e.id);
+    expect(flowIds).toContain('th1->th2');
+    expect(flowIds).not.toContain('bad1->th2');
+    expect(flowIds).not.toContain('bad2->th2');
+  });
+
+  it('bridges to the next iteration via the text node when a thinking emitted only text', () => {
+    // A pure-text iteration (no tools, just narration) still needs to
+    // pass the flow baton to the next iteration's thinking. The text
+    // node serves as the bridge in that case.
+    const turn: ExecutionNode = {
+      id: 't',
+      type: 'turn',
+      status: 'running',
+      label: 'turn',
+      children: [
+        {
+          id: 'th1',
+          type: 'thinking',
+          status: 'completed',
+          label: 'thinking',
+          children: [
+            {
+              id: 'th1-text',
+              type: 'text',
+              status: 'completed',
+              label: 'narration',
+              children: [],
+            },
+          ],
+        },
+        {
+          id: 'th2',
+          type: 'thinking',
+          status: 'running',
+          label: 'thinking',
+          children: [leaf('toolA')],
+        },
+      ],
+    };
+    const { result } = renderHook(() => useTreeLayout(tree([turn])));
+    const flowIds = result.current.edges
+      .filter((e) => e.kind === 'sequence')
+      .map((e) => e.id);
+    // Flow goes from the text bridge (not the bare thinking) so the
+    // visual chain stays unbroken left-to-right.
+    expect(flowIds).toContain('th1-text->th2');
+    expect(flowIds).not.toContain('th1->th2');
   });
 
   it('does not emit sequence edges between sibling tools (parallel/sequential ambiguous)', () => {

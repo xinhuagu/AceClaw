@@ -202,12 +202,18 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
             viewBox="0 0 10 10"
             refX="9"
             refY="5"
-            markerWidth="7"
-            markerHeight="7"
+            markerWidth="8"
+            markerHeight="8"
             orient="auto-start-reverse"
             markerUnits="userSpaceOnUse"
           >
-            <path d="M 0 0 L 10 5 L 0 10 z" fill="#52525b" opacity={0.7} />
+            {/*
+              Fill matches GrowingEdge's SEQUENCE_STROKE so the arrowhead
+              looks like the same piece as the dashed line. Bumped from
+              opacity 0.7 → 0.95 because at the previous strength the
+              arrow disappeared on the dark canvas.
+            */}
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8" opacity={0.95} />
           </marker>
         </defs>
         <g transform={transform}>
