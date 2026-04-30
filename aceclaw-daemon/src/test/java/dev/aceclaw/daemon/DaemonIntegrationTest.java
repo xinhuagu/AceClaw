@@ -292,7 +292,7 @@ class DaemonIntegrationTest {
     @BeforeEach
     void resetMock() {
         mockLlm.reset();
-        permissionManager.clearSessionApprovals();
+        permissionManager.clearAllSessionApprovals();
         channelLineBuffer.setLength(0);
     }
 
@@ -756,7 +756,7 @@ class DaemonIntegrationTest {
             sendPromptAndHandlePermissions(channel, params1, 2, true, true); // approve + remember
 
             // Verify session approval was recorded
-            assertThat(permissionManager.hasSessionApproval("write_file")).isTrue();
+            assertThat(permissionManager.hasSessionApproval(sessionId, "write_file")).isTrue();
 
             // Second tool call: should NOT prompt for permission (session-approved)
             mockLlm.enqueueResponse(MockLlmClient.toolUseResponse(

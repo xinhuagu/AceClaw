@@ -165,7 +165,7 @@ class HookIntegrationTest {
     @BeforeEach
     void resetState() {
         mockLlm.reset();
-        permissionManager.clearSessionApprovals();
+        permissionManager.clearAllSessionApprovals();
         channelLineBuffer.setLength(0);
         // Clean up audit marker
         try { Files.deleteIfExists(tempDir.resolve("audit-marker.json")); } catch (Exception ignored) {}

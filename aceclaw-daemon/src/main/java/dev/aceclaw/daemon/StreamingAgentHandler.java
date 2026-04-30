@@ -3863,7 +3863,7 @@ public final class StreamingAgentHandler {
             final String finalInputJson = effectiveInputJson;
 
             var permRequest = new PermissionRequest(delegate.name(), toolDescription, level);
-            var decision = permissionManager.check(permRequest);
+            var decision = permissionManager.check(permRequest, sessionId);
             var overrideStatus = antiPatternOverrideSupplier != null
                     ? antiPatternOverrideSupplier.get()
                     : new AntiPatternGateOverrideStatus(sessionId, delegate.name(), false, 0L, "");
@@ -3948,9 +3948,12 @@ public final class StreamingAgentHandler {
                         }
                         if (metricsExporter != null) metricsExporter.recordPermissionDecision(false);
 
-                        // If user chose "remember", grant session-level approval
+                        // If user chose "remember", grant session-level approval.
+                        // Per-session scope (issue #456): the allow only applies
+                        // to THIS session — clicking Always Allow in workspace A
+                        // no longer silently disables the prompt in workspace B.
                         if (remember) {
-                            permissionManager.approveForSession(delegate.name());
+                            permissionManager.approveForSession(sessionId, delegate.name());
                         }
 
                         log.info("Tool {} approved by user (requestId={}, remember={})",
