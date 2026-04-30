@@ -151,12 +151,46 @@ interface DashboardConnectedProps {
 }
 
 function DashboardConnected({ sessionId, wsUrl }: DashboardConnectedProps) {
-  const { tree, status } = useExecutionTree(wsUrl, sessionId);
+  const { tree, status, sendCommand, resolvePermission, dismissPermission } =
+    useExecutionTree(wsUrl, sessionId);
+
+  // The Approve / Deny click does TWO things:
+  //   1. POST permission.response to the daemon over the WS so the
+  //      blocked tool resumes (or returns "Permission denied").
+  //   2. Optimistically update the local tree so the panel disappears
+  //      and the tool node returns to the running/cancelled state
+  //      without waiting for the daemon's tool_completed echo.
+  // First-response-wins on the daemon (#433) makes a duplicate fine —
+  // if the CLI already answered, our send is dropped server-side and
+  // the local optimistic update gets superseded by the next
+  // tool_completed event. Stamping resolvedBy='browser' beforehand also
+  // guards against the reducer mistaking that completion for a CLI
+  // resolution.
+  const handleApprove = (requestId: string): void => {
+    sendCommand({
+      method: 'permission.response',
+      params: { requestId, approved: true },
+    });
+    resolvePermission(requestId, true);
+  };
+  const handleDeny = (requestId: string): void => {
+    sendCommand({
+      method: 'permission.response',
+      params: { requestId, approved: false },
+    });
+    resolvePermission(requestId, false);
+  };
+
   return (
     <>
       <StatusBar sessionId={sessionId} status={status} stats={tree.stats} />
       <div className="flex-1">
-        <ExecutionTree tree={tree} />
+        <ExecutionTree
+          tree={tree}
+          onApprovePermission={handleApprove}
+          onDenyPermission={handleDeny}
+          onDismissPermission={dismissPermission}
+        />
       </div>
     </>
   );

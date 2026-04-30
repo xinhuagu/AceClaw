@@ -477,11 +477,29 @@ function completeToolNode(
   const status: ExecutionNode['status'] = params.isError ? 'failed' : 'completed';
   const rootNodes = mapNode(state.rootNodes, params.id, (n) => {
     const error = params.error ?? n.error;
+    // If the tool completes while still awaitingInput AND no local click
+    // resolved it, the CLI must have answered the permission first
+    // (first-response-wins via the daemon's permissionRegistry, #433).
+    // Stamp resolvedBy so the panel can render the "Approved/Denied via
+    // CLI" indicator before its own dismiss timer tears it down. Don't
+    // strip awaitingInput here — the panel needs it to know it should
+    // still render in resolved state for ~1.5s.
+    const isExternalResolution =
+      n.awaitingInput === true && (n.metadata?.['resolvedBy'] ?? null) === null;
     return {
       ...n,
       status,
       duration: params.durationMs,
       ...(error !== undefined ? { error } : {}),
+      ...(isExternalResolution
+        ? {
+            metadata: {
+              ...(n.metadata ?? {}),
+              resolvedBy: 'cli',
+              resolvedApproved: !params.isError,
+            },
+          }
+        : {}),
     };
   });
 
@@ -1120,7 +1138,9 @@ function pauseForPermission(
 ): ExecutionTree {
   // The daemon pauses execution waiting for a permission.response. We mark
   // the active leaf as paused + awaitingInput so the renderer can surface
-  // the prompt right where the agent stopped.
+  // the prompt right where the agent stopped. Stamp requestedAt so the
+  // PermissionPanel can derive the countdown deadline (server side caps
+  // at 120s — see CancelAwareStreamContext.PERMISSION_RESPONSE_TIMEOUT_MS).
   if (!state.activeNodeId) return state;
   return {
     ...state,
@@ -1130,8 +1150,119 @@ function pauseForPermission(
       awaitingInput: true,
       inputPrompt: params.description,
       permissionRequestId: params.requestId,
-      metadata: { ...(n.metadata ?? {}), permissionTool: params.tool },
+      metadata: {
+        ...(n.metadata ?? {}),
+        permissionTool: params.tool,
+        permissionRequestedAt: Date.now(),
+      },
     })),
+  };
+}
+
+/**
+ * Locally apply a user's Approve / Deny click to the paused node and clear
+ * its awaitingInput flag. The browser still posts {@code permission.response}
+ * over the WS for the daemon to act on — this reducer step just keeps the
+ * UI in sync without waiting for a daemon-side reflection (the daemon
+ * never echoes the response, it just resumes execution and emits
+ * stream.tool_completed when the tool finishes).
+ *
+ * Status semantic mirrors the issue spec:
+ *   - approved → 'running' (the tool is now executing on the daemon)
+ *   - denied   → 'cancelled' (tool returns "Permission denied" and the
+ *     model continues from the failure)
+ *
+ * Tagging metadata.resolvedBy = 'browser' lets a future "approved via X"
+ * banner in the panel distinguish the responder. Idempotent: if no node
+ * is found awaiting this requestId, the state is returned unchanged
+ * (lets duplicate clicks no-op cleanly).
+ */
+/**
+ * Tears down the permission panel for {@code requestId} by stripping the
+ * panel-trigger fields ({@code awaitingInput}, {@code inputPrompt},
+ * {@code permissionRequestId}) from whatever node carries them. Used by
+ * the panel's dismiss timer after a CLI-resolved request has shown its
+ * "Approved/Denied via CLI" state long enough to register on the eye.
+ * Idempotent — a no-op when the request is no longer pending.
+ */
+export function dismissPermissionPanel(
+  state: ExecutionTree,
+  requestId: string,
+): ExecutionTree {
+  let target: ExecutionNode | null = null;
+  const visit = (nodes: readonly ExecutionNode[]): void => {
+    for (const n of nodes) {
+      if (n.permissionRequestId === requestId && target === null) {
+        target = n;
+      }
+      if (n.children.length > 0) visit(n.children);
+    }
+  };
+  visit(state.rootNodes);
+  if (!target) return state;
+  const targetNode: ExecutionNode = target;
+  return {
+    ...state,
+    rootNodes: mapNode(state.rootNodes, targetNode.id, (n) => {
+      const {
+        awaitingInput: _ai,
+        inputPrompt: _ip,
+        permissionRequestId: _pid,
+        ...rest
+      } = n;
+      void _ai; void _ip; void _pid;
+      return rest;
+    }),
+  };
+}
+
+export function resolvePermissionLocally(
+  state: ExecutionTree,
+  requestId: string,
+  approved: boolean,
+  resolvedBy: 'browser' | 'cli' = 'browser',
+): ExecutionTree {
+  let target: ExecutionNode | null = null;
+  const visit = (nodes: readonly ExecutionNode[]): void => {
+    for (const n of nodes) {
+      if (
+        n.awaitingInput === true &&
+        n.permissionRequestId === requestId &&
+        target === null
+      ) {
+        target = n;
+      }
+      if (n.children.length > 0) visit(n.children);
+    }
+  };
+  visit(state.rootNodes);
+  if (!target) return state;
+
+  const targetNode: ExecutionNode = target;
+  const nextStatus: ExecutionStatus = approved ? 'running' : 'cancelled';
+  return {
+    ...state,
+    rootNodes: mapNode(state.rootNodes, targetNode.id, (n) => {
+      // Strip awaitingInput / inputPrompt / permissionRequestId from the
+      // node so the panel unmounts. Drop them with destructuring rather
+      // than setting `undefined` (exactOptionalPropertyTypes forbids it).
+      const {
+        awaitingInput: _ai,
+        inputPrompt: _ip,
+        permissionRequestId: _pid,
+        ...rest
+      } = n;
+      void _ai; void _ip; void _pid;
+      return {
+        ...rest,
+        status: nextStatus,
+        metadata: {
+          ...(n.metadata ?? {}),
+          resolvedBy,
+          resolvedApproved: approved,
+        },
+      };
+    }),
   };
 }
 

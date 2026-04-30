@@ -5,7 +5,12 @@ import type {
   EventParams,
 } from '../src/types/events';
 import { emptyTree, type ExecutionNode, type ExecutionTree } from '../src/types/tree';
-import { executionTreeReducer, stepNodeId } from '../src/reducers/treeReducer';
+import {
+  dismissPermissionPanel,
+  executionTreeReducer,
+  resolvePermissionLocally,
+  stepNodeId,
+} from '../src/reducers/treeReducer';
 
 /**
  * Acceptance-criteria coverage for issue #435. Each describe block maps to
@@ -338,6 +343,163 @@ describe('permission pause', () => {
     expect(tool.awaitingInput).toBe(true);
     expect(tool.inputPrompt).toBe('rm -rf /');
     expect(tool.permissionRequestId).toBe('perm-1');
+    // Stamp time the daemon paused — the panel uses this to drive the
+    // countdown ring without a separate "I started waiting at X" event.
+    expect(typeof tool.metadata?.['permissionRequestedAt']).toBe('number');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Permission resolution — local approve/deny + CLI-resolved + dismiss
+// (issue #437 — browser-side panel; complements daemon-side #433)
+// ---------------------------------------------------------------------------
+
+describe('permission resolution (issue #437)', () => {
+  /**
+   * Helper: build the standard "session → turn → tool with pending
+   * permission" tree all permission-resolution tests below start from.
+   */
+  function pausedToolTree(): ExecutionTree {
+    return runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.tool_use', { id: 't1', name: 'edit_file' }),
+      envelope('permission.request', {
+        tool: 'edit_file',
+        description: 'edit_file wants to write to /tmp/foo.txt',
+        requestId: 'perm-1',
+      }),
+    );
+  }
+
+  it('approve flips paused → running, strips awaitingInput, records resolvedBy', () => {
+    const before = pausedToolTree();
+    const after = resolvePermissionLocally(before, 'perm-1', true);
+    const tool = after.rootNodes[0]!.children[0]!.children[0]!;
+    expect(tool.status).toBe('running');
+    expect(tool.awaitingInput).toBeUndefined();
+    expect(tool.inputPrompt).toBeUndefined();
+    expect(tool.permissionRequestId).toBeUndefined();
+    expect(tool.metadata?.['resolvedBy']).toBe('browser');
+    expect(tool.metadata?.['resolvedApproved']).toBe(true);
+  });
+
+  it('deny flips paused → cancelled', () => {
+    const after = resolvePermissionLocally(pausedToolTree(), 'perm-1', false);
+    const tool = after.rootNodes[0]!.children[0]!.children[0]!;
+    expect(tool.status).toBe('cancelled');
+    expect(tool.metadata?.['resolvedApproved']).toBe(false);
+  });
+
+  it('is a no-op for an unknown requestId (idempotent on double-click)', () => {
+    const before = pausedToolTree();
+    const ghost = resolvePermissionLocally(before, 'perm-never', true);
+    expect(ghost).toBe(before);
+    // Second resolve on the same id post-strip is also a no-op — once
+    // awaitingInput is gone, the find-by-permissionRequestId visit
+    // returns null and the state is returned unchanged.
+    const once = resolvePermissionLocally(before, 'perm-1', true);
+    const twice = resolvePermissionLocally(once, 'perm-1', false);
+    expect(twice).toBe(once);
+  });
+
+  it('detects CLI-resolved permission via stream.tool_completed (success)', () => {
+    // CLI answered the permission first → daemon ran the tool → tool_completed
+    // arrives while the node is still awaitingInput. Reducer stamps
+    // resolvedBy='cli' so the panel shows "Approved via CLI" before its
+    // dismiss timer tears it down.
+    const before = pausedToolTree();
+    const after = runAll(
+      before,
+      envelope('stream.tool_completed', {
+        id: 't1',
+        name: 'edit_file',
+        durationMs: 42,
+        isError: false,
+      }),
+    );
+    const tool = after.rootNodes[0]!.children[0]!.children[0]!;
+    expect(tool.status).toBe('completed');
+    expect(tool.metadata?.['resolvedBy']).toBe('cli');
+    expect(tool.metadata?.['resolvedApproved']).toBe(true);
+    // The panel still has its trigger fields — they're stripped by the
+    // panel's dismiss timer via dismissPermissionPanel, not by the
+    // reducer's tool_completed handler.
+    expect(tool.awaitingInput).toBe(true);
+  });
+
+  it('detects CLI-resolved permission via stream.tool_completed (denied)', () => {
+    const before = pausedToolTree();
+    const after = runAll(
+      before,
+      envelope('stream.tool_completed', {
+        id: 't1',
+        name: 'edit_file',
+        durationMs: 42,
+        isError: true,
+        error: 'Permission denied',
+      }),
+    );
+    const tool = after.rootNodes[0]!.children[0]!.children[0]!;
+    expect(tool.status).toBe('failed');
+    expect(tool.metadata?.['resolvedBy']).toBe('cli');
+    expect(tool.metadata?.['resolvedApproved']).toBe(false);
+  });
+
+  it('does not stamp resolvedBy=cli when local resolve already won the race', () => {
+    // Local Approve fires → resolvedBy='browser' stamped, awaitingInput
+    // stripped. Daemon emits tool_completed afterwards (the tool ran
+    // because we approved). Reducer must not overwrite resolvedBy.
+    const after = runAll(
+      resolvePermissionLocally(pausedToolTree(), 'perm-1', true),
+      envelope('stream.tool_completed', {
+        id: 't1',
+        name: 'edit_file',
+        durationMs: 42,
+        isError: false,
+      }),
+    );
+    const tool = after.rootNodes[0]!.children[0]!.children[0]!;
+    expect(tool.status).toBe('completed');
+    expect(tool.metadata?.['resolvedBy']).toBe('browser');
+  });
+
+  it('dismissPermissionPanel strips panel-trigger fields without touching status', () => {
+    // Used by the panel's dismiss timer after the CLI-resolved reveal.
+    // Status was already set by tool_completed; we only clear the
+    // panel-mounting flags so the overlay unmounts.
+    const cliResolved = runAll(
+      pausedToolTree(),
+      envelope('stream.tool_completed', {
+        id: 't1',
+        name: 'edit_file',
+        durationMs: 42,
+        isError: false,
+      }),
+    );
+    const dismissed = dismissPermissionPanel(cliResolved, 'perm-1');
+    const tool = dismissed.rootNodes[0]!.children[0]!.children[0]!;
+    expect(tool.awaitingInput).toBeUndefined();
+    expect(tool.inputPrompt).toBeUndefined();
+    expect(tool.permissionRequestId).toBeUndefined();
+    expect(tool.status).toBe('completed');
+    expect(tool.metadata?.['resolvedBy']).toBe('cli');
+  });
+
+  it('dismiss is a no-op for unknown requestId', () => {
+    const before = pausedToolTree();
+    const dismissed = dismissPermissionPanel(before, 'perm-never');
+    expect(dismissed).toBe(before);
   });
 });
 

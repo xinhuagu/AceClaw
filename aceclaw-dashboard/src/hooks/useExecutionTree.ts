@@ -25,12 +25,17 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
+  ClientCommand,
   DaemonEvent,
   DaemonEventEnvelope,
   UnknownDaemonEvent,
 } from '../types/events';
 import { emptyTree, type ExecutionTree } from '../types/tree';
-import { executionTreeReducer } from '../reducers/treeReducer';
+import {
+  dismissPermissionPanel,
+  executionTreeReducer,
+  resolvePermissionLocally,
+} from '../reducers/treeReducer';
 
 /** Connection lifecycle states surfaced to the renderer. */
 export type WsStatus =
@@ -44,6 +49,33 @@ export type WsStatus =
 export interface UseExecutionTreeResult {
   tree: ExecutionTree;
   status: WsStatus;
+  /**
+   * Sends a {@link ClientCommand} (browser → daemon) over the WS. Used by
+   * the PermissionPanel (#437) to post {@code permission.response}. If the
+   * socket isn't open yet, the command is buffered and flushed on
+   * {@code onopen}; reconnect re-sends nothing — pending permission
+   * approvals time out anyway and the daemon will re-emit a fresh
+   * {@code permission.request}. Returns a boolean indicating whether the
+   * command was sent immediately ({@code true}) or buffered/dropped
+   * ({@code false}).
+   */
+  sendCommand: (cmd: ClientCommand) => boolean;
+  /**
+   * Same as a reducer-driven {@code permission.response} broadcast: flips
+   * the paused node out of awaiting-input state in the local tree. The
+   * caller is expected to invoke {@link UseExecutionTreeResult.sendCommand}
+   * separately so the daemon also learns of the decision — keeping the
+   * two calls split avoids double-resolving when the user clicks twice
+   * before the optimistic update lands.
+   */
+  resolvePermission: (requestId: string, approved: boolean) => void;
+  /**
+   * Tears down the permission panel for {@code requestId} after a
+   * CLI-resolved request has shown its "Approved/Denied via CLI" state
+   * long enough to register. Idempotent — a no-op when the request is
+   * no longer pending.
+   */
+  dismissPermission: (requestId: string) => void;
 }
 
 /**
@@ -165,6 +197,40 @@ export function useExecutionTree(
     [],
   );
 
+  // Stable refs the connect effect can read without re-tearing the socket
+  // when their identities change. wsRef is the live socket; pendingSendRef
+  // is the outbound command queue we flush in onopen.
+  const wsRef = useRef<WebSocket | null>(null);
+  const pendingSendRef = useRef<ClientCommand[]>([]);
+
+  const sendCommand = useCallback((cmd: ClientCommand): boolean => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(cmd));
+      return true;
+    }
+    // Buffer until onopen flushes. Cap at 32 to keep a malicious /
+    // bug-induced flood from growing the queue without bound; commands
+    // beyond the cap are dropped (the user can re-click once the socket
+    // reconnects). 32 is a soft upper bound — typical permission flows
+    // emit one outbound command at a time.
+    if (pendingSendRef.current.length < 32) {
+      pendingSendRef.current.push(cmd);
+    }
+    return false;
+  }, []);
+
+  const resolvePermission = useCallback(
+    (requestId: string, approved: boolean) => {
+      setTree((prev) => resolvePermissionLocally(prev, requestId, approved));
+    },
+    [],
+  );
+
+  const dismissPermission = useCallback((requestId: string) => {
+    setTree((prev) => dismissPermissionPanel(prev, requestId));
+  }, []);
+
   useEffect(() => {
     let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -190,6 +256,7 @@ export function useExecutionTree(
       if (cancelled) return;
       setStatus('connecting');
       ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
 
       ws.onopen = () => {
         backoffMs = RECONNECT_INITIAL_MS;
@@ -206,6 +273,17 @@ export function useExecutionTree(
         ws?.send(
           JSON.stringify({ method: 'snapshot.request', params: { sessionId } }),
         );
+        // Flush any commands the user queued before the socket opened
+        // (e.g. clicked Approve while the tab was reconnecting). Drained
+        // in arrival order — the daemon's first-response-wins (#433)
+        // makes back-to-back duplicates safe.
+        if (pendingSendRef.current.length > 0) {
+          const queued = pendingSendRef.current;
+          pendingSendRef.current = [];
+          for (const cmd of queued) {
+            ws?.send(JSON.stringify(cmd));
+          }
+        }
       };
 
       ws.onmessage = (e: MessageEvent<string>) => {
@@ -311,11 +389,12 @@ export function useExecutionTree(
         ws.onmessage = null;
         ws.close();
       }
+      wsRef.current = null;
       setStatus('closed');
     };
   }, [wsUrl, sessionId, dispatch]);
 
-  return { tree, status };
+  return { tree, status, sendCommand, resolvePermission, dismissPermission };
 }
 
 // ---------------------------------------------------------------------------

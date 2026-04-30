@@ -22,13 +22,24 @@ import {
   useRef,
   useState,
 } from 'react';
-import type { ExecutionTree as ExecutionTreeState } from '../types/tree';
+import type { ExecutionTree as ExecutionTreeState, LayoutNode } from '../types/tree';
 import { useTreeLayout } from '../hooks/useTreeLayout';
 import { GrowingEdge } from './GrowingEdge';
 import { GrowingNode } from './GrowingNode';
+import { PermissionPanel } from './PermissionPanel';
 
 interface ExecutionTreeProps {
   tree: ExecutionTreeState;
+  /**
+   * Approve/Deny/Dismiss handlers for the inline {@link PermissionPanel}
+   * (issue #437). Optional so test scaffolding and the empty state can
+   * still render the tree without wiring permission flows. App.tsx wires
+   * these to the WS hook's {@code sendCommand}, {@code resolvePermission},
+   * and {@code dismissPermission}.
+   */
+  onApprovePermission?: (requestId: string) => void;
+  onDenyPermission?: (requestId: string) => void;
+  onDismissPermission?: (requestId: string) => void;
 }
 
 const ZOOM_MIN = 0.2;
@@ -43,7 +54,12 @@ interface ViewportTransform {
 
 const INITIAL_TRANSFORM: ViewportTransform = { x: 0, y: 0, scale: 1 };
 
-export function ExecutionTree({ tree }: ExecutionTreeProps) {
+export function ExecutionTree({
+  tree,
+  onApprovePermission,
+  onDenyPermission,
+  onDismissPermission,
+}: ExecutionTreeProps) {
   const layout = useTreeLayout(tree);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [viewport, setViewport] = useState<ViewportTransform>(INITIAL_TRANSFORM);
@@ -166,6 +182,38 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
     [viewport.x, viewport.y, viewport.scale],
   );
 
+  /**
+   * Pick the node that should host an inline {@link PermissionPanel}.
+   * The panel is mounted whenever a node carries {@code awaitingInput}
+   * (true for both interactive paused state AND the brief "resolved via
+   * CLI" reveal — the panel itself disambiguates via metadata.resolvedBy).
+   * Multiple awaiting nodes are unusual but possible (parallel tools, a
+   * resume mid-permission). Pick the most recently observed one — the
+   * one matching {@code activeNodeId} when it itself is awaiting,
+   * otherwise the first pre-order match.
+   */
+  const awaitingNode = useMemo<LayoutNode | null>(() => {
+    if (tree.activeNodeId) {
+      const active = layout.nodes.find(
+        (n) => n.id === tree.activeNodeId && n.awaitingInput === true,
+      );
+      if (active) return active;
+    }
+    return layout.nodes.find((n) => n.awaitingInput === true) ?? null;
+  }, [layout.nodes, tree.activeNodeId]);
+
+  // Convert the awaiting node's layout (graph-space) coords to overlay
+  // (container-space) coords so the panel sits next to it on screen.
+  // Panel anchors at the node's right edge; the +12px shifts past the
+  // node border so the connector notch lands cleanly on the panel side.
+  const panelAnchor = useMemo(() => {
+    if (!awaitingNode) return null;
+    const x =
+      viewport.x + (awaitingNode.x + awaitingNode.width / 2) * viewport.scale + 12;
+    const y = viewport.y + awaitingNode.y * viewport.scale;
+    return { x, y };
+  }, [awaitingNode, viewport]);
+
   if (layout.nodes.length === 0) {
     return (
       <div
@@ -187,6 +235,32 @@ export function ExecutionTree({ tree }: ExecutionTreeProps) {
       onPointerCancel={handlePointerUp}
       className="relative h-full w-full cursor-grab overflow-hidden bg-zinc-950 active:cursor-grabbing"
     >
+      {/*
+        Permission panel sits ABOVE the SVG canvas as an HTML overlay, so
+        buttons and pointer interactions don't fight with foreignObject
+        quirks. The container has pointer-events on; we still want the
+        background SVG to receive wheel/drag, so the overlay layer is
+        pointer-events:none and the panel itself opts back in.
+      */}
+      <div className="pointer-events-none absolute inset-0 z-20">
+        <AnimatePresence>
+          {awaitingNode &&
+          panelAnchor &&
+          onApprovePermission &&
+          onDenyPermission &&
+          onDismissPermission ? (
+            <PermissionPanel
+              key={awaitingNode.permissionRequestId ?? awaitingNode.id}
+              node={awaitingNode}
+              anchorX={panelAnchor.x}
+              anchorY={panelAnchor.y}
+              onApprove={onApprovePermission}
+              onDeny={onDenyPermission}
+              onDismiss={onDismissPermission}
+            />
+          ) : null}
+        </AnimatePresence>
+      </div>
       <svg className="h-full w-full" role="img" aria-label="execution tree">
         {/*
           Arrowhead marker for sequence/flow edges. Shape: a thin triangle
