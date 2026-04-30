@@ -2,16 +2,24 @@
  * PermissionPanel — inline approval card for a paused tool node (issue #437).
  *
  * Rendered as an HTML overlay anchored to the paused node's screen-space
- * coordinates inside {@link ExecutionTree}. Three states drive the visual:
+ * coordinates inside {@link ExecutionTree}. The user opens the panel by
+ * clicking the node's "click ✓/✗" chip — the panel does NOT auto-mount
+ * on permission.request, because daemons with auto-accept policies
+ * would resolve the gate before the operator could read it.
+ *
+ * <p>Three states are encoded on the type union:
  *
  *   1. {@code awaiting} — interactive: Approve / Deny buttons, countdown
  *      ring (gold → red as the deadline closes), keyboard shortcuts
- *      (A approves, D denies). Esc dismisses the panel without responding
- *      so the user can keep watching the tree.
- *   2. {@code resolved-cli} — CLI answered first (first-response-wins via
- *      the daemon, #433). Buttons disabled, panel grays out and shows
- *      "Approved via CLI" or "Denied via CLI"; auto-dismisses after
- *      DISMISS_AFTER_RESOLVED_MS so the tree returns to its normal state.
+ *      (A approves, D denies). Esc / × dismiss the panel without
+ *      responding so the user can keep watching the tree.
+ *   2. {@code resolved-cli} — defensive fallback. The reducer's
+ *      {@link "../reducers/treeReducer"#completeToolNode} now strips
+ *      {@code awaitingInput} when the CLI wins the race (so the panel
+ *      unmounts immediately on its next render), and the click-to-open
+ *      flow means the panel is rarely on screen at the moment of
+ *      external resolution. The state remains as a defence-in-depth
+ *      indicator if a future flow leaves a CLI-resolved panel mounted.
  *   3. {@code resolving} — user just clicked. Optimistic local resolve
  *      strips awaitingInput, which unmounts the panel — so this state is
  *      effectively never rendered. Kept on the type union for symmetry

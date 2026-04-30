@@ -40,7 +40,7 @@ AceClawEventBus  ──►  WebSocketBridge  ──►  treeReducer (pure fn)
 
 - **Multi-session sidebar** — one daemon, many concurrent sessions; the sidebar lists them and the URL preserves the selection across reload.
 - **Snapshot + replay reconnect** — a tab opened mid-execution issues `snapshot.request`, gets the full event history back, and dedupes against the live stream via a monotonic `eventId` watermark. No "I missed the first half of the run."
-- **First-response-wins permissions** — CLI and browser race to answer; the daemon resolves whichever lands first via a `ConcurrentHashMap` registry, with a sessionId guard so a tab on session B can't approve session A's tool calls.
+- **First-response-wins permissions** — CLI and browser race to answer; the daemon resolves whichever lands first via a `ConcurrentHashMap` registry, with a sessionId guard so a tab on session B can't approve session A's tool calls. When the dashboard wins, the daemon also pushes a `permission.cancelled` notification back to the originating CLI so its TUI prompt dismisses automatically with "Resolved via dashboard" instead of waiting on stdin.
 - **Inline permission panel** — paused tool nodes anchor a floating Approve/Deny card with `A`/`D` keyboard shortcuts and a 120 s countdown ring; if the CLI answers first, the panel briefly renders "Approved/Denied via CLI" before tearing itself down.
 - **Pure reducer, immutable tree** — every event flows through one pure function. The same reducer drives live rendering and snapshot replay, so the two paths can't diverge.
 

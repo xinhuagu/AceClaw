@@ -280,15 +280,13 @@ export function ExecutionTree({
       ) ?? null
     );
   }, [layout.nodes, openPanelRequestId]);
+  // Reuse the same anchor math the cascade tests pin so this single-
+  // panel path can't drift from the (future) multi-panel one. Single-
+  // element array → no cascading happens; just the right-edge offset.
   const openPanelAnchor = useMemo(() => {
     if (!openPanelNode) return null;
-    return {
-      x:
-        viewport.x +
-        (openPanelNode.x + openPanelNode.width / 2) * viewport.scale +
-        12,
-      y: viewport.y + openPanelNode.y * viewport.scale,
-    };
+    const [anchor] = computePanelAnchors([openPanelNode], viewport);
+    return anchor ?? null;
   }, [openPanelNode, viewport]);
 
   if (layout.nodes.length === 0) {

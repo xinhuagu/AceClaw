@@ -5,11 +5,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -40,6 +44,13 @@ class PermissionResponseRoutingTest {
     private ObjectMapper mapper;
     private ConcurrentHashMap<String, Object> registry;
     private Constructor<?> pendingPermissionCtor;
+    /**
+     * Stub StreamContext used as the originating-CLI handle stored on
+     * {@code PendingPermission}. Records every {@code sendNotification}
+     * call so the {@code permission.cancelled} fan-out tests can assert
+     * the daemon poked the right context with the right payload.
+     */
+    private RecordingStreamContext recordingContext;
 
     @BeforeEach
     @SuppressWarnings("unchecked")
@@ -65,23 +76,31 @@ class PermissionResponseRoutingTest {
         registry = (ConcurrentHashMap<String, Object>) f.get(handler);
 
         // Locate the private PendingPermission record's constructor for
-        // populating test entries (it's a record, so the canonical
-        // constructor takes (String sessionId, CompletableFuture future)).
+        // populating test entries. Canonical record ctor:
+        //   (String sessionId, CompletableFuture future, StreamContext context)
+        // The third arg was added when routePermissionResponse needed to
+        // emit permission.cancelled back to the originating CLI (#437) —
+        // the test scaffold mirrors the same shape so reflection stays
+        // honest about the production record.
         Class<?> pendingPermissionClass = null;
+        Class<?> streamContextClass = null;
         for (Class<?> inner : StreamingAgentHandler.class.getDeclaredClasses()) {
             if (inner.getSimpleName().equals("PendingPermission")) {
                 pendingPermissionClass = inner;
-                break;
             }
         }
+        // StreamContext is a top-level interface in the same package; load
+        // by name so we don't import an unstable internal type.
+        streamContextClass = Class.forName("dev.aceclaw.daemon.StreamContext");
         assertThat(pendingPermissionClass).isNotNull();
         pendingPermissionCtor = pendingPermissionClass.getDeclaredConstructor(
-                String.class, CompletableFuture.class);
+                String.class, CompletableFuture.class, streamContextClass);
         pendingPermissionCtor.setAccessible(true);
+        recordingContext = new RecordingStreamContext();
     }
 
     private Object pending(String sessionId, CompletableFuture<JsonNode> future) throws Exception {
-        return pendingPermissionCtor.newInstance(sessionId, future);
+        return pendingPermissionCtor.newInstance(sessionId, future, recordingContext);
     }
 
     /** Browser-shaped response carrying sessionId. */
@@ -196,5 +215,111 @@ class PermissionResponseRoutingTest {
     @Test
     void returnsFalseForNullMessage() {
         assertThat(handler.routePermissionResponse(null)).isFalse();
+    }
+
+    @Test
+    void sendsPermissionCancelledToOriginatingContextOnApproved() throws Exception {
+        // Successful WS-side resolution must fan out a permission.cancelled
+        // notification on the originating CLI's StreamContext so its TUI
+        // can dismiss the y/n modal. Without this the daemon-side tool
+        // resumes silently and the operator's CLI keeps waiting on stdin
+        // that no longer matters (#437).
+        var future = new CompletableFuture<JsonNode>();
+        registry.put("perm-route-1", pending(SESSION_ID, future));
+        boolean routed = handler.routePermissionResponse(
+                response("perm-route-1", SESSION_ID, true));
+        assertThat(routed).isTrue();
+        assertThat(recordingContext.notifications).hasSize(1);
+        var sent = recordingContext.notifications.get(0);
+        assertThat(sent.method).isEqualTo("permission.cancelled");
+        var params = mapper.valueToTree(sent.params);
+        assertThat(params.get("requestId").asText()).isEqualTo("perm-route-1");
+        assertThat(params.get("approved").asBoolean()).isTrue();
+        assertThat(params.get("via").asText()).isEqualTo("websocket");
+    }
+
+    @Test
+    void sendsPermissionCancelledOnDeniedToo() throws Exception {
+        // Denied is also a resolution: the CLI modal should dismiss with
+        // an "approved=false" indicator, not stay on screen until the
+        // 120s daemon-side deadline elapses.
+        var future = new CompletableFuture<JsonNode>();
+        registry.put("perm-route-deny", pending(SESSION_ID, future));
+        handler.routePermissionResponse(
+                response("perm-route-deny", SESSION_ID, false));
+        assertThat(recordingContext.notifications).hasSize(1);
+        var params = mapper.valueToTree(recordingContext.notifications.get(0).params);
+        assertThat(params.get("approved").asBoolean()).isFalse();
+    }
+
+    @Test
+    void doesNotSendCancellationWhenRouteFails() throws Exception {
+        // If the routing itself fails — unknown id, sessionId mismatch,
+        // already-completed future — there's no resolution to broadcast,
+        // so the originating context must NOT see a stray
+        // permission.cancelled. Pin against three failure modes.
+        // a) Unknown requestId.
+        handler.routePermissionResponse(response("perm-never", SESSION_ID, true));
+        // b) sessionId mismatch.
+        var futureA = new CompletableFuture<JsonNode>();
+        registry.put("perm-x", pending("sess-A", futureA));
+        handler.routePermissionResponse(response("perm-x", "sess-B-attacker", true));
+        // c) Missing sessionId on the response.
+        var futureB = new CompletableFuture<JsonNode>();
+        registry.put("perm-y", pending(SESSION_ID, futureB));
+        var noSid = mapper.createObjectNode();
+        noSid.put("method", "permission.response");
+        noSid.putObject("params").put("requestId", "perm-y").put("approved", true);
+        handler.routePermissionResponse(noSid);
+
+        assertThat(recordingContext.notifications)
+                .as("no cancellation broadcast on failed routes")
+                .isEmpty();
+    }
+
+    @Test
+    void swallowsIOExceptionFromContextSend() throws Exception {
+        // The cancellation send is best-effort — a CLI socket that's
+        // mid-close shouldn't roll back the daemon-side resolution that
+        // already took the WS path. Pin the IOException-swallow contract
+        // so a future change doesn't accidentally let it escape and
+        // crash the request thread.
+        var throwingContext = new RecordingStreamContext();
+        throwingContext.throwOnSend = new IOException("simulated socket-mid-close");
+        // Replace the recorded context for THIS pending entry with the
+        // throwing one — the constructor in setUp already used recordingContext.
+        var future = new CompletableFuture<JsonNode>();
+        registry.put("perm-throw",
+                pendingPermissionCtor.newInstance(SESSION_ID, future, throwingContext));
+        boolean routed = handler.routePermissionResponse(
+                response("perm-throw", SESSION_ID, true));
+        // Routing succeeded even though the cancellation send blew up.
+        assertThat(routed).isTrue();
+        assertThat(future.isDone()).isTrue();
+    }
+
+    /**
+     * Recording stub — the cancel-fanout tests need a StreamContext that
+     * captures every {@code sendNotification} payload (and optionally
+     * throws on send). Implemented inline rather than using a mocking
+     * library so the test stays self-contained.
+     */
+    private static final class RecordingStreamContext implements StreamContext {
+        record Sent(String method, Object params) {}
+
+        final List<Sent> notifications = new ArrayList<>();
+        IOException throwOnSend;
+
+        @Override
+        public void sendNotification(String method, Object params) throws IOException {
+            if (throwOnSend != null) throw throwOnSend;
+            notifications.add(new Sent(method, params));
+        }
+
+        @Override
+        public JsonNode readMessage() {
+            throw new UnsupportedOperationException(
+                    "read not used in routePermissionResponse tests");
+        }
     }
 }

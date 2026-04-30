@@ -213,6 +213,17 @@ public final class PermissionBridge {
     }
 
     /**
+     * Drops any external-cancellation entry left over for {@code requestId}.
+     * Called by the modal cleanup so a cancellation that arrived AFTER
+     * the user had already typed y/n (i.e. cancelExternal completed the
+     * future a millisecond too late) doesn't leak into the map for the
+     * lifetime of the CLI process. Idempotent.
+     */
+    private void clearExternalCancellation(String requestId) {
+        externalCancellations.remove(requestId);
+    }
+
+    /**
      * Returns and clears a previously resolved answer for a request, if present.
      *
      * <p>This is used by the UI polling loop to detect requests that were
@@ -220,6 +231,11 @@ public final class PermissionBridge {
      */
     public PermissionAnswer consumeResolvedAnswer(String requestId) {
         if (requestId == null || requestId.isBlank()) return null;
+        // Also drop any external-cancellation entry the modal didn't
+        // pick up (e.g. user typed y a millisecond before the daemon's
+        // permission.cancelled arrived) so the map doesn't leak entries
+        // for the lifetime of the CLI.
+        clearExternalCancellation(requestId);
         return resolvedAnswers.remove(requestId);
     }
 
