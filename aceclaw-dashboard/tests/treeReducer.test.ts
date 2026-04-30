@@ -925,6 +925,51 @@ describe('thinking-anchored tool grouping (ReAct iterations)', () => {
     expect(tool.duration).toBe(1234);
   });
 
+  it('mints a separate text node when the next iteration text follows a tool_use without new thinking', () => {
+    // The bug this guards against: an iteration that emits text
+    // WITHOUT a preceding thinking event (model went straight from
+    // tool result → final response, e.g. extended thinking off or
+    // budget exhausted) used to merge into the previous iteration's
+    // text node, because both ids were keyed on the same
+    // currentThinkingId. After the fix, tool_use closes the text
+    // (textIsOpen=false), so the next text delta mints a new node.
+    const state = runAll(
+      startedTurn(),
+      envelope('stream.thinking', { delta: 'iter 1' }),
+      envelope('stream.text', { delta: 'narration before tool' }),
+      envelope('stream.tool_use', { id: 't1', name: 'bash' }),
+      envelope('stream.tool_completed', {
+        id: 't1',
+        name: 'bash',
+        durationMs: 100,
+        isError: false,
+      }),
+      // No stream.thinking before this — model skipped the thinking
+      // block and went straight to the final response. The previous
+      // shape would have appended these deltas to the "narration
+      // before tool" node.
+      envelope('stream.text', { delta: 'final answer line 1' }),
+      envelope('stream.text', { delta: ' line 2' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const thinking = turn.children[0]!;
+    // Thinking should now have two text descendants: the narration
+    // (under thinking, with the tool as its child) and the final
+    // response (sibling, separate node).
+    const allTextNodes: ExecutionNode[] = [];
+    function walk(n: ExecutionNode) {
+      if (n.type === 'text') allTextNodes.push(n);
+      n.children.forEach(walk);
+    }
+    walk(thinking);
+    expect(allTextNodes).toHaveLength(2);
+    expect(allTextNodes[0]!.text).toBe('narration before tool');
+    expect(allTextNodes[1]!.text).toBe('final answer line 1 line 2');
+    // The two text nodes have distinct ids — proving the second
+    // iteration didn't accidentally append to the first.
+    expect(allTextNodes[0]!.id).not.toBe(allTextNodes[1]!.id);
+  });
+
   it('attaches tool_use as a child of the iteration narration when text exists', () => {
     // Causal chain: thinking → narration ("I'll call A and B") → tools
     // (the actions that narration described). When the iteration emits

@@ -304,10 +304,12 @@ function addTurnNode(
     rootNodes,
     activeNodeId: turn.id,
     // A new turn always starts a fresh ReAct loop — clear the thinking
-    // anchor so the first tool of this turn doesn't accidentally graft
-    // itself onto the previous turn's last thinking node.
+    // and text anchors so the first event of this turn doesn't graft
+    // itself onto the previous turn's last node.
     currentThinkingId: null,
     thinkingSealed: false,
+    currentTextId: null,
+    textIsOpen: false,
     stats: { ...state.stats, totalTurns: state.stats.totalTurns + 1 },
   };
 }
@@ -389,11 +391,15 @@ function addToolNode(
     state.activeNodeId,
     (n) => n.type === 'turn' && n.status === 'running',
   );
-  const narrationId = state.currentThinkingId
-    ? (findNode(state.rootNodes, textNodeId(state.currentThinkingId))?.id ?? null)
-    : null;
+  // Tool anchor preference: the active narration text (if one is open
+  // OR was the most recent under current thinking) > thinking > turn.
+  // currentTextId stays valid through parallel tool_use events so they
+  // share the same anchor. textIsOpen=false (after a tool closed the
+  // text) keeps the anchor for parallel-tool grouping but signals to
+  // the next text delta that it's a NEW iteration.
   const anchorId =
-    narrationId ?? state.currentThinkingId ?? (turn ? turn.id : null);
+    state.currentTextId ?? state.currentThinkingId ?? (turn ? turn.id : null);
+  const narrationId = state.currentTextId;
 
   const tool: ExecutionNode = {
     id: params.id,
@@ -449,12 +455,14 @@ function addToolNode(
     ...state,
     rootNodes,
     activeNodeId: tool.id,
-    // Seal the current thinking anchor: any subsequent thinking delta is
-    // from a NEW LLM call (next ReAct iteration) and should mint a new
-    // thinking node rather than concatenate into this one. Parallel
-    // tool_use events that follow within the SAME LLM call don't get a
-    // thinking delta between them, so the anchor stays valid for them.
+    // Seal both anchors: a tool_use means the model has stopped
+    // thinking AND stopped talking; the next thinking OR text delta is
+    // from a NEW LLM call (next ReAct iteration). Parallel tool_use
+    // events that follow within the SAME call don't have a thinking
+    // or text delta between them, so currentThinkingId / currentTextId
+    // stay valid for parallel-tool grouping.
     thinkingSealed: true,
+    textIsOpen: false,
     stats: { ...state.stats, totalTools: state.stats.totalTools + 1 },
   };
 }
@@ -510,15 +518,14 @@ function appendTextToCurrentTurn(
   state: ExecutionTree,
   params: TextDeltaParams,
 ): ExecutionTree {
-  // Text in a Claude streaming response is per-LLM-call: each ReAct
-  // iteration may emit one text block (narration before tools, or the
-  // final answer with no tools after). Keying the text node on the
-  // iteration's thinking id gives one bubble per call, attached as a
-  // sibling of that iteration's tools. The previous shape rolled
-  // every delta of every iteration into one turn-level text node,
-  // which created a "response" box on the very first delta and then
-  // visually dragged across the diagram as later iterations were
-  // appended.
+  // Text in a Claude streaming response is per-LLM-call. Two anchors
+  // separate "extend the live text" from "start a new iteration's
+  // text": currentTextId tracks the live node; textIsOpen=false (set
+  // by tool_use) signals that the text was sealed and the next delta
+  // belongs to a NEW iteration. Without this flag, an iteration that
+  // skips its thinking block (model went straight from tool result to
+  // final response) would silently merge into the previous iter's
+  // text node, because both ids would key on the same currentThinkingId.
   const turn = findNearestAncestor(
     state.rootNodes,
     state.activeNodeId,
@@ -526,23 +533,28 @@ function appendTextToCurrentTurn(
   );
   if (!turn) return state;
 
-  // Anchor: the active thinking node's id, or the turn id when the
-  // model never emitted a thinking block (extended thinking off, or
-  // text-first content order). Fallback uses turnTextNodeId so a
-  // thinking-less turn still gets at most one text node, not one per
-  // delta.
-  const anchorId = state.currentThinkingId ?? turn.id;
-  const textId =
-    state.currentThinkingId !== null
-      ? textNodeId(state.currentThinkingId)
-      : turnTextNodeId(turn.id);
+  let textId: string;
+  let isNewNode: boolean;
+  let nextSyntheticId = state.nextSyntheticId;
+  if (state.currentTextId && state.textIsOpen) {
+    textId = state.currentTextId;
+    isNewNode = false;
+  } else {
+    // New iteration: mint a unique id keyed on (anchor, counter).
+    // The counter (nextSyntheticId) ensures uniqueness when an
+    // iteration's text follows a tool_use without a fresh thinking
+    // delta — both ids would key on the same currentThinkingId
+    // otherwise and silently collide.
+    const counter = nextSyntheticId;
+    nextSyntheticId += 1;
+    textId =
+      state.currentThinkingId !== null
+        ? `${state.currentThinkingId}:text:${counter}`
+        : `${turn.id}:text:${counter}`;
+    isNewNode = true;
+  }
 
-  // Find the iteration's existing text node by id (not "first text
-  // child of turn" — that would still match a previous iteration's
-  // text under the same turn). Using a stable id keyed on the
-  // iteration anchor makes "extend the current call's text" trivial
-  // to detect.
-  const existing = findNode(state.rootNodes, textId);
+  const existing = !isNewNode ? findNode(state.rootNodes, textId) : null;
   const newText = (existing?.text ?? '') + params.delta;
   let rootNodes: ExecutionNode[];
   if (existing) {
@@ -552,6 +564,7 @@ function appendTextToCurrentTurn(
       label: previewLabel(newText),
     }));
   } else {
+    const anchorId = state.currentThinkingId ?? turn.id;
     const textNode: ExecutionNode = {
       id: textId,
       type: 'text',
@@ -564,23 +577,25 @@ function appendTextToCurrentTurn(
   }
 
   // Mark the thinking anchor as completed: text means the LLM has
-  // stopped thinking and is now talking. Mirrors the thinking → tool
-  // transition in addToolNode. Only flip running → completed.
+  // stopped thinking and is now talking.
   if (state.currentThinkingId) {
     rootNodes = mapNode(rootNodes, state.currentThinkingId, (t) =>
       t.status === 'running' ? { ...t, status: 'completed' as const } : t,
     );
   }
 
-  // Move auto-scroll focus onto the streaming text so the camera
-  // follows it. Subsequent deltas keep the same id, so the camera
-  // stays on this bubble until the next iteration starts (or the
-  // turn closes).
-  // Seal the thinking anchor: any subsequent thinking delta is from a
-  // NEW LLM call (next ReAct iteration). tool_use within the SAME
-  // call still attaches to the existing thinking — sealed only
-  // affects the next-thinking-delta branch.
-  return { ...state, rootNodes, activeNodeId: textId, thinkingSealed: true };
+  // Move auto-scroll focus onto the streaming text. Subsequent deltas
+  // keep the same id (textIsOpen stays true), so the camera sits on
+  // this bubble until tool_use closes it or the turn ends.
+  return {
+    ...state,
+    rootNodes,
+    activeNodeId: textId,
+    currentTextId: textId,
+    textIsOpen: true,
+    thinkingSealed: true,
+    ...(isNewNode ? { nextSyntheticId } : {}),
+  };
 }
 
 function appendThinkingToCurrentTurn(
@@ -657,6 +672,11 @@ function appendThinkingToCurrentTurn(
     rootNodes: appendChild(preparedRootNodes, turn.id, thinkingNode),
     currentThinkingId: id,
     thinkingSealed: false,
+    // New iteration: forget the previous iteration's text anchors so
+    // tools/text in this iteration attach to the new thinking, not the
+    // old text node.
+    currentTextId: null,
+    textIsOpen: false,
   };
 }
 
