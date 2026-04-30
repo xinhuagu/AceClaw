@@ -64,3 +64,7 @@ pnpm dev       # http://localhost:5173/
 ```
 
 The dashboard lives under [`aceclaw-dashboard/`](../aceclaw-dashboard/). It's a React 19 + Vite + Tailwind 4 app with a dagre-driven SVG tree and framer-motion node animations; reducer and hook layers are unit-tested with Vitest.
+
+## What's next
+
+[`visual-harness-roadmap.md`](visual-harness-roadmap.md) sketches the four directions the harness is heading: an **agent debugger** (pause / step / replay / diff), a **decision graph** (plan + reasoning + counterfactual tools), a **permission dashboard** (auditable decisions across sessions), and a **learning viewer** (the self-learning loop made legible). Each is large enough to spin out its own PRD when we pick it up.
