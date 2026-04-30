@@ -166,20 +166,21 @@ function DashboardConnected({ sessionId, wsUrl }: DashboardConnectedProps) {
   // tool_completed event. Stamping resolvedBy='browser' beforehand also
   // guards against the reducer mistaking that completion for a CLI
   // resolution.
-  const handleApprove = (requestId: string): void => {
-    sendCommand({
+  //
+  // Dropped sends (pre-open queue full) skip the optimistic resolve so
+  // the panel keeps rendering and the user can re-try once the socket
+  // reconnects — eating the click silently while clearing the panel
+  // would leave the daemon waiting until its 120 s timeout.
+  const respond = (requestId: string, approved: boolean): void => {
+    const result = sendCommand({
       method: 'permission.response',
-      params: { requestId, approved: true },
+      params: { requestId, approved },
     });
-    resolvePermission(requestId, true);
+    if (result === 'dropped') return;
+    resolvePermission(requestId, approved);
   };
-  const handleDeny = (requestId: string): void => {
-    sendCommand({
-      method: 'permission.response',
-      params: { requestId, approved: false },
-    });
-    resolvePermission(requestId, false);
-  };
+  const handleApprove = (requestId: string): void => respond(requestId, true);
+  const handleDeny = (requestId: string): void => respond(requestId, false);
 
   return (
     <>

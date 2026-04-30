@@ -347,6 +347,41 @@ describe('permission pause', () => {
     // countdown ring without a separate "I started waiting at X" event.
     expect(typeof tool.metadata?.['permissionRequestedAt']).toBe('number');
   });
+
+  it('uses envelope.receivedAt (not Date.now) for permissionRequestedAt', () => {
+    // Snapshot replay re-feeds aged events; using Date.now() in the
+    // reducer would re-stamp every replayed permission.request with the
+    // current wall clock and the panel's countdown would always show
+    // the full 120 s for an already-aged request. Pin envelope-time
+    // sourcing so the panel's deadline math survives reconnects.
+    const aged = '2026-04-30T10:00:00.000Z';
+    const state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: aged,
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: aged,
+      }),
+      envelope('stream.tool_use', { id: 't1', name: 'bash' }),
+      {
+        eventId: nextEventId++,
+        sessionId: 'sess-1',
+        receivedAt: aged,
+        event: {
+          method: 'permission.request',
+          params: { tool: 'bash', description: 'rm', requestId: 'perm-aged' },
+        },
+      } as DaemonEventEnvelope,
+    );
+    const tool = state.rootNodes[0]!.children[0]!.children[0]!;
+    expect(tool.metadata?.['permissionRequestedAt']).toBe(Date.parse(aged));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -454,6 +489,35 @@ describe('permission resolution (issue #437)', () => {
     expect(tool.status).toBe('failed');
     expect(tool.metadata?.['resolvedBy']).toBe('cli');
     expect(tool.metadata?.['resolvedApproved']).toBe(false);
+  });
+
+  it('does not corrupt a CLI-resolved node when a tardy browser click arrives', () => {
+    // The race the codex review caught: tool_completed lands first
+    // (resolvedBy='cli', status='completed', awaitingInput still true so
+    // the panel shows "Approved via CLI"). The user, having seen the
+    // panel mid-flicker, clicks Approve before the dismiss timer fires.
+    // Without the guard, resolvePermissionLocally would overwrite
+    // resolvedBy back to 'browser' and reset status from 'completed' to
+    // 'running' — resurrecting a node the daemon already finished.
+    const cliResolved = runAll(
+      pausedToolTree(),
+      envelope('stream.tool_completed', {
+        id: 't1',
+        name: 'edit_file',
+        durationMs: 42,
+        isError: false,
+      }),
+    );
+    const after = resolvePermissionLocally(cliResolved, 'perm-1', false);
+    const tool = after.rootNodes[0]!.children[0]!.children[0]!;
+    // Status stays at the daemon's verdict; resolvedBy stays 'cli'.
+    expect(tool.status).toBe('completed');
+    expect(tool.metadata?.['resolvedBy']).toBe('cli');
+    expect(tool.metadata?.['resolvedApproved']).toBe(true);
+    // Panel-trigger fields are stripped — the click DID dismiss the
+    // panel, just without rewriting the resolution.
+    expect(tool.awaitingInput).toBeUndefined();
+    expect(tool.permissionRequestId).toBeUndefined();
   });
 
   it('does not stamp resolvedBy=cli when local resolve already won the race', () => {

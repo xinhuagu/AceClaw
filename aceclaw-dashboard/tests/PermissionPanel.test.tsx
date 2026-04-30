@@ -131,6 +131,57 @@ describe('PermissionPanel — awaiting state', () => {
     });
     expect(onDismiss).toHaveBeenCalledWith('perm-1');
   });
+
+  it('immediately calls onDismiss when mounted past the deadline (snapshot replay)', () => {
+    // A tab opening mid-execution via snapshot replay receives a
+    // permission.request whose `permissionRequestedAt` is already older
+    // than the 120 s deadline. The panel must dismiss on first render
+    // rather than waiting up to 250 ms for the next interval tick —
+    // otherwise an obviously-stale panel flashes on screen.
+    const onDismiss = vi.fn();
+    const stale = awaitingNode({
+      metadata: {
+        permissionTool: 'edit_file',
+        permissionRequestedAt: Date.now() - PERMISSION_TIMEOUT_MS - 5_000,
+      },
+    });
+    render(
+      <PermissionPanel
+        node={stale}
+        anchorX={0}
+        anchorY={0}
+        onApprove={vi.fn()}
+        onDeny={vi.fn()}
+        onDismiss={onDismiss}
+      />,
+    );
+    expect(onDismiss).toHaveBeenCalledWith('perm-1');
+  });
+
+  it('secondary panels do not respond to A/D keyboard shortcuts', () => {
+    // With parallel pending permissions, only the primary (most-recent)
+    // panel binds the global keyboard shortcuts so a keystroke has a
+    // single, predictable target. Secondary panels render and remain
+    // click-interactive.
+    const onApprove = vi.fn();
+    render(
+      <PermissionPanel
+        node={awaitingNode()}
+        anchorX={0}
+        anchorY={0}
+        onApprove={onApprove}
+        onDeny={vi.fn()}
+        onDismiss={vi.fn()}
+        primary={false}
+      />,
+    );
+    fireEvent.keyDown(window, { key: 'a' });
+    expect(onApprove).not.toHaveBeenCalled();
+    // Click still works on a secondary panel — the user can answer via
+    // the mouse even when keyboard ownership lies elsewhere.
+    fireEvent.click(screen.getByRole('button', { name: /approve permission/i }));
+    expect(onApprove).toHaveBeenCalledWith('perm-1');
+  });
 });
 
 describe('PermissionPanel — CLI-resolved state', () => {

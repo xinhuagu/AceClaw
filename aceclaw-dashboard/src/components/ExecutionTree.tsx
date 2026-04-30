@@ -183,36 +183,45 @@ export function ExecutionTree({
   );
 
   /**
-   * Pick the node that should host an inline {@link PermissionPanel}.
-   * The panel is mounted whenever a node carries {@code awaitingInput}
-   * (true for both interactive paused state AND the brief "resolved via
-   * CLI" reveal — the panel itself disambiguates via metadata.resolvedBy).
-   * Multiple awaiting nodes are unusual but possible (parallel tools, a
-   * resume mid-permission). Pick the most recently observed one — the
-   * one matching {@code activeNodeId} when it itself is awaiting,
-   * otherwise the first pre-order match.
+   * Find every node that should host an inline {@link PermissionPanel}.
+   * Panels mount on any node carrying {@code awaitingInput} — this is
+   * true both for the interactive paused state AND for the brief
+   * "resolved via CLI" reveal (the panel disambiguates via
+   * metadata.resolvedBy). Parallel tools that each open a permission
+   * gate produce multiple awaiting nodes — render one panel per node so
+   * the user can see and answer all of them; without this they'd
+   * collapse to a single panel and the rest would be invisible.
+   *
+   * "Primary" is the most-recently activated awaiting node — it owns
+   * the global A/D/Esc keyboard shortcuts so keystrokes always have a
+   * single target. Click targeting works on any panel.
    */
-  const awaitingNode = useMemo<LayoutNode | null>(() => {
+  const awaitingNodes = useMemo<LayoutNode[]>(
+    () => layout.nodes.filter((n) => n.awaitingInput === true),
+    [layout.nodes],
+  );
+  const primaryAwaitingId = useMemo<string | null>(() => {
+    if (awaitingNodes.length === 0) return null;
     if (tree.activeNodeId) {
-      const active = layout.nodes.find(
-        (n) => n.id === tree.activeNodeId && n.awaitingInput === true,
-      );
-      if (active) return active;
+      const active = awaitingNodes.find((n) => n.id === tree.activeNodeId);
+      if (active) return active.id;
     }
-    return layout.nodes.find((n) => n.awaitingInput === true) ?? null;
-  }, [layout.nodes, tree.activeNodeId]);
+    // Fall back to the first match in pre-order. Stable across re-renders
+    // because layout.nodes order is itself stable.
+    return awaitingNodes[0]!.id;
+  }, [awaitingNodes, tree.activeNodeId]);
 
-  // Convert the awaiting node's layout (graph-space) coords to overlay
-  // (container-space) coords so the panel sits next to it on screen.
-  // Panel anchors at the node's right edge; the +12px shifts past the
+  // Convert each awaiting node's layout (graph-space) coords to overlay
+  // (container-space) coords so its panel sits next to it on screen.
+  // Panel anchors at the node's right edge; the +12 px shifts past the
   // node border so the connector notch lands cleanly on the panel side.
-  const panelAnchor = useMemo(() => {
-    if (!awaitingNode) return null;
-    const x =
-      viewport.x + (awaitingNode.x + awaitingNode.width / 2) * viewport.scale + 12;
-    const y = viewport.y + awaitingNode.y * viewport.scale;
-    return { x, y };
-  }, [awaitingNode, viewport]);
+  const panelAnchors = useMemo(() => {
+    return awaitingNodes.map((node) => ({
+      node,
+      x: viewport.x + (node.x + node.width / 2) * viewport.scale + 12,
+      y: viewport.y + node.y * viewport.scale,
+    }));
+  }, [awaitingNodes, viewport]);
 
   if (layout.nodes.length === 0) {
     return (
@@ -244,21 +253,20 @@ export function ExecutionTree({
       */}
       <div className="pointer-events-none absolute inset-0 z-20">
         <AnimatePresence>
-          {awaitingNode &&
-          panelAnchor &&
-          onApprovePermission &&
-          onDenyPermission &&
-          onDismissPermission ? (
-            <PermissionPanel
-              key={awaitingNode.permissionRequestId ?? awaitingNode.id}
-              node={awaitingNode}
-              anchorX={panelAnchor.x}
-              anchorY={panelAnchor.y}
-              onApprove={onApprovePermission}
-              onDeny={onDenyPermission}
-              onDismiss={onDismissPermission}
-            />
-          ) : null}
+          {onApprovePermission && onDenyPermission && onDismissPermission
+            ? panelAnchors.map(({ node, x, y }) => (
+                <PermissionPanel
+                  key={node.permissionRequestId ?? node.id}
+                  node={node}
+                  anchorX={x}
+                  anchorY={y}
+                  onApprove={onApprovePermission}
+                  onDeny={onDenyPermission}
+                  onDismiss={onDismissPermission}
+                  primary={node.id === primaryAwaitingId}
+                />
+              ))
+            : null}
         </AnimatePresence>
       </div>
       <svg className="h-full w-full" role="img" aria-label="execution tree">

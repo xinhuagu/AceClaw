@@ -1135,13 +1135,19 @@ function completeSubAgentNode(
 function pauseForPermission(
   state: ExecutionTree,
   params: PermissionRequestParams,
+  receivedAt: string,
 ): ExecutionTree {
   // The daemon pauses execution waiting for a permission.response. We mark
   // the active leaf as paused + awaitingInput so the renderer can surface
-  // the prompt right where the agent stopped. Stamp requestedAt so the
-  // PermissionPanel can derive the countdown deadline (server side caps
-  // at 120s — see CancelAwareStreamContext.PERMISSION_RESPONSE_TIMEOUT_MS).
+  // the prompt right where the agent stopped. Stamp requestedAt from the
+  // envelope's receivedAt (set by the bridge when the daemon emitted the
+  // event) so the PermissionPanel's countdown is correct on snapshot
+  // replay too — using Date.now() here would re-stamp every replay with
+  // the current wall clock, making aged requests look fresh and breaking
+  // the deadline math. Server side caps at 120 s — see
+  // CancelAwareStreamContext.PERMISSION_RESPONSE_TIMEOUT_MS.
   if (!state.activeNodeId) return state;
+  const requestedAt = Date.parse(receivedAt);
   return {
     ...state,
     rootNodes: mapNode(state.rootNodes, state.activeNodeId, (n) => ({
@@ -1153,7 +1159,12 @@ function pauseForPermission(
       metadata: {
         ...(n.metadata ?? {}),
         permissionTool: params.tool,
-        permissionRequestedAt: Date.now(),
+        // NaN guard: malformed receivedAt (shouldn't happen — the bridge
+        // always sets it) falls back to current time so the panel still
+        // shows something sane rather than a permanently-empty ring.
+        permissionRequestedAt: Number.isFinite(requestedAt)
+          ? requestedAt
+          : Date.now(),
       },
     })),
   };
@@ -1239,6 +1250,23 @@ export function resolvePermissionLocally(
   if (!target) return state;
 
   const targetNode: ExecutionNode = target;
+
+  // Race guard: if the daemon already echoed tool_completed (CLI won the
+  // race) the reducer's completeToolNode stamped resolvedBy='cli' and
+  // moved the node to a terminal status, but kept awaitingInput=true so
+  // the panel can briefly show "Approved/Denied via CLI". A tardy click
+  // from the user must not overwrite that resolution: reverting status
+  // from 'completed'/'failed' back to 'running' would resurrect a node
+  // the daemon already finished, and stamping resolvedBy='browser' would
+  // mislabel who actually resolved it. Bail to a panel-dismiss-only
+  // path so the UI clears without corrupting state.
+  if (
+    targetNode.metadata?.['resolvedBy'] === 'cli' ||
+    (targetNode.status !== 'paused' && resolvedBy === 'browser')
+  ) {
+    return dismissPermissionPanel(state, requestId);
+  }
+
   const nextStatus: ExecutionStatus = approved ? 'running' : 'cancelled';
   return {
     ...state,
@@ -1392,7 +1420,7 @@ export function executionTreeReducer(
       next = completeSubAgentNode(state, event.params);
       break;
     case 'permission.request':
-      next = pauseForPermission(state, event.params);
+      next = pauseForPermission(state, event.params, envelope.receivedAt);
       break;
     case 'stream.usage':
       next = updateUsageStats(state, event.params);

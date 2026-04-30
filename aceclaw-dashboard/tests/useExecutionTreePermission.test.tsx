@@ -96,14 +96,14 @@ describe('useExecutionTree permission flow (issue #437)', () => {
     const ws = FakeWebSocket.last!;
     act(() => ws.open());
 
-    let immediate: boolean | undefined;
+    let immediate: 'sent' | 'queued' | 'dropped' | undefined;
     act(() => {
       immediate = result.current.sendCommand({
         method: 'permission.response',
         params: { requestId: 'perm-1', approved: true },
       });
     });
-    expect(immediate).toBe(true);
+    expect(immediate).toBe('sent');
 
     // Last frame on the wire (after the handshake's snapshot.request) is
     // the permission.response. JSON-string compare on the parsed object
@@ -124,14 +124,14 @@ describe('useExecutionTree permission flow (issue #437)', () => {
     const ws = FakeWebSocket.last!;
     // Socket NOT opened yet — readyState is 0, so the first send must
     // queue. Without the queue, pre-open clicks would silently no-op.
-    let immediate: boolean | undefined;
+    let immediate: 'sent' | 'queued' | 'dropped' | undefined;
     act(() => {
       immediate = result.current.sendCommand({
         method: 'permission.response',
         params: { requestId: 'perm-1', approved: false },
       });
     });
-    expect(immediate).toBe(false);
+    expect(immediate).toBe('queued');
     // Nothing on the wire yet.
     expect(ws.sent.filter((s) => s.includes('permission.response'))).toHaveLength(0);
 
@@ -144,6 +144,59 @@ describe('useExecutionTree permission flow (issue #437)', () => {
       method: 'permission.response',
       params: { requestId: 'perm-1', approved: false },
     });
+  });
+
+  it('returns "dropped" when the pre-open buffer is full and refuses to queue more', () => {
+    // The 33rd command sent before the socket opens must be rejected
+    // rather than silently dropped — App.tsx uses this signal to skip
+    // the optimistic local resolve so the panel keeps rendering and the
+    // daemon doesn't get a divergent client view.
+    const { result } = renderHook(() =>
+      useExecutionTree('ws://test/ws', 'sess-1'),
+    );
+    const dispositions: Array<'sent' | 'queued' | 'dropped'> = [];
+    act(() => {
+      for (let i = 0; i < 33; i += 1) {
+        dispositions.push(
+          result.current.sendCommand({
+            method: 'permission.response',
+            // Distinct ids so the dedup path doesn't collapse them.
+            params: { requestId: `perm-${i}`, approved: true },
+          }),
+        );
+      }
+    });
+    // First 32 queue, the 33rd drops.
+    expect(dispositions.slice(0, 32).every((d) => d === 'queued')).toBe(true);
+    expect(dispositions[32]).toBe('dropped');
+  });
+
+  it('dedups queued permission.response by requestId so back-to-back clicks collapse', () => {
+    // User clicks Approve, then Deny, while the WS is reconnecting.
+    // Both queue. On flush the daemon's first-response-wins will pick
+    // whichever the bridge happened to deliver first — but on a daemon
+    // without #433 the second click might never land. Replace the
+    // earlier entry instead so the LATEST decision is what flushes.
+    const { result } = renderHook(() =>
+      useExecutionTree('ws://test/ws', 'sess-1'),
+    );
+    const ws = FakeWebSocket.last!;
+    act(() => {
+      result.current.sendCommand({
+        method: 'permission.response',
+        params: { requestId: 'perm-1', approved: true },
+      });
+      result.current.sendCommand({
+        method: 'permission.response',
+        params: { requestId: 'perm-1', approved: false },
+      });
+    });
+    act(() => ws.open());
+    const permFrames = ws.sent
+      .filter((s) => s.includes('permission.response'))
+      .map((s) => JSON.parse(s) as { params: { approved: boolean } });
+    expect(permFrames).toHaveLength(1);
+    expect(permFrames[0]!.params.approved).toBe(false);
   });
 
   it('resolvePermission flips a paused tool node optimistically without going through the WS', async () => {

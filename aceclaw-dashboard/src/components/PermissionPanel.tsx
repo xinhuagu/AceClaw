@@ -49,6 +49,15 @@ interface PermissionPanelProps {
   onDeny: (requestId: string) => void;
   /** Called when the panel times out OR the CLI-resolved fade-out elapses. */
   onDismiss: (requestId: string) => void;
+  /**
+   * When multiple panels are mounted (parallel tools each holding a
+   * permission gate), only the {@code primary} one binds the global
+   * A/D/Esc keyboard shortcuts — otherwise every keystroke fans out to
+   * all of them and the user can't tell which they're answering. Click
+   * targeting still works on every panel. Defaults to {@code true} so
+   * the single-panel case is unchanged.
+   */
+  primary?: boolean;
 }
 
 /**
@@ -106,6 +115,7 @@ export function PermissionPanel({
   onApprove,
   onDeny,
   onDismiss,
+  primary = true,
 }: PermissionPanelProps) {
   const requestId = node.permissionRequestId;
   const requestedAt =
@@ -142,9 +152,16 @@ export function PermissionPanel({
   // leaving the panel on screen would just be misleading. onDismiss is
   // wired to the reducer's panel-clearing action; the daemon will emit a
   // tool_completed (likely with an error) shortly after.
+  //
+  // First render uses Date.now() directly (not the lazy `now` state)
+  // because a snapshot-replay request may already be past its deadline
+  // when the panel mounts, and waiting up to 250 ms for the next tick
+  // would leak an obviously-stale panel on screen. We also re-check on
+  // every tick so a panel that mounted just-in-time still dismisses
+  // when its real deadline elapses.
   useEffect(() => {
     if (state.kind !== 'awaiting' || !requestId) return;
-    const elapsed = now - requestedAt;
+    const elapsed = Date.now() - requestedAt;
     if (elapsed >= PERMISSION_TIMEOUT_MS) onDismiss(requestId);
   }, [now, requestedAt, requestId, state.kind, onDismiss]);
 
@@ -159,9 +176,13 @@ export function PermissionPanel({
     return () => window.clearTimeout(id);
   }, [state.kind, requestId, onDismiss]);
 
-  // Keyboard shortcuts — only active in the awaiting state.
+  // Keyboard shortcuts — only active in the awaiting state, and only on
+  // the primary (most-recent) panel. Secondary panels render fully
+  // interactive but require a click; without this scoping every keystroke
+  // would fan out to every mounted panel and the user couldn't tell
+  // which permission they were answering.
   useEffect(() => {
-    if (state.kind !== 'awaiting' || !requestId) return;
+    if (state.kind !== 'awaiting' || !requestId || !primary) return;
     const onKey = (e: KeyboardEvent) => {
       // Don't hijack typing in inputs/textareas (none in Tier 1, but defensive).
       const target = e.target as HTMLElement | null;
@@ -179,7 +200,7 @@ export function PermissionPanel({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [state.kind, requestId, onApprove, onDeny, onDismiss]);
+  }, [state.kind, requestId, primary, onApprove, onDeny, onDismiss]);
 
   if (!requestId) return null;
 
@@ -236,6 +257,14 @@ export function PermissionPanel({
             <div className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-300/90">
               <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
               Permission required
+              {!primary ? (
+                <span
+                  className="rounded bg-zinc-800/80 px-1.5 py-0.5 font-mono text-[9px] tracking-normal text-zinc-400"
+                  title="Click Approve/Deny — keyboard shortcuts target the most recent prompt"
+                >
+                  click only
+                </span>
+              ) : null}
             </div>
             <div className="font-mono text-sm text-zinc-100">{tool}</div>
           </div>

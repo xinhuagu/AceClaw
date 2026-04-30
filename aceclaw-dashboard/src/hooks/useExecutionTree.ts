@@ -45,6 +45,17 @@ export type WsStatus =
   | 'closed'
   | 'error';
 
+/**
+ * Disposition of a {@code sendCommand} call. Three terminal states:
+ *
+ *   - {@code 'sent'}    — written directly to an open socket.
+ *   - {@code 'queued'}  — buffered for flush on the next {@code onopen}.
+ *   - {@code 'dropped'} — pre-open buffer is full (cap {@link PENDING_SEND_CAP}).
+ *     The caller should avoid running optimistic local updates so the
+ *     daemon's eventual timeout/event remains the source of truth.
+ */
+export type SendCommandResult = 'sent' | 'queued' | 'dropped';
+
 /** Shape returned to consumers — tree state plus a connection indicator. */
 export interface UseExecutionTreeResult {
   tree: ExecutionTree;
@@ -55,11 +66,12 @@ export interface UseExecutionTreeResult {
    * socket isn't open yet, the command is buffered and flushed on
    * {@code onopen}; reconnect re-sends nothing — pending permission
    * approvals time out anyway and the daemon will re-emit a fresh
-   * {@code permission.request}. Returns a boolean indicating whether the
-   * command was sent immediately ({@code true}) or buffered/dropped
-   * ({@code false}).
+   * {@code permission.request}. Returns the disposition of the command
+   * so callers can avoid running optimistic local updates when the
+   * command was dropped (e.g. don't strip awaitingInput just because we
+   * couldn't notify the daemon).
    */
-  sendCommand: (cmd: ClientCommand) => boolean;
+  sendCommand: (cmd: ClientCommand) => SendCommandResult;
   /**
    * Same as a reducer-driven {@code permission.response} broadcast: flips
    * the paused node out of awaiting-input state in the local tree. The
@@ -153,6 +165,15 @@ const VALIDATORS: Partial<Record<DaemonEvent['method'], ParamGuard>> = {
 
 const RECONNECT_INITIAL_MS = 500;
 const RECONNECT_MAX_MS = 30_000;
+/**
+ * Soft cap on the pre-open send buffer. Permission flows emit one
+ * outbound command per click; a click-storm during reconnect that fills
+ * 32 slots is already pathological and probably indicates the user is
+ * unaware the WS is down — drop further commands and surface
+ * {@code 'dropped'} to the caller so it can refrain from optimistic
+ * local updates.
+ */
+const PENDING_SEND_CAP = 32;
 
 /**
  * Subscribes to the daemon's WebSocket bridge and exposes the current
@@ -203,21 +224,37 @@ export function useExecutionTree(
   const wsRef = useRef<WebSocket | null>(null);
   const pendingSendRef = useRef<ClientCommand[]>([]);
 
-  const sendCommand = useCallback((cmd: ClientCommand): boolean => {
+  const sendCommand = useCallback((cmd: ClientCommand): SendCommandResult => {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(cmd));
-      return true;
+      return 'sent';
     }
-    // Buffer until onopen flushes. Cap at 32 to keep a malicious /
-    // bug-induced flood from growing the queue without bound; commands
-    // beyond the cap are dropped (the user can re-click once the socket
-    // reconnects). 32 is a soft upper bound — typical permission flows
-    // emit one outbound command at a time.
-    if (pendingSendRef.current.length < 32) {
-      pendingSendRef.current.push(cmd);
+    // Buffer until onopen flushes. Two queue invariants:
+    //   1. Per-requestId dedup for permission.response — if the user
+    //      clicks Approve, then quickly Deny while the WS is reconnecting,
+    //      both would otherwise queue and the daemon's first-response-wins
+    //      would honour whichever arrived first; on a daemon without #433
+    //      the second click never lands. Replace the prior entry instead.
+    //   2. Hard cap at PENDING_SEND_CAP — beyond that, drop and signal
+    //      back to the caller so it can avoid optimistic local updates.
+    const queue = pendingSendRef.current;
+    if (cmd.method === 'permission.response') {
+      const dupIdx = queue.findIndex(
+        (q) =>
+          q.method === 'permission.response' &&
+          q.params.requestId === cmd.params.requestId,
+      );
+      if (dupIdx >= 0) {
+        queue[dupIdx] = cmd;
+        return 'queued';
+      }
     }
-    return false;
+    if (queue.length >= PENDING_SEND_CAP) {
+      return 'dropped';
+    }
+    queue.push(cmd);
+    return 'queued';
   }, []);
 
   const resolvePermission = useCallback(
