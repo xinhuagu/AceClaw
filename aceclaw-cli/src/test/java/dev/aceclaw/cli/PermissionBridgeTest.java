@@ -219,26 +219,54 @@ class PermissionBridgeTest {
     }
 
     @Test
-    void consumeResolvedAnswer_alsoClearsExternalCancellation() {
+    void consumeResolvedAnswer_clearsExternalCancellation_whenAnswerWasResolved() throws Exception {
         // When the modal completes the local way (user typed y) but a
         // cancellation arrives a millisecond later from the daemon, the
-        // cleanup hook in consumeResolvedAnswer must drop the stale
-        // external entry so the externalCancellations map doesn't leak
-        // for the lifetime of the CLI process.
+        // cleanup hook in consumeResolvedAnswer drops the stale external
+        // entry so the externalCancellations map doesn't leak.
         var bridge = new PermissionBridge();
-        bridge.cancelExternal("req-leak",
-                new PermissionBridge.PermissionAnswer(true, false, true));
-        // Simulate the user-answer path that records a resolved answer
-        // (in production this happens via submitAnswer + then the modal
-        // calls consumeResolvedAnswer in its cleanup).
-        bridge.submitAnswer("req-leak",
-                new PermissionBridge.PermissionAnswer(false, false));
-        // First consumeResolvedAnswer: sees the user's answer AND wipes
-        // any pending external entry as a side-effect.
-        bridge.consumeResolvedAnswer("req-leak");
+        var req = new PermissionBridge.PermissionRequest("1", "bash", "run", "req-leak");
+        var pool = Executors.newSingleThreadExecutor();
+        try {
+            // requestPermission registers the future so submitAnswer can
+            // populate resolvedAnswers (no-op without a registered future).
+            Future<PermissionBridge.PermissionAnswer> f =
+                    pool.submit(() -> bridge.requestPermission(req));
+            assertThat(bridge.pollPending(1, TimeUnit.SECONDS)).isNotNull();
+            // External cancel arrives a millisecond after the user typed y.
+            bridge.submitAnswer("req-leak",
+                    new PermissionBridge.PermissionAnswer(false, false));
+            f.get(2, TimeUnit.SECONDS);
+            bridge.cancelExternal("req-leak",
+                    new PermissionBridge.PermissionAnswer(true, false, true));
 
-        // External entry is gone too — no leak.
-        assertThat(bridge.consumeExternalCancellation("req-leak")).isNull();
+            // Modal cleanup runs consumeResolvedAnswer; it returns the
+            // user's answer AND wipes the stale external entry.
+            assertThat(bridge.consumeResolvedAnswer("req-leak")).isNotNull();
+            assertThat(bridge.consumeExternalCancellation("req-leak")).isNull();
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void consumeResolvedAnswer_preservesExternalCancellation_whenNothingResolved() {
+        // P1 race (Codex): drainPermissions polls a request and calls
+        // consumeResolvedAnswer immediately. If the dashboard cancellation
+        // lands in that narrow window — externalCancellations gets the
+        // entry but submitAnswer hasn't run yet — the cleanup MUST NOT
+        // wipe externalCancellations, otherwise the modal's polling tick
+        // can't see it and waits 120 s on stdin for nothing.
+        var bridge = new PermissionBridge();
+        bridge.cancelExternal("req-race",
+                new PermissionBridge.PermissionAnswer(true, false, true));
+
+        // User hasn't typed anything — no resolved answer to return.
+        assertThat(bridge.consumeResolvedAnswer("req-race")).isNull();
+        // External entry MUST still be available for the modal to pick up.
+        var external = bridge.consumeExternalCancellation("req-race");
+        assertThat(external).isNotNull();
+        assertThat(external.external()).isTrue();
     }
 
     @Test

@@ -271,12 +271,21 @@ public final class PermissionBridge {
      */
     public PermissionAnswer consumeResolvedAnswer(String requestId) {
         if (requestId == null || requestId.isBlank()) return null;
-        // Also drop any external-cancellation entry the modal didn't
-        // pick up (e.g. user typed y a millisecond before the daemon's
-        // permission.cancelled arrived) so the map doesn't leak entries
-        // for the lifetime of the CLI.
-        clearExternalCancellation(requestId);
-        return resolvedAnswers.remove(requestId);
+        var resolved = resolvedAnswers.remove(requestId);
+        // Only drop the external-cancellation entry when we actually
+        // returned a resolved answer — i.e. the user already typed y/n
+        // and we're cleaning up after submitAnswer. If resolved is
+        // null we MUST leave externalCancellations alone: a dashboard
+        // cancel can land in the narrow window between drainPermissions
+        // polling the request and getting here, and wiping the entry
+        // would leave the modal stuck on stdin until the daemon's 120 s
+        // deadline (the modal's polling tick is the only consumer left).
+        // Worst case is a leaked entry per orphaned cancel — bounded
+        // and rare.
+        if (resolved != null) {
+            clearExternalCancellation(requestId);
+        }
+        return resolved;
     }
 
     /**

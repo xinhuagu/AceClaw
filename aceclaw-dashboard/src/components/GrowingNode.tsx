@@ -271,7 +271,7 @@ export function GrowingNode({ node, onAwaitingClick, isOpenPanel }: GrowingNodeP
         permission gates at a glance and knows the node is interactive.
         Hidden once the panel is open or the request resolves.
       */}
-      {isAwaiting && !isOpenPanel ? (
+      {interactive && !isOpenPanel ? (
         <g pointerEvents="none">
           <rect
             x={left + node.width - 64}

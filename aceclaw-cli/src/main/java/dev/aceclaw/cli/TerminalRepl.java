@@ -499,6 +499,16 @@ public final class TerminalRepl {
                                 + "Ctrl-C twice — force-exiting AceClaw."
                                 + RESET);
                         out.flush();
+                        // Restore the terminal before exiting — System.exit
+                        // skips finally blocks in waitForForeground /
+                        // readPermissionAnswer, so without this the user's
+                        // shell would inherit raw mode (no echo, no canonical
+                        // line edit) until they ran `stty sane`.
+                        try {
+                            terminal.close();
+                        } catch (Exception ignored) {
+                            // Best-effort — we're exiting anyway.
+                        }
                         // Daemon cleanup (session.destroy) runs from the
                         // JVM shutdown hook installed in AceClawMain so
                         // it covers ALL force-exit paths (Ctrl-C×2,

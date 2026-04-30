@@ -61,8 +61,19 @@ interface PermissionPanelProps {
   onAlwaysAllow: (requestId: string) => void;
   /** Called when the user clicks Deny. */
   onDeny: (requestId: string) => void;
-  /** Called when the panel times out OR the user dismisses it without responding. */
+  /** Called when the user dismisses the panel (Esc / × close) without responding. */
   onDismiss: (requestId: string) => void;
+  /**
+   * Called when the panel auto-dismisses because the daemon's own
+   * deadline has elapsed. Distinct from {@link #onDismiss} because the
+   * daemon will reject any further response now — the parent should
+   * clear {@code awaitingInput}/{@code permissionRequestId} in the
+   * reducer so the user can't reopen the panel and click on a stale
+   * request. Defaults to {@link #onDismiss} when omitted, which keeps
+   * Tier-1 callers that haven't been updated working (the panel still
+   * disappears, just leaving the awaiting-flag stale).
+   */
+  onTimeout?: (requestId: string) => void;
   /**
    * When multiple panels are mounted (parallel tools each holding a
    * permission gate), only the {@code primary} one binds the global
@@ -130,6 +141,7 @@ export function PermissionPanel({
   onAlwaysAllow,
   onDeny,
   onDismiss,
+  onTimeout,
   primary = true,
 }: PermissionPanelProps) {
   const requestId = node.permissionRequestId;
@@ -171,9 +183,11 @@ export function PermissionPanel({
 
   // Auto-dismiss after the daemon's own deadline elapses — once we cross
   // the timeout the daemon will reject any incoming response anyway, so
-  // leaving the panel on screen would just be misleading. onDismiss is
-  // wired to the reducer's panel-clearing action; the daemon will emit a
-  // tool_completed (likely with an error) shortly after.
+  // leaving the panel on screen would just be misleading. We route
+  // through onTimeout (not onDismiss) so the parent can also clear the
+  // node's awaitingInput/permissionRequestId — otherwise the user could
+  // reopen the panel and click Approve/Deny against a request the
+  // daemon is already done with.
   //
   // First render uses Date.now() directly (not the lazy `now` state)
   // because a snapshot-replay request may already be past its deadline
@@ -184,8 +198,8 @@ export function PermissionPanel({
   useEffect(() => {
     if (state.kind !== 'awaiting' || !requestId) return;
     const elapsed = Date.now() - requestedAt;
-    if (elapsed >= PERMISSION_TIMEOUT_MS) onDismiss(requestId);
-  }, [now, requestedAt, requestId, state.kind, onDismiss]);
+    if (elapsed >= PERMISSION_TIMEOUT_MS) (onTimeout ?? onDismiss)(requestId);
+  }, [now, requestedAt, requestId, state.kind, onDismiss, onTimeout]);
 
   // CLI-resolved panels self-dismiss after the brief "via CLI" reveal so
   // the operator knows the daemon was the one that answered.
@@ -206,9 +220,20 @@ export function PermissionPanel({
   useEffect(() => {
     if (state.kind !== 'awaiting' || !requestId || !primary) return;
     const onKey = (e: KeyboardEvent) => {
-      // Don't hijack typing in inputs/textareas (none in Tier 1, but defensive).
+      // Don't hijack typing in text-entry inputs/textareas/contentEditable
+      // (defensive — Tier 1 doesn't render any text inputs in the panel,
+      // but the "Don't ask again" CHECKBOX must not be caught here, or
+      // focusing it would silently disable A/D/Esc shortcuts).
       const target = e.target as HTMLElement | null;
-      if (target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA') return;
+      if (target?.tagName === 'TEXTAREA') return;
+      if (target?.isContentEditable) return;
+      if (target?.tagName === 'INPUT') {
+        const t = (target as HTMLInputElement).type;
+        const TEXT_INPUT = new Set([
+          'text', 'search', 'email', 'url', 'tel', 'password', 'number',
+        ]);
+        if (TEXT_INPUT.has(t)) return;
+      }
       // Modifier guard: A/D shortcuts must NOT fire under any
       // modifier — Cmd-A (select all), Cmd-D (bookmark), Shift-A
       // (typing capital letters) and similar shortcuts would

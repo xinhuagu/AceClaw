@@ -419,6 +419,13 @@ export function ExecutionTree({
                 void _rid;
                 setOpenPanelRequestId(null);
               }}
+              onTimeout={(rid) => {
+                // Deadline elapsed — daemon will reject any further
+                // response, so clear the node's awaiting flag so the
+                // user can't reopen and click on a stale request.
+                setOpenPanelRequestId(null);
+                onDismissPermission(rid);
+              }}
             />
           ) : null}
         </AnimatePresence>

@@ -101,12 +101,27 @@ public final class AceClawMain implements Runnable {
             final var sessionIdFinal = sessionId;
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 if (cleanedUp.compareAndSet(false, true)) {
+                    // sendRequest is synchronous (waits on socket
+                    // readLine), so a hung-but-socket-alive daemon
+                    // would block this hook indefinitely — defeating
+                    // the very Ctrl-C×2 force-exit it backs up. Bound
+                    // it to 1 s on a daemon thread so JVM exit can
+                    // proceed regardless. Best-effort only.
+                    var worker = new Thread(() -> {
+                        try {
+                            var p = clientRef.objectMapper().createObjectNode();
+                            p.put("sessionId", sessionIdFinal);
+                            clientRef.sendRequest("session.destroy", p);
+                        } catch (Exception ignored) {
+                            // Daemon down / socket closed / race — accept.
+                        }
+                    }, "aceclaw-cli-shutdown-cleanup-rpc");
+                    worker.setDaemon(true);
+                    worker.start();
                     try {
-                        var p = clientRef.objectMapper().createObjectNode();
-                        p.put("sessionId", sessionIdFinal);
-                        clientRef.sendRequest("session.destroy", p);
-                    } catch (Exception ignored) {
-                        // Daemon down / socket closed / race — accept.
+                        worker.join(1000L);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
                     }
                 }
             }, "aceclaw-cli-shutdown-cleanup"));
