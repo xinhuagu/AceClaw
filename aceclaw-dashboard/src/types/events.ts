@@ -316,6 +316,14 @@ export interface PermissionRequestParams {
  */
 export interface PermissionResponseParams {
   requestId: string;
+  /**
+   * Session this response belongs to. The daemon enforces a
+   * cross-session guard (#433/#454): a response without sessionId, or
+   * with a sessionId that doesn't match the originating request, is
+   * dropped. The {@link useExecutionTree} hook auto-injects this from
+   * its own session prop so callers can omit it.
+   */
+  sessionId?: string;
   approved: boolean;
   /** When true, daemon grants session-level approval for this tool. */
   remember?: boolean;

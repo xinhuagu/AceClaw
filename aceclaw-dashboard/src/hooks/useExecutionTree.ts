@@ -225,9 +225,19 @@ export function useExecutionTree(
   const pendingSendRef = useRef<ClientCommand[]>([]);
 
   const sendCommand = useCallback((cmd: ClientCommand): SendCommandResult => {
+    // Auto-inject sessionId on permission.response. The daemon's
+    // cross-session guard (#433 / #454) drops frames that don't carry
+    // a sessionId, so callers can no longer just send
+    // {requestId, approved} like older builds — but the hook already
+    // knows which session this WS is attached to, so injecting here
+    // keeps every callsite simple and the wire format correct.
+    const augmented: ClientCommand =
+      cmd.method === 'permission.response'
+        ? { ...cmd, params: { ...cmd.params, sessionId } }
+        : cmd;
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(cmd));
+      ws.send(JSON.stringify(augmented));
       return 'sent';
     }
     // Buffer until onopen flushes. Two queue invariants:
@@ -243,23 +253,23 @@ export function useExecutionTree(
     //   2. Hard cap at PENDING_SEND_CAP — beyond that, drop and signal
     //      back to the caller so it can avoid optimistic local updates.
     const queue = pendingSendRef.current;
-    if (cmd.method === 'permission.response') {
+    if (augmented.method === 'permission.response') {
       const dupIdx = queue.findIndex(
         (q) =>
           q.method === 'permission.response' &&
-          q.params.requestId === cmd.params.requestId,
+          q.params.requestId === augmented.params.requestId,
       );
       if (dupIdx >= 0) {
-        queue[dupIdx] = cmd;
+        queue[dupIdx] = augmented;
         return 'queued';
       }
     }
     if (queue.length >= PENDING_SEND_CAP) {
       return 'dropped';
     }
-    queue.push(cmd);
+    queue.push(augmented);
     return 'queued';
-  }, []);
+  }, [sessionId]);
 
   const resolvePermission = useCallback(
     (requestId: string, approved: boolean) => {

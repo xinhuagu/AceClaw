@@ -133,11 +133,40 @@ describe('useExecutionTree permission flow (issue #437)', () => {
     // so we don't depend on key order.
     const parsed = JSON.parse(ws.sent[ws.sent.length - 1]!) as {
       method: string;
-      params: { requestId: string; approved: boolean };
+      params: { requestId: string; approved: boolean; sessionId?: string };
     };
     expect(parsed.method).toBe('permission.response');
     expect(parsed.params.requestId).toBe('perm-1');
     expect(parsed.params.approved).toBe(true);
+    // The hook MUST inject sessionId — the daemon's cross-session guard
+    // (#433 / #454) drops responses without it. Manual testing on the
+    // first ship of #437 caught a silent-drop bug here: every browser
+    // approval was rejected server-side because the dashboard never
+    // stamped sessionId. Pin it.
+    expect(parsed.params.sessionId).toBe('sess-1');
+  });
+
+  it('auto-injects sessionId even when the caller omitted it', () => {
+    // Defensive: if a caller's params lack sessionId (the typical
+    // App.tsx path), the hook fills it in from its own sessionId prop
+    // before the frame leaves the socket. Without this, a daemon with
+    // the cross-session guard silently drops every approval.
+    const { result } = renderHook(() =>
+      useExecutionTree('ws://test/ws', 'sess-other'),
+    );
+    const ws = FakeWebSocket.last!;
+    act(() => ws.open());
+    act(() => {
+      result.current.sendCommand({
+        method: 'permission.response',
+        // Notice: no sessionId in the caller's payload at all.
+        params: { requestId: 'perm-1', approved: false },
+      });
+    });
+    const parsed = JSON.parse(ws.sent[ws.sent.length - 1]!) as {
+      params: { sessionId?: string };
+    };
+    expect(parsed.params.sessionId).toBe('sess-other');
   });
 
   it('buffers commands sent before the socket opens and flushes them on open', () => {
