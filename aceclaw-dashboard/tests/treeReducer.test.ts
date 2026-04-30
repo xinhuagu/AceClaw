@@ -583,10 +583,11 @@ describe('text accumulation', () => {
     expect(thinkingChildren[0]!.label).toBe('thinking');
   });
 
-  it('keeps thinking and text as siblings under the same turn', () => {
-    // A real turn often thinks then responds; both nodes should hang off
-    // the turn so the layout shows two distinct children rather than one
-    // collapsing into the other.
+  it('places text inside its iteration thinking, not as a sibling of the turn', () => {
+    // Text in a Claude streaming response is per-LLM-call. Anchoring
+    // it on the iteration's thinking lets multi-iteration turns keep
+    // each call's narration locally bound — the text node doesn't
+    // visually drift across the diagram as later iterations append.
     const state = runAll(
       freshTree(),
       envelope('stream.session_started', {
@@ -604,8 +605,103 @@ describe('text accumulation', () => {
       envelope('stream.text', { delta: 'response' }),
     );
     const turn = state.rootNodes[0]!.children[0]!;
-    const childTypes = turn.children.map((c) => c.type).sort();
-    expect(childTypes).toEqual(['text', 'thinking']);
+    expect(turn.children.map((c) => c.type)).toEqual(['thinking']);
+    const thinking = turn.children[0]!;
+    const textChildren = thinking.children.filter((c) => c.type === 'text');
+    expect(textChildren).toHaveLength(1);
+    expect(textChildren[0]!.text).toBe('response');
+  });
+
+  it('mints a separate text node per ReAct iteration (no cross-iteration accumulation)', () => {
+    // The bug this guards against: with text keyed on the turn, every
+    // iteration's text deltas would pile into one node that survives
+    // all the layout reshuffles. Per-iteration text bubbles stay where
+    // their iteration is.
+    const state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      // Iter 1: thinking → text → tool
+      envelope('stream.thinking', { delta: 'iter 1 thought' }),
+      envelope('stream.text', { delta: 'iter 1 narration' }),
+      envelope('stream.tool_use', { id: 't1', name: 'bash' }),
+      // Iter 2: thinking → text (final response)
+      envelope('stream.thinking', { delta: 'iter 2 thought' }),
+      envelope('stream.text', { delta: 'iter 2 final answer' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const thinkings = turn.children.filter((c) => c.type === 'thinking');
+    expect(thinkings).toHaveLength(2);
+    const text1 = thinkings[0]!.children.find((c) => c.type === 'text')!;
+    const text2 = thinkings[1]!.children.find((c) => c.type === 'text')!;
+    expect(text1.text).toBe('iter 1 narration');
+    expect(text2.text).toBe('iter 2 final answer');
+    // Texts have distinct ids — no leakage across iterations.
+    expect(text1.id).not.toBe(text2.id);
+  });
+
+  it('falls back to attaching text to the turn when no thinking has been emitted', () => {
+    // Extended thinking off, or model emitted text without a prior
+    // thinking block. Text still gets at most one node per turn,
+    // keyed on a turn-level fallback id.
+    const state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.text', { delta: 'no thinking, just talk' }),
+      envelope('stream.text', { delta: ' more talk' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const textChildren = turn.children.filter((c) => c.type === 'text');
+    expect(textChildren).toHaveLength(1);
+    expect(textChildren[0]!.text).toBe('no thinking, just talk more talk');
+  });
+
+  it('uses a truncated text preview as the node label', () => {
+    const state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.thinking', { delta: 't' }),
+      envelope('stream.text', {
+        delta: 'this is a much longer response that exceeds the preview cap',
+      }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const text = turn.children[0]!.children.find((c) => c.type === 'text')!;
+    // Label is truncated and ends with the ellipsis sentinel.
+    expect(text.label.length).toBeLessThanOrEqual(22);
+    expect(text.label.endsWith('…')).toBe(true);
+    // But the full text is preserved on the node itself for the
+    // detail view / debugging.
+    expect(text.text!.length).toBeGreaterThan(text.label.length);
   });
 });
 

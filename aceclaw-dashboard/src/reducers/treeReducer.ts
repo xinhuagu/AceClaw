@@ -65,9 +65,29 @@ export function stepNodeId(planId: string, stepIndex: number): string {
   return `${planId}:step:${stepIndex}`;
 }
 
-/** ID for the rolled-up text-bubble child of a turn. One per turn. */
-export function textNodeId(turnId: string): string {
-  return `${turnId}:text`;
+/**
+ * ID for the text bubble of a single ReAct iteration. The previous form
+ * keyed text on the turn ({@code `${turnId}:text`}) and rolled every
+ * delta the turn ever produced into one node — but a turn typically
+ * contains multiple LLM calls, each potentially emitting its own
+ * narrative text before tool_use, plus a final response text. Lumping
+ * them together produces a single ever-growing "response" node that
+ * lives from the very first delta and visually drags as later
+ * iterations are added. Keying on the iteration's thinking id instead
+ * gives one text node per LLM call, attached to that call's thinking
+ * as a sibling of its tools.
+ */
+export function textNodeId(thinkingId: string): string {
+  return `${thinkingId}:text`;
+}
+
+/**
+ * Fallback id for text emitted in an iteration that produced no
+ * thinking event (extended thinking off, or model emitted text first).
+ * Keyed on the turn so we still get at most one such node per turn.
+ */
+export function turnTextNodeId(turnId: string): string {
+  return `${turnId}:text:no-thinking`;
 }
 
 /** ID for the rolled-up thinking-bubble child of a turn. One per turn. */
@@ -450,13 +470,32 @@ function completeToolNode(
   };
 }
 
+/**
+ * Truncates text for use as a node label. Tier-1 nodes are 180 px wide
+ * and the renderer truncates to ~24 chars; we cap a bit shorter here
+ * so the live preview reads cleanly while the text streams. Strips
+ * leading whitespace because the model often opens a paragraph with a
+ * newline and an indent that would otherwise dominate the preview.
+ */
+function previewLabel(text: string, max = 22): string {
+  const trimmed = text.replace(/^\s+/, '');
+  if (trimmed.length <= max) return trimmed;
+  return `${trimmed.slice(0, max - 1)}…`;
+}
+
 function appendTextToCurrentTurn(
   state: ExecutionTree,
   params: TextDeltaParams,
 ): ExecutionTree {
-  // Text deltas roll up into a single text-typed child of the current turn so
-  // the renderer can show them as one streaming bubble. If no turn is active,
-  // drop the delta — there's no meaningful place to attach it.
+  // Text in a Claude streaming response is per-LLM-call: each ReAct
+  // iteration may emit one text block (narration before tools, or the
+  // final answer with no tools after). Keying the text node on the
+  // iteration's thinking id gives one bubble per call, attached as a
+  // sibling of that iteration's tools. The previous shape rolled
+  // every delta of every iteration into one turn-level text node,
+  // which created a "response" box on the very first delta and then
+  // visually dragged across the diagram as later iterations were
+  // appended.
   const turn = findNearestAncestor(
     state.rootNodes,
     state.activeNodeId,
@@ -464,44 +503,60 @@ function appendTextToCurrentTurn(
   );
   if (!turn) return state;
 
-  const existing = turn.children.find((c) => c.type === 'text');
+  // Anchor: the active thinking node's id, or the turn id when the
+  // model never emitted a thinking block (extended thinking off, or
+  // text-first content order). Fallback uses turnTextNodeId so a
+  // thinking-less turn still gets at most one text node, not one per
+  // delta.
+  const anchorId = state.currentThinkingId ?? turn.id;
+  const textId =
+    state.currentThinkingId !== null
+      ? textNodeId(state.currentThinkingId)
+      : turnTextNodeId(turn.id);
+
+  // Find the iteration's existing text node by id (not "first text
+  // child of turn" — that would still match a previous iteration's
+  // text under the same turn). Using a stable id keyed on the
+  // iteration anchor makes "extend the current call's text" trivial
+  // to detect.
+  const existing = findNode(state.rootNodes, textId);
+  const newText = (existing?.text ?? '') + params.delta;
   let rootNodes: ExecutionNode[];
-  let textId: string;
   if (existing) {
-    textId = existing.id;
-    rootNodes = mapNode(state.rootNodes, existing.id, (t) => ({
+    rootNodes = mapNode(state.rootNodes, textId, (t) => ({
       ...t,
-      text: (t.text ?? '') + params.delta,
+      text: newText,
+      label: previewLabel(newText),
     }));
   } else {
-    textId = textNodeId(turn.id);
     const textNode: ExecutionNode = {
       id: textId,
       type: 'text',
       status: 'running',
-      label: 'response',
+      label: previewLabel(newText),
       children: [],
-      text: params.delta,
+      text: newText,
     };
-    rootNodes = appendChild(state.rootNodes, turn.id, textNode);
+    rootNodes = appendChild(state.rootNodes, anchorId, textNode);
   }
-  // Mark the thinking anchor as completed: text response means the LLM
-  // has stopped thinking and is now responding (mirrors the thinking →
-  // tool transition in addToolNode). Only flip running → completed.
+
+  // Mark the thinking anchor as completed: text means the LLM has
+  // stopped thinking and is now talking. Mirrors the thinking → tool
+  // transition in addToolNode. Only flip running → completed.
   if (state.currentThinkingId) {
     rootNodes = mapNode(rootNodes, state.currentThinkingId, (t) =>
       t.status === 'running' ? { ...t, status: 'completed' as const } : t,
     );
   }
-  // Move auto-scroll focus onto the response. Without this, activeNodeId
-  // stays on the previous tool and the camera centres there while the
-  // model is actually streaming text — the user wants to watch the
-  // response form, not stare at a finished tool. Subsequent text deltas
-  // are no-ops for activeNodeId (still pointing at the same response
-  // node), so the camera sits on the response until the turn closes.
-  // Seal the thinking anchor: a text response means the model has decided
-  // to talk rather than tool-call, so any subsequent thinking is the next
-  // ReAct iteration (or — typically — there is no next iteration).
+
+  // Move auto-scroll focus onto the streaming text so the camera
+  // follows it. Subsequent deltas keep the same id, so the camera
+  // stays on this bubble until the next iteration starts (or the
+  // turn closes).
+  // Seal the thinking anchor: any subsequent thinking delta is from a
+  // NEW LLM call (next ReAct iteration). tool_use within the SAME
+  // call still attaches to the existing thinking — sealed only
+  // affects the next-thinking-delta branch.
   return { ...state, rootNodes, activeNodeId: textId, thinkingSealed: true };
 }
 

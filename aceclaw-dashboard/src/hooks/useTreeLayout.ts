@@ -73,9 +73,10 @@ function populateGraph(
  *
  * - A non-first {@code thinking} child of a turn: the chain enters via
  *   the previous thinking's tool outputs.
- * - A {@code text} (response) child of a turn that has at least one
- *   thinking sibling: the chain enters via the last thinking's tool
- *   outputs (or the last thinking directly when it had no tools).
+ *
+ * Text nodes are now anchored to their iteration's thinking (so they're
+ * never direct children of the turn), and the redundant-containment
+ * skip for them is no longer relevant.
  */
 function shouldSkipContainment(
   parent: ExecutionNode,
@@ -86,27 +87,29 @@ function shouldSkipContainment(
     const firstThinking = parent.children.find((c) => c.type === 'thinking');
     return firstThinking !== child;
   }
-  if (child.type === 'text') {
-    return parent.children.some((c) => c.type === 'thinking');
-  }
   return false;
 }
 
 /**
  * Adds dashed flow edges to the graph so the dagre layout chains
- * thinking/tool/thinking/.../response left-to-right within a turn.
+ * thinking/tool/thinking/... left-to-right within a turn.
  *
  * For each turn that has multiple thinking iterations:
  *   - Each tool of {@code thinking[i]} gets a flow edge to
  *     {@code thinking[i+1]}. Multiple parallel tools all merge into
  *     the next thinking, mirroring "tool results feed the next LLM call".
- *   - When {@code thinking[i]} has no tool children (rare — a thinking
- *     that produced no tool_use), a direct
- *     {@code thinking[i] → thinking[i+1]} flow edge is used instead.
+ *   - When {@code thinking[i]} has no tool children (a thinking
+ *     iteration that emitted only text), the iteration's text node
+ *     bridges to {@code thinking[i+1]} instead — so the chain stays
+ *     visually unbroken across iterations whose model response was
+ *     pure narration. Falls back to a direct
+ *     {@code thinking[i] → thinking[i+1]} flow when there's no text
+ *     either.
  *
- * For the response (text node) at the end of a turn: every tool of the
- * final thinking gets a flow edge to it, or the final thinking itself
- * when it had no tools.
+ * Each iteration's text node lives as a child of its thinking
+ * (sibling of that iteration's tools), so no separate response-flow
+ * branch is needed — the final iteration's text is just the last
+ * leaf in its iteration's subtree.
  *
  * Flow edges carry a {@code { flow: true }} label so the readback pass
  * can mark them {@code kind: 'sequence'} and the renderer draws them
@@ -119,7 +122,6 @@ function addReActFlowEdges(
   for (const parent of nodes) {
     if (parent.type === 'turn') {
       const thinkings = parent.children.filter((c) => c.type === 'thinking');
-      const responses = parent.children.filter((c) => c.type === 'text');
 
       for (let i = 0; i < thinkings.length - 1; i += 1) {
         const curr = thinkings[i]!;
@@ -129,22 +131,13 @@ function addReActFlowEdges(
           for (const t of tools) {
             graph.setEdge(t.id, next.id, { flow: true });
           }
+          continue;
+        }
+        const text = curr.children.find((c) => c.type === 'text');
+        if (text) {
+          graph.setEdge(text.id, next.id, { flow: true });
         } else {
           graph.setEdge(curr.id, next.id, { flow: true });
-        }
-      }
-
-      if (thinkings.length > 0 && responses.length > 0) {
-        const last = thinkings[thinkings.length - 1]!;
-        const lastTools = last.children.filter((c) => c.type === 'tool');
-        for (const r of responses) {
-          if (lastTools.length > 0) {
-            for (const t of lastTools) {
-              graph.setEdge(t.id, r.id, { flow: true });
-            }
-          } else {
-            graph.setEdge(last.id, r.id, { flow: true });
-          }
         }
       }
     }
