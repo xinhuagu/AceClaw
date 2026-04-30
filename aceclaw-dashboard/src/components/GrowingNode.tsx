@@ -99,10 +99,17 @@ interface GrowingNodeProps {
 }
 
 /**
- * Truncates labels that would overrun the fixed 180-px node width. The cap
- * (24 chars) was chosen so JetBrains-Mono 13px text fits with margins.
+ * Truncates labels that would overrun the fixed 180-px node width.
+ *
+ * <p>Cap calc: usable label area = node.width - 30 (left padding for
+ * status icon + spacing) - 8 (right padding) = 142 px. JetBrains Mono
+ * at 12 px averages ~7.2 px per character (some glyphs wider, e.g. 'm',
+ * 'w'), so 142 / 7.2 ≈ 19. Cap at 18 to leave a hair of slack and so
+ * the trailing `…` still fits without pushing the last visible glyph
+ * past the right edge — labels like {@code mcp__agent-wiki__wiki_search}
+ * were overflowing the previous 24-char cap.
  */
-function truncate(s: string, max = 24): string {
+function truncate(s: string, max = 18): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
@@ -244,6 +251,9 @@ export function GrowingNode({ node, onAwaitingClick, isOpenPanel }: GrowingNodeP
         fontSize={12}
         fill="#e5e7eb"
       >
+        {/* Native SVG <title> renders as a tooltip on hover so the
+            full label is recoverable when truncate() drops chars. */}
+        <title>{node.label}</title>
         {truncate(node.label)}
       </text>
       {typeof node.duration === 'number' && node.duration > 0 ? (
