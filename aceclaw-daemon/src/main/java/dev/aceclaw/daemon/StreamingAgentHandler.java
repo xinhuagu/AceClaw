@@ -3937,6 +3937,20 @@ public final class StreamingAgentHandler {
                         params.put("tool", delegate.name());
                         params.put("description", approval.prompt());
                         params.put("requestId", requestId);
+                        // Stamp the originating tool_use id so the
+                        // dashboard reducer can mark the SPECIFIC tool
+                        // node as awaiting (instead of falling back to
+                        // activeNodeId, which collapses onto whichever
+                        // parallel tool_use was emitted last). Without
+                        // this, parallel tool calls each fire their own
+                        // permission.request but only one node shows
+                        // the "click ✓/✗" chip — the user can only
+                        // approve one from the dashboard.
+                        var toolUseId =
+                                dev.aceclaw.core.agent.ToolExecutionContext.currentToolUseId();
+                        if (toolUseId != null) {
+                            params.put("toolUseId", toolUseId);
+                        }
                         context.sendNotification("permission.request", params);
 
                         // Each thread waits on its own future — no cross-delivery possible

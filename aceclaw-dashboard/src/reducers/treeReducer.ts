@@ -1202,11 +1202,22 @@ function pauseForPermission(
   // the current wall clock, making aged requests look fresh and breaking
   // the deadline math. Server side caps at 120 s — see
   // CancelAwareStreamContext.PERMISSION_RESPONSE_TIMEOUT_MS.
-  if (!state.activeNodeId) return state;
+  //
+  // Target node: prefer params.toolUseId (the tool_use block id the
+  // daemon stamped on the request, #437) so parallel tool calls each
+  // mark their OWN node awaiting. Fall back to activeNodeId for
+  // backward compat with older daemons that don't emit toolUseId —
+  // accepts the legacy collapse-onto-last behaviour rather than
+  // dropping the event.
+  const targetNodeId =
+    (params.toolUseId && findNode(state.rootNodes, params.toolUseId)
+      ? params.toolUseId
+      : null) ?? state.activeNodeId;
+  if (!targetNodeId) return state;
   const requestedAt = Date.parse(receivedAt);
   return {
     ...state,
-    rootNodes: mapNode(state.rootNodes, state.activeNodeId, (n) => ({
+    rootNodes: mapNode(state.rootNodes, targetNodeId, (n) => ({
       ...n,
       status: 'paused',
       awaitingInput: true,

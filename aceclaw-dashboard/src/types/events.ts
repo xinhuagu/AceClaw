@@ -304,6 +304,17 @@ export interface PermissionRequestParams {
   tool: string;
   description: string;
   requestId: string;
+  /**
+   * The tool_use block id that owns this permission request. Optional
+   * for backward compatibility with daemons predating #437's parallel-
+   * permission fix; when present, the reducer marks THAT specific
+   * tool node as awaiting instead of falling back to activeNodeId.
+   * Without it, parallel tool_use events would each fire a
+   * permission.request but only the most-recent tool node would show
+   * the "click ✓/✗" chip — the user could only approve one from
+   * the dashboard.
+   */
+  toolUseId?: string;
 }
 
 /**
