@@ -1465,8 +1465,13 @@ public final class TerminalRepl {
             boolean remember = answer.remember();
 
             if (answer.externalCancel()) {
+                // Pick styling by outcome — green check for approved,
+                // red glyph for denied — so a quick visual scan can't
+                // misread a remote denial as an approval.
+                String color = approved ? APPROVED : DENIED;
+                String glyph = approved ? CHECKMARK : "✗";
                 out.printf("%s%s Resolved via dashboard%s (%s)%s%n",
-                        APPROVED, CHECKMARK, RESET,
+                        color, glyph, RESET,
                         approved ? "approved" : "denied", RESET);
             } else if (answer.timedOut()) {
                 out.printf("%sTimed out%s%n", WARNING, RESET);

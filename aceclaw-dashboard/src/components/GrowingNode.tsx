@@ -161,12 +161,35 @@ export function GrowingNode({ node, onAwaitingClick, isOpenPanel }: GrowingNodeP
         transformOrigin: `${node.x}px ${node.y}px`,
         cursor: interactive ? 'pointer' : 'default',
       }}
+      // Keyboard + ARIA: an awaiting node is a button (it opens the
+      // permission panel); make it focusable, give it a role/label, and
+      // wire Enter/Space the same way as click. aria-pressed flips when
+      // the panel is open so screen readers reflect the toggle state.
+      // Non-interactive nodes (any tree node not awaiting permission)
+      // stay unfocusable so the tab order matches the actionable set.
+      tabIndex={interactive ? 0 : undefined}
+      role={interactive ? 'button' : undefined}
+      aria-label={
+        interactive ? `Open permission panel for ${node.label}` : undefined
+      }
+      aria-pressed={interactive ? isOpenPanel === true : undefined}
       onPointerDown={interactive ? (e) => e.stopPropagation() : undefined}
       onClick={
         interactive
           ? (e) => {
               e.stopPropagation();
               onAwaitingClick!(node.permissionRequestId!);
+            }
+          : undefined
+      }
+      onKeyDown={
+        interactive
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                e.stopPropagation();
+                onAwaitingClick!(node.permissionRequestId!);
+              }
             }
           : undefined
       }

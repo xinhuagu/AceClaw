@@ -245,9 +245,11 @@ public final class PermissionBridge {
 
     /**
      * Drops any external-cancellation entry left over for {@code requestId}.
-     * Called by the modal cleanup so a cancellation that arrived AFTER
-     * the user had already typed y/n (i.e. cancelExternal completed the
-     * future a millisecond too late) doesn't leak into the map for the
+     * Invoked by {@link #consumeResolvedAnswer} (the path the modal
+     * cleanup goes through) so a cancellation that arrived AFTER the
+     * user already typed y/n — i.e. {@link #cancelExternal} completed
+     * the future a millisecond too late and there's no longer anything
+     * waiting to consume it — doesn't leak into the map for the
      * lifetime of the CLI process. Idempotent.
      */
     private void clearExternalCancellation(String requestId) {
