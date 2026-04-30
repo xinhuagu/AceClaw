@@ -385,6 +385,13 @@ public final class StreamingAgentHandler {
                 p.put("sessionId", sessionId);
                 p.put("model", getModelForSession(sessionId));
                 p.put("timestamp", Instant.now().toString());
+                // Include projectPath so the dashboard sidebar can render
+                // the session's directory immediately, instead of falling
+                // back to "(unknown)" until the next sessions.list refresh
+                // (issue #452 — particularly visible after a Ctrl+C double
+                // cancel + new-session-in-same-dir, where the cancelled row
+                // still showed the path while the new row read "(unknown)").
+                p.put("projectPath", session.projectPath().toString());
                 emitBrowserOnly(sessionId, "stream.session_started", p);
             }
             var ts = objectMapper.createObjectNode();

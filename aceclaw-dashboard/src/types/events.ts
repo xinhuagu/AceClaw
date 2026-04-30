@@ -56,6 +56,13 @@ export interface SessionStartedParams {
   sessionId: string;
   model: string;
   timestamp: string; // ISO-8601
+  /**
+   * Filesystem path the session is bound to. Optional for forward/
+   * backward compat with daemons that don't yet emit it (issue #452 —
+   * older daemons leave this blank and the dashboard falls back to
+   * "(unknown)" until the next {@code sessions.list} refresh).
+   */
+  projectPath?: string;
 }
 
 /**

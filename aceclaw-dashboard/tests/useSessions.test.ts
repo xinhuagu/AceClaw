@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { mergeSnapshot, parseSessionsListResult } from '../src/hooks/useSessions';
+import {
+  mergeSnapshot,
+  parseSessionsListResult,
+  sessionInfoFromSessionStarted,
+} from '../src/hooks/useSessions';
 import type { SessionInfo } from '../src/hooks/useSessions';
 
 const session = (overrides: Partial<SessionInfo> & { sessionId: string }): SessionInfo => ({
@@ -174,5 +178,74 @@ describe('mergeSnapshot', () => {
     expect(merged[0]!.projectPath).toBe('/real/path');
     expect(merged[0]!.model).toBe('claude-opus-4-7');
     expect(merged[0]!.createdAt).toBe('2026-04-29T08:59:59.000Z');
+  });
+});
+
+describe('sessionInfoFromSessionStarted (issue #452)', () => {
+  it('reads projectPath from the event payload when the daemon emits it', () => {
+    // The fix this guards: daemons ≥ #452 include projectPath on
+    // stream.session_started so the sidebar shows the real path
+    // immediately, instead of falling back to "(unknown)" until the
+    // next sessions.list refresh.
+    const row = sessionInfoFromSessionStarted({
+      sessionId: 's1',
+      model: 'claude-opus-4-7',
+      timestamp: '2026-04-30T10:00:00.000Z',
+      projectPath: '/Users/me/project',
+    });
+    expect(row).not.toBeNull();
+    expect(row!.sessionId).toBe('s1');
+    expect(row!.projectPath).toBe('/Users/me/project');
+    expect(row!.model).toBe('claude-opus-4-7');
+    expect(row!.createdAt).toBe('2026-04-30T10:00:00.000Z');
+    expect(row!.active).toBe(true);
+  });
+
+  it('falls back to "(unknown)" when older daemons omit projectPath', () => {
+    const row = sessionInfoFromSessionStarted({
+      sessionId: 's1',
+      model: 'claude-opus-4-7',
+      timestamp: '2026-04-30T10:00:00.000Z',
+    });
+    expect(row!.projectPath).toBe('(unknown)');
+  });
+
+  it('falls back to "(unknown)" for blank or wrong-typed projectPath', () => {
+    expect(
+      sessionInfoFromSessionStarted({
+        sessionId: 's1',
+        projectPath: '',
+      })!.projectPath,
+    ).toBe('(unknown)');
+    expect(
+      sessionInfoFromSessionStarted({
+        sessionId: 's1',
+        projectPath: 42,
+      })!.projectPath,
+    ).toBe('(unknown)');
+  });
+
+  it('omits the model field when missing rather than stamping empty-string', () => {
+    const row = sessionInfoFromSessionStarted({
+      sessionId: 's1',
+      projectPath: '/p',
+    });
+    expect(row!.model).toBeUndefined();
+  });
+
+  it('returns null when sessionId is missing', () => {
+    expect(sessionInfoFromSessionStarted({ projectPath: '/p' })).toBeNull();
+    expect(sessionInfoFromSessionStarted({ sessionId: 42 })).toBeNull();
+  });
+
+  it('uses the current time as createdAt when timestamp is missing', () => {
+    const before = Date.now();
+    const row = sessionInfoFromSessionStarted({ sessionId: 's1' });
+    const stamped = Date.parse(row!.createdAt);
+    const after = Date.now();
+    // createdAt is a fresh ISO timestamp; sanity-check it lands in
+    // the wall-clock window the call ran in.
+    expect(stamped).toBeGreaterThanOrEqual(before);
+    expect(stamped).toBeLessThanOrEqual(after);
   });
 });
