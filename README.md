@@ -25,7 +25,7 @@ A persistent JVM daemon that runs the ReAct + Plan/Replan loop, tools, permissio
 
 ### 2. A visual agent harness
 
-A React dashboard that talks to the same daemon over a loopback-only WebSocket bridge, so you can watch — and intervene in — the agent in real time. It streams every event from the daemon and renders the run as a live, navigable tree. Permission requests show up as inline panels you can Approve or Deny from the browser; CLI and dashboard race, first response wins.
+A React dashboard that talks to the same daemon over a loopback-only WebSocket bridge, so you can watch — and intervene in — the agent in real time. The ReAct loop is laid out as a live, navigable tree: every thinking block, tool call, and observation appears as its own node so you can see the agent reason, act, observe, and iterate. Permission requests show up as inline panels you can Approve or Deny from the browser.
 
 <p align="center">
   <img src="docs/img/aceclaw-dashboard.gif" alt="AceClaw dashboard — live execution tree" width="820">
