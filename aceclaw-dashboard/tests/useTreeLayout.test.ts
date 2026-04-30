@@ -204,6 +204,83 @@ describe('useTreeLayout', () => {
     expect(containmentIds).toContain('th2->toolC');
   });
 
+  it('does not draw a flow edge from a failed tool — only successful tools carry the chain', () => {
+    // Failed tools render as dead-end leaves: visually clearer that
+    // they didn't drive the next iteration, even though their error
+    // is what the model adapted to. With one tool succeeding and one
+    // failing, only the successful one gets a flow edge.
+    const turn: ExecutionNode = {
+      id: 't',
+      type: 'turn',
+      status: 'running',
+      label: 'turn',
+      children: [
+        {
+          id: 'th1',
+          type: 'thinking',
+          status: 'completed',
+          label: 'thinking',
+          children: [
+            { id: 'good', type: 'tool', status: 'completed', label: 'bash', children: [] },
+            { id: 'bad', type: 'tool', status: 'failed', label: 'bash', children: [] },
+          ],
+        },
+        {
+          id: 'th2',
+          type: 'thinking',
+          status: 'running',
+          label: 'thinking',
+          children: [],
+        },
+      ],
+    };
+    const { result } = renderHook(() => useTreeLayout(tree([turn])));
+    const flowIds = result.current.edges
+      .filter((e) => e.kind === 'sequence')
+      .map((e) => e.id);
+    expect(flowIds).toContain('good->th2');
+    expect(flowIds).not.toContain('bad->th2');
+  });
+
+  it('falls back to thinking-bridge when every tool in an iteration failed', () => {
+    // All-failed iteration: model recovered from a total failure.
+    // The chain still needs to reach the next thinking, so we bridge
+    // via the iteration's text/thinking instead of leaving it
+    // disconnected.
+    const turn: ExecutionNode = {
+      id: 't',
+      type: 'turn',
+      status: 'running',
+      label: 'turn',
+      children: [
+        {
+          id: 'th1',
+          type: 'thinking',
+          status: 'completed',
+          label: 'thinking',
+          children: [
+            { id: 'bad1', type: 'tool', status: 'failed', label: 'bash', children: [] },
+            { id: 'bad2', type: 'tool', status: 'failed', label: 'bash', children: [] },
+          ],
+        },
+        {
+          id: 'th2',
+          type: 'thinking',
+          status: 'running',
+          label: 'thinking',
+          children: [],
+        },
+      ],
+    };
+    const { result } = renderHook(() => useTreeLayout(tree([turn])));
+    const flowIds = result.current.edges
+      .filter((e) => e.kind === 'sequence')
+      .map((e) => e.id);
+    expect(flowIds).toContain('th1->th2');
+    expect(flowIds).not.toContain('bad1->th2');
+    expect(flowIds).not.toContain('bad2->th2');
+  });
+
   it('bridges to the next iteration via the text node when a thinking emitted only text', () => {
     // A pure-text iteration (no tools, just narration) still needs to
     // pass the flow baton to the next iteration's thinking. The text

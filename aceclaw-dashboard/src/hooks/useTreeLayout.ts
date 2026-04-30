@@ -129,20 +129,31 @@ function addReActFlowEdges(
         // Tools can live either as direct children of the thinking
         // (no narration this iteration) or under the iteration's text
         // node (narration → tools chain). Either way, the iteration's
-        // "leaves" are what flow into the next thinking.
+        // productive leaves are what flow into the next thinking.
         const text = curr.children.find((c) => c.type === 'text');
         const directTools = curr.children.filter((c) => c.type === 'tool');
         const narratedTools =
           text?.children.filter((c) => c.type === 'tool') ?? [];
-        const tools = [...directTools, ...narratedTools];
-        if (tools.length > 0) {
-          for (const t of tools) {
+        // Failed tools render as dead-end leaves: they don't get a
+        // flow edge to the next iteration. Technically the error IS
+        // fed back to the model and IS what triggers recovery in the
+        // next thinking, but visually drawing the connection muddles
+        // "this tool's output drove the next step" with "this tool
+        // crashed and the model worked around it". The user reads the
+        // tree faster when failed tools look dead and successful tools
+        // carry the chain.
+        const productiveTools = [...directTools, ...narratedTools].filter(
+          (t) => t.status !== 'failed',
+        );
+        if (productiveTools.length > 0) {
+          for (const t of productiveTools) {
             graph.setEdge(t.id, next.id, { flow: true });
           }
           continue;
         }
-        // No tools this iteration. Bridge via text when present (pure
-        // narration), else direct thinking → thinking.
+        // No productive tools (none ran, or every one failed). Bridge
+        // via text when present (pure narration / model-recovered-from-
+        // total-failure), else direct thinking → thinking.
         if (text) {
           graph.setEdge(text.id, next.id, { flow: true });
         } else {
