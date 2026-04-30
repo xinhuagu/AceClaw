@@ -313,6 +313,8 @@ public final class StreamingAgentHandler {
         // alone.
         if (!permissionRegistry.remove(requestId, pending)) return false;
         boolean completed = pending.future().complete(message);
+        log.info("WS routePermissionResponse: requestId={}, sessionId={}, completed={}",
+                requestId, responseSessionId, completed);
         if (completed) {
             // Notify the originating CLI's UDS context so its TUI can
             // dismiss the in-progress y/n prompt — without this signal
@@ -330,6 +332,8 @@ public final class StreamingAgentHandler {
                 cancelParams.put("approved", approved);
                 cancelParams.put("via", "websocket");
                 pending.context().sendNotification("permission.cancelled", cancelParams);
+                log.info("Sent permission.cancelled to originating CLI (requestId={})",
+                        requestId);
             } catch (IOException e) {
                 log.warn("Failed to notify originating CLI of WS-resolved permission "
                         + "(requestId={}): {}", requestId, e.getMessage());

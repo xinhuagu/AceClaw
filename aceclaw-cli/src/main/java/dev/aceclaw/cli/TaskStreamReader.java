@@ -165,7 +165,21 @@ public final class TaskStreamReader implements Runnable {
                     sink.onToolCompleted(toolId, toolName, durationMs, isError, error);
                 }
             }
-            case "permission.request" -> handlePermissionRequest(params);
+            case "permission.request" ->
+                    // Run the blocking permission flow off the read loop on
+                    // a virtual thread. handlePermissionRequest waits on
+                    // permissionBridge.requestPermission(...) until the
+                    // user types y/n in the TUI; if we ran it inline, the
+                    // read loop couldn't drain the connection and the
+                    // daemon's permission.cancelled notification (sent
+                    // when a dashboard tab answered first, #437) would
+                    // sit on the wire while the modal sat on screen
+                    // waiting for stdin that no longer matters. Virtual
+                    // threads are cheap, and parallel permission.requests
+                    // queue naturally inside PermissionBridge.
+                    Thread.ofVirtual()
+                            .name("aceclaw-cli-permission-" + handle.taskId())
+                            .start(() -> handlePermissionRequest(params));
             case "permission.cancelled" -> handlePermissionCancelled(params);
             case "stream.error" -> {
                 if (params != null && params.has("error")) {
