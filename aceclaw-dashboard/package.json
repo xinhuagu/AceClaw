@@ -4,6 +4,9 @@
   "private": true,
   "description": "AceClaw real-time execution dashboard (epic #430, Tier 1).",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
