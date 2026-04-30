@@ -116,27 +116,12 @@ export function useSessions(wsUrl: string | null): SessionInfo[] {
         const rawParams = event['params'];
         const params: Record<string, unknown> = isPlainObject(rawParams) ? rawParams : {};
         if (method === 'stream.session_started') {
-          const sessionId = typeof params['sessionId'] === 'string' ? params['sessionId'] : null;
-          if (!sessionId) return;
-          // The session_started event doesn't carry projectPath, so we fall
-          // back to "(unknown)" until the next sessions.list refresh — the
-          // sidebar will replace it on its next mount/reconnect.
-          const created =
-            typeof params['timestamp'] === 'string'
-              ? params['timestamp']
-              : new Date().toISOString();
+          const row = sessionInfoFromSessionStarted(params);
+          if (!row) return;
           setSessions((prev) =>
-            prev.some((s) => s.sessionId === sessionId)
+            prev.some((s) => s.sessionId === row.sessionId)
               ? prev
-              : sortByCreatedDesc([
-                  ...prev,
-                  {
-                    sessionId,
-                    projectPath: '(unknown)',
-                    createdAt: created,
-                    active: true,
-                  },
-                ]),
+              : sortByCreatedDesc([...prev, row]),
           );
         } else if (method === 'stream.session_ended') {
           const sessionId = typeof params['sessionId'] === 'string' ? params['sessionId'] : null;
@@ -182,6 +167,40 @@ export function useSessions(wsUrl: string | null): SessionInfo[] {
 // ---------------------------------------------------------------------------
 // Validation helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Reads a {@code stream.session_started} event's params and produces the
+ * {@link SessionInfo} row the sidebar should render. Falls back gracefully
+ * when fields are missing — older daemons that don't emit
+ * {@code projectPath} (issue #452) get the {@code "(unknown)"} placeholder
+ * the hook used pre-fix; daemons that don't yet emit {@code model} skip
+ * the field instead of stamping an empty string.
+ *
+ * Returns {@code null} when the event is unusable (no sessionId).
+ * Exported for unit testing — the hook calls this inline.
+ */
+export function sessionInfoFromSessionStarted(
+  params: Record<string, unknown>,
+): SessionInfo | null {
+  const sessionId = typeof params['sessionId'] === 'string' ? params['sessionId'] : null;
+  if (!sessionId) return null;
+  const projectPath =
+    typeof params['projectPath'] === 'string' && params['projectPath'].length > 0
+      ? params['projectPath']
+      : '(unknown)';
+  const model = typeof params['model'] === 'string' ? params['model'] : null;
+  const createdAt =
+    typeof params['timestamp'] === 'string'
+      ? params['timestamp']
+      : new Date().toISOString();
+  return {
+    sessionId,
+    projectPath,
+    createdAt,
+    active: true,
+    ...(model ? { model } : {}),
+  };
+}
 
 /**
  * Validates the daemon's sessions.list.result reply and narrows it to a
