@@ -11,8 +11,9 @@
 
 AceClaw is two things in one project:
 
-1. **A Java agent runtime** — a persistent JVM daemon that runs the ReAct + Plan/Replan loop, tools, permissions, memory, and self-learning. Pure Java 21, zero AI framework. The CLI talks to it over a Unix Domain Socket (no network surface).
-2. **A visual agent harness** — a React dashboard that talks to the same daemon over a loopback-only WebSocket bridge, so you can watch — and intervene in — the agent in real time.
+### 1. A Java agent runtime
+
+A persistent JVM daemon that runs the ReAct + Plan/Replan loop, tools, permissions, memory, and self-learning. Pure Java 21, zero AI framework. The CLI talks to it over a Unix Domain Socket (no network surface).
 
 <p align="center">
   <img src="docs/img/aceclaw_daemon_architecture.drawio.png" alt="AceClaw architecture: CLI over UDS and Dashboard over WebSocket, both connected to the JVM daemon" width="640">
@@ -22,6 +23,16 @@ AceClaw is two things in one project:
 
 **[Read the design philosophy →](docs/design-philosophy.md)** — why Java, why no AI framework, what drives the architecture.
 
+### 2. A visual agent harness
+
+A React dashboard that talks to the same daemon over a loopback-only WebSocket bridge, so you can watch — and intervene in — the agent in real time. It streams every event from the daemon and renders the run as a live, navigable tree. Permission requests show up as inline panels you can Approve or Deny from the browser; CLI and dashboard race, first response wins.
+
+<p align="center">
+  <img src="docs/img/aceclaw-dashboard.gif" alt="AceClaw dashboard — live execution tree" width="820">
+</p>
+
+**[Visual Agent Harness →](docs/visual-harness.md)**
+
 ## Highlights
 
 - **Visual agent harness** — live execution tree, inline permission Approve/Deny from the browser. *([details](docs/visual-harness.md))*
@@ -30,16 +41,6 @@ AceClaw is two things in one project:
 - **Long-term memory** — 8-tier hierarchy, HMAC-signed entries, hybrid search, automated consolidation. *([details](docs/memory-system-design.md))*
 - **Context engineering** — budgeted 8-tier prompt assembly, 3-phase compaction, request-time pruning. *([details](docs/context-engineering.md))*
 - **Security** — UDS-only daemon socket, sealed 4-level permissions, signed memory, no network attack surface. *([details](docs/security.md))*
-
-## Visual Agent Harness
-
-<p align="center">
-  <img src="docs/img/aceclaw-dashboard.gif" alt="AceClaw dashboard — live execution tree" width="820">
-</p>
-
-A React dashboard streams every event from the daemon over a WebSocket bridge and renders the run as a live, navigable tree. Permission requests show up as inline panels you can Approve or Deny from the browser; CLI and dashboard race, first response wins.
-
-**[Visual Agent Harness →](docs/visual-harness.md)**
 
 ## Quick Start
 
