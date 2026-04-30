@@ -50,9 +50,8 @@ describe('PermissionPanel — awaiting state', () => {
     vi.useRealTimers();
   });
 
-  it('renders Approve / Deny / Always Allow and routes clicks back with the requestId', () => {
+  it('renders Approve / Deny and routes clicks back with the requestId', () => {
     const onApprove = vi.fn();
-    const onAlwaysAllow = vi.fn();
     const onDeny = vi.fn();
     const onDismiss = vi.fn();
     render(
@@ -61,7 +60,7 @@ describe('PermissionPanel — awaiting state', () => {
         anchorX={100}
         anchorY={100}
         onApprove={onApprove}
-        onAlwaysAllow={onAlwaysAllow}
+        onAlwaysAllow={vi.fn()}
         onDeny={onDeny}
         onDismiss={onDismiss}
       />,
@@ -72,11 +71,41 @@ describe('PermissionPanel — awaiting state', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /deny permission/i }));
     expect(onDeny).toHaveBeenCalledWith('perm-1');
+  });
 
+  it('routes Approve to onAlwaysAllow only when the "remember" checkbox is ticked', () => {
+    // Session-level remember is a deliberate opt-in: ticking the
+    // checkbox flips the Approve button to "Approve & remember" and
+    // the click sends remember=true. Earlier UI made this a separate
+    // primary button — too easy to click accidentally and end up with
+    // the daemon auto-approving every subsequent call to that tool
+    // for the rest of the session.
+    const onApprove = vi.fn();
+    const onAlwaysAllow = vi.fn();
+    render(
+      <PermissionPanel
+        node={awaitingNode()}
+        anchorX={0}
+        anchorY={0}
+        onApprove={onApprove}
+        onAlwaysAllow={onAlwaysAllow}
+        onDeny={vi.fn()}
+        onDismiss={vi.fn()}
+      />,
+    );
+    // Default: checkbox off → Approve fires onApprove (no remember).
+    fireEvent.click(screen.getByRole('button', { name: /^approve permission$/i }));
+    expect(onApprove).toHaveBeenCalledWith('perm-1');
+    expect(onAlwaysAllow).not.toHaveBeenCalled();
+
+    // Tick the checkbox → Approve label changes → click fires onAlwaysAllow.
+    onApprove.mockClear();
+    fireEvent.click(screen.getByRole('checkbox', { name: /don't ask again/i }));
     fireEvent.click(
-      screen.getByRole('button', { name: /always allow this tool/i }),
+      screen.getByRole('button', { name: /approve and remember/i }),
     );
     expect(onAlwaysAllow).toHaveBeenCalledWith('perm-1');
+    expect(onApprove).not.toHaveBeenCalled();
   });
 
   it('extracts a path-like subject from the prompt and renders it as code', () => {

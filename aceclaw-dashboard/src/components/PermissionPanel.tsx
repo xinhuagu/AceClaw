@@ -144,6 +144,13 @@ export function PermissionPanel({
     [node.inputPrompt, tool],
   );
 
+  // Power-user opt-in for session-level "remember": when ticked, the
+  // Approve button flips to "Approve & remember" and the click sends
+  // permission.response with remember=true so the daemon stops asking
+  // about this tool for the rest of the session. Default OFF — granting
+  // session-wide approval is destructive and shouldn't be one click.
+  const [rememberThisSession, setRememberThisSession] = useState<boolean>(false);
+
   // Live "now" so the countdown ticks and the urgency colour shifts. 250 ms
   // resolution is plenty for a seconds counter and avoids re-rendering the
   // panel 60×/s; the timer clears the moment we leave the awaiting state.
@@ -196,7 +203,8 @@ export function PermissionPanel({
       if (target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA') return;
       if (e.key === 'a' || e.key === 'A') {
         e.preventDefault();
-        onApprove(requestId);
+        if (rememberThisSession) onAlwaysAllow(requestId);
+        else onApprove(requestId);
       } else if (e.key === 'd' || e.key === 'D') {
         e.preventDefault();
         onDeny(requestId);
@@ -207,7 +215,16 @@ export function PermissionPanel({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [state.kind, requestId, primary, onApprove, onDeny, onDismiss]);
+  }, [
+    state.kind,
+    requestId,
+    primary,
+    rememberThisSession,
+    onApprove,
+    onAlwaysAllow,
+    onDeny,
+    onDismiss,
+  ]);
 
   if (!requestId) return null;
 
@@ -324,16 +341,24 @@ export function PermissionPanel({
             <div className="flex gap-2">
               <button
                 type="button"
-                onClick={() => onApprove(requestId)}
+                onClick={() =>
+                  rememberThisSession
+                    ? onAlwaysAllow(requestId)
+                    : onApprove(requestId)
+                }
                 className={[
                   'flex-1 rounded-md px-3 py-1.5 text-xs font-semibold tracking-wide',
                   'bg-emerald-500/90 text-emerald-50 shadow-sm',
                   'transition hover:bg-emerald-400 hover:shadow-emerald-500/40',
                   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300',
                 ].join(' ')}
-                aria-label="Approve permission"
+                aria-label={
+                  rememberThisSession
+                    ? 'Approve and remember for the session'
+                    : 'Approve permission'
+                }
               >
-                <span>Approve</span>
+                <span>{rememberThisSession ? 'Approve & remember' : 'Approve'}</span>
                 <kbd className="ml-2 rounded bg-emerald-900/50 px-1 py-0 font-mono text-[10px] opacity-80">
                   A
                 </kbd>
@@ -355,20 +380,28 @@ export function PermissionPanel({
                 </kbd>
               </button>
             </div>
-            <button
-              type="button"
-              onClick={() => onAlwaysAllow(requestId)}
-              className={[
-                'w-full rounded-md px-3 py-1.5 text-[11px] font-medium tracking-wide',
-                'border border-emerald-700/40 bg-emerald-500/5 text-emerald-200/90',
-                'transition hover:border-emerald-500/60 hover:bg-emerald-500/15 hover:text-emerald-100',
-                'focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-300',
-              ].join(' ')}
-              aria-label="Always allow this tool for the rest of the session"
-              title="Approve and remember for the rest of this session"
+            {/*
+              Session-level "remember" is a power-user opt-in, not a
+              primary action. Earlier versions made it a full-width
+              button next to Approve/Deny — too easy to click without
+              realising the daemon would then auto-approve every
+              subsequent call to that tool with no UI feedback. Now
+              it's a small checkbox: when ticked, the Approve button
+              flips to "Approve & remember" so the destructive choice
+              is explicit, and the default click stays one-shot.
+            */}
+            <label
+              className="flex cursor-pointer items-center gap-2 px-1 text-[10px] text-zinc-400 hover:text-zinc-200"
+              title={`Skip this prompt for ${tool} until the session ends`}
             >
-              ✓ Always allow {tool} this session
-            </button>
+              <input
+                type="checkbox"
+                className="h-3 w-3 cursor-pointer accent-emerald-500"
+                checked={rememberThisSession}
+                onChange={(e) => setRememberThisSession(e.target.checked)}
+              />
+              <span>Don't ask again for {tool} this session</span>
+            </label>
           </div>
         ) : (
           <div className="flex items-center gap-2 border-t border-zinc-800/60 px-4 py-3">
