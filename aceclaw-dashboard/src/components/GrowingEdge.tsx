@@ -69,12 +69,13 @@ export function GrowingEdge({ edge }: GrowingEdgeProps) {
     <motion.path
       d={d}
       stroke={stroke}
-      // Sequence edges get the SAME stroke width as containment edges
-      // and a longer dash gap so they read as a clear, intentional
-      // dashed line on a dark background — not a faint hint.
+      // Sequence edges get the same stroke width as containment so they
+      // read on a dark background, but with butt linecaps and a wider
+      // gap-to-dash ratio so the dashes stay obviously discrete. Round
+      // caps blob the dash ends out by ~strokeWidth/2 each side, which
+      // closed the gaps and made the line look solid.
       strokeWidth={isSequence ? 1.75 : 1.75}
-      strokeDasharray={isSequence ? '7 5' : undefined}
-      strokeLinecap={isSequence ? 'round' : 'butt'}
+      strokeDasharray={isSequence ? '5 6' : undefined}
       fill="none"
       initial={{ pathLength: 0, opacity: 0 }}
       animate={{ pathLength: 1, opacity: isSequence ? 0.85 : 0.85 }}
