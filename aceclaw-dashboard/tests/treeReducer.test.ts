@@ -463,6 +463,71 @@ describe('permission pause', () => {
     expect(findById(state, 't3').permissionRequestId).toBe('perm-3');
   });
 
+  it('disambiguates 8 parallel permissions even with arbitrary wire interleaving', () => {
+    // Stress version of the parallel-permission test. Daemon's parallel
+    // virtual threads can interleave stream.tool_use and
+    // permission.request in any order; the reducer must produce a
+    // tree where EVERY tool node ends up awaiting its OWN permission
+    // request — no collisions, no missing chips, no buffered leftovers.
+    //
+    // Wire order constructed below mixes:
+    //   - some tools whose tool_use arrives BEFORE their permission
+    //   - some whose permission arrives BEFORE their tool_use (buffer path)
+    //   - bursts of consecutive same-direction events
+    //
+    // Asserts each of the 8 nodes ends up with the expected
+    // awaitingInput + permissionRequestId pairing — a UI consumer
+    // walking the tree gets one chip per tool, addressable.
+    const ids = ['t1', 't2', 't3', 't4', 't5', 't6', 't7', 't8'] as const;
+    function tu(id: string) {
+      return envelope('stream.tool_use', { id, name: 'wiki_search' });
+    }
+    function pr(toolUseId: string, requestId: string) {
+      return envelope('permission.request', {
+        tool: 'wiki_search',
+        description: `wiki_search ${toolUseId}`,
+        requestId,
+        toolUseId,
+      });
+    }
+    const state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      // Adversarial interleaving covering every order pattern:
+      tu('t1'),  pr('t1', 'p1'),                  // tu then perm (immediate)
+      pr('t2', 'p2'),  tu('t2'),                   // perm then tu (buffer)
+      tu('t3'),  tu('t4'),  pr('t3', 'p3'),        // burst of tus, then perms in order
+      pr('t4', 'p4'),
+      pr('t5', 'p5'),  pr('t6', 'p6'),             // burst of perms BEFORE their tus
+      tu('t5'),  tu('t6'),                         // tus catch up — buffer drains both
+      pr('t7', 'p7'),  tu('t8'),  tu('t7'),        // mixed: p7 buffered, t8 in, then t7
+      pr('t8', 'p8'),                              // p8 immediate (t8 already exists)
+    );
+
+    for (let i = 0; i < ids.length; i += 1) {
+      const id = ids[i]!;
+      const expectedRid = `p${i + 1}`;
+      const tool = findById(state, id);
+      expect(tool.type).toBe('tool');
+      expect(tool.awaitingInput).toBe(true);
+      expect(tool.permissionRequestId).toBe(expectedRid);
+      expect(tool.inputPrompt).toBe(`wiki_search ${id}`);
+    }
+    // Every buffered request was drained — no orphans hanging around
+    // for tool nodes that never arrived.
+    expect(state.pendingPermissionsByToolUseId).toEqual({});
+  });
+
   it('buffers a permission.request whose tool node has not arrived yet', () => {
     // Race: parallel virtual threads on the daemon dispatch
     // permission.request and stream.tool_use independently — wire
