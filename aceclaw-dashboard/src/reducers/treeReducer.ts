@@ -769,6 +769,14 @@ function mintIterationThinking(
   const newState: ExecutionTree = {
     ...state,
     rootNodes: appendChild(preparedRootNodes, turn.id, thinkingNode),
+    // Move auto-scroll focus to the new thinking node so the camera
+    // pans to it as it arrives. Without this, a new ReAct iteration's
+    // thinking lands off the right edge of the viewport (downstream of
+    // the just-completed tool) and the user sees no movement until a
+    // text delta later flips activeNodeId — at which point the canvas
+    // jumps two steps ahead. With the focus move + the SVG transition
+    // on style.transform, every new node slides smoothly into view.
+    activeNodeId: id,
     currentThinkingId: id,
     thinkingSealed: false,
     // New iteration: forget the previous iteration's text anchors so
@@ -809,6 +817,9 @@ function appendThinkingToCurrentTurn(
         ...t,
         text: (t.text ?? '') + params.delta,
       })),
+      // Keep auto-scroll focus on the streaming thinking node so a
+      // long thought doesn't drift off-screen as content grows.
+      activeNodeId: state.currentThinkingId,
     };
   }
 

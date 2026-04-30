@@ -1413,6 +1413,40 @@ describe('thinking-anchored tool grouping (ReAct iterations)', () => {
     expect(thinking.status).toBe('completed');
   });
 
+  it('moves activeNodeId to the new thinking so the camera follows it (#437)', () => {
+    // Without this, the camera stayed on the just-completed tool when
+    // a new ReAct iteration's thinking arrived — the new thinking
+    // landed off the right edge of the viewport (downstream of the
+    // tool) and only became visible when a later text delta moved
+    // activeNodeId, by which point the canvas appeared to "jump".
+    // mintIterationThinking now sets activeNodeId = synth_id so the
+    // auto-scroll effect pans to the new node as it arrives. The
+    // append-delta path keeps activeNodeId on the streaming thinking
+    // so a long thought doesn't drift off-screen.
+    const state = runAll(
+      startedTurn(),
+      envelope('stream.thinking', { delta: 'iter 1 thought' }),
+      envelope('stream.tool_use', { id: 't1', name: 'bash' }),
+      envelope('stream.tool_completed', {
+        id: 't1',
+        name: 'bash',
+        durationMs: 12,
+        isError: false,
+      }),
+      envelope('stream.thinking', { delta: 'iter 2 thought' }),
+    );
+    // After iter-2 thinking arrives, activeNodeId should point at the
+    // new thinking (req-1:thinking:1 — the second thinking under the
+    // turn) so the auto-scroll effect in ExecutionTree pans there.
+    expect(state.activeNodeId).toBe('req-1:thinking:1');
+    // Same-iteration delta keeps focus on the same thinking.
+    const after = executionTreeReducer(
+      state,
+      envelope('stream.thinking', { delta: ' more' }),
+    );
+    expect(after.activeNodeId).toBe('req-1:thinking:1');
+  });
+
   it('synthesises a thinking parent when a tool_use arrives with no preceding thinking', () => {
     // Extended thinking disabled (or model emitted tool_use without
     // any thinking delta): addToolNode mints a synthetic thinking
