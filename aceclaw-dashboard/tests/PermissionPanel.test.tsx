@@ -126,6 +126,40 @@ describe('PermissionPanel — awaiting state', () => {
     expect(subject.tagName.toLowerCase()).toBe('code');
   });
 
+  it('ignores A/D when held with a modifier (Cmd/Ctrl/Alt/Shift)', () => {
+    // Real safety bug from review: Cmd-A (select all), Cmd-D
+    // (bookmark), Shift-A (typing a capital letter), and similar
+    // browser shortcuts must NOT trigger a permission decision. The
+    // earlier guard only filtered Cmd/Ctrl/Alt/Meta — Shift slipped
+    // through because `e.key === 'A'` matches Shift-a.
+    const onApprove = vi.fn();
+    const onDeny = vi.fn();
+    const onDismiss = vi.fn();
+    render(
+      <PermissionPanel
+        node={awaitingNode()}
+        anchorX={0}
+        anchorY={0}
+        onApprove={onApprove}
+        onAlwaysAllow={vi.fn()}
+        onDeny={onDeny}
+        onDismiss={onDismiss}
+      />,
+    );
+    fireEvent.keyDown(window, { key: 'a', metaKey: true });
+    fireEvent.keyDown(window, { key: 'a', ctrlKey: true });
+    fireEvent.keyDown(window, { key: 'A', shiftKey: true }); // Shift-a
+    fireEvent.keyDown(window, { key: 'd', altKey: true });
+    fireEvent.keyDown(window, { key: 'D', shiftKey: true });
+    fireEvent.keyDown(window, { key: 'Escape', metaKey: true });
+    expect(onApprove).not.toHaveBeenCalled();
+    expect(onDeny).not.toHaveBeenCalled();
+    expect(onDismiss).not.toHaveBeenCalled();
+    // Sanity: plain 'a' (no modifiers) still works.
+    fireEvent.keyDown(window, { key: 'a' });
+    expect(onApprove).toHaveBeenCalledWith('perm-1');
+  });
+
   it('A / D / Esc keyboard shortcuts invoke the right callbacks', () => {
     const onApprove = vi.fn();
     const onDeny = vi.fn();

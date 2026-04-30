@@ -101,17 +101,21 @@ public final class PermissionBridge {
         }
         var future = new CompletableFuture<PermissionAnswer>();
         futures.put(request.requestId(), future);
-        // Re-check after register: covers the race where cancelExternal
-        // ran concurrently and saw no future, but its externalCancellations
-        // entry was added between our pre-check and futures.put. Without
-        // this, requestPermission would block until timeout for a
-        // dashboard answer that already landed.
-        var lateCancel = externalCancellations.remove(request.requestId());
-        if (lateCancel != null) {
-            future.complete(lateCancel);
-        }
         boolean enqueued = false;
         try {
+            // Re-check after register: covers the race where
+            // cancelExternal ran concurrently and saw no future, but
+            // its externalCancellations entry was added between our
+            // pre-check and futures.put. Without this, requestPermission
+            // would block until timeout for a dashboard answer that
+            // already landed. Return immediately so the modal doesn't
+            // briefly show — pending.put hasn't run yet, so the TUI
+            // never sees a request that was already resolved.
+            var lateCancel = externalCancellations.remove(request.requestId());
+            if (lateCancel != null) {
+                future.complete(lateCancel);
+                return lateCancel;
+            }
             pending.put(request);
             enqueued = true;
             var listener = requestListener;
@@ -131,6 +135,12 @@ public final class PermissionBridge {
             throw new IllegalStateException("Permission request failed unexpectedly", e);
         } finally {
             futures.remove(request.requestId());
+            // Belt-and-suspenders: drop any externalCancellations entry
+            // that arrived AFTER the late-check (e.g. a daemon-side
+            // permission.cancelled raced past requestPermission's body
+            // and landed during future.get()). Without this cleanup
+            // the entry would leak until the CLI process exits.
+            externalCancellations.remove(request.requestId());
             if (enqueued) {
                 pending.remove(request);
             }

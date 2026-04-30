@@ -209,13 +209,14 @@ export function PermissionPanel({
       // Don't hijack typing in inputs/textareas (none in Tier 1, but defensive).
       const target = e.target as HTMLElement | null;
       if (target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA') return;
-      // Modifier guard: A/D shortcuts must NOT fire under
-      // Cmd/Ctrl/Alt/Meta — Cmd-A (select all), Cmd-D (bookmark), and
-      // similar browser shortcuts would otherwise accidentally trigger
-      // a safety-critical Approve/Deny while the user is just trying
-      // to use unrelated chord. Esc has no common chord conflict but
-      // gate it too for symmetry.
-      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      // Modifier guard: A/D shortcuts must NOT fire under any
+      // modifier — Cmd-A (select all), Cmd-D (bookmark), Shift-A
+      // (typing capital letters) and similar shortcuts would
+      // otherwise accidentally trigger a safety-critical
+      // Approve/Deny. Shift is in the guard because `e.key === 'A'`
+      // would otherwise match Shift-a; using the lowercase-only
+      // comparison alone wouldn't catch Caps Lock.
+      if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
       if (e.key === 'a' || e.key === 'A') {
         e.preventDefault();
         if (rememberThisSession) onAlwaysAllow(requestId);
