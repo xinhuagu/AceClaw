@@ -45,8 +45,14 @@ function straightPath(edge: LayoutEdge): string {
   return `M ${from.x} ${from.y} L ${to.x} ${to.y}`;
 }
 
-/** Muted neutral for sequence edges so they recede behind containment edges. */
-const SEQUENCE_STROKE = '#52525b';
+/**
+ * Stroke colour for sequence/flow edges. Picked light enough to read on
+ * the bg-zinc-950 canvas without competing visually with the saturated
+ * status colours on containment edges. zinc-400 (#94a3b8 → slate-400)
+ * survives the dark background; the 0.5 opacity earlier rendered as
+ * near-invisible.
+ */
+const SEQUENCE_STROKE = '#94a3b8';
 
 export function GrowingEdge({ edge }: GrowingEdgeProps) {
   const isSequence = edge.kind === 'sequence';
@@ -60,14 +66,26 @@ export function GrowingEdge({ edge }: GrowingEdgeProps) {
   // and adding arrowheads to every containment edge would be visual noise.
   const markerEnd = isSequence ? 'url(#seq-arrow)' : undefined;
   return (
+    // Animation differs by edge kind: framer-motion's `pathLength`
+    // implements its draw-on animation by setting strokeDasharray
+    // internally — which silently clobbers any explicit dasharray we
+    // pass for sequence edges, rendering them as solid lines. So
+    // sequence edges drop pathLength and fade in via opacity instead;
+    // their custom dash pattern survives. Containment edges keep the
+    // line-drawing animation since they have no custom dasharray to
+    // preserve.
     <motion.path
       d={d}
       stroke={stroke}
-      strokeWidth={isSequence ? 1.25 : 1.75}
-      strokeDasharray={isSequence ? '4 4' : undefined}
+      strokeWidth={isSequence ? 1.75 : 1.75}
+      strokeDasharray={isSequence ? '5 6' : undefined}
       fill="none"
-      initial={{ pathLength: 0, opacity: 0 }}
-      animate={{ pathLength: 1, opacity: isSequence ? 0.5 : 0.85 }}
+      initial={
+        isSequence ? { opacity: 0 } : { pathLength: 0, opacity: 0 }
+      }
+      animate={
+        isSequence ? { opacity: 0.85 } : { pathLength: 1, opacity: 0.85 }
+      }
       transition={{ duration: 0.4, ease: 'easeOut' }}
       // exactOptionalPropertyTypes: avoid passing undefined to the
       // optional markerEnd attribute.

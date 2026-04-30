@@ -174,6 +174,26 @@ export function GrowingNode({ node }: GrowingNodeProps) {
             : `${(node.duration / 1000).toFixed(1)}s`}
         </text>
       ) : null}
+      {/*
+        Stop-reason badge on truncated turns: MAX_TOKENS / ERROR / etc
+        get a small amber tag at the bottom-right of the turn node so the
+        reader can tell at a glance why a turn ended without a normal
+        final-text response. END_TURN (the default) shows nothing.
+      */}
+      {node.type === 'turn' &&
+      typeof node.metadata?.['stopReason'] === 'string' &&
+      node.metadata['stopReason'] !== 'END_TURN' ? (
+        <text
+          x={left + node.width - 8}
+          y={top + node.height - 6}
+          textAnchor="end"
+          fontFamily="ui-monospace, 'JetBrains Mono', monospace"
+          fontSize={9}
+          fill="#fbbf24"
+        >
+          ⚠ {String(node.metadata['stopReason']).toLowerCase()}
+        </text>
+      ) : null}
     </motion.g>
   );
 }

@@ -86,6 +86,17 @@ export interface TurnCompletedParams {
   durationMs: number;
   toolCount: number;
   timestamp: string; // ISO-8601
+  /**
+   * Why the model stopped generating output for this turn. Optional for
+   * forward/backward compat with daemons that don't yet emit it. Values
+   * follow the daemon's StopReason enum: {@code END_TURN} (normal),
+   * {@code MAX_TOKENS}, {@code TOOL_USE}, {@code STOP_SEQUENCE},
+   * {@code ERROR}. The dashboard renders a small badge on the turn
+   * node when this is anything other than {@code END_TURN} so the
+   * reader can tell at a glance why a turn ended without a final-text
+   * response.
+   */
+  stopReason?: string;
 }
 
 // --- Existing daemon stream events ---

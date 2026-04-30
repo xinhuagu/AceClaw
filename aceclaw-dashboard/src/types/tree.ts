@@ -102,6 +102,27 @@ export interface ExecutionTree {
    * iteration rather than one fat concatenated node per turn.
    */
   thinkingSealed: boolean;
+  /**
+   * The text (narration / response) node currently being streamed for the
+   * active iteration. Used as the anchor for {@code stream.tool_use}
+   * events that follow narration in the same LLM call (so tools nest
+   * under the text that announced them). Stays valid across parallel
+   * tool_use events so they share the same parent. Reset when a new
+   * iteration starts (new thinking delta, or when {@link textIsOpen}
+   * is false and the next text delta arrives).
+   */
+  currentTextId: string | null;
+  /**
+   * True while the current iteration's text block is open for more
+   * deltas. A {@code tool_use} closes the text block (the model has
+   * stopped talking and started acting) — we keep
+   * {@link currentTextId} for tool anchoring, but the next text delta
+   * must mint a NEW node, because it belongs to the NEXT iteration.
+   * Without this flag, an iteration that emits text without a
+   * preceding thinking delta would silently merge into the previous
+   * iteration's text (ids both keyed on {@link currentThinkingId}).
+   */
+  textIsOpen: boolean;
   /** Aggregate counters surfaced in the UI sidebar. */
   stats: TreeStats;
 }
@@ -125,6 +146,8 @@ export function emptyTree(sessionId: string): ExecutionTree {
     nextSyntheticId: 1,
     currentThinkingId: null,
     thinkingSealed: false,
+    currentTextId: null,
+    textIsOpen: false,
     stats: {
       totalTools: 0,
       completedTools: 0,
