@@ -3615,14 +3615,19 @@ public final class StreamingAgentHandler {
                                             ? respParams.get("requestId").asText() : null;
                                     if (rid != null) {
                                         var future = pendingPermissions.remove(rid);
-                                        // Keep the daemon-wide registry in sync — if a
-                                        // browser also tries to respond, its lookup
-                                        // (#433) should now miss instead of double-
-                                        // completing the future.
-                                        if (globalPermissionRegistry != null) {
-                                            globalPermissionRegistry.remove(rid);
-                                        }
                                         if (future != null) {
+                                            // Keep the daemon-wide registry in sync —
+                                            // only when THIS context owned the request
+                                            // (local future found). Removing
+                                            // unconditionally would let a stale or
+                                            // cross-session CLI message delete another
+                                            // context's legitimate entry, causing the
+                                            // browser response for that request to be
+                                            // rejected as "unknown requestId" until
+                                            // timeout (codex P1 review on PR #454).
+                                            if (globalPermissionRegistry != null) {
+                                                globalPermissionRegistry.remove(rid);
+                                            }
                                             future.complete(message);
                                         } else {
                                             log.warn("Cancel monitor: no pending request for requestId={}, dropping stale permission.response", rid);
