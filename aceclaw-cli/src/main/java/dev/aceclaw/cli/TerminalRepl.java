@@ -499,6 +499,15 @@ public final class TerminalRepl {
                                 + "Ctrl-C twice — force-exiting AceClaw."
                                 + RESET);
                         out.flush();
+                        // Daemon cleanup (session.destroy) runs from the
+                        // JVM shutdown hook installed in AceClawMain so
+                        // it covers ALL force-exit paths (Ctrl-C×2,
+                        // SIGTERM, uncaught exception bubbling out of
+                        // repl.run, …). Without that hook the daemon
+                        // would still think this workspace's TUI is
+                        // attached and the next `aceclaw` from the
+                        // same directory would fail with "another TUI
+                        // session is already active".
                         // 128 + SIGINT (2) — POSIX convention for
                         // exits triggered by an interrupt signal.
                         System.exit(130);

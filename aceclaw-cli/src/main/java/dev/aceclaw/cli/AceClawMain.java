@@ -88,19 +88,46 @@ public final class AceClawMain implements Runnable {
             // Read bench mode from dev.sh (ACECLAW_BENCH_MODE env var)
             String benchMode = System.getenv("ACECLAW_BENCH_MODE");
 
+            // Defense in depth: a JVM shutdown hook makes sure the daemon
+            // hears about the session ending even when the REPL doesn't
+            // reach its normal cleanup — TerminalRepl's double-Ctrl-C
+            // force-exit, an OS-sent SIGTERM/SIGHUP, an uncaught error
+            // bubbling out of repl.run(). The normal-exit path below
+            // marks `cleanedUp` so the hook is a no-op when the REPL
+            // finished the right way. Failures here are swallowed
+            // (best-effort) — the JVM is going down regardless.
+            final var cleanedUp = new java.util.concurrent.atomic.AtomicBoolean(false);
+            final var clientRef = client;
+            final var sessionIdFinal = sessionId;
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                if (cleanedUp.compareAndSet(false, true)) {
+                    try {
+                        var p = clientRef.objectMapper().createObjectNode();
+                        p.put("sessionId", sessionIdFinal);
+                        clientRef.sendRequest("session.destroy", p);
+                    } catch (Exception ignored) {
+                        // Daemon down / socket closed / race — accept.
+                    }
+                }
+            }, "aceclaw-cli-shutdown-cleanup"));
+
             // Enter REPL with session info
             var sessionInfo = new TerminalRepl.SessionInfo(
                     VERSION, model, effectiveProject, contextWindowTokens, gitBranch, benchMode, profile);
             var repl = new TerminalRepl(client, sessionId, sessionInfo);
             repl.run();
 
-            // Destroy session on exit
-            try {
-                var destroyParams = client.objectMapper().createObjectNode();
-                destroyParams.put("sessionId", sessionId);
-                client.sendRequest("session.destroy", destroyParams);
-            } catch (Exception e) {
-                // Best-effort cleanup; daemon may already be shutting down
+            // Normal-exit cleanup. Marking the flag first prevents the
+            // shutdown hook from re-issuing session.destroy if the JVM
+            // exits before this thread returns.
+            if (cleanedUp.compareAndSet(false, true)) {
+                try {
+                    var destroyParams = client.objectMapper().createObjectNode();
+                    destroyParams.put("sessionId", sessionId);
+                    client.sendRequest("session.destroy", destroyParams);
+                } catch (Exception e) {
+                    // Best-effort cleanup; daemon may already be shutting down
+                }
             }
 
         } catch (DaemonClient.DaemonClientException e) {
