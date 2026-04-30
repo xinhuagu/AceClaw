@@ -541,8 +541,13 @@ describe('text accumulation', () => {
       envelope('stream.text', { delta: 'world' }),
       envelope('stream.text', { delta: '!' }),
     );
+    // Text-without-thinking now anchors on a synthetic thinking node
+    // (so it stays in the ReAct chain instead of orphaning at the
+    // turn level — see addReActFlowEdges in useTreeLayout).
     const turn = state.rootNodes[0]!.children[0]!;
-    const textChildren = turn.children.filter((c) => c.type === 'text');
+    const thinking = turn.children.find((c) => c.type === 'thinking')!;
+    expect(thinking).toBeDefined();
+    const textChildren = thinking.children.filter((c) => c.type === 'text');
     expect(textChildren).toHaveLength(1);
     expect(textChildren[0]!.text).toBe('Hello, world!');
   });
@@ -649,10 +654,12 @@ describe('text accumulation', () => {
     expect(text1.id).not.toBe(text2.id);
   });
 
-  it('falls back to attaching text to the turn when no thinking has been emitted', () => {
-    // Extended thinking off, or model emitted text without a prior
-    // thinking block. Text still gets at most one node per turn,
-    // keyed on a turn-level fallback id.
+  it('attaches text to a synthetic thinking when no real thinking has been emitted', () => {
+    // Extended thinking off, or model emitted text without any prior
+    // thinking block. The reducer mints a synthetic thinking so the
+    // text stays in the ReAct chain (addReActFlowEdges only iterates
+    // thinking children of a turn — text directly under a turn would
+    // be orphaned from the layout flow).
     const state = runAll(
       freshTree(),
       envelope('stream.session_started', {
@@ -670,7 +677,10 @@ describe('text accumulation', () => {
       envelope('stream.text', { delta: ' more talk' }),
     );
     const turn = state.rootNodes[0]!.children[0]!;
-    const textChildren = turn.children.filter((c) => c.type === 'text');
+    expect(turn.children.map((c) => c.type)).toEqual(['thinking']);
+    const synthThinking = turn.children[0]!;
+    expect(synthThinking.status).toBe('completed'); // synthetic, no real reasoning streamed
+    const textChildren = synthThinking.children.filter((c) => c.type === 'text');
     expect(textChildren).toHaveLength(1);
     expect(textChildren[0]!.text).toBe('no thinking, just talk more talk');
   });

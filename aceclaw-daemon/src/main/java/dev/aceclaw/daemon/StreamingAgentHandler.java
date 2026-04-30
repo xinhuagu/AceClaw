@@ -400,6 +400,7 @@ public final class StreamingAgentHandler {
                         sessionId, session, cancelContext, eventHandler,
                         permissionAwareLoop, cancellationToken, metricsCollector, watchdog, requestToolNames);
                 if (resumeResult != null) {
+                    finalStopReason = extractStopReason(resumeResult, finalStopReason);
                     sendBudgetExhaustedNotificationIfNeeded(watchdog, cancelContext, sessionId, cancellationToken);
                     return resumeResult;
                 }
@@ -416,6 +417,7 @@ public final class StreamingAgentHandler {
                     var planResult = executePlannedPrompt(prompt, session, sessionId, cancelContext,
                             eventHandler, permissionAwareLoop, cancellationToken,
                             metricsCollector, watchdog, requestToolNames);
+                    finalStopReason = extractStopReason(planResult, finalStopReason);
                     sendBudgetExhaustedNotificationIfNeeded(watchdog, cancelContext, sessionId, cancellationToken);
                     return planResult;
                 }
@@ -442,6 +444,15 @@ public final class StreamingAgentHandler {
 
             String userMessage = formatLlmError(e);
             throw new IllegalStateException(userMessage);
+        } catch (RuntimeException | Error e) {
+            // Catch-all for non-LLM failures: anything thrown after
+            // requestId is assigned MUST be reported as ERROR on the
+            // turn_completed broadcast so the dashboard's truncated-
+            // turn badge fires. Without this branch the finally block
+            // would emit the END_TURN default for an aborted turn.
+            // Rethrow unchanged — error semantics elsewhere unchanged.
+            finalStopReason = "ERROR";
+            throw e;
         } finally {
             // Emit stream.turn_completed BEFORE releasing the lock so the
             // start→end window is fully serialised against other prompts on
@@ -713,7 +724,11 @@ public final class StreamingAgentHandler {
         var result = objectMapper.createObjectNode();
         result.put("sessionId", sessionId);
         result.put("response", responseSummary);
-        result.put("stopReason", "END_TURN");
+        // Use the planner-derived stopReason (END_TURN on success, ERROR
+        // on plan failure) instead of a hardcoded END_TURN — both the
+        // CLI and the dashboard's stream.turn_completed broadcast read
+        // this so mismatches confuse "did the plan really succeed?".
+        result.put("stopReason", plannedStopReason.name());
         result.put("planned", true);
         result.put("planSuccess", planResult.success());
         result.put("planSteps", planResult.plan().steps().size());
@@ -926,6 +941,22 @@ public final class StreamingAgentHandler {
 
     private static String shortenSessionId(String sessionId) {
         return sessionId.length() > 8 ? sessionId.substring(0, 8) : sessionId;
+    }
+
+    /**
+     * Reads the {@code stopReason} field from a planner / resume result
+     * payload so the {@code stream.turn_completed} broadcast reflects
+     * the real plan outcome (END_TURN on success, ERROR on failure)
+     * instead of the END_TURN default. Falls back to {@code current}
+     * when the result isn't a JSON object or doesn't carry the field —
+     * older code paths that haven't been updated keep working.
+     */
+    private static String extractStopReason(Object result, String current) {
+        if (result instanceof com.fasterxml.jackson.databind.node.ObjectNode obj
+                && obj.has("stopReason")) {
+            return obj.get("stopReason").asText(current);
+        }
+        return current;
     }
 
     private void recordPromptSkillCorrections(String sessionId, Path projectPath, String prompt) {
@@ -2833,7 +2864,10 @@ public final class StreamingAgentHandler {
         var result = objectMapper.createObjectNode();
         result.put("sessionId", sessionId);
         result.put("response", responseSummary);
-        result.put("stopReason", "END_TURN");
+        // Use the resumed-plan stopReason (END_TURN on success, ERROR
+        // on plan failure) instead of a hardcoded END_TURN — see the
+        // matching comment in executePlannedPrompt.
+        result.put("stopReason", plannedStopReason.name());
         result.put("planned", true);
         result.put("resumed", true);
         result.put("planSuccess", planResult.success());

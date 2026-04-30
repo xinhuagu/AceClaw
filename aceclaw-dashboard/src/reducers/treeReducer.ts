@@ -533,23 +533,26 @@ function appendTextToCurrentTurn(
   );
   if (!turn) return state;
 
-  // If we're starting a new iteration's text (previous iteration
-  // closed by a tool_use → textIsOpen=false → thinkingSealed=true)
-  // AND the model didn't emit a fresh stream.thinking event for this
-  // iteration, mint a SYNTHETIC thinking node to anchor it. Without
-  // this, the new text/tools all pile up under the previous
-  // iteration's thinking, producing 3-5+ text bubbles stacked
-  // vertically as siblings — visually reading as "parallel
-  // responses" when they're actually sequential iterations of one
-  // ReAct loop. The synthetic thinking is created status=completed
-  // (the model already finished thinking by the time we infer the
-  // boundary from a text delta) and gets the same shape as a real
-  // thinking node so the layout chains identically.
+  // If we're starting a new iteration's text without a fresh
+  // stream.thinking event, mint a SYNTHETIC thinking node to anchor
+  // it. Two cases trigger this:
+  //   1. textIsOpen=false + thinkingSealed=true: previous iteration
+  //      closed by a tool_use, next call started with text directly.
+  //   2. textIsOpen=false + currentThinkingId=null: this is the very
+  //      first event of the turn AND it's a text (extended thinking
+  //      off, model went straight to text). Without the synthetic
+  //      thinking the text would land as a turn-direct child and
+  //      addReActFlowEdges (which only iterates thinking siblings)
+  //      would orphan it from the ReAct chain.
+  //
+  // The synthetic thinking is created status=completed — the model
+  // already finished thinking by the time we infer the boundary from
+  // a text delta — and gets the same shape as a real thinking node
+  // so the layout chains identically.
   let workingState = state;
   if (
     !state.textIsOpen &&
-    state.thinkingSealed &&
-    state.currentThinkingId !== null
+    (state.thinkingSealed || state.currentThinkingId === null)
   ) {
     workingState = mintIterationThinking(state, turn, '', 'completed').state;
   }
