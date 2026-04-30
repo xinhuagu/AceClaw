@@ -179,11 +179,37 @@ export function ExecutionTree({
     const el = containerRef.current;
     if (!el) return;
     const { width: cw, height: ch } = el.getBoundingClientRect();
-    setViewport((prev) => ({
-      scale: prev.scale,
-      x: cw / 2 - target.x * prev.scale,
-      y: ch / 2 - target.y * prev.scale,
-    }));
+    setViewport((prev) => {
+      // "Comfort zone" — when the active node is already inside this
+      // inner rect, do nothing. This keeps the camera still while a
+      // turn produces nodes that fit on screen, and only pans when
+      // activity reaches the viewport edge. Without this, every new
+      // event (thinking → tool → text → next iteration) triggered
+      // a re-center, and the user's just-clicked node visibly slid
+      // out from under their cursor.
+      const COMFORT_MARGIN_X = 80;
+      const COMFORT_MARGIN_Y = 40;
+      const screenX = prev.x + target.x * prev.scale;
+      const screenY = prev.y + target.y * prev.scale;
+      const halfW = (target.width / 2) * prev.scale;
+      const halfH = (target.height / 2) * prev.scale;
+      const insideX =
+        screenX - halfW >= COMFORT_MARGIN_X &&
+        screenX + halfW <= cw - COMFORT_MARGIN_X;
+      const insideY =
+        screenY - halfH >= COMFORT_MARGIN_Y &&
+        screenY + halfH <= ch - COMFORT_MARGIN_Y;
+      if (insideX && insideY) return prev;
+      // Out of comfort zone on at least one axis — re-center the
+      // active node. Centring (rather than nudging) means a single
+      // smooth pan handles bursts of distant activity without
+      // chasing every event.
+      return {
+        scale: prev.scale,
+        x: cw / 2 - target.x * prev.scale,
+        y: ch / 2 - target.y * prev.scale,
+      };
+    });
   }, [tree.activeNodeId, layout.nodes]);
 
   // Wheel zoom should stay snappy: each wheel tick is a discrete user
