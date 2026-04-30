@@ -4,7 +4,7 @@ import type {
   DaemonEventEnvelope,
   EventParams,
 } from '../src/types/events';
-import { emptyTree, type ExecutionTree } from '../src/types/tree';
+import { emptyTree, type ExecutionNode, type ExecutionTree } from '../src/types/tree';
 import { executionTreeReducer, stepNodeId } from '../src/reducers/treeReducer';
 
 /**
@@ -925,14 +925,21 @@ describe('thinking-anchored tool grouping (ReAct iterations)', () => {
     expect(tool.duration).toBe(1234);
   });
 
-  it('mints a separate text node when the next iteration text follows a tool_use without new thinking', () => {
+  it('mints a synthetic thinking + text node when the next iteration emits text without a preceding thinking event', () => {
     // The bug this guards against: an iteration that emits text
-    // WITHOUT a preceding thinking event (model went straight from
-    // tool result → final response, e.g. extended thinking off or
-    // budget exhausted) used to merge into the previous iteration's
-    // text node, because both ids were keyed on the same
-    // currentThinkingId. After the fix, tool_use closes the text
-    // (textIsOpen=false), so the next text delta mints a new node.
+    // WITHOUT a preceding thinking event (extended thinking off or
+    // budget exhausted) used to silently merge into the previous
+    // iteration's text node — the dashboard rendered all iterations'
+    // narrations as siblings of one fat thinking, which dagre laid
+    // out as a vertical stack that read as "5 parallel responses".
+    //
+    // Fix: when text starts a new iteration without a fresh thinking
+    // delta, mint a SYNTHETIC thinking node (status=completed, since
+    // the model already finished thinking by the time we infer the
+    // boundary) so the new text/tools attach to a dedicated anchor.
+    // The result is a chain shape: th_1 → text_1 → tool → synth_th_2 →
+    // text_2 — exactly what the user expects from a multi-iteration
+    // ReAct turn.
     const state = runAll(
       startedTurn(),
       envelope('stream.thinking', { delta: 'iter 1' }),
@@ -944,30 +951,26 @@ describe('thinking-anchored tool grouping (ReAct iterations)', () => {
         durationMs: 100,
         isError: false,
       }),
-      // No stream.thinking before this — model skipped the thinking
-      // block and went straight to the final response. The previous
-      // shape would have appended these deltas to the "narration
-      // before tool" node.
+      // No stream.thinking before this — model went straight from
+      // tool result to final response.
       envelope('stream.text', { delta: 'final answer line 1' }),
       envelope('stream.text', { delta: ' line 2' }),
     );
     const turn = state.rootNodes[0]!.children[0]!;
-    const thinking = turn.children[0]!;
-    // Thinking should now have two text descendants: the narration
-    // (under thinking, with the tool as its child) and the final
-    // response (sibling, separate node).
-    const allTextNodes: ExecutionNode[] = [];
-    function walk(n: ExecutionNode) {
-      if (n.type === 'text') allTextNodes.push(n);
-      n.children.forEach(walk);
-    }
-    walk(thinking);
-    expect(allTextNodes).toHaveLength(2);
-    expect(allTextNodes[0]!.text).toBe('narration before tool');
-    expect(allTextNodes[1]!.text).toBe('final answer line 1 line 2');
-    // The two text nodes have distinct ids — proving the second
-    // iteration didn't accidentally append to the first.
-    expect(allTextNodes[0]!.id).not.toBe(allTextNodes[1]!.id);
+    const thinkings = turn.children.filter((c) => c.type === 'thinking');
+    expect(thinkings).toHaveLength(2);
+    const realThinking = thinkings[0]!;
+    const syntheticThinking = thinkings[1]!;
+    // Real thinking has its narration text + its tool child (under text)
+    expect(realThinking.text).toBe('iter 1');
+    const realText = realThinking.children.find((c) => c.type === 'text')!;
+    expect(realText.text).toBe('narration before tool');
+    // Synthetic thinking has the final response under it
+    expect(syntheticThinking.text).toBe('');
+    expect(syntheticThinking.status).toBe('completed');
+    const synthText = syntheticThinking.children.find((c) => c.type === 'text')!;
+    expect(synthText.text).toBe('final answer line 1 line 2');
+    expect(realText.id).not.toBe(synthText.id);
   });
 
   it('attaches tool_use as a child of the iteration narration when text exists', () => {

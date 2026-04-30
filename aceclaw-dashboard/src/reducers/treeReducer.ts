@@ -40,7 +40,7 @@ import type {
   UsageParams,
   CompactionParams,
 } from '../types/events';
-import type { ExecutionNode, ExecutionTree } from '../types/tree';
+import type { ExecutionNode, ExecutionStatus, ExecutionTree } from '../types/tree';
 
 /**
  * The reducer takes only well-typed envelopes. Forward-compatibility for
@@ -533,38 +533,59 @@ function appendTextToCurrentTurn(
   );
   if (!turn) return state;
 
+  // If we're starting a new iteration's text (previous iteration
+  // closed by a tool_use → textIsOpen=false → thinkingSealed=true)
+  // AND the model didn't emit a fresh stream.thinking event for this
+  // iteration, mint a SYNTHETIC thinking node to anchor it. Without
+  // this, the new text/tools all pile up under the previous
+  // iteration's thinking, producing 3-5+ text bubbles stacked
+  // vertically as siblings — visually reading as "parallel
+  // responses" when they're actually sequential iterations of one
+  // ReAct loop. The synthetic thinking is created status=completed
+  // (the model already finished thinking by the time we infer the
+  // boundary from a text delta) and gets the same shape as a real
+  // thinking node so the layout chains identically.
+  let workingState = state;
+  if (
+    !state.textIsOpen &&
+    state.thinkingSealed &&
+    state.currentThinkingId !== null
+  ) {
+    workingState = mintIterationThinking(state, turn, '', 'completed').state;
+  }
+
   let textId: string;
   let isNewNode: boolean;
-  let nextSyntheticId = state.nextSyntheticId;
-  if (state.currentTextId && state.textIsOpen) {
-    textId = state.currentTextId;
+  let nextSyntheticId = workingState.nextSyntheticId;
+  if (workingState.currentTextId && workingState.textIsOpen) {
+    textId = workingState.currentTextId;
     isNewNode = false;
   } else {
     // New iteration: mint a unique id keyed on (anchor, counter).
-    // The counter (nextSyntheticId) ensures uniqueness when an
+    // The counter (nextSyntheticId) ensures uniqueness even when an
     // iteration's text follows a tool_use without a fresh thinking
     // delta — both ids would key on the same currentThinkingId
     // otherwise and silently collide.
     const counter = nextSyntheticId;
     nextSyntheticId += 1;
     textId =
-      state.currentThinkingId !== null
-        ? `${state.currentThinkingId}:text:${counter}`
+      workingState.currentThinkingId !== null
+        ? `${workingState.currentThinkingId}:text:${counter}`
         : `${turn.id}:text:${counter}`;
     isNewNode = true;
   }
 
-  const existing = !isNewNode ? findNode(state.rootNodes, textId) : null;
+  const existing = !isNewNode ? findNode(workingState.rootNodes, textId) : null;
   const newText = (existing?.text ?? '') + params.delta;
   let rootNodes: ExecutionNode[];
   if (existing) {
-    rootNodes = mapNode(state.rootNodes, textId, (t) => ({
+    rootNodes = mapNode(workingState.rootNodes, textId, (t) => ({
       ...t,
       text: newText,
       label: previewLabel(newText),
     }));
   } else {
-    const anchorId = state.currentThinkingId ?? turn.id;
+    const anchorId = workingState.currentThinkingId ?? turn.id;
     const textNode: ExecutionNode = {
       id: textId,
       type: 'text',
@@ -573,22 +594,24 @@ function appendTextToCurrentTurn(
       children: [],
       text: newText,
     };
-    rootNodes = appendChild(state.rootNodes, anchorId, textNode);
+    rootNodes = appendChild(workingState.rootNodes, anchorId, textNode);
   }
 
   // Mark the thinking anchor as completed: text means the LLM has
   // stopped thinking and is now talking.
-  if (state.currentThinkingId) {
-    rootNodes = mapNode(rootNodes, state.currentThinkingId, (t) =>
+  if (workingState.currentThinkingId) {
+    rootNodes = mapNode(rootNodes, workingState.currentThinkingId, (t) =>
       t.status === 'running' ? { ...t, status: 'completed' as const } : t,
     );
   }
 
   // Move auto-scroll focus onto the streaming text. Subsequent deltas
   // keep the same id (textIsOpen stays true), so the camera sits on
-  // this bubble until tool_use closes it or the turn ends.
+  // this bubble until tool_use closes it or the turn ends. Spread
+  // workingState (not state) to preserve any synthetic-thinking
+  // mutations from the iteration-boundary helper above.
   return {
-    ...state,
+    ...workingState,
     rootNodes,
     activeNodeId: textId,
     currentTextId: textId,
@@ -596,6 +619,65 @@ function appendTextToCurrentTurn(
     thinkingSealed: true,
     ...(isNewNode ? { nextSyntheticId } : {}),
   };
+}
+
+/**
+ * Mints a new thinking node under {@code turn} and returns the updated
+ * tree state. Encapsulates the "iteration boundary" reconciliation
+ * (provisionally complete previous iteration's running work) plus the
+ * iteration-anchor reset (clear currentTextId/textIsOpen). Used by both
+ * {@link appendThinkingToCurrentTurn} (real thinking deltas) and
+ * {@link appendTextToCurrentTurn} (synthetic thinking when text starts a
+ * new iteration without a preceding stream.thinking event).
+ *
+ * @param initialDelta first thinking delta — for synthetic insertions
+ *   pass an empty string
+ * @param initialStatus 'running' for real thinking, 'completed' for
+ *   synthetic placeholders (the "model didn't think" case is already
+ *   over by the time we infer the iteration boundary from a text delta)
+ */
+function mintIterationThinking(
+  state: ExecutionTree,
+  turn: ExecutionNode,
+  initialDelta: string,
+  initialStatus: ExecutionStatus,
+): { state: ExecutionTree; thinkingId: string } {
+  // Reconcile previous iteration: provisionally complete any
+  // still-running tools/text under the prior thinking so they stop
+  // pulsing as soon as we know the next iteration has started. Real
+  // tool_completed events still apply normally when they arrive.
+  let preparedRootNodes = state.rootNodes;
+  if (state.currentThinkingId) {
+    preparedRootNodes = mapNode(state.rootNodes, state.currentThinkingId, (n) =>
+      provisionallyCompleteRunningWork(n),
+    );
+  }
+
+  const existingThinkingCount = countDescendantsOfType(turn, 'thinking');
+  const id =
+    existingThinkingCount === 0
+      ? thinkingNodeId(turn.id)
+      : `${thinkingNodeId(turn.id)}:${existingThinkingCount}`;
+  const thinkingNode: ExecutionNode = {
+    id,
+    type: 'thinking',
+    status: initialStatus,
+    label: 'thinking',
+    children: [],
+    text: initialDelta,
+  };
+  const newState: ExecutionTree = {
+    ...state,
+    rootNodes: appendChild(preparedRootNodes, turn.id, thinkingNode),
+    currentThinkingId: id,
+    thinkingSealed: false,
+    // New iteration: forget the previous iteration's text anchors so
+    // tools/text in this iteration attach to the new thinking, not the
+    // old text node.
+    currentTextId: null,
+    textIsOpen: false,
+  };
+  return { state: newState, thinkingId: id };
 }
 
 function appendThinkingToCurrentTurn(
@@ -630,54 +712,10 @@ function appendThinkingToCurrentTurn(
     };
   }
 
-  // New iteration boundary. The model has gathered the previous
-  // iteration's tool results and is now reasoning about the next step
-  // — by API definition, every tool from the previous iteration MUST
-  // have completed (otherwise the model wouldn't have results to
-  // reason about). Daemon's tool_completed events sometimes arrive
-  // AFTER the next iteration's first thinking deltas (the daemon
-  // kicks off the next LLM call before broadcasting completion), so
-  // without reconciliation here the previous iteration's tools would
-  // keep pulsing alongside the new thinking — visually looking
-  // "parallel" when they're really sequential. Provisionally complete
-  // the prior subtree's running tools/text now; when the real
-  // tool_completed event arrives it'll overwrite with the correct
-  // status (failed vs completed) plus duration/error metadata.
-  let preparedRootNodes = state.rootNodes;
-  if (state.currentThinkingId) {
-    preparedRootNodes = mapNode(state.rootNodes, state.currentThinkingId, (n) =>
-      provisionallyCompleteRunningWork(n),
-    );
-  }
-
-  // Mint a new thinking node. Use a synthetic id keyed on the turn +
-  // an index so multiple thinking nodes per turn each get a unique id
-  // (the first uses the existing `${turnId}:thinking` id; later
-  // iterations append a counter).
-  const existingThinkingCount = countDescendantsOfType(turn, 'thinking');
-  const id =
-    existingThinkingCount === 0
-      ? thinkingNodeId(turn.id)
-      : `${thinkingNodeId(turn.id)}:${existingThinkingCount}`;
-  const thinkingNode: ExecutionNode = {
-    id,
-    type: 'thinking',
-    status: 'running',
-    label: 'thinking',
-    children: [],
-    text: params.delta,
-  };
-  return {
-    ...state,
-    rootNodes: appendChild(preparedRootNodes, turn.id, thinkingNode),
-    currentThinkingId: id,
-    thinkingSealed: false,
-    // New iteration: forget the previous iteration's text anchors so
-    // tools/text in this iteration attach to the new thinking, not the
-    // old text node.
-    currentTextId: null,
-    textIsOpen: false,
-  };
+  // New iteration boundary — delegate to the shared mint helper which
+  // handles previous-iteration reconciliation (provisional completion
+  // of running tools/text), id minting, and anchor reset.
+  return mintIterationThinking(state, turn, params.delta, 'running').state;
 }
 
 /**
