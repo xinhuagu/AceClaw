@@ -321,11 +321,19 @@ function completeTurnNode(
   // but thinking and text are delta-only — there's no explicit "ended"
   // event for them, so without this sweep they'd stay in the 'running'
   // visual state (pulsing glow) forever even after the turn is over.
+  // Capture stopReason on the turn's metadata so the renderer can
+  // surface a badge for non-END_TURN endings (MAX_TOKENS, ERROR, …).
+  // Older daemons that don't emit stopReason produce undefined, which
+  // the renderer treats as "normal" — same visual as END_TURN.
   const rootNodes = mapNode(state.rootNodes, params.requestId, (n) => ({
     ...completeRunningDeltaDescendants(n),
     status: 'completed' as const,
     endTime: Date.parse(params.timestamp),
     duration: params.durationMs,
+    metadata: {
+      ...(n.metadata ?? {}),
+      ...(params.stopReason !== undefined ? { stopReason: params.stopReason } : {}),
+    },
   }));
   // Don't bubble activeNodeId up to the parent (session/step) when the
   // turn closes — that yanks the dashboard's auto-scroll back to the

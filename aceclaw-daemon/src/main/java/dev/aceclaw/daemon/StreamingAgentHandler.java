@@ -350,6 +350,12 @@ public final class StreamingAgentHandler {
         // Acquire per-session turn lock (coordinates with DeferredActionScheduler)
         var turnLock = sessionTurnLocks.computeIfAbsent(sessionId, _ -> new ReentrantLock());
         turnLock.lock();
+        // Captured for the stream.turn_completed broadcast so the dashboard
+        // can render a "max_tokens" / "error" badge on truncated turns.
+        // Hoisted above the try so the finally block can read it. Each
+        // happy-path branch below overrides this with the Turn's actual
+        // finalStopReason; the LlmException catch overrides to ERROR.
+        String finalStopReason = "END_TURN";
         try {
             // Start the cancel monitor thread to read from the socket
             cancelContext.startMonitor();
@@ -417,6 +423,7 @@ public final class StreamingAgentHandler {
 
             var adaptive = runTurnWithAdaptiveContinuation(
                     permissionAwareLoop, prompt, conversationHistory, eventHandler, cancellationToken);
+            finalStopReason = adaptive.turn().finalStopReason().name();
 
             // Send cancelled / budget-exhausted notifications if applicable
             sendCancelledNotificationIfNeeded(cancellationToken, cancelContext, sessionId);
@@ -427,6 +434,7 @@ public final class StreamingAgentHandler {
 
         } catch (dev.aceclaw.core.llm.LlmException e) {
             // Translate LLM errors to user-friendly messages
+            finalStopReason = "ERROR";
             log.error("LLM error during prompt: statusCode={}, message={}",
                     e.statusCode(), e.getMessage(), e);
 
@@ -456,6 +464,10 @@ public final class StreamingAgentHandler {
                 tcp.put("durationMs", System.currentTimeMillis() - turnStartMillis);
                 tcp.put("toolCount", cancelContext.toolUseCount());
                 tcp.put("timestamp", Instant.now().toString());
+                // The dashboard renders a small badge on truncated turns
+                // (MAX_TOKENS / ERROR / etc) so the user can tell at a glance
+                // why a turn ended without the usual final-text response.
+                tcp.put("stopReason", finalStopReason);
                 emitBrowserOnly(sessionId, "stream.turn_completed", tcp);
             }
             if (watchdog != null) {

@@ -810,6 +810,45 @@ describe('thinking-anchored tool grouping (ReAct iterations)', () => {
     expect(thinking.status).toBe('completed');
   });
 
+  it('captures stopReason on the turn metadata for the renderer to badge', () => {
+    // The dashboard's GrowingNode renders a small amber "⚠ max_tokens"
+    // tag on truncated turns. The reducer just stamps the value onto
+    // metadata; the renderer decides what to do with it.
+    const state = runAll(
+      startedTurn(),
+      envelope('stream.tool_use', { id: 't1', name: 'bash' }),
+      envelope('stream.turn_completed', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+        durationMs: 9999,
+        toolCount: 1,
+        stopReason: 'MAX_TOKENS',
+      }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    expect(turn.status).toBe('completed');
+    expect(turn.metadata?.['stopReason']).toBe('MAX_TOKENS');
+  });
+
+  it('omits stopReason when the daemon does not emit it (older versions)', () => {
+    const state = runAll(
+      startedTurn(),
+      envelope('stream.tool_use', { id: 't1', name: 'bash' }),
+      envelope('stream.turn_completed', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+        durationMs: 100,
+        toolCount: 1,
+      }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    expect(turn.metadata?.['stopReason']).toBeUndefined();
+  });
+
   it('marks remaining running thinking/text nodes completed when the turn ends', () => {
     // Edge case: a turn ends while a delta-stream child is still
     // 'running' (for example, the model emitted thinking but the turn
