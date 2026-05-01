@@ -16,14 +16,12 @@ public final class ComplexityEstimator {
     /**
      * Default threshold for the no-arg constructor. Mirrors
      * {@code AceClawConfig.DEFAULT_PLANNER_THRESHOLD} — keep the
-     * two in sync. Settled at 4: too low (3) made every single
-     * "refactor X" / "extract Y" trigger a planner LLM call even on
-     * trivial prompts; too high (5) required two explicit signals
-     * which most prompts didn't hit. At 4, a single +3 signal alone
-     * stays as plain ReAct, but adding ANY second signal flips on
-     * planning.
+     * two in sync. Restored to 5 after live testing showed the
+     * planner's extra LLM call is material cost. The {@code /plan}
+     * slash command is the escape hatch for prompts that need
+     * planning but don't trip two heuristic signals.
      */
-    private static final int DEFAULT_THRESHOLD = 4;
+    private static final int DEFAULT_THRESHOLD = 5;
 
     // -- Heuristic patterns ---------------------------------------------------
 
