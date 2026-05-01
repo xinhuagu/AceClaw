@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { CronJobsList } from './components/CronJobsList';
 import { ExecutionTree } from './components/ExecutionTree';
 import { SessionList } from './components/SessionList';
+import { buildReplanFixture } from './demo/replanFixture';
 import { useCronJobs } from './hooks/useCronJobs';
 import { useExecutionTree } from './hooks/useExecutionTree';
 import { useSessions } from './hooks/useSessions';
@@ -57,6 +58,14 @@ export function sanitiseWsUrl(raw: string | null | undefined): string | null {
 }
 
 export function App() {
+  // Demo mode: ?demo=replan renders a hand-crafted ExecutionTree with
+  // the full plan/replan visualisation (#458) so reviewers can verify
+  // the change without rolling for a real LLM plan + replan trigger.
+  // Bypasses every hook (no WS connection, no daemon dependency).
+  if (readQueryParam('demo') === 'replan') {
+    return <ReplanDemo />;
+  }
+
   const initialSession = readQueryParam('session') ?? '';
   const initialWs = sanitiseWsUrl(readQueryParam('ws')) ?? DEFAULT_WS_URL;
   const [sessionId, setSessionId] = useState(initialSession);
@@ -249,5 +258,37 @@ function StatusBar({ sessionId, status, stats }: StatusBarProps) {
         </span>
       </div>
     </header>
+  );
+}
+
+/**
+ * Demo view for #458 reviewers — renders a hand-crafted ExecutionTree
+ * with the full plan/replan visualisation. No WS, no daemon, no real
+ * session. Activated by {@code ?demo=replan} on the URL.
+ */
+function ReplanDemo() {
+  const tree = buildReplanFixture();
+  const noop = (): void => undefined;
+  return (
+    <div className="flex h-full flex-col">
+      <header className="flex items-center gap-3 border-b border-amber-700/40 bg-amber-950/40 px-4 py-2 text-xs">
+        <span className="rounded bg-amber-600 px-2 py-px font-mono text-[10px] uppercase text-amber-50">
+          DEMO
+        </span>
+        <span className="text-amber-200">
+          Replan visualisation fixture (#458) — hand-crafted, no daemon connection.
+        </span>
+        <span className="ml-auto font-mono text-zinc-500">?demo=replan</span>
+      </header>
+      <div className="flex-1">
+        <ExecutionTree
+          tree={tree}
+          onApprovePermission={noop}
+          onAlwaysAllowPermission={noop}
+          onDenyPermission={noop}
+          onDismissPermission={noop}
+        />
+      </div>
+    </div>
   );
 }
