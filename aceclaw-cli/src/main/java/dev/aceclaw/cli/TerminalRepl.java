@@ -604,7 +604,12 @@ public final class TerminalRepl {
                 // remainder as a regular prompt with forcePlan=true so
                 // the daemon always runs the planner (#458 follow-up).
                 // Empty /plan is a no-op (no prompt to send).
-                if (trimmed.equals("/plan") || trimmed.startsWith("/plan ")) {
+                // Case-insensitive on the command itself to match how
+                // handleSlashCommand normalises the rest of /help, /status
+                // etc. — `/PLAN refactor X` should not surprise the user
+                // with "Unknown command".
+                String lowered = trimmed.toLowerCase();
+                if (lowered.equals("/plan") || lowered.startsWith("/plan ")) {
                     String rest = trimmed.length() > 5 ? trimmed.substring(5).trim() : "";
                     if (rest.isEmpty()) {
                         out.println(WARNING + "/plan needs a prompt — try /plan <your task>" + RESET);

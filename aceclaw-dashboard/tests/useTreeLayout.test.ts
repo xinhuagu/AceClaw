@@ -388,6 +388,62 @@ describe('useTreeLayout', () => {
     expect(flowEdges.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('skips containment edges from a step to its non-first thinkings', () => {
+    // Pinning the visual contract from the layout's
+    // shouldSkipContainment helper: a step with N iterations should
+    // draw exactly ONE containment edge to its FIRST thinking;
+    // subsequent thinkings reach the user via the flow chain through
+    // the previous iteration's productive tool. Without this skip
+    // the step would visually fan out into N parallel branches even
+    // when the flow edges are also drawn, undoing the chain-shape
+    // that #458 follow-up established.
+    const tool1: ExecutionNode = {
+      id: 'tool-a',
+      type: 'tool',
+      status: 'completed',
+      label: 'read_file',
+      children: [],
+    };
+    const thinking1: ExecutionNode = {
+      id: 'think-1',
+      type: 'thinking',
+      status: 'completed',
+      label: 'iter 1',
+      children: [tool1],
+    };
+    const thinking2: ExecutionNode = {
+      id: 'think-2',
+      type: 'thinking',
+      status: 'completed',
+      label: 'iter 2',
+      children: [],
+    };
+    const thinking3: ExecutionNode = {
+      id: 'think-3',
+      type: 'thinking',
+      status: 'completed',
+      label: 'iter 3',
+      children: [],
+    };
+    const step: ExecutionNode = {
+      id: 'step-1',
+      type: 'step',
+      status: 'running',
+      label: 'extract',
+      children: [thinking1, thinking2, thinking3],
+    };
+    const { result } = renderHook(() => useTreeLayout(tree([step])));
+    // Containment edges from step → thinking should exist for ONLY
+    // the first thinking. The other two are reached via flow edges.
+    const containmentFromStep = result.current.edges.filter(
+      (e) => e.kind === 'containment' && e.id.startsWith('step-1->'),
+    );
+    const stepToThinkingTargets = containmentFromStep
+      .map((e) => e.id.split('->')[1])
+      .filter((target) => target?.startsWith('think-'));
+    expect(stepToThinkingTargets).toEqual(['think-1']);
+  });
+
   it('does not emit ReAct flow edges between thinkings under a non-loop parent', () => {
     // Regression guard: only turns and steps host ReAct loops. A
     // generic node with multiple thinking children (sub-agent here)
