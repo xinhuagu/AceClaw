@@ -262,8 +262,12 @@ export function parseSessionsListResult(
 
 /**
  * True when {@code sessionId} belongs to a cron-as-session (#459).
- * Mirrors the daemon-side prefix in {@code CronScheduler.runJobOnce}.
- * Exported so unit tests pin the convention.
+ *
+ * <p><b>Daemon coupling</b>: the {@code 'cron-'} prefix mirrors
+ * {@code CronScheduler.CRON_SESSION_PREFIX} on the Java side. The
+ * sentinel test {@code cronSessionPrefixIsStableForDashboardCompat}
+ * (in CronSchedulerTest) fires if the daemon constant changes without
+ * a paired update here.
  */
 export function isCronSessionId(sessionId: string): boolean {
   return sessionId.startsWith('cron-');

@@ -27,7 +27,15 @@ interface CronJobsListProps {
   onSelect: (sessionId: string) => void;
 }
 
-/** Maps a job id to the deterministic sessionId the daemon broadcasts under. */
+/**
+ * Maps a job id to the deterministic sessionId the daemon broadcasts under.
+ *
+ * <p><b>Daemon coupling</b>: the {@code 'cron-'} prefix mirrors
+ * {@code CronScheduler.CRON_SESSION_PREFIX} on the Java side. The sentinel
+ * test {@code cronSessionPrefixIsStableForDashboardCompat} (in
+ * CronSchedulerTest) fires if the daemon constant changes without a
+ * paired update here.
+ */
 export function cronSessionId(jobId: string): string {
   return `cron-${jobId}`;
 }

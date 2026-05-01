@@ -54,6 +54,21 @@ public final class CronScheduler {
     private static final int DEFAULT_EVENT_SUMMARY_MAX_CHARS = 8192;
     private static final int EVENT_SUMMARY_MAX_CHARS = parseEventSummaryMaxChars();
     private static final int TOOL_RESULT_FALLBACK_MAX_CHARS = 1600;
+    /**
+     * SessionId prefix used when broadcasting cron run events to the
+     * dashboard (#459 cron-as-session). The full sessionId is
+     * {@code CRON_SESSION_PREFIX + jobId}, deterministic across runs of
+     * the same job so all triggers stack as turns under one tree.
+     *
+     * <p><b>Cross-language coupling</b>: the dashboard's
+     * {@code isCronSessionId} (in {@code aceclaw-dashboard/src/hooks/useSessions.ts})
+     * and {@code cronSessionId} (in {@code components/CronJobsList.tsx})
+     * hard-code the same {@code "cron-"} string. Changing this constant
+     * silently breaks both — the sentinel test
+     * {@code CronScheduler.cronSessionPrefixIsStableForDashboardCompat}
+     * exists to surface that loudly at build time.
+     */
+    public static final String CRON_SESSION_PREFIX = "cron-";
 
     private final JobStore jobStore;
     private final LlmClient llmClient;
@@ -68,7 +83,7 @@ public final class CronScheduler {
      * Optional dashboard sink (#459). When non-null, each cron run's
      * agent-loop events ({@code stream.thinking}, {@code stream.tool_use},
      * etc.) are broadcast to the WS bridge under
-     * {@code "cron-" + jobId}, so the dashboard's ExecutionTree can
+     * {@code CRON_SESSION_PREFIX + jobId}, so the dashboard's ExecutionTree can
      * render the run live — each fire becomes a turn under the same
      * cron-as-session tree. Null disables the broadcast (CLI-only
      * deployments fall back to the no-op SilentStreamHandler).
@@ -343,7 +358,7 @@ public final class CronScheduler {
         // Build per-job permission checker
         var permChecker = new CronPermissionChecker(job.id(), job.allowedTools());
         var loopConfig = AgentLoopConfig.builder()
-                .sessionId("cron-" + job.id())
+                .sessionId(CRON_SESSION_PREFIX + job.id())
                 .permissionChecker(permChecker)
                 .maxIterations(job.maxIterations())
                 .build();
@@ -373,11 +388,18 @@ public final class CronScheduler {
         // Falls back to the no-op SilentStreamHandler when the bridge
         // is disabled — CLI deployments are unaffected.
         var bridgeRef = this.webSocketBridge;
-        String sessionId = "cron-" + job.id();
+        String sessionId = CRON_SESSION_PREFIX + job.id();
         int turnNumber = cronTurnCounters
                 .computeIfAbsent(sessionId, k -> new java.util.concurrent.atomic.AtomicInteger(0))
                 .incrementAndGet();
-        String requestId = sessionId + "-turn-" + turnNumber;
+        // requestId is the dashboard-side node id for this turn. Including
+        // epochMillis means a daemon restart can't accidentally reuse an
+        // id that's still in a long-lived dashboard tab's local state —
+        // post-restart counter resets to 1, but the timestamp differs, so
+        // there's no collision between the old turn-1 node and the new
+        // one. Display label keeps using turnNumber, the millis are
+        // opaque to the renderer.
+        String requestId = sessionId + "-turn-" + System.currentTimeMillis() + "-" + turnNumber;
         StreamEventHandler streamHandler = bridgeRef != null
                 ? StreamingAgentHandler.newBroadcastingStreamHandler(
                         bridgeRef, sessionId, objectMapper)
