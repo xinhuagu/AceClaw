@@ -1,20 +1,38 @@
 /**
- * CronJobsList — sidebar section showing the daemon's cron jobs (#459 layer 2).
+ * CronJobsList — sidebar section showing the daemon's cron jobs (#459).
  *
- * Sourced from {@link useCronJobs}. Each row shows the job's name, cron
- * expression, last-run status (icon + relative time), and the next
- * scheduled fire time. Click handlers, history expansion, and
- * jump-to-session are deferred to a follow-up — this layer's job is to
- * make the daemon's scheduling layer simply *visible*.
+ * Each row is clickable: selecting a job navigates the main pane to the
+ * cron's session tree (sessionId = {@code "cron-" + jobId}). The mental
+ * model is **a cron job IS a session, each fire IS a turn** — so the
+ * existing ExecutionTree component renders cron history naturally as
+ * accumulated turns under one tree, no new visualization needed.
  */
 
 import type { CronJobInfo } from '../hooks/useCronJobs';
 
 interface CronJobsListProps {
   jobs: CronJobInfo[];
+  /**
+   * Currently-selected sessionId from the main pane. Used to highlight
+   * the active row when the user is viewing a cron's tree. Pass the
+   * same value the SessionList receives — App keeps a single
+   * selectedSessionId for both lists.
+   */
+  selectedSessionId: string | null;
+  /**
+   * Invoked with the cron's sessionId ({@code "cron-" + jobId}) when
+   * the user clicks a row. App routes this through the same
+   * selectSession handler the SessionList uses.
+   */
+  onSelect: (sessionId: string) => void;
 }
 
-export function CronJobsList({ jobs }: CronJobsListProps) {
+/** Maps a job id to the deterministic sessionId the daemon broadcasts under. */
+export function cronSessionId(jobId: string): string {
+  return `cron-${jobId}`;
+}
+
+export function CronJobsList({ jobs, selectedSessionId, onSelect }: CronJobsListProps) {
   return (
     <section className="flex shrink-0 flex-col border-t border-zinc-800">
       <header className="flex items-center justify-between border-b border-zinc-800 px-3 py-2 text-[11px] uppercase tracking-wider text-zinc-500">
@@ -29,7 +47,12 @@ export function CronJobsList({ jobs }: CronJobsListProps) {
       ) : (
         <ul className="max-h-72 overflow-y-auto">
           {jobs.map((job) => (
-            <CronJobRow key={job.id} job={job} />
+            <CronJobRow
+              key={job.id}
+              job={job}
+              selected={selectedSessionId === cronSessionId(job.id)}
+              onSelect={onSelect}
+            />
           ))}
         </ul>
       )}
@@ -39,15 +62,24 @@ export function CronJobsList({ jobs }: CronJobsListProps) {
 
 interface CronJobRowProps {
   job: CronJobInfo;
+  selected: boolean;
+  onSelect: (sessionId: string) => void;
 }
 
-function CronJobRow({ job }: CronJobRowProps) {
+function CronJobRow({ job, selected, onSelect }: CronJobRowProps) {
   const dotColor = statusDotColor(job);
   const subtitle = subtitleFor(job);
+  // Mirror the SessionRow visual contract: left border + lighter bg
+  // when active, hover state otherwise. Same vocabulary across both
+  // lists keeps the sidebar coherent.
+  const baseBg = selected ? 'bg-zinc-800/60' : 'hover:bg-zinc-800/40';
+  const accent = selected ? 'border-l-2 border-blue-500' : 'border-l-2 border-transparent';
   return (
     <li>
-      <div
-        className="flex w-full items-start gap-2 px-3 py-2 text-left text-xs"
+      <button
+        type="button"
+        onClick={() => onSelect(cronSessionId(job.id))}
+        className={`flex w-full items-start gap-2 px-3 py-2 text-left text-xs transition-colors ${baseBg} ${accent}`}
         title={job.lastError ?? job.description ?? job.id}
       >
         <span
@@ -69,7 +101,7 @@ function CronJobRow({ job }: CronJobRowProps) {
             <span className="whitespace-nowrap">{subtitle}</span>
           </div>
         </div>
-      </div>
+      </button>
     </li>
   );
 }

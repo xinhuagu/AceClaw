@@ -11,8 +11,11 @@ import dev.aceclaw.core.llm.LlmException;
 import dev.aceclaw.core.llm.Message;
 import dev.aceclaw.core.llm.StreamEventHandler;
 import dev.aceclaw.core.util.WaitSupport;
+import dev.aceclaw.daemon.StreamingAgentHandler;
+import dev.aceclaw.daemon.WebSocketBridge;
 import dev.aceclaw.infra.event.EventBus;
 import dev.aceclaw.infra.event.SchedulerEvent;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -61,6 +64,17 @@ public final class CronScheduler {
     private final int thinkingBudget;
     private final EventBus eventBus;
     private final int tickSeconds;
+    /**
+     * Optional dashboard sink (#459). When non-null, each cron run's
+     * agent-loop events ({@code stream.thinking}, {@code stream.tool_use},
+     * etc.) are broadcast to the WS bridge under
+     * {@code "cron-" + jobId}, so the dashboard's ExecutionTree can
+     * render the run live — each fire becomes a turn under the same
+     * cron-as-session tree. Null disables the broadcast (CLI-only
+     * deployments fall back to the no-op SilentStreamHandler).
+     */
+    private volatile WebSocketBridge webSocketBridge;
+    private final ObjectMapper objectMapper;
 
     private ScheduledExecutorService scheduler;
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -94,6 +108,18 @@ public final class CronScheduler {
         this.thinkingBudget = thinkingBudget;
         this.eventBus = eventBus;
         this.tickSeconds = tickSeconds > 0 ? tickSeconds : 60;
+        this.objectMapper = new ObjectMapper();
+    }
+
+    /**
+     * Sets the dashboard sink. Idempotent. Pass {@code null} to disable
+     * dashboard broadcasting (a CLI-only deployment will keep working
+     * via the existing scheduler.* event feed). Setter rather than
+     * constructor param so daemon startup ordering doesn't constrain
+     * either side.
+     */
+    public void setWebSocketBridge(WebSocketBridge bridge) {
+        this.webSocketBridge = bridge;
     }
 
     /**
@@ -334,11 +360,22 @@ public final class CronScheduler {
 
         var cancellationToken = new CancellationToken();
         var executor = Executors.newVirtualThreadPerTaskExecutor();
+        // #459: when the dashboard's WS bridge is available, broadcast
+        // every agent-loop event under sessionId="cron-{jobId}" so
+        // operators can drill into the run live (and see history as
+        // accumulated turns under the same cron-as-session tree).
+        // Falls back to the no-op SilentStreamHandler when the bridge
+        // is disabled — CLI deployments are unaffected.
+        var bridgeRef = this.webSocketBridge;
+        StreamEventHandler streamHandler = bridgeRef != null
+                ? StreamingAgentHandler.newBroadcastingStreamHandler(
+                        bridgeRef, "cron-" + job.id(), objectMapper)
+                : new SilentStreamHandler();
         try {
             var future = CompletableFuture.supplyAsync(() -> {
                 try {
                     var turn = agentLoop.runTurn(cronPrompt, new ArrayList<>(),
-                            new SilentStreamHandler(), cancellationToken);
+                            streamHandler, cancellationToken);
                     return summarizeTurnOutput(turn);
                 } catch (LlmException e) {
                     throw new CompletionException(e);

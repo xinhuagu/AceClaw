@@ -3229,6 +3229,25 @@ public final class StreamingAgentHandler {
     // -- StreamEventHandler that forwards events as JSON-RPC notifications --
 
     /**
+     * Builds a {@link StreamEventHandler} for daemon-internal subsystems
+     * (cron scheduler, deferred actions, …) that need to push their
+     * agent-loop events to the dashboard but have no CLI client to
+     * funnel through. The handler translates raw LLM stream events into
+     * the same {@code stream.*} JSON-RPC notifications a normal user
+     * session would emit, and broadcasts them under {@code sessionId} via
+     * the WS bridge so the dashboard's existing ExecutionTree picks them
+     * up — a cron run becomes a session with one turn per fire (#459).
+     *
+     * <p>Returns the SAME translation logic the user-session path uses
+     * so both surfaces speak literally one wire format.
+     */
+    public static StreamEventHandler newBroadcastingStreamHandler(
+            WebSocketBridge bridge, String sessionId, ObjectMapper mapper) {
+        var ctx = new BroadcastOnlyStreamContext(bridge, sessionId);
+        return new StreamingNotificationHandler(ctx, mapper);
+    }
+
+    /**
      * Forwards stream events from the agent loop to the client as JSON-RPC notifications.
      */
     private static final class StreamingNotificationHandler implements StreamEventHandler {
