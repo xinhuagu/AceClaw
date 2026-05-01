@@ -11,8 +11,11 @@ import dev.aceclaw.core.llm.LlmException;
 import dev.aceclaw.core.llm.Message;
 import dev.aceclaw.core.llm.StreamEventHandler;
 import dev.aceclaw.core.util.WaitSupport;
+import dev.aceclaw.daemon.StreamingAgentHandler;
+import dev.aceclaw.daemon.WebSocketBridge;
 import dev.aceclaw.infra.event.EventBus;
 import dev.aceclaw.infra.event.SchedulerEvent;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -51,6 +54,21 @@ public final class CronScheduler {
     private static final int DEFAULT_EVENT_SUMMARY_MAX_CHARS = 8192;
     private static final int EVENT_SUMMARY_MAX_CHARS = parseEventSummaryMaxChars();
     private static final int TOOL_RESULT_FALLBACK_MAX_CHARS = 1600;
+    /**
+     * SessionId prefix used when broadcasting cron run events to the
+     * dashboard (#459 cron-as-session). The full sessionId is
+     * {@code CRON_SESSION_PREFIX + jobId}, deterministic across runs of
+     * the same job so all triggers stack as turns under one tree.
+     *
+     * <p><b>Cross-language coupling</b>: the dashboard's
+     * {@code isCronSessionId} (in {@code aceclaw-dashboard/src/hooks/useSessions.ts})
+     * and {@code cronSessionId} (in {@code components/CronJobsList.tsx})
+     * hard-code the same {@code "cron-"} string. Changing this constant
+     * silently breaks both — the sentinel test
+     * {@code CronScheduler.cronSessionPrefixIsStableForDashboardCompat}
+     * exists to surface that loudly at build time.
+     */
+    public static final String CRON_SESSION_PREFIX = "cron-";
 
     private final JobStore jobStore;
     private final LlmClient llmClient;
@@ -61,6 +79,23 @@ public final class CronScheduler {
     private final int thinkingBudget;
     private final EventBus eventBus;
     private final int tickSeconds;
+    /**
+     * Optional dashboard sink (#459). When non-null, each cron run's
+     * agent-loop events ({@code stream.thinking}, {@code stream.tool_use},
+     * etc.) are broadcast to the WS bridge under
+     * {@code CRON_SESSION_PREFIX + jobId}, so the dashboard's ExecutionTree can
+     * render the run live — each fire becomes a turn under the same
+     * cron-as-session tree. Null disables the broadcast (CLI-only
+     * deployments fall back to the no-op SilentStreamHandler).
+     */
+    private volatile WebSocketBridge webSocketBridge;
+    private final ObjectMapper objectMapper;
+    /** Cron-sessionIds for which {@code stream.session_started} has been emitted in this JVM. */
+    private final java.util.Set<String> cronSessionStartedSignaled =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** Per-cron-session turn counter (1-based). Each fire becomes a new turn. */
+    private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>
+            cronTurnCounters = new java.util.concurrent.ConcurrentHashMap<>();
 
     private ScheduledExecutorService scheduler;
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -94,6 +129,18 @@ public final class CronScheduler {
         this.thinkingBudget = thinkingBudget;
         this.eventBus = eventBus;
         this.tickSeconds = tickSeconds > 0 ? tickSeconds : 60;
+        this.objectMapper = new ObjectMapper();
+    }
+
+    /**
+     * Sets the dashboard sink. Idempotent. Pass {@code null} to disable
+     * dashboard broadcasting (a CLI-only deployment will keep working
+     * via the existing scheduler.* event feed). Setter rather than
+     * constructor param so daemon startup ordering doesn't constrain
+     * either side.
+     */
+    public void setWebSocketBridge(WebSocketBridge bridge) {
+        this.webSocketBridge = bridge;
     }
 
     /**
@@ -311,7 +358,7 @@ public final class CronScheduler {
         // Build per-job permission checker
         var permChecker = new CronPermissionChecker(job.id(), job.allowedTools());
         var loopConfig = AgentLoopConfig.builder()
-                .sessionId("cron-" + job.id())
+                .sessionId(CRON_SESSION_PREFIX + job.id())
                 .permissionChecker(permChecker)
                 .maxIterations(job.maxIterations())
                 .build();
@@ -334,11 +381,55 @@ public final class CronScheduler {
 
         var cancellationToken = new CancellationToken();
         var executor = Executors.newVirtualThreadPerTaskExecutor();
+        // #459: when the dashboard's WS bridge is available, broadcast
+        // every agent-loop event under sessionId="cron-{jobId}" so
+        // operators can drill into the run live (and see history as
+        // accumulated turns under the same cron-as-session tree).
+        // Falls back to the no-op SilentStreamHandler when the bridge
+        // is disabled — CLI deployments are unaffected.
+        var bridgeRef = this.webSocketBridge;
+        String sessionId = CRON_SESSION_PREFIX + job.id();
+        int turnNumber = cronTurnCounters
+                .computeIfAbsent(sessionId, k -> new java.util.concurrent.atomic.AtomicInteger(0))
+                .incrementAndGet();
+        // requestId is the dashboard-side node id for this turn. Including
+        // epochMillis means a daemon restart can't accidentally reuse an
+        // id that's still in a long-lived dashboard tab's local state —
+        // post-restart counter resets to 1, but the timestamp differs, so
+        // there's no collision between the old turn-1 node and the new
+        // one. Display label keeps using turnNumber, the millis are
+        // opaque to the renderer.
+        String requestId = sessionId + "-turn-" + System.currentTimeMillis() + "-" + turnNumber;
+        StreamEventHandler streamHandler = bridgeRef != null
+                ? StreamingAgentHandler.newBroadcastingStreamHandler(
+                        bridgeRef, sessionId, objectMapper)
+                : new SilentStreamHandler();
+
+        // Lifecycle wrappers (#459): the inner StreamEventHandler emits
+        // only the LOW-LEVEL agent-loop events (thinking, tool_use, …).
+        // Without an enclosing session_started + turn_started, the
+        // reducer has no parent to attach those nodes to and tools
+        // float at the tree root. We emit the wrappers here at the run
+        // boundaries, the same way StreamingAgentHandler does for user
+        // sessions — one wire format, no drift.
+        if (bridgeRef != null) {
+            if (cronSessionStartedSignaled.add(sessionId)) {
+                StreamingAgentHandler.emitSessionStarted(bridgeRef, sessionId, model, objectMapper);
+            }
+            StreamingAgentHandler.emitTurnStarted(
+                    bridgeRef, sessionId, requestId, turnNumber, objectMapper);
+        }
+        long turnStartNanos = System.nanoTime();
+        // turnEndStopReason flips to ERROR on any failure path so the
+        // turn_completed event sent in `finally` accurately reflects
+        // why the run ended. Without this, a timed-out cron run would
+        // silently render as "END_TURN" on the dashboard.
+        String turnEndStopReason = "END_TURN";
         try {
             var future = CompletableFuture.supplyAsync(() -> {
                 try {
                     var turn = agentLoop.runTurn(cronPrompt, new ArrayList<>(),
-                            new SilentStreamHandler(), cancellationToken);
+                            streamHandler, cancellationToken);
                     return summarizeTurnOutput(turn);
                 } catch (LlmException e) {
                     throw new CompletionException(e);
@@ -348,11 +439,13 @@ public final class CronScheduler {
             try {
                 return future.get(job.timeoutSeconds(), TimeUnit.SECONDS);
             } catch (TimeoutException e) {
+                turnEndStopReason = "ERROR";
                 cancellationToken.cancel();
                 future.cancel(true);
                 throw new TimeoutException("Cron job '" + job.id() + "' timed out after "
                         + job.timeoutSeconds() + "s");
             } catch (ExecutionException e) {
+                turnEndStopReason = "ERROR";
                 Throwable cause = e.getCause();
                 if (cause instanceof Exception ex) {
                     throw ex;
@@ -361,6 +454,14 @@ public final class CronScheduler {
             }
         } finally {
             executor.close();
+            // Always close out the turn so the dashboard tree marks it
+            // completed (or failed) — never leave it in-progress.
+            if (bridgeRef != null) {
+                long durationMs = (System.nanoTime() - turnStartNanos) / 1_000_000L;
+                StreamingAgentHandler.emitTurnCompleted(
+                        bridgeRef, sessionId, requestId, turnNumber,
+                        durationMs, /* toolCount = */ 0, turnEndStopReason, objectMapper);
+            }
         }
     }
 
