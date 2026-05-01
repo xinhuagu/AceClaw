@@ -372,6 +372,11 @@ public final class StreamingAgentHandler {
     private Object handlePrompt(JsonNode params, StreamContext context) throws Exception {
         var sessionId = requireString(params, "sessionId");
         var prompt = requireString(params, "prompt");
+        // Optional escape hatch for users who want to bypass the
+        // ComplexityEstimator and always run the planner — wired to the
+        // CLI's /plan slash command. When true, skips the heuristic
+        // entirely and goes straight to executePlannedPrompt below.
+        var forcePlan = params.has("forcePlan") && params.get("forcePlan").asBoolean(false);
 
         var session = sessionManager.getSession(sessionId);
         if (session == null) {
@@ -543,14 +548,28 @@ public final class StreamingAgentHandler {
                 }
             }
 
-            // Check if this task warrants upfront planning
+            // Check if this task warrants upfront planning. Two paths
+            // can trigger the planner:
+            //   1. forcePlan param (from CLI's /plan slash command) —
+            //      user explicitly asked for planning, skip the
+            //      heuristic. plannerEnabled still gates this so a
+            //      daemon configured with planner turned off entirely
+            //      still respects that.
+            //   2. ComplexityEstimator heuristic — score >= threshold.
             if (plannerEnabled) {
-                var estimator = new ComplexityEstimator(plannerThreshold);
-                var complexityScore = estimator.estimate(prompt);
-
-                if (complexityScore.shouldPlan()) {
-                    log.info("Complex task detected (score={}, signals={}), generating plan",
-                            complexityScore.score(), complexityScore.signals());
+                boolean shouldPlan = forcePlan;
+                if (forcePlan) {
+                    log.info("Forced planning requested via forcePlan=true, generating plan");
+                } else {
+                    var estimator = new ComplexityEstimator(plannerThreshold);
+                    var complexityScore = estimator.estimate(prompt);
+                    shouldPlan = complexityScore.shouldPlan();
+                    if (shouldPlan) {
+                        log.info("Complex task detected (score={}, signals={}), generating plan",
+                                complexityScore.score(), complexityScore.signals());
+                    }
+                }
+                if (shouldPlan) {
                     var planResult = executePlannedPrompt(prompt, session, sessionId, cancelContext,
                             eventHandler, permissionAwareLoop, cancellationToken,
                             metricsCollector, watchdog, requestToolNames);

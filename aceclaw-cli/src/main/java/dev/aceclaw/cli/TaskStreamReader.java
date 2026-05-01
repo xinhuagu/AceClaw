@@ -33,17 +33,33 @@ public final class TaskStreamReader implements Runnable {
     private final String fullPrompt;
     private final PermissionBridge permissionBridge;
     private final Consumer<TaskHandle> onComplete;
+    /**
+     * When true, the daemon's complexity heuristic is bypassed and the
+     * planner always runs. Wired to the CLI's /plan slash command —
+     * lets users force planning on prompts that don't trip the
+     * estimator's keyword patterns.
+     */
+    private final boolean forcePlan;
 
     public TaskStreamReader(TaskHandle handle, DaemonConnection connection,
                             String sessionId, String fullPrompt,
                             PermissionBridge permissionBridge,
                             Consumer<TaskHandle> onComplete) {
+        this(handle, connection, sessionId, fullPrompt, permissionBridge, onComplete, false);
+    }
+
+    public TaskStreamReader(TaskHandle handle, DaemonConnection connection,
+                            String sessionId, String fullPrompt,
+                            PermissionBridge permissionBridge,
+                            Consumer<TaskHandle> onComplete,
+                            boolean forcePlan) {
         this.handle = Objects.requireNonNull(handle, "handle");
         this.connection = Objects.requireNonNull(connection, "connection");
         this.sessionId = Objects.requireNonNull(sessionId, "sessionId");
         this.fullPrompt = Objects.requireNonNull(fullPrompt, "fullPrompt");
         this.permissionBridge = Objects.requireNonNull(permissionBridge, "permissionBridge");
         this.onComplete = onComplete;
+        this.forcePlan = forcePlan;
     }
 
     @Override
@@ -73,15 +89,34 @@ public final class TaskStreamReader implements Runnable {
 
     private void sendPromptRequest() throws IOException {
         long id = connection.nextRequestId();
-        ObjectNode request = connection.objectMapper().createObjectNode();
+        var request = buildPromptRequest(connection.objectMapper(), sessionId, fullPrompt, id, forcePlan);
+        connection.writeLine(connection.objectMapper().writeValueAsString(request));
+    }
+
+    /**
+     * Builds the JSON-RPC envelope for an {@code agent.prompt} request.
+     * Pure / static so the wire shape can be unit-tested without
+     * mocking the {@link DaemonConnection}. Visible for tests.
+     *
+     * <p>{@code forcePlan} is only emitted when {@code true} so older
+     * daemons (without the field) see the same payload they always
+     * have — keeping the change strictly additive.
+     */
+    static ObjectNode buildPromptRequest(com.fasterxml.jackson.databind.ObjectMapper mapper,
+                                          String sessionId, String fullPrompt,
+                                          long id, boolean forcePlan) {
+        ObjectNode request = mapper.createObjectNode();
         request.put("jsonrpc", "2.0");
         request.put("method", "agent.prompt");
-        ObjectNode params = connection.objectMapper().createObjectNode();
+        ObjectNode params = mapper.createObjectNode();
         params.put("sessionId", sessionId);
         params.put("prompt", fullPrompt);
+        if (forcePlan) {
+            params.put("forcePlan", true);
+        }
         request.set("params", params);
         request.put("id", id);
-        connection.writeLine(connection.objectMapper().writeValueAsString(request));
+        return request;
     }
 
     private void readStreamLoop() throws IOException {

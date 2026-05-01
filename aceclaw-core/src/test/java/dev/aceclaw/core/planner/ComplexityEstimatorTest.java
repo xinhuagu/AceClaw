@@ -12,7 +12,9 @@ class ComplexityEstimatorTest {
     void simpleQuestion_lowScore() {
         var score = estimator.estimate("What is 2+2?");
         assertFalse(score.shouldPlan());
-        assertTrue(score.score() < 5);
+        // Score is 0 here — no signals fire for a plain question. The
+        // threshold (now 3) doesn't matter for this case.
+        assertEquals(0, score.score());
     }
 
     @Test
@@ -42,6 +44,11 @@ class ComplexityEstimatorTest {
         var score = estimator.estimate("Refactor the authentication module");
         assertTrue(score.signals().contains("refactoring"));
         assertTrue(score.score() >= 3);
+        // After the threshold drop (5 → 3), a single 'refactoring'
+        // signal is enough to plan. Pinning so a future revert can't
+        // silently restore the old "single signal never plans"
+        // behavior without updating this test.
+        assertTrue(score.shouldPlan());
     }
 
     @Test

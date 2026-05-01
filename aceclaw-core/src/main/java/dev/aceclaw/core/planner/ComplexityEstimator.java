@@ -13,7 +13,14 @@ import java.util.regex.Pattern;
  */
 public final class ComplexityEstimator {
 
-    private static final int DEFAULT_THRESHOLD = 5;
+    /**
+     * Default threshold for the no-arg constructor. Mirrors
+     * {@code AceClawConfig.DEFAULT_PLANNER_THRESHOLD} — keep the two
+     * in sync. Lowered from 5 to 3 because single-signal compound
+     * prompts ("refactor X", "extract Y", "do A and then B") are
+     * already plannable but were never triggering the planner.
+     */
+    private static final int DEFAULT_THRESHOLD = 3;
 
     // -- Heuristic patterns ---------------------------------------------------
 
