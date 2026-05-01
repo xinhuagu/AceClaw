@@ -80,6 +80,19 @@ const TYPE_ACCENT: Record<string, Record<string, string>> = {
     paused: '#fbbf24',
     cancelled: '#71717a',
   },
+  // #458 replan marker. Deliberately a deeper coral / orange so it
+  // doesn't get visually confused with text (warm yellow). The replan
+  // node is always emitted as 'completed' (the event is instantaneous),
+  // so 'completed' is the colour the operator actually sees; the other
+  // states are for forward-compat with future status semantics.
+  replan: {
+    pending: '#fb923c', // orange-400
+    running: '#fb923c',
+    completed: '#f97316', // orange-500 — sharp, distinct from text amber
+    failed: '#f87171',
+    paused: '#fbbf24',
+    cancelled: '#71717a',
+  },
 };
 
 /**
@@ -128,6 +141,33 @@ interface GrowingNodeProps {
  */
 function truncate(s: string, max = 18): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+/**
+ * Picks the most useful tooltip text for a node. Default is just the
+ * label (which truncate() may have shortened on screen). Replan nodes
+ * (#458) prefer the rationale + drop/add counts since "Replan #N" by
+ * itself doesn't tell the operator anything they couldn't read off
+ * the screen — but the rationale carried in metadata is exactly the
+ * "why" they're hovering for.
+ *
+ * Exported for unit tests so the contract is pinned.
+ */
+export function nodeTooltip(node: LayoutNode): string {
+  if (node.type === 'replan') {
+    const rationale =
+      typeof node.metadata?.['rationale'] === 'string'
+        ? (node.metadata['rationale'] as string)
+        : null;
+    const cancelled = node.metadata?.['cancelledStepCount'];
+    const added = node.metadata?.['newStepCount'];
+    const counts =
+      typeof cancelled === 'number' && typeof added === 'number'
+        ? `dropped ${cancelled}, added ${added}`
+        : null;
+    return [node.label, rationale, counts].filter(Boolean).join('\n');
+  }
+  return node.label;
 }
 
 export function GrowingNode({ node, onAwaitingClick, isOpenPanel }: GrowingNodeProps) {
@@ -304,10 +344,44 @@ export function GrowingNode({ node, onAwaitingClick, isOpenPanel }: GrowingNodeP
         fill="#e5e7eb"
       >
         {/* Native SVG <title> renders as a tooltip on hover so the
-            full label is recoverable when truncate() drops chars. */}
-        <title>{node.label}</title>
+            full label is recoverable when truncate() drops chars.
+            Replan nodes (#458) prefer rationale + counts as the
+            tooltip content — that's the actual "why" the operator
+            wants when they hover the marker. */}
+        <title>{nodeTooltip(node)}</title>
         {truncate(node.label)}
       </text>
+      {/*
+        #458 — "replan ×N" chip on plan nodes. Tells the operator at
+        a glance "this plan was revised" even when the replan markers
+        themselves are scrolled off-screen. Hidden on plans that have
+        never been replanned.
+      */}
+      {node.type === 'plan' && typeof node.metadata?.['replanAttempt'] === 'number' &&
+      (node.metadata['replanAttempt'] as number) > 0 ? (
+        <g pointerEvents="none">
+          <rect
+            x={left + node.width - 60}
+            y={top - 10}
+            width={58}
+            height={16}
+            rx={8}
+            fill="#f97316"
+            fillOpacity={0.95}
+          />
+          <text
+            x={left + node.width - 31}
+            y={top + 1}
+            textAnchor="middle"
+            fontFamily="ui-monospace, 'JetBrains Mono', monospace"
+            fontSize={9}
+            fontWeight={600}
+            fill="#431407"
+          >
+            replan ×{node.metadata['replanAttempt'] as number}
+          </text>
+        </g>
+      ) : null}
       {typeof node.duration === 'number' && node.duration > 0 ? (
         <text
           x={left + node.width - 8}
