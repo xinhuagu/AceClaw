@@ -271,14 +271,23 @@ function ReplanDemo() {
   const noop = (): void => undefined;
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center gap-3 border-b border-amber-700/40 bg-amber-950/40 px-4 py-2 text-xs">
-        <span className="rounded bg-amber-600 px-2 py-px font-mono text-[10px] uppercase text-amber-50">
-          DEMO
-        </span>
-        <span className="text-amber-200">
-          Replan visualisation fixture (#458) — hand-crafted, no daemon connection.
-        </span>
-        <span className="ml-auto font-mono text-zinc-500">?demo=replan</span>
+      <header className="flex flex-col gap-1 border-b border-amber-700/40 bg-amber-950/40 px-4 py-2 text-xs">
+        <div className="flex items-center gap-3">
+          <span className="rounded bg-amber-600 px-2 py-px font-mono text-[10px] uppercase text-amber-50">
+            DEMO
+          </span>
+          <span className="text-amber-200">
+            Replan visualisation fixture (#458) — hand-crafted, no daemon connection.
+          </span>
+          <span className="ml-auto font-mono text-zinc-500">?demo=replan</span>
+        </div>
+        <div className="text-[11px] text-amber-200/80">
+          Two replan motivations to recognize: <strong>Replan #1</strong> follows a{' '}
+          <span className="text-rose-300">red failed</span> step (reactive — extract errored).{' '}
+          <strong>Replan #2</strong> follows only{' '}
+          <span className="text-zinc-400">grey cancelled</span> steps (proactive — model swapped
+          frameworks mid-execution). Hover any orange marker for the rationale.
+        </div>
       </header>
       <div className="flex-1">
         <ExecutionTree

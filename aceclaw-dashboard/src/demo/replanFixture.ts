@@ -6,19 +6,29 @@
  * when the model decides to revise mid-execution — not reproducible on
  * demand).
  *
+ * The two replan markers deliberately illustrate the **two motivations**
+ * an operator should learn to recognize:
+ *
+ *   1. **Reactive replan** — a step actually FAILED (red), the planner
+ *      had to revise. Replan #1 follows a failed extract step.
+ *   2. **Proactive replan** — every step before it just gets cancelled
+ *      (no red), because the model itself decided to pivot before any
+ *      step errored. Replan #2 follows a working JUnit test that the
+ *      model decided to swap for AssertJ anyway.
+ *
  * Tree shape:
  *
  *   session
  *     └── turn 1
  *           └── plan (with replan ×2 chip)
  *                 ├── completed step  (s1 — analyze)
- *                 ├── cancelled step  (s2 — first attempt write)
- *                 ├── cancelled step  (s3 — first attempt test)
- *                 ├── replan #1       (rationale: "tests would have failed without ...")
- *                 ├── completed step  (s2' — second attempt write)
- *                 ├── cancelled step  (s3' — second attempt test)
- *                 ├── replan #2       (rationale: "switched test framework")
- *                 └── running step    (s3'' — third attempt)
+ *                 ├── FAILED step     (s2 — extract v1, red, with error chip)
+ *                 ├── cancelled step  (s3 — tests v1 — never ran)
+ *                 ├── replan #1       — REACTIVE (extract failed)
+ *                 ├── completed step  (s2' — extract v2)
+ *                 ├── cancelled step  (s3' — JUnit tests, was running fine)
+ *                 ├── replan #2       — PROACTIVE (model switched framework)
+ *                 └── running step    (s3'' — AssertJ tests)
  */
 
 import type { ExecutionTree } from '../types/tree';
@@ -65,8 +75,10 @@ export function buildReplanFixture(): ExecutionTree {
                   {
                     id: 'demo-step-s2-v1',
                     type: 'step',
-                    status: 'cancelled',
+                    status: 'failed',
                     label: 'extract validator (v1)',
+                    error: 'NoSuchMethodError: missing import on line 42',
+                    duration: 320,
                     children: [],
                   },
                   {
@@ -83,9 +95,9 @@ export function buildReplanFixture(): ExecutionTree {
                     label: 'Replan #1',
                     metadata: {
                       rationale:
-                        'tests would have failed without first updating the mock fixtures',
+                        'extract failed (missing import). Switching to a top-down extraction that resolves dependencies first.',
                       replanAttempt: 1,
-                      cancelledStepCount: 2,
+                      cancelledStepCount: 1,
                       newStepCount: 2,
                     },
                     children: [],
@@ -111,8 +123,11 @@ export function buildReplanFixture(): ExecutionTree {
                     status: 'completed',
                     label: 'Replan #2',
                     metadata: {
+                      // Proactive: nothing failed, the model just decided
+                      // mid-execution that AssertJ would be a better fit.
+                      // The cancelled JUnit step above carries no error.
                       rationale:
-                        'switched from JUnit to AssertJ — better matchers for the new validator API',
+                        'JUnit was working but AssertJ has better matchers for the new validator API — switching for code quality',
                       replanAttempt: 2,
                       cancelledStepCount: 1,
                       newStepCount: 1,
