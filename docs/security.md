@@ -1,6 +1,8 @@
 # AceClaw Security Model
 
 > Version 1.1 | 2026-05-01
+>
+> See also [runtime-governance.md](runtime-governance.md) for AceClaw's positioning around where governance lives (protocol vs. connector vs. runtime). This document covers the security mechanisms; that one covers the *layer* they operate at.
 
 AceClaw defends across five dimensions: local surface isolation, permission enforcement, memory integrity, content boundaries, and data protection.
 

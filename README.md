@@ -21,9 +21,9 @@ A persistent JVM daemon that runs the ReAct + Plan/Replan loop, tools, permissio
   <img src="docs/img/aceclaw_daemon_architecture.drawio.png" alt="AceClaw architecture: CLI over UDS and Dashboard over WebSocket, both connected to the JVM daemon" width="640">
 </p>
 
-> Memory helps an agent remember. Self-learning helps an agent improve. Visualization makes both legible.
+> AceClaw is an attempt to move agent governance from the protocol layer into the runtime — every permission decision, every tool execution, every memory write goes through one daemon, with one policy boundary, one audit chain, and one visual surface.
 
-**[Read the design philosophy →](docs/design-philosophy.md)** — why Java, why no AI framework, what drives the architecture.
+**[Read the design philosophy →](docs/design-philosophy.md)** — why Java, why no AI framework, what drives the architecture. &nbsp;·&nbsp; **[Runtime-level governance →](docs/runtime-governance.md)** — where AceClaw fits vs. protocol- and connector-level governance, and what's still missing.
 
 ### 2. A visual agent harness
 
@@ -37,6 +37,7 @@ A React dashboard that talks to the same daemon over a loopback-only WebSocket b
 
 ## Highlights
 
+- **Runtime-level governance** — capabilities decided in the agent loop, not at the protocol or connector layer. One pipeline for every adapter (in progress). *([details](docs/runtime-governance.md))*
 - **Visual agent harness** — live execution tree, inline permission Approve/Deny from the browser. *([details](docs/visual-harness.md))*
 - **Plan → Execute → Replan** — explicit task plan layered on top of ReAct, with per-step budgets and inline replan on failure. *([details](docs/plan-replan.md))*
 - **Self-learning** — zero-cost detectors turn behavior into typed, confidence-scored insights that survive across sessions. *([details](docs/self-learning.md))*

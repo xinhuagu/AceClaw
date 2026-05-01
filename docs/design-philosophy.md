@@ -75,6 +75,18 @@ In many scripting environments, these concepts are often represented as loosely 
 
 Java sealed interfaces model those states explicitly as closed sets and make missing cases easier to catch. When the model evolves, missing cases surface as compilation failures instead of becoming latent runtime bugs.
 
+## Why Governance Belongs in the Runtime
+
+Most agent platforms put governance at the **protocol layer** ("which MCP servers are installed?") or the **connector layer** ("does this specific tool have an allowlist?"). Both stop short of where the actual decisions live.
+
+A capability — "read this file", "execute this command", "talk to that network endpoint" — is a runtime concept. It carries context: which session, which plan step, which iteration, what just happened, what permission mode is active. None of that is visible to a static MCP manifest. All of it is visible inside the agent loop.
+
+AceClaw's bet is that the agent loop is the right policy boundary. Permission decisions, sub-agent privilege isolation, the live event surface, the signed memory chain, the cron-as-session run path — they all funnel through the daemon, with one decision rule, one approval surface (CLI prompt or dashboard panel), one audit trail.
+
+The next bar is unification: **every** capability use, regardless of which adapter brought it (built-in tool, MCP server, bash subprocess, browser tool, sub-agent), should enter the same `CapabilityRequest` pipeline and produce the same audit record. That's the work ahead.
+
+**[Runtime-level governance →](runtime-governance.md)** lays out where AceClaw is today vs. what "complete" runtime governance looks like.
+
 ## Infrastructure Mindset: Keeping the Core Predictable
 
 What ties all of this together is **control**.
