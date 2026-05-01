@@ -82,7 +82,13 @@ export function App() {
         sessions={sessions}
         selectedSessionId={sessionId || null}
         onSelect={selectSession}
-        footer={<CronJobsList jobs={cronJobs} />}
+        footer={
+          <CronJobsList
+            jobs={cronJobs}
+            selectedSessionId={sessionId || null}
+            onSelect={selectSession}
+          />
+        }
       />
       <div className="flex flex-1 flex-col overflow-hidden">
         {sessionId ? (

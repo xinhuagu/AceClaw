@@ -323,6 +323,20 @@ class CronSchedulerTest {
         assertThat(updatedJob.get().lastError()).isNotNull();
     }
 
+    @Test
+    void cronSessionPrefixIsStableForDashboardCompat() {
+        // Sentinel: this constant is mirrored on the dashboard side as a
+        // hard-coded string in two places —
+        //   - aceclaw-dashboard/src/hooks/useSessions.ts (isCronSessionId)
+        //   - aceclaw-dashboard/src/components/CronJobsList.tsx (cronSessionId)
+        // Renaming CRON_SESSION_PREFIX without updating those would
+        // silently break the dashboard's filter (cron sessions would
+        // leak into SessionList) and the row-click navigation. The
+        // assertion is intentionally tautological — it exists to fire
+        // a build-time speed bump that says "go update the dashboard".
+        assertThat(CronScheduler.CRON_SESSION_PREFIX).isEqualTo("cron-");
+    }
+
     // -- Helpers --
 
     private static String extractUserPrompt(LlmRequest request) {

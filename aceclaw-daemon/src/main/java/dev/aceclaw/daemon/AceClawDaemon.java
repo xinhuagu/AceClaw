@@ -2351,6 +2351,12 @@ public final class AceClawDaemon {
                         bootModel, bootSystemPrompt,
                         config.maxTokens(), config.thinkingBudget(),
                         eventBus, config.schedulerTickSeconds());
+                // #459: dashboard sees a cron run as a session ("cron-{jobId}")
+                // with one turn per fire. The bridge ref is null when WS is
+                // disabled, in which case the scheduler falls back to the
+                // existing SilentStreamHandler — CLI-only deployments
+                // unchanged.
+                cronScheduler.setWebSocketBridge(this.webSocketBridge);
                 cronScheduler.start();
 
                 shutdownManager.register(new ShutdownManager.ShutdownParticipant() {

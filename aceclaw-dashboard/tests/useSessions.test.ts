@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  isCronSessionId,
   mergeSnapshot,
   parseSessionsListResult,
   sessionInfoFromSessionStarted,
@@ -247,5 +248,22 @@ describe('sessionInfoFromSessionStarted (issue #452)', () => {
     // the wall-clock window the call ran in.
     expect(stamped).toBeGreaterThanOrEqual(before);
     expect(stamped).toBeLessThanOrEqual(after);
+  });
+});
+
+describe('isCronSessionId', () => {
+  // The hook filters cron-as-session events out of the user-facing
+  // SessionList (#459). Daemon emits cron run events under
+  // "cron-{jobId}" so the dashboard's reducer can scaffold the tree
+  // properly — but we don't want them showing up as user sessions.
+  it('returns true for cron-prefixed sessionIds', () => {
+    expect(isCronSessionId('cron-daily-backup')).toBe(true);
+    expect(isCronSessionId('cron-x')).toBe(true);
+  });
+
+  it('returns false for regular sessionIds', () => {
+    expect(isCronSessionId('s1')).toBe(false);
+    expect(isCronSessionId('a-cron-prefix-but-not-at-start')).toBe(false);
+    expect(isCronSessionId('Cron-uppercase')).toBe(false);
   });
 });
