@@ -339,6 +339,226 @@ describe('replan', () => {
     expect(plan.children[2]!.status).toBe('cancelled'); // s3 was pending
     expect(plan.metadata?.['replanAttempt']).toBe(1);
     expect(plan.metadata?.['replanRationale']).toBe('changed approach');
+    // #458 — the replan event itself is now an addressable node.
+    expect(plan.children[3]!.type).toBe('replan');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Replan as a first-class node (#458)
+// ---------------------------------------------------------------------------
+
+describe('replan as first-class node (#458)', () => {
+  // Helper: build a minimal session/turn/plan scaffold so each test starts
+  // with a plan that has 3 pending steps. Lets the tests focus on the
+  // replan-specific assertions instead of repeating boilerplate.
+  function freshPlanWithThreePendingSteps() {
+    return runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 3,
+        goal: 'g',
+        steps: [
+          { index: 1, name: 's1', description: '' },
+          { index: 2, name: 's2', description: '' },
+          { index: 3, name: 's3', description: '' },
+        ],
+      }),
+    );
+  }
+  function locatePlan(state: ReturnType<typeof freshPlanWithThreePendingSteps>) {
+    return state.rootNodes[0]!.children[0]!.children[0]!;
+  }
+
+  it('inserts exactly one replan marker per replan event', () => {
+    const state = runAll(
+      freshPlanWithThreePendingSteps(),
+      envelope('stream.plan_replanned', {
+        planId: 'plan-1',
+        replanAttempt: 1,
+        newStepCount: 2,
+        rationale: 'one fewer step',
+      }),
+    );
+    const plan = locatePlan(state);
+    const markers = plan.children.filter((c) => c.type === 'replan');
+    expect(markers).toHaveLength(1);
+    expect(markers[0]!.label).toBe('Replan #1');
+  });
+
+  it('creates a fresh marker per attempt — N replans yield N markers', () => {
+    let state = freshPlanWithThreePendingSteps();
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      state = runAll(
+        state,
+        envelope('stream.plan_replanned', {
+          planId: 'plan-1',
+          replanAttempt: attempt,
+          newStepCount: 1,
+          rationale: `attempt ${attempt}`,
+        }),
+      );
+    }
+    const plan = locatePlan(state);
+    const markers = plan.children.filter((c) => c.type === 'replan');
+    expect(markers.map((m) => m.label)).toEqual([
+      'Replan #1',
+      'Replan #2',
+      'Replan #3',
+    ]);
+    // Each marker has a unique id so the renderer can address them.
+    const ids = new Set(markers.map((m) => m.id));
+    expect(ids.size).toBe(3);
+  });
+
+  it('marker carries rationale + drop/add counts in metadata', () => {
+    const state = runAll(
+      freshPlanWithThreePendingSteps(),
+      envelope('stream.plan_replanned', {
+        planId: 'plan-1',
+        replanAttempt: 1,
+        newStepCount: 5,
+        rationale: 'need more depth',
+      }),
+    );
+    const plan = locatePlan(state);
+    const marker = plan.children.find((c) => c.type === 'replan');
+    expect(marker).toBeDefined();
+    expect(marker!.metadata?.['rationale']).toBe('need more depth');
+    expect(marker!.metadata?.['replanAttempt']).toBe(1);
+    expect(marker!.metadata?.['cancelledStepCount']).toBe(3); // all 3 were pending
+    expect(marker!.metadata?.['newStepCount']).toBe(5);
+  });
+
+  it('counts dropped steps correctly when some were already completed', () => {
+    let state = freshPlanWithThreePendingSteps();
+    // Complete step 1 first.
+    state = runAll(
+      state,
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 3,
+        stepName: 's1',
+      }),
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 1,
+        tokensUsed: 1,
+      }),
+    );
+    state = runAll(
+      state,
+      envelope('stream.plan_replanned', {
+        planId: 'plan-1',
+        replanAttempt: 1,
+        newStepCount: 2,
+        rationale: 'rethink',
+      }),
+    );
+    const marker = locatePlan(state).children.find((c) => c.type === 'replan');
+    // Only s2 + s3 were pending → 2 dropped, not 3.
+    expect(marker!.metadata?.['cancelledStepCount']).toBe(2);
+  });
+
+  it('marker is positioned AFTER cancelled steps so new lazy steps land after it', () => {
+    let state = freshPlanWithThreePendingSteps();
+    state = runAll(
+      state,
+      envelope('stream.plan_replanned', {
+        planId: 'plan-1',
+        replanAttempt: 1,
+        newStepCount: 1,
+        rationale: 'pivot',
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 'new-step',
+        stepIndex: 99,
+        totalSteps: 1,
+        stepName: 'new-step',
+      }),
+    );
+    const plan = locatePlan(state);
+    // Order should be: cancelled(s1) → cancelled(s2) → cancelled(s3) → replan → new running step
+    const types = plan.children.map((c) => c.type);
+    expect(types).toEqual(['step', 'step', 'step', 'replan', 'step']);
+    const newRunning = plan.children[4]!;
+    expect(newRunning.status).toBe('running');
+    expect(newRunning.label).toBe('new-step');
+  });
+
+  it('marker has stable id across reducer iterations (same key for re-renders)', () => {
+    // The id format is `${planId}::replan-${attempt}` so the renderer's
+    // React key stays stable across re-renders. This pins the format so
+    // a future refactor can't silently change the id and cause unmount/
+    // remount thrash.
+    const state = runAll(
+      freshPlanWithThreePendingSteps(),
+      envelope('stream.plan_replanned', {
+        planId: 'plan-1',
+        replanAttempt: 2,
+        newStepCount: 1,
+        rationale: 'r',
+      }),
+    );
+    const marker = locatePlan(state).children.find((c) => c.type === 'replan');
+    expect(marker!.id).toBe('plan-1::replan-2');
+  });
+
+  it('marker survives snapshot replay — same envelopes, same tree shape', () => {
+    // The reducer is pure, so re-running the same envelope sequence on a
+    // fresh tree must produce a tree with the same replan structure.
+    // This is the property that makes snapshot.request safe for cron /
+    // late-joining tabs — the marker is reducer state, not render state.
+    const env = [
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 1,
+        goal: 'g',
+        steps: [{ index: 1, name: 's1', description: '' }],
+      }),
+      envelope('stream.plan_replanned', {
+        planId: 'plan-1',
+        replanAttempt: 1,
+        newStepCount: 2,
+        rationale: 'r',
+      }),
+    ];
+    const liveState = runAll(freshTree(), ...env);
+    const replayedState = runAll(freshTree(), ...env);
+    const liveMarker = locatePlan(liveState).children.find((c) => c.type === 'replan');
+    const replayMarker = locatePlan(replayedState).children.find((c) => c.type === 'replan');
+    expect(liveMarker!.id).toBe(replayMarker!.id);
+    expect(liveMarker!.metadata?.['rationale']).toBe(replayMarker!.metadata?.['rationale']);
   });
 });
 
@@ -1683,16 +1903,19 @@ describe('replan with colliding stepIndex', () => {
       }),
     );
     const plan = state.rootNodes[0]!.children[0]!.children[0]!;
-    // Three children: two cancelled tombstones (old-1, old-2) + one new running.
-    expect(plan.children).toHaveLength(3);
+    // Four children now (#458): two cancelled tombstones (old-1, old-2) +
+    // the synthetic 'replan' marker + one new running step.
+    expect(plan.children).toHaveLength(4);
     const tombstone = plan.children.find(
       (c) => c.id === stepNodeId('plan-1', 1) && c.status === 'cancelled',
     );
+    const replanMarker = plan.children.find((c) => c.type === 'replan');
     const replacement = plan.children.find(
       (c) => c.metadata?.['createdByReplan'] === true && c.status === 'running',
     );
     expect(tombstone).toBeDefined();
     expect(tombstone?.label).toBe('old-1');
+    expect(replanMarker).toBeDefined();
     expect(replacement).toBeDefined();
     expect(replacement?.label).toBe('new-1');
     expect(state.activeNodeId).toBe(replacement?.id);

@@ -13,6 +13,15 @@ export type ExecutionNodeType =
   | 'request'
   | 'plan'
   | 'step'
+  /**
+   * Synthetic boundary marker inserted by the reducer when
+   * {@code stream.plan_replanned} arrives (#458). Sits between the
+   * cancelled steps from the previous plan iteration and the
+   * (lazy-created) new steps. Carries the rationale, attempt number,
+   * and step counts in metadata so the renderer can surface the
+   * "what changed and why" without requiring daemon-side changes.
+   */
+  | 'replan'
   | 'turn'
   | 'tool'
   | 'subagent'
