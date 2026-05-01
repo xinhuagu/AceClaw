@@ -21,9 +21,21 @@ interface SessionListProps {
   sessions: SessionInfo[];
   selectedSessionId: string | null;
   onSelect: (sessionId: string) => void;
+  /**
+   * Optional content rendered at the bottom of the sidebar, beneath the
+   * session rows. Used by App to mount the CronJobsList panel (#459)
+   * without wrapping SessionList in another container — the parent
+   * &lt;aside&gt; here is already the dashboard's left rail.
+   */
+  footer?: React.ReactNode;
 }
 
-export function SessionList({ sessions, selectedSessionId, onSelect }: SessionListProps) {
+export function SessionList({
+  sessions,
+  selectedSessionId,
+  onSelect,
+  footer,
+}: SessionListProps) {
   return (
     <aside className="flex h-full w-60 shrink-0 flex-col border-r border-zinc-800 bg-zinc-900/40">
       <header className="flex items-center justify-between border-b border-zinc-800 px-3 py-2 text-[11px] uppercase tracking-wider text-zinc-500">
@@ -47,6 +59,7 @@ export function SessionList({ sessions, selectedSessionId, onSelect }: SessionLi
           ))}
         </ul>
       )}
+      {footer}
     </aside>
   );
 }
