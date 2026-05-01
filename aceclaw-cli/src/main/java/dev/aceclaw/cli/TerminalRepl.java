@@ -600,7 +600,24 @@ public final class TerminalRepl {
                 }
 
                 String trimmed = line.trim();
-                if (trimmed.startsWith("/")) {
+                // /plan <prompt> bypasses the heuristic — submit the
+                // remainder as a regular prompt with forcePlan=true so
+                // the daemon always runs the planner (#458 follow-up).
+                // Empty /plan is a no-op (no prompt to send).
+                // Case-insensitive on the command itself to match how
+                // handleSlashCommand normalises the rest of /help, /status
+                // etc. — `/PLAN refactor X` should not surprise the user
+                // with "Unknown command".
+                String lowered = trimmed.toLowerCase();
+                if (lowered.equals("/plan") || lowered.startsWith("/plan ")) {
+                    String rest = trimmed.length() > 5 ? trimmed.substring(5).trim() : "";
+                    if (rest.isEmpty()) {
+                        out.println(WARNING + "/plan needs a prompt — try /plan <your task>" + RESET);
+                        out.flush();
+                    } else {
+                        submitAndWait(out, reader, rest, /* forcePlan = */ true);
+                    }
+                } else if (trimmed.startsWith("/")) {
                     if (handleSlashCommand(out, trimmed, reader)) {
                         break;
                     }
@@ -1120,6 +1137,17 @@ public final class TerminalRepl {
      * uses JLine's {@code printAbove()} to display the result above the prompt.
      */
     private void submitAndWait(PrintWriter out, LineReader reader, String input) {
+        submitAndWait(out, reader, input, false);
+    }
+
+    /**
+     * Submits a prompt for execution. When {@code forcePlan} is true, the
+     * daemon's complexity heuristic is bypassed and the planner always
+     * runs — wired to the {@code /plan} slash command for users who want
+     * planning on prompts that don't trip the keyword patterns.
+     */
+    private void submitAndWait(PrintWriter out, LineReader reader, String input,
+                                boolean forcePlan) {
         try {
             String effectiveInput = input == null ? "" : input.trim();
             if (!effectiveInput.isBlank()) {
@@ -1132,7 +1160,8 @@ public final class TerminalRepl {
 
             promptStartNanos = System.nanoTime();
 
-            var handle = taskManager.submit(effectiveInput, conn, sessionId, fgSink, permissionBridge, ctxWindow);
+            var handle = taskManager.submit(effectiveInput, conn, sessionId, fgSink,
+                    permissionBridge, ctxWindow, forcePlan);
             taskManager.setForeground(handle.taskId());
             resumeCheckpointStore.recordTaskSubmitted(
                     sessionId,
@@ -3186,6 +3215,7 @@ public final class TerminalRepl {
                 out.println(INFO + "  /compact" + RESET + "  Trigger context compaction");
                 out.println(INFO + "  /context" + RESET + "  Inspect context composition (/context list | /context detail <key>)");
                 out.println(INFO + "  /model" + RESET + "    Show current model (or /model <name> to switch)");
+                out.println(INFO + "  /plan <task>" + RESET + " Force the planner on this prompt (skips the complexity heuristic)");
                 out.println(INFO + "  /tools" + RESET + "    List available tools");
                 out.println(INFO + "  /status" + RESET + "   Show session status");
                 out.println(INFO + "  /learning" + RESET + " Show learning summary");
