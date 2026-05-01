@@ -141,9 +141,10 @@ public final class AceClawDaemon {
         eventBus.subscribe(SchedulerEvent.class, schedulerEventFeed::append);
         // #459: also forward scheduler events to the dashboard via the WS
         // bridge (when one is configured). Lazy-reads webSocketBridge at
-        // fire time because the bridge is constructed later in start();
-        // before that point the forwarder is a no-op so the CLI's
-        // schedulerEventFeed::append path is unaffected.
+        // fire time because the bridge is constructed later in start().
+        // The null-check is pure defense in depth — the cron scheduler
+        // itself isn't started until after the bridge is up (see start()),
+        // so in practice no SchedulerEvent can fire while bridge is null.
         eventBus.subscribe(SchedulerEvent.class, this::forwardSchedulerEventToWs);
         this.deferredEventFeed = new DeferredEventFeed();
         eventBus.subscribe(DeferEvent.class, deferredEventFeed::append);
@@ -1843,38 +1844,54 @@ public final class AceClawDaemon {
             return;
         }
         try {
-            var params = objectMapper.createObjectNode();
-            params.put("jobId", event.jobId());
-            String method = switch (event) {
-                case SchedulerEvent.JobTriggered e -> {
-                    params.put("cronExpression", e.cronExpression());
-                    params.put("timestamp", e.timestamp().toString());
-                    yield "scheduler.job_triggered";
-                }
-                case SchedulerEvent.JobCompleted e -> {
-                    params.put("durationMs", e.durationMs());
-                    params.put("summary", e.summary());
-                    params.put("timestamp", e.timestamp().toString());
-                    yield "scheduler.job_completed";
-                }
-                case SchedulerEvent.JobFailed e -> {
-                    params.put("error", e.error());
-                    params.put("attempt", e.attempt());
-                    params.put("maxAttempts", e.maxAttempts());
-                    params.put("timestamp", e.timestamp().toString());
-                    yield "scheduler.job_failed";
-                }
-                case SchedulerEvent.JobSkipped e -> {
-                    params.put("reason", e.reason());
-                    params.put("timestamp", e.timestamp().toString());
-                    yield "scheduler.job_skipped";
-                }
-            };
-            bridge.broadcastGlobal(method, params);
+            var notification = translateSchedulerEvent(objectMapper, event);
+            bridge.broadcastGlobal(notification.method(), notification.params());
         } catch (Exception e) {
             log.warn("Failed to forward SchedulerEvent to WS bridge: {}", e.getMessage());
         }
     }
+
+    /**
+     * Translation rule for {@link SchedulerEvent} → JSON-RPC notification.
+     * Pure and static so it can be unit-tested in isolation — the wiring
+     * in {@link #forwardSchedulerEventToWs} becomes a thin caller, and
+     * the dashboard's wire contract (method name + param shape) is pinned
+     * by direct unit tests instead of by a missing integration test.
+     */
+    static SchedulerNotification translateSchedulerEvent(
+            ObjectMapper mapper, SchedulerEvent event) {
+        var params = mapper.createObjectNode();
+        params.put("jobId", event.jobId());
+        String method = switch (event) {
+            case SchedulerEvent.JobTriggered e -> {
+                params.put("cronExpression", e.cronExpression());
+                params.put("timestamp", e.timestamp().toString());
+                yield "scheduler.job_triggered";
+            }
+            case SchedulerEvent.JobCompleted e -> {
+                params.put("durationMs", e.durationMs());
+                params.put("summary", e.summary());
+                params.put("timestamp", e.timestamp().toString());
+                yield "scheduler.job_completed";
+            }
+            case SchedulerEvent.JobFailed e -> {
+                params.put("error", e.error());
+                params.put("attempt", e.attempt());
+                params.put("maxAttempts", e.maxAttempts());
+                params.put("timestamp", e.timestamp().toString());
+                yield "scheduler.job_failed";
+            }
+            case SchedulerEvent.JobSkipped e -> {
+                params.put("reason", e.reason());
+                params.put("timestamp", e.timestamp().toString());
+                yield "scheduler.job_skipped";
+            }
+        };
+        return new SchedulerNotification(method, params);
+    }
+
+    /** Translated form of a {@link SchedulerEvent} ready to broadcast over WS. */
+    record SchedulerNotification(String method, com.fasterxml.jackson.databind.node.ObjectNode params) {}
 
     private static String cronKind(CronJob job) {
         if (job.id() != null && job.id().startsWith(HeartbeatRunner.JOB_ID_PREFIX)) {
