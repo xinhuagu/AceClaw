@@ -1074,19 +1074,45 @@ function replacePlanSteps(
   params: PlanReplannedParams,
 ): ExecutionTree {
   // The daemon's PlanReplanned only carries newStepCount + rationale, not the
-  // full new step list (#439). Mark the plan with replan metadata so the
-  // renderer can strike through the old step list; the next plan_step_started
-  // events will land on synthesised step IDs that don't exist yet — handle
-  // that by lazily creating them in activateStep when the lookup misses.
+  // full new step list (#439). Three things happen on replan (#458):
+  //   1. Cancel non-completed steps — preserves history of what was dropped
+  //   2. Insert a synthetic 'replan' marker node after the cancelled steps —
+  //      gives the replan event itself an addressable id, so it can be
+  //      clicked, hovered, diffed across runs, and (later) used as a
+  //      step boundary for the agent debugger
+  //   3. Stamp the plan with replan metadata so a chip on the plan node
+  //      can show "replan ×N" without scrolling to find a marker
+  // The marker's status is 'completed' because the replan event itself is
+  // instantaneous — the surrounding step nodes carry the actual progress.
+  // Subsequent plan_step_started events lazy-append new steps via
+  // activateStep, so they naturally land AFTER the replan marker, giving
+  // the timeline: [cancelled steps] → [replan marker] → [new steps].
+  const cancelledStepCount = countCancellableSteps(state.rootNodes, params.planId);
+  const replanMarker: ExecutionNode = {
+    id: `${params.planId}::replan-${params.replanAttempt}`,
+    type: 'replan',
+    status: 'completed',
+    label: `Replan #${params.replanAttempt}`,
+    children: [],
+    metadata: {
+      rationale: params.rationale,
+      replanAttempt: params.replanAttempt,
+      cancelledStepCount,
+      newStepCount: params.newStepCount,
+    },
+  };
   return {
     ...state,
     rootNodes: mapNode(state.rootNodes, params.planId, (plan) => ({
       ...plan,
-      children: plan.children.map((c) =>
-        c.type === 'step' && c.status !== 'completed'
-          ? { ...c, status: 'cancelled' as const }
-          : c,
-      ),
+      children: [
+        ...plan.children.map((c) =>
+          c.type === 'step' && c.status !== 'completed'
+            ? { ...c, status: 'cancelled' as const }
+            : c,
+        ),
+        replanMarker,
+      ],
       metadata: {
         ...(plan.metadata ?? {}),
         replanAttempt: params.replanAttempt,
@@ -1095,6 +1121,34 @@ function replacePlanSteps(
       },
     })),
   };
+}
+
+/**
+ * Counts how many step children of {@code planId} would be NEWLY
+ * cancelled by this replan event. Used by the synthetic replan marker's
+ * metadata so the renderer can surface "this revision dropped N steps
+ * and added M".
+ *
+ * <p>Crucially excludes both {@code 'completed'} (preserved history)
+ * AND {@code 'cancelled'} (tombstones from earlier replans). Without
+ * the cancelled-exclusion the second replan's marker would over-count:
+ * if replan #1 dropped 3 steps and replan #2 newly drops 1, replan #2's
+ * marker would say "dropped 4" because the 3 already-cancelled
+ * tombstones still live in {@code plan.children} and would be re-counted.
+ *
+ * <p>Pure function; returns 0 if the plan can't be found.
+ */
+function countCancellableSteps(
+  rootNodes: ExecutionNode[],
+  planId: string,
+): number {
+  const plan = findNode(rootNodes, planId);
+  if (!plan) return 0;
+  return plan.children.filter(
+    (c) => c.type === 'step'
+      && c.status !== 'completed'
+      && c.status !== 'cancelled',
+  ).length;
 }
 
 function completePlan(
