@@ -114,7 +114,15 @@ public final class AceClawDaemon {
     private DeferredActionStore deferredActionStore;
     private DeferCheckTool deferCheckTool;
     /** Browser dashboard bridge (issue #431); null when {@code webSocket.enabled=false}. */
-    private WebSocketBridge webSocketBridge;
+    /**
+     * Volatile because {@link #forwardSchedulerEventToWs} reads this on
+     * eventBus subscriber threads and the field is written once in
+     * {@link #start()}. Without volatile the JMM only guarantees visibility
+     * via the eventBus queue's internal synchronization — true in practice
+     * but fragile to refactor. The volatile read is essentially free and
+     * documents the cross-thread access.
+     */
+    private volatile WebSocketBridge webSocketBridge;
 
     private volatile boolean running;
 

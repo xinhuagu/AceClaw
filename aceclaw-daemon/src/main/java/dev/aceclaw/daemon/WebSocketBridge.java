@@ -239,6 +239,16 @@ public final class WebSocketBridge {
      */
     public void broadcast(String sessionId, String method, Object params) {
         Objects.requireNonNull(sessionId, "sessionId");
+        // Guard against routing a globally-scoped event through the
+        // per-session path by mistake — the sentinel must only ever be
+        // emitted by broadcastGlobal, which deliberately skips the
+        // SessionEventBuffer. A typo'd call here would silently pollute
+        // the buffer with entries no snapshot.request would ever read.
+        if (GLOBAL_SESSION_ID.equals(sessionId)) {
+            throw new IllegalArgumentException(
+                    "Use broadcastGlobal(method, params) for globally-scoped events; "
+                            + "the GLOBAL_SESSION_ID sentinel must not appear in broadcast(sessionId, ...)");
+        }
         if (app == null) {
             return;
         }

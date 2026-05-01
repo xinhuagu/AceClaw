@@ -442,6 +442,20 @@ final class WebSocketBridgeTest {
     }
 
     @Test
+    void broadcastRejectsGlobalSessionIdSentinel() throws Exception {
+        // Defense-in-depth: the GLOBAL_SESSION_ID sentinel is only meant to
+        // come from broadcastGlobal, which skips the per-session buffer.
+        // A typo'd `bridge.broadcast(GLOBAL_SESSION_ID, ...)` would
+        // silently pollute the buffer with entries no snapshot.request
+        // would ever consume; turn it into a loud failure instead.
+        bridge = startOnRandomPort();
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> bridge.broadcast(WebSocketBridge.GLOBAL_SESSION_ID,
+                        "stream.text", Map.of("delta", "oops")));
+    }
+
+    @Test
     void broadcastGlobalAndPerSessionShareEventIdSequence() throws Exception {
         // The dashboard's snapshot-replay watermark assumes a single monotonic
         // eventId stream; globally-scoped broadcasts must not branch off a
