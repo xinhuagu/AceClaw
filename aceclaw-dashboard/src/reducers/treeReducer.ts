@@ -146,6 +146,30 @@ function findNearestAncestor(
 }
 
 /**
+ * Returns the active scope under which agent-loop events (thinking,
+ * text, tool_use, sub-agent) should nest — the nearest running
+ * {@code 'turn'} OR {@code 'step'} ancestor of the active node.
+ *
+ * <p>A running plan step takes precedence over the enclosing turn.
+ * Without this, every step's agent-loop events would walk up past the
+ * step and re-attach to the user's original turn, producing one long
+ * undifferentiated chain across all steps instead of grouping each
+ * step's reasoning under itself. Each plan step is its own ReAct
+ * sub-loop (see SequentialPlanExecutor.runStep on the daemon side),
+ * so the step IS the right anchor when one is active.
+ *
+ * <p>Falls back to the running turn when no step is active (plain
+ * ReAct with no plan), preserving the historical behavior.
+ */
+function findCurrentAgentScope(state: ExecutionTree): ExecutionNode | null {
+  return findNearestAncestor(
+    state.rootNodes,
+    state.activeNodeId,
+    (n) => (n.type === 'turn' || n.type === 'step') && n.status === 'running',
+  );
+}
+
+/**
  * Replaces a node anywhere in the forest by id. Returns a new forest with
  * structural sharing for branches that did not change.
  */
@@ -392,12 +416,11 @@ function addToolNode(
   // Parallel tools from one LLM response don't get a thinking delta or
   // a text delta between them, so they share the same anchor — they
   // attach as siblings to whichever anchor was selected for the first
-  // tool of the call.
-  const turn = findNearestAncestor(
-    state.rootNodes,
-    state.activeNodeId,
-    (n) => n.type === 'turn' && n.status === 'running',
-  );
+  // tool of the call. Variable still named `turn` for historical
+  // continuity but the helper returns the nearest running turn OR
+  // step, so plan-step agent loops anchor on the step (not the
+  // enclosing turn) — see findCurrentAgentScope.
+  const turn = findCurrentAgentScope(state);
 
   // Iteration-boundary synthesis (mirrors appendTextToCurrentTurn):
   // when this tool_use is the FIRST event of a new iteration with no
@@ -623,11 +646,9 @@ function appendTextToCurrentTurn(
   // skips its thinking block (model went straight from tool result to
   // final response) would silently merge into the previous iter's
   // text node, because both ids would key on the same currentThinkingId.
-  const turn = findNearestAncestor(
-    state.rootNodes,
-    state.activeNodeId,
-    (n) => n.type === 'turn' && n.status === 'running',
-  );
+  // findCurrentAgentScope returns running step if one is active,
+  // else running turn — so step-scoped agent loops anchor correctly.
+  const turn = findCurrentAgentScope(state);
   if (!turn) return state;
 
   // If we're starting a new iteration's text without a fresh
@@ -801,12 +822,10 @@ function appendThinkingToCurrentTurn(
   // current thinking node, so the next thinking delta starts a fresh one.
   // Parallel tool_use events from a single LLM response don't seal the
   // anchor between themselves (no thinking delta arrives between them), so
-  // they correctly attach to the same parent.
-  const turn = findNearestAncestor(
-    state.rootNodes,
-    state.activeNodeId,
-    (n) => n.type === 'turn' && n.status === 'running',
-  );
+  // they correctly attach to the same parent. findCurrentAgentScope
+  // returns the running step when one is active so each plan step's
+  // thinking lands under itself rather than on the enclosing turn.
+  const turn = findCurrentAgentScope(state);
   if (!turn) return state;
 
   // Same iteration: append the delta to the existing thinking node.
@@ -1188,11 +1207,9 @@ function addSubAgentNode(
   state: ExecutionTree,
   params: SubAgentStartParams,
 ): ExecutionTree {
-  const turn = findNearestAncestor(
-    state.rootNodes,
-    state.activeNodeId,
-    (n) => n.type === 'turn' && n.status === 'running',
-  );
+  // Anchor on the running step when one is active (so a sub-agent
+  // spawned mid-step nests under that step), else the running turn.
+  const turn = findCurrentAgentScope(state);
   // Sub-agent ids in the daemon are not unique across the same agentType
   // running twice in one turn (#439). Mint a synthetic id from the per-tree
   // monotonic counter so two subagent.start events back-to-back with the

@@ -55,6 +55,19 @@ public final class TaskManager {
     public TaskHandle submit(String prompt, DaemonConnection connection, String sessionId,
                              OutputSink outputSink, PermissionBridge permissionBridge,
                              int contextWindow) {
+        return submit(prompt, connection, sessionId, outputSink, permissionBridge,
+                contextWindow, false);
+    }
+
+    /**
+     * Submits a task with an optional {@code forcePlan} flag — when true,
+     * the daemon bypasses its complexity heuristic and runs the planner
+     * regardless of the prompt's apparent complexity. Wired to the CLI's
+     * /plan slash command (TerminalRepl).
+     */
+    public TaskHandle submit(String prompt, DaemonConnection connection, String sessionId,
+                             OutputSink outputSink, PermissionBridge permissionBridge,
+                             int contextWindow, boolean forcePlan) {
         Objects.requireNonNull(prompt, "prompt");
         Objects.requireNonNull(connection, "connection");
         Objects.requireNonNull(sessionId, "sessionId");
@@ -67,7 +80,7 @@ public final class TaskManager {
 
         // TaskStreamReader reads sink from handle.outputSink() — supports /bg and /fg swaps
         var reader = new TaskStreamReader(handle, connection, sessionId,
-                prompt, permissionBridge, this::handleTaskComplete);
+                prompt, permissionBridge, this::handleTaskComplete, forcePlan);
 
         Thread thread = Thread.ofVirtual()
                 .name("aceclaw-task-" + taskId)

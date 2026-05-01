@@ -74,7 +74,18 @@ public final class AceClawConfig {
     private static final int DEFAULT_SCHEDULER_TICK_SECONDS = 60;
     private static final boolean DEFAULT_HEARTBEAT_ENABLED = true;
     private static final boolean DEFAULT_PLANNER_ENABLED = true;
-    private static final int DEFAULT_PLANNER_THRESHOLD = 5;
+    /**
+     * Default complexity score for triggering the planner. Lowered
+     * from 5 → 3 so single-signal compound prompts ("refactor X",
+     * "rename across", "do A and then B") trigger a plan instead of
+     * being treated as plain ReAct turns. Empirically, threshold=5
+     * required two explicit signals which most everyday agentic
+     * prompts don't hit, so the planner essentially never fired for
+     * typical work. See {@link ComplexityEstimator} for the score
+     * table. Users can still override via config to restore older
+     * behavior.
+     */
+    private static final int DEFAULT_PLANNER_THRESHOLD = 3;
     private static final boolean DEFAULT_ADAPTIVE_REPLAN_ENABLED = true;
     private static final boolean DEFAULT_CANDIDATE_INJECTION_ENABLED = true;
     private static final boolean DEFAULT_CANDIDATE_PROMOTION_ENABLED = true;

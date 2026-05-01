@@ -345,6 +345,189 @@ describe('replan', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Plan-step agent-loop scoping — agent-loop events that fire while a plan
+// step is running must nest UNDER that step, not on the enclosing turn.
+// Without this, every step's thinking/tool/text would walk up past the
+// step and chain off the original prompt's turn, producing one long
+// undifferentiated agent-loop chain across all steps.
+// ---------------------------------------------------------------------------
+
+describe('agent-loop events anchor on the running plan step', () => {
+  function freshTurnWithPlan() {
+    return runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 2,
+        goal: 'g',
+        steps: [
+          { index: 1, name: 's1', description: '' },
+          { index: 2, name: 's2', description: '' },
+        ],
+      }),
+    );
+  }
+
+  it('thinking inside a running step nests under the step, not the turn', () => {
+    const state = runAll(
+      freshTurnWithPlan(),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 2,
+        stepName: 's1',
+      }),
+      envelope('stream.thinking', { delta: 'considering options' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const plan = turn.children[0]!;
+    const step = plan.children.find(
+      (c) => c.id === stepNodeId('plan-1', 1),
+    )!;
+    // Step is the parent of the thinking node, NOT the turn.
+    const thinking = step.children.find((c) => c.type === 'thinking');
+    expect(thinking).toBeDefined();
+    expect(thinking!.text).toBe('considering options');
+    // The turn must NOT have a thinking child of its own — only the
+    // plan it spawned and nothing else from the agent loop.
+    expect(turn.children.filter((c) => c.type === 'thinking')).toHaveLength(0);
+  });
+
+  it('tool_use inside a running step nests under the step', () => {
+    const state = runAll(
+      freshTurnWithPlan(),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 2,
+        stepName: 's1',
+      }),
+      envelope('stream.thinking', { delta: 'plan to read' }),
+      envelope('stream.tool_use', { id: 'tu-1', name: 'read_file' }),
+    );
+    const step = state.rootNodes[0]!.children[0]!.children[0]!.children.find(
+      (c) => c.id === stepNodeId('plan-1', 1),
+    )!;
+    // Tool nests under the step's thinking node (which itself nests
+    // under the step) — the whole sub-tree stays inside the step.
+    const stepThinking = step.children.find((c) => c.type === 'thinking');
+    const toolUse = stepThinking?.children.find((c) => c.type === 'tool');
+    expect(toolUse).toBeDefined();
+    expect(toolUse!.id).toBe('tu-1');
+    // The turn must not have any tool as a DIRECT child — the only
+    // child of the turn should be the plan, which contains the step,
+    // which contains the agent-loop subtree. Pre-fix, the tool would
+    // have appeared as a direct sibling of the plan under the turn.
+    const turn = state.rootNodes[0]!.children[0]!;
+    expect(turn.children.filter((c) => c.type === 'tool')).toHaveLength(0);
+  });
+
+  it('two consecutive steps each get their own agent-loop subtree', () => {
+    // The original bug: events from BOTH steps walked up past the step
+    // and chained on the user's turn, producing one giant agent-loop
+    // chain instead of two separate per-step subtrees.
+    const state = runAll(
+      freshTurnWithPlan(),
+      // Step 1: 1 thinking + 1 tool
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 2,
+        stepName: 's1',
+      }),
+      envelope('stream.thinking', { delta: 's1 thinking' }),
+      envelope('stream.tool_use', { id: 'tu-1', name: 'read_file' }),
+      envelope('stream.tool_completed', {
+        id: 'tu-1',
+        name: 'read_file',
+        durationMs: 1,
+        isError: false,
+      }),
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 1,
+        tokensUsed: 1,
+      }),
+      // Step 2: 1 thinking + 1 tool
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's2',
+        stepIndex: 2,
+        totalSteps: 2,
+        stepName: 's2',
+      }),
+      envelope('stream.thinking', { delta: 's2 thinking' }),
+      envelope('stream.tool_use', { id: 'tu-2', name: 'edit_file' }),
+    );
+
+    const turn = state.rootNodes[0]!.children[0]!;
+    const plan = turn.children[0]!;
+    const step1 = plan.children.find((c) => c.id === stepNodeId('plan-1', 1))!;
+    const step2 = plan.children.find((c) => c.id === stepNodeId('plan-1', 2))!;
+
+    // Each step has its OWN thinking subtree (with its OWN tool nested inside).
+    const t1 = step1.children.find((c) => c.type === 'thinking');
+    const t2 = step2.children.find((c) => c.type === 'thinking');
+    expect(t1?.text).toBe('s1 thinking');
+    expect(t2?.text).toBe('s2 thinking');
+    expect(t1?.children.find((c) => c.type === 'tool')?.id).toBe('tu-1');
+    expect(t2?.children.find((c) => c.type === 'tool')?.id).toBe('tu-2');
+
+    // The turn must NOT have any thinking/tool children of its own
+    // outside the plan — those would be the symptom of the original
+    // anchoring bug (events chaining off the turn instead of the steps).
+    const turnDirectAgentLoop = turn.children.filter(
+      (c) => c.type === 'thinking' || c.type === 'tool' || c.type === 'text',
+    );
+    expect(turnDirectAgentLoop).toHaveLength(0);
+  });
+
+  it('falls back to the turn when no step is active (plain ReAct)', () => {
+    // Regression guard: the new helper must NOT break the no-plan path.
+    // Without this assertion, a future "step-only" interpretation of
+    // findCurrentAgentScope would silently break every non-plan
+    // session.
+    const state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.thinking', { delta: 'no plan, just react' }),
+    );
+    const turn = state.rootNodes[0]!.children[0]!;
+    const thinking = turn.children.find((c) => c.type === 'thinking');
+    expect(thinking).toBeDefined();
+    expect(thinking!.text).toBe('no plan, just react');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Replan as a first-class node (#458)
 // ---------------------------------------------------------------------------
 
