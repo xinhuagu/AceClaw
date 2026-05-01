@@ -122,7 +122,24 @@ export function useCronJobs(wsUrl: string | null): CronJobInfo[] {
         const jobId = typeof params['jobId'] === 'string' ? params['jobId'] : null;
         if (!jobId) return;
 
-        setJobs((prev) => applyEventDelta(prev, method, jobId, params));
+        setJobs((prev) => {
+          if (!hasJob(prev, jobId)) {
+            // Job was created after our snapshot — applyEventDelta would
+            // silently drop the event. Re-request the status so the new
+            // row appears (the snapshot reply will replace this state
+            // wholesale; returning `prev` here just keeps the UI stable
+            // for the few ms of round-trip). The send is idempotent so
+            // React's strict-mode double-invocation is harmless.
+            try {
+              ws?.send(STATUS_REQUEST);
+            } catch {
+              // Socket transitioning — next reconnect's onopen will
+              // re-fetch anyway.
+            }
+            return prev;
+          }
+          return applyEventDelta(prev, method, jobId, params);
+        });
       };
 
       ws.onclose = () => {
@@ -197,10 +214,21 @@ export function parseStatusResult(data: Record<string, unknown>): CronJobInfo[] 
 }
 
 /**
+ * True when {@code prev} contains a job with the given id. Exposed
+ * separately from {@link applyEventDelta} so the hook can fire a
+ * snapshot refresh BEFORE applying the delta when the event references
+ * a job created after our last snapshot — without that refresh the
+ * sidebar would silently drop events for newly-created jobs.
+ */
+export function hasJob(prev: CronJobInfo[], jobId: string): boolean {
+  return prev.some((j) => j.id === jobId);
+}
+
+/**
  * Folds a {@code scheduler.job_*} event into the existing job list. If
  * the event references a job we don't know about (e.g. a job created
- * after our snapshot), the call is a no-op — the next reconnect /
- * status refresh will pick it up.
+ * after our snapshot), the call is a no-op — the caller should fire
+ * a status refresh, see {@link hasJob}.
  *
  * Exported for unit tests so the four event types are pinned by name.
  */

@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyEventDelta,
+  hasJob,
   parseStatusResult,
   type CronJobInfo,
 } from '../src/hooks/useCronJobs';
@@ -142,6 +143,9 @@ describe('applyEventDelta', () => {
   });
 
   it('is a no-op when the jobId is unknown', () => {
+    // The hook's responsibility is to detect this case via `hasJob` and
+    // fire a status refresh — the delta itself stays a pure no-op so
+    // the function can keep its plain (prev → next) shape.
     const prev = [baseJob()];
     const next = applyEventDelta(prev, 'scheduler.job_triggered', 'unknown-id', {
       timestamp: '2026-05-01T10:00:00Z',
@@ -155,5 +159,30 @@ describe('applyEventDelta', () => {
       timestamp: '2026-05-01T10:01:00Z',
     });
     expect(prev[0]!.lastStatus).toBeUndefined();
+  });
+});
+
+describe('hasJob', () => {
+  // The hook uses hasJob to gate "apply delta vs fire snapshot refresh"
+  // — so a `scheduler.job_*` event for a job created after our snapshot
+  // triggers a re-fetch instead of being silently dropped. This is the
+  // counterpart to applyEventDelta's "no-op on unknown id" contract.
+  const baseJob = (id: string): CronJobInfo => ({
+    id,
+    name: 'X',
+    expression: '* * * * *',
+    enabled: true,
+  });
+
+  it('returns true for an id present in the list', () => {
+    expect(hasJob([baseJob('a'), baseJob('b')], 'b')).toBe(true);
+  });
+
+  it('returns false for an id missing from the list', () => {
+    expect(hasJob([baseJob('a')], 'unknown')).toBe(false);
+  });
+
+  it('returns false for an empty list', () => {
+    expect(hasJob([], 'a')).toBe(false);
   });
 });
