@@ -50,19 +50,27 @@ Java 21 with `--enable-preview` required everywhere (compile, test, runtime). Th
 
 ## Architecture Overview
 
-AceClaw is a **daemon-first AI coding agent**. The CLI is a thin client that connects to a persistent JVM daemon via Unix Domain Socket. Multiple CLI/TUI windows can connect to one daemon simultaneously, each with its own independent session. One active TUI per workspace is enforced by `WorkspaceAttachmentRegistry`. See `docs/multi-session.md` for details.
+AceClaw is a **daemon-first AI coding agent**. The CLI is a thin client that connects to a persistent JVM daemon via Unix Domain Socket. The optional React dashboard connects via a loopback-only WebSocket bridge for runtime visualization. Multiple CLI/TUI windows can connect to one daemon simultaneously, each with its own independent session. One active TUI per workspace is enforced by `WorkspaceAttachmentRegistry`. See `docs/multi-session.md` and `docs/visual-harness.md` for details.
 
 ```
-CLI (Picocli + JLine3)
-  ↕ JSON-RPC 2.0 over UDS (~/.aceclaw/aceclaw.sock)
+CLI (Picocli + JLine3)            Dashboard (React + Vite)
+  ↕ JSON-RPC 2.0 over UDS           ↕ JSON-RPC notifications over WS
+  (~/.aceclaw/aceclaw.sock)         (127.0.0.1:3141, opt-in, allowed-origins)
+                  \                /
+                   v              v
 Daemon (persistent JVM)
   ├── RequestRouter → dispatches methods to handlers
+  ├── WebSocketBridge → fans daemon events out to connected dashboards (off by default)
+  ├── EventMultiplexer → tees per-request notifications to both CLI sink and WS bridge
   ├── WorkspaceAttachmentRegistry → one live TUI per workspace
   ├── StreamingAgentHandler → runs ReAct loop with permission checks + task planner
   ├── StreamingAgentLoop → LLM call → tool execution cycle (max 25 iterations)
   ├── Task Planner → complexity estimation → LLM plan generation → sequential execution
   ├── PermissionManager → READ auto-approved, WRITE/EXECUTE need user approval
+  │     (per-session scoping — CLI and dashboard race, first response wins)
   ├── ToolRegistry → 6 tools (read_file, write_file, edit_file, bash, glob, grep)
+  ├── CronScheduler → triggers cron jobs as cron-as-session runs (each fire = a turn,
+  │     broadcast over WS so dashboard can drill into them)
   ├── SelfImprovementEngine → post-turn learning (ErrorDetector + PatternDetector)
   └── AnthropicClient → Claude API (supports both API key and OAuth token auth)
 ```
