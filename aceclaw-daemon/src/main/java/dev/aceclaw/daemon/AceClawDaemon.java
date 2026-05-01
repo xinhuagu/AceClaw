@@ -139,6 +139,12 @@ public final class AceClawDaemon {
         eventBus.start();
         this.schedulerEventFeed = new SchedulerEventFeed();
         eventBus.subscribe(SchedulerEvent.class, schedulerEventFeed::append);
+        // #459: also forward scheduler events to the dashboard via the WS
+        // bridge (when one is configured). Lazy-reads webSocketBridge at
+        // fire time because the bridge is constructed later in start();
+        // before that point the forwarder is a no-op so the CLI's
+        // schedulerEventFeed::append path is unaffected.
+        eventBus.subscribe(SchedulerEvent.class, this::forwardSchedulerEventToWs);
         this.deferredEventFeed = new DeferredEventFeed();
         eventBus.subscribe(DeferEvent.class, deferredEventFeed::append);
         this.skillDraftEventFeed = new SkillDraftEventFeed();
@@ -1811,6 +1817,63 @@ public final class AceClawDaemon {
             return firstLine;
         }
         return firstLine.substring(0, 117) + "...";
+    }
+
+    /**
+     * #459 layer 1: forwards a {@link SchedulerEvent} to the dashboard via
+     * the WebSocket bridge. Translates the typed event into one of four
+     * JSON-RPC notification methods ({@code scheduler.job_triggered},
+     * {@code scheduler.job_completed}, {@code scheduler.job_failed},
+     * {@code scheduler.job_skipped}) and broadcasts it globally — scheduler
+     * events are session-less, so the dashboard's per-session reducers
+     * filter them out and only the global {@code useCronJobs} hook
+     * picks them up.
+     *
+     * <p>No-op when the WS bridge is disabled (or not yet constructed) —
+     * the CLI continues to receive scheduler updates via the
+     * {@link SchedulerEventFeed} polling endpoint untouched.
+     *
+     * <p>Defensive against subscriber-thread interruption: any exception
+     * here is logged and swallowed so a misbehaving WS path can't kill
+     * the eventBus subscriber chain.
+     */
+    private void forwardSchedulerEventToWs(SchedulerEvent event) {
+        var bridge = this.webSocketBridge;
+        if (bridge == null) {
+            return;
+        }
+        try {
+            var params = objectMapper.createObjectNode();
+            params.put("jobId", event.jobId());
+            String method = switch (event) {
+                case SchedulerEvent.JobTriggered e -> {
+                    params.put("cronExpression", e.cronExpression());
+                    params.put("timestamp", e.timestamp().toString());
+                    yield "scheduler.job_triggered";
+                }
+                case SchedulerEvent.JobCompleted e -> {
+                    params.put("durationMs", e.durationMs());
+                    params.put("summary", e.summary());
+                    params.put("timestamp", e.timestamp().toString());
+                    yield "scheduler.job_completed";
+                }
+                case SchedulerEvent.JobFailed e -> {
+                    params.put("error", e.error());
+                    params.put("attempt", e.attempt());
+                    params.put("maxAttempts", e.maxAttempts());
+                    params.put("timestamp", e.timestamp().toString());
+                    yield "scheduler.job_failed";
+                }
+                case SchedulerEvent.JobSkipped e -> {
+                    params.put("reason", e.reason());
+                    params.put("timestamp", e.timestamp().toString());
+                    yield "scheduler.job_skipped";
+                }
+            };
+            bridge.broadcastGlobal(method, params);
+        } catch (Exception e) {
+            log.warn("Failed to forward SchedulerEvent to WS bridge: {}", e.getMessage());
+        }
     }
 
     private static String cronKind(CronJob job) {
