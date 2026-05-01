@@ -40,15 +40,31 @@ class ComplexityEstimatorTest {
     }
 
     @Test
-    void refactoring_highScore() {
+    void refactoring_singleSignalDoesNotPlan_atDefaultThreshold() {
+        // The signal IS detected and contributes its 3 points, but at
+        // the default threshold (4) a single +3 signal alone is not
+        // enough to invoke the planner — the planner adds a real
+        // LLM-call cost, and "refactor X" can mean trivially small
+        // work (REFACTORING regex matches "extract" too, etc.).
+        // Users who want planning on a borderline single-signal prompt
+        // can use the /plan slash command (forcePlan) instead.
         var score = estimator.estimate("Refactor the authentication module");
         assertTrue(score.signals().contains("refactoring"));
-        assertTrue(score.score() >= 3);
-        // After the threshold drop (5 → 3), a single 'refactoring'
-        // signal is enough to plan. Pinning so a future revert can't
-        // silently restore the old "single signal never plans"
-        // behavior without updating this test.
-        assertTrue(score.shouldPlan());
+        assertEquals(3, score.score());
+        assertFalse(score.shouldPlan());
+    }
+
+    @Test
+    void refactoring_plusSecondSignal_plans() {
+        // Adding ANY second signal pushes a +3 prompt over threshold 4.
+        // Pins the rule "single +3 signal → no plan; +3 with anything
+        // else → plan" so future threshold tweaks have to reckon with
+        // the assertion explicitly.
+        var withTesting = estimator.estimate("Refactor the auth module and add tests");
+        assertTrue(withTesting.signals().contains("refactoring"));
+        assertTrue(withTesting.signals().contains("testing"));
+        assertTrue(withTesting.score() >= 4);
+        assertTrue(withTesting.shouldPlan());
     }
 
     @Test

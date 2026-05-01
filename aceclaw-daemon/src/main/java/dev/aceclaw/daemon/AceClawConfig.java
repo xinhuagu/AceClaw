@@ -75,17 +75,27 @@ public final class AceClawConfig {
     private static final boolean DEFAULT_HEARTBEAT_ENABLED = true;
     private static final boolean DEFAULT_PLANNER_ENABLED = true;
     /**
-     * Default complexity score for triggering the planner. Lowered
-     * from 5 → 3 so single-signal compound prompts ("refactor X",
-     * "rename across", "do A and then B") trigger a plan instead of
-     * being treated as plain ReAct turns. Empirically, threshold=5
-     * required two explicit signals which most everyday agentic
-     * prompts don't hit, so the planner essentially never fired for
-     * typical work. See {@link ComplexityEstimator} for the score
-     * table. Users can still override via config to restore older
-     * behavior.
+     * Default complexity score for triggering the planner. Bumped
+     * from 5 → 4 (initially landed at 3, dialled back after review).
+     *
+     * <p>Threshold 5 required two explicit signals — most everyday
+     * agentic prompts hit at most one, so the planner essentially
+     * never fired. Threshold 3 went too far the other way: every
+     * single "refactor X" / "extract Y" (REFACTORING regex matches
+     * "extract" too) triggered a planner LLM call before any actual
+     * work, even on trivial prompts.
+     *
+     * <p>Threshold 4 is the middle ground: single-signal +3 prompts
+     * ("refactor X" alone) stay as plain ReAct, but adding ANY
+     * second signal (a long description, a second action, multiple
+     * files, testing, …) flips on planning. Users who explicitly
+     * want the planner on a borderline prompt can use
+     * {@code /plan <prompt>} as the escape hatch — that bypasses
+     * this heuristic entirely.
+     *
+     * <p>See {@link ComplexityEstimator} for the score table.
      */
-    private static final int DEFAULT_PLANNER_THRESHOLD = 3;
+    private static final int DEFAULT_PLANNER_THRESHOLD = 4;
     private static final boolean DEFAULT_ADAPTIVE_REPLAN_ENABLED = true;
     private static final boolean DEFAULT_CANDIDATE_INJECTION_ENABLED = true;
     private static final boolean DEFAULT_CANDIDATE_PROMOTION_ENABLED = true;
