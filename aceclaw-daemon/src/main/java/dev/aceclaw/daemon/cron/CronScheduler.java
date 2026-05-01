@@ -75,6 +75,12 @@ public final class CronScheduler {
      */
     private volatile WebSocketBridge webSocketBridge;
     private final ObjectMapper objectMapper;
+    /** Cron-sessionIds for which {@code stream.session_started} has been emitted in this JVM. */
+    private final java.util.Set<String> cronSessionStartedSignaled =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** Per-cron-session turn counter (1-based). Each fire becomes a new turn. */
+    private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicInteger>
+            cronTurnCounters = new java.util.concurrent.ConcurrentHashMap<>();
 
     private ScheduledExecutorService scheduler;
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -367,10 +373,36 @@ public final class CronScheduler {
         // Falls back to the no-op SilentStreamHandler when the bridge
         // is disabled — CLI deployments are unaffected.
         var bridgeRef = this.webSocketBridge;
+        String sessionId = "cron-" + job.id();
+        int turnNumber = cronTurnCounters
+                .computeIfAbsent(sessionId, k -> new java.util.concurrent.atomic.AtomicInteger(0))
+                .incrementAndGet();
+        String requestId = sessionId + "-turn-" + turnNumber;
         StreamEventHandler streamHandler = bridgeRef != null
                 ? StreamingAgentHandler.newBroadcastingStreamHandler(
-                        bridgeRef, "cron-" + job.id(), objectMapper)
+                        bridgeRef, sessionId, objectMapper)
                 : new SilentStreamHandler();
+
+        // Lifecycle wrappers (#459): the inner StreamEventHandler emits
+        // only the LOW-LEVEL agent-loop events (thinking, tool_use, …).
+        // Without an enclosing session_started + turn_started, the
+        // reducer has no parent to attach those nodes to and tools
+        // float at the tree root. We emit the wrappers here at the run
+        // boundaries, the same way StreamingAgentHandler does for user
+        // sessions — one wire format, no drift.
+        if (bridgeRef != null) {
+            if (cronSessionStartedSignaled.add(sessionId)) {
+                StreamingAgentHandler.emitSessionStarted(bridgeRef, sessionId, model, objectMapper);
+            }
+            StreamingAgentHandler.emitTurnStarted(
+                    bridgeRef, sessionId, requestId, turnNumber, objectMapper);
+        }
+        long turnStartNanos = System.nanoTime();
+        // turnEndStopReason flips to ERROR on any failure path so the
+        // turn_completed event sent in `finally` accurately reflects
+        // why the run ended. Without this, a timed-out cron run would
+        // silently render as "END_TURN" on the dashboard.
+        String turnEndStopReason = "END_TURN";
         try {
             var future = CompletableFuture.supplyAsync(() -> {
                 try {
@@ -385,11 +417,13 @@ public final class CronScheduler {
             try {
                 return future.get(job.timeoutSeconds(), TimeUnit.SECONDS);
             } catch (TimeoutException e) {
+                turnEndStopReason = "ERROR";
                 cancellationToken.cancel();
                 future.cancel(true);
                 throw new TimeoutException("Cron job '" + job.id() + "' timed out after "
                         + job.timeoutSeconds() + "s");
             } catch (ExecutionException e) {
+                turnEndStopReason = "ERROR";
                 Throwable cause = e.getCause();
                 if (cause instanceof Exception ex) {
                     throw ex;
@@ -398,6 +432,14 @@ public final class CronScheduler {
             }
         } finally {
             executor.close();
+            // Always close out the turn so the dashboard tree marks it
+            // completed (or failed) — never leave it in-progress.
+            if (bridgeRef != null) {
+                long durationMs = (System.nanoTime() - turnStartNanos) / 1_000_000L;
+                StreamingAgentHandler.emitTurnCompleted(
+                        bridgeRef, sessionId, requestId, turnNumber,
+                        durationMs, /* toolCount = */ 0, turnEndStopReason, objectMapper);
+            }
         }
     }
 

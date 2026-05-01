@@ -100,7 +100,13 @@ export function useSessions(wsUrl: string | null): SessionInfo[] {
         // resurrect a just-ended session or drop one we just learned about.
         if (data['method'] === 'sessions.list.result') {
           const list = parseSessionsListResult(data);
-          if (list) setSessions((prev) => mergeSnapshot(prev, list));
+          if (list) {
+            // Defensive cron filter — the daemon's SessionManager doesn't
+            // hold cron sessions today, but if it ever does we still
+            // don't want them in the user-facing sidebar. (#459)
+            const userOnly = list.filter((s) => !isCronSessionId(s.sessionId));
+            setSessions((prev) => mergeSnapshot(prev, userOnly));
+          }
           return;
         }
 
@@ -118,6 +124,14 @@ export function useSessions(wsUrl: string | null): SessionInfo[] {
         if (method === 'stream.session_started') {
           const row = sessionInfoFromSessionStarted(params);
           if (!row) return;
+          // #459: cron jobs reuse the session_started/turn_started
+          // events to scaffold their tree (each fire becomes a new
+          // turn under "cron-{jobId}"), but they aren't user sessions
+          // and shouldn't appear in the SessionList sidebar — they
+          // already have their own CronJobsList row. Filter by the
+          // sessionId prefix so cron events don't leak into the user
+          // session list.
+          if (isCronSessionId(row.sessionId)) return;
           setSessions((prev) =>
             prev.some((s) => s.sessionId === row.sessionId)
               ? prev
@@ -126,6 +140,7 @@ export function useSessions(wsUrl: string | null): SessionInfo[] {
         } else if (method === 'stream.session_ended') {
           const sessionId = typeof params['sessionId'] === 'string' ? params['sessionId'] : null;
           if (!sessionId) return;
+          if (isCronSessionId(sessionId)) return;
           setSessions((prev) =>
             prev.map((s) => (s.sessionId === sessionId ? { ...s, active: false } : s)),
           );
@@ -243,6 +258,15 @@ export function parseSessionsListResult(
     });
   }
   return out;
+}
+
+/**
+ * True when {@code sessionId} belongs to a cron-as-session (#459).
+ * Mirrors the daemon-side prefix in {@code CronScheduler.runJobOnce}.
+ * Exported so unit tests pin the convention.
+ */
+export function isCronSessionId(sessionId: string): boolean {
+  return sessionId.startsWith('cron-');
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

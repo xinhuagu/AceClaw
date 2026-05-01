@@ -3240,11 +3240,79 @@ public final class StreamingAgentHandler {
      *
      * <p>Returns the SAME translation logic the user-session path uses
      * so both surfaces speak literally one wire format.
+     *
+     * <p>Note: this handler only carries the LOW-LEVEL agent-loop events
+     * (thinking, tool_use, text, tool_completed). Callers must emit the
+     * lifecycle wrapper events ({@link #emitSessionStarted},
+     * {@link #emitTurnStarted}, {@link #emitTurnCompleted}) themselves at
+     * the run boundaries — without those, the dashboard reducer has no
+     * session/turn parent to attach the inner nodes to and tools end up
+     * floating at the tree root.
      */
     public static StreamEventHandler newBroadcastingStreamHandler(
             WebSocketBridge bridge, String sessionId, ObjectMapper mapper) {
         var ctx = new BroadcastOnlyStreamContext(bridge, sessionId);
         return new StreamingNotificationHandler(ctx, mapper);
+    }
+
+    /**
+     * Broadcasts {@code stream.session_started} for a daemon-internal
+     * session (cron, deferred action, …). Idempotency is the caller's
+     * responsibility — emit once per session lifetime (e.g., dedupe
+     * against a {@code Set<String>} of already-signaled ids).
+     *
+     * <p>Same wire shape as the user-session path uses, so the dashboard
+     * reducer creates the session root node identically.
+     */
+    public static void emitSessionStarted(WebSocketBridge bridge, String sessionId,
+                                          String model, ObjectMapper mapper) {
+        if (bridge == null) return;
+        var p = mapper.createObjectNode();
+        p.put("sessionId", sessionId);
+        p.put("model", model);
+        p.put("timestamp", java.time.Instant.now().toString());
+        bridge.broadcast(sessionId, "stream.session_started", p);
+    }
+
+    /**
+     * Broadcasts {@code stream.turn_started} for a daemon-internal
+     * session. Call once before each {@code agentLoop.runTurn(...)} so
+     * the reducer creates a fresh turn node and the agent-loop events
+     * that follow attach under it.
+     */
+    public static void emitTurnStarted(WebSocketBridge bridge, String sessionId,
+                                       String requestId, int turnNumber, ObjectMapper mapper) {
+        if (bridge == null) return;
+        var ts = mapper.createObjectNode();
+        ts.put("sessionId", sessionId);
+        ts.put("requestId", requestId);
+        ts.put("turnNumber", turnNumber);
+        ts.put("timestamp", java.time.Instant.now().toString());
+        bridge.broadcast(sessionId, "stream.turn_started", ts);
+    }
+
+    /**
+     * Broadcasts {@code stream.turn_completed} for a daemon-internal
+     * session. Call once after each {@code agentLoop.runTurn(...)}
+     * (success OR failure path) so the reducer can mark the turn
+     * complete and stop drawing it as in-progress.
+     */
+    public static void emitTurnCompleted(WebSocketBridge bridge, String sessionId,
+                                         String requestId, int turnNumber,
+                                         long durationMs, int toolCount,
+                                         String stopReason, ObjectMapper mapper) {
+        if (bridge == null) return;
+        var tc = mapper.createObjectNode();
+        tc.put("sessionId", sessionId);
+        tc.put("requestId", requestId);
+        tc.put("turnNumber", turnNumber);
+        tc.put("durationMs", durationMs);
+        tc.put("toolCount", toolCount);
+        tc.put("timestamp", java.time.Instant.now().toString());
+        if (stopReason != null) {
+            tc.put("stopReason", stopReason);
+        }
+        bridge.broadcast(sessionId, "stream.turn_completed", tc);
     }
 
     /**
