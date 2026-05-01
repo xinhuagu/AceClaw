@@ -523,6 +523,13 @@ public final class AceClawDaemon {
                     // started just sees an empty job list.
                     case "scheduler.cron.status" ->
                             handleSchedulerCronStatus(ctx, mapperRef, cronJobStore, cronScheduler);
+                    // #459 layer 3: dashboard timeline backfills its
+                    // event window from this on connect. Same shape as
+                    // the CLI's scheduler.events.poll RPC; reply tagged
+                    // with .result for the hook to match.
+                    case "scheduler.events.poll" ->
+                            handleSchedulerEventsPoll(ctx, mapperRef, schedulerEventFeed,
+                                    message.get("params"));
                     // Browser approve/deny → route to the same per-context
                     // CompletableFuture the CLI socket monitor would (issue
                     // #433). First response wins; the loser is logged and
@@ -1285,58 +1292,13 @@ public final class AceClawDaemon {
         router.register("scheduler.cron.status", params ->
                 buildCronStatusReply(objectMapper, cronJobStore, cronScheduler));
 
-        // Scheduler feed polling for foreground CLI notifications.
-        router.register("scheduler.events.poll", params -> {
-            long afterSeq = 0L;
-            int limit = 20;
-            if (params != null) {
-                if (params.has("afterSeq")) {
-                    afterSeq = Math.max(0L, params.get("afterSeq").asLong());
-                }
-                if (params.has("limit")) {
-                    limit = params.get("limit").asInt(20);
-                }
-            }
-
-            var polled = schedulerEventFeed.poll(afterSeq, limit);
-            var result = objectMapper.createObjectNode();
-            result.put("nextSeq", polled.nextSequence());
-            var events = objectMapper.createArrayNode();
-            for (var entry : polled.entries()) {
-                var node = objectMapper.createObjectNode();
-                node.put("seq", entry.sequence());
-                var event = entry.event();
-                node.put("jobId", event.jobId());
-                switch (event) {
-                    case SchedulerEvent.JobTriggered e -> {
-                        node.put("type", "triggered");
-                        node.put("cronExpression", e.cronExpression());
-                        node.put("timestamp", e.timestamp().toString());
-                    }
-                    case SchedulerEvent.JobCompleted e -> {
-                        node.put("type", "completed");
-                        node.put("durationMs", e.durationMs());
-                        node.put("summary", e.summary());
-                        node.put("timestamp", e.timestamp().toString());
-                    }
-                    case SchedulerEvent.JobFailed e -> {
-                        node.put("type", "failed");
-                        node.put("error", e.error());
-                        node.put("attempt", e.attempt());
-                        node.put("maxAttempts", e.maxAttempts());
-                        node.put("timestamp", e.timestamp().toString());
-                    }
-                    case SchedulerEvent.JobSkipped e -> {
-                        node.put("type", "skipped");
-                        node.put("reason", e.reason());
-                        node.put("timestamp", e.timestamp().toString());
-                    }
-                }
-                events.add(node);
-            }
-            result.set("events", events);
-            return result;
-        });
+        // Scheduler event feed polling. CLI uses this for foreground
+        // notifications; dashboard timeline (#459 layer 3) uses it for
+        // history backfill on connect. Body extracted into
+        // buildSchedulerEventsPollReply so the WS inbound path serves
+        // exactly the same shape.
+        router.register("scheduler.events.poll", params ->
+                buildSchedulerEventsPollReply(objectMapper, schedulerEventFeed, params));
 
         // Deferred event feed polling for foreground CLI notifications.
         router.register("deferred.events.poll", params -> {
@@ -1928,6 +1890,93 @@ public final class AceClawDaemon {
         }
         result.set("jobs", jobs);
         return result;
+    }
+
+    /**
+     * Builds the {@code scheduler.events.poll} reply body — a paginated
+     * window into the {@link SchedulerEventFeed} ring buffer. Shared by
+     * the CLI's JSON-RPC handler and the dashboard's WS inbound handler
+     * (#459 layer 3) so both surfaces speak exactly the same wire shape.
+     *
+     * <p>Tolerates a null params node (defaults afterSeq=0, limit=20)
+     * and clamps {@code limit} via the feed's own bounds.
+     */
+    private static com.fasterxml.jackson.databind.node.ObjectNode buildSchedulerEventsPollReply(
+            ObjectMapper mapper,
+            SchedulerEventFeed feed,
+            com.fasterxml.jackson.databind.JsonNode params) {
+        long afterSeq = 0L;
+        int limit = 20;
+        if (params != null) {
+            if (params.has("afterSeq")) {
+                afterSeq = Math.max(0L, params.get("afterSeq").asLong());
+            }
+            if (params.has("limit")) {
+                limit = params.get("limit").asInt(20);
+            }
+        }
+        var result = mapper.createObjectNode();
+        if (feed == null) {
+            result.put("nextSeq", 0L);
+            result.set("events", mapper.createArrayNode());
+            return result;
+        }
+        var polled = feed.poll(afterSeq, limit);
+        result.put("nextSeq", polled.nextSequence());
+        var events = mapper.createArrayNode();
+        for (var entry : polled.entries()) {
+            var node = mapper.createObjectNode();
+            node.put("seq", entry.sequence());
+            var event = entry.event();
+            node.put("jobId", event.jobId());
+            switch (event) {
+                case SchedulerEvent.JobTriggered e -> {
+                    node.put("type", "triggered");
+                    node.put("cronExpression", e.cronExpression());
+                    node.put("timestamp", e.timestamp().toString());
+                }
+                case SchedulerEvent.JobCompleted e -> {
+                    node.put("type", "completed");
+                    node.put("durationMs", e.durationMs());
+                    node.put("summary", e.summary());
+                    node.put("timestamp", e.timestamp().toString());
+                }
+                case SchedulerEvent.JobFailed e -> {
+                    node.put("type", "failed");
+                    node.put("error", e.error());
+                    node.put("attempt", e.attempt());
+                    node.put("maxAttempts", e.maxAttempts());
+                    node.put("timestamp", e.timestamp().toString());
+                }
+                case SchedulerEvent.JobSkipped e -> {
+                    node.put("type", "skipped");
+                    node.put("reason", e.reason());
+                    node.put("timestamp", e.timestamp().toString());
+                }
+            }
+            events.add(node);
+        }
+        result.set("events", events);
+        return result;
+    }
+
+    /**
+     * Replies to a {@code scheduler.events.poll} inbound message from
+     * the dashboard timeline. Tags with {@code scheduler.events.poll.result}
+     * so the consumer hook can match it against its connect-time request.
+     * Mirrors {@link #handleSchedulerCronStatus}.
+     */
+    private static void handleSchedulerEventsPoll(io.javalin.websocket.WsContext ctx,
+                                                   ObjectMapper mapper,
+                                                   SchedulerEventFeed feed,
+                                                   com.fasterxml.jackson.databind.JsonNode params) {
+        try {
+            var body = buildSchedulerEventsPollReply(mapper, feed, params);
+            body.put("method", "scheduler.events.poll.result");
+            ctx.send(mapper.writeValueAsString(body));
+        } catch (Exception e) {
+            log.warn("Failed to send scheduler.events.poll.result reply: {}", e.getMessage());
+        }
     }
 
     /**

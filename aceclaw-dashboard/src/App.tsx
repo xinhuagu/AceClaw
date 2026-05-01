@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { CronJobsList } from './components/CronJobsList';
+import { CronTimeline } from './components/CronTimeline';
 import { ExecutionTree } from './components/ExecutionTree';
 import { SessionList } from './components/SessionList';
 import { useCronJobs } from './hooks/useCronJobs';
@@ -62,7 +63,7 @@ export function App() {
   const [sessionId, setSessionId] = useState(initialSession);
   const [wsUrl] = useState(initialWs);
   const sessions = useSessions(wsUrl);
-  const cronJobs = useCronJobs(wsUrl);
+  const { jobs: cronJobs, recentEvents: cronRecentEvents } = useCronJobs(wsUrl);
 
   // Selecting a session in the sidebar replaces the URL so reload preserves
   // the selection — replaceState rather than pushState so the back button
@@ -85,6 +86,7 @@ export function App() {
         footer={<CronJobsList jobs={cronJobs} />}
       />
       <div className="flex flex-1 flex-col overflow-hidden">
+        <CronTimeline jobs={cronJobs} recentEvents={cronRecentEvents} />
         {sessionId ? (
           <DashboardConnected sessionId={sessionId.trim()} wsUrl={wsUrl} />
         ) : (

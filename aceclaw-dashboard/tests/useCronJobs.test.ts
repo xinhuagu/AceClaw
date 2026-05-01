@@ -8,9 +8,12 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  appendCapped,
   applyEventDelta,
   hasJob,
+  parseEventsPollResult,
   parseStatusResult,
+  recordFromLiveEvent,
   type CronJobInfo,
 } from '../src/hooks/useCronJobs';
 
@@ -159,6 +162,123 @@ describe('applyEventDelta', () => {
       timestamp: '2026-05-01T10:01:00Z',
     });
     expect(prev[0]!.lastStatus).toBeUndefined();
+  });
+});
+
+describe('parseEventsPollResult', () => {
+  // Pins the wire-format mapping for the timeline backfill (#459 layer 3).
+  // A typo'd `cronExpression` vs `cronExpr` would silently render blank
+  // tooltips with no test failure — this guards.
+
+  it('returns null when events is not an array', () => {
+    expect(parseEventsPollResult({})).toBeNull();
+    expect(parseEventsPollResult({ events: 'oops' })).toBeNull();
+  });
+
+  it('parses each of the four event types with their kind-specific fields', () => {
+    const out = parseEventsPollResult({
+      events: [
+        { jobId: 'a', type: 'triggered', timestamp: '2026-05-01T10:00:00Z',
+          cronExpression: '* * * * *' },
+        { jobId: 'a', type: 'completed', timestamp: '2026-05-01T10:00:01Z',
+          durationMs: 1234, summary: 'done' },
+        { jobId: 'a', type: 'failed', timestamp: '2026-05-01T10:00:02Z',
+          error: 'boom', attempt: 2, maxAttempts: 5 },
+        { jobId: 'a', type: 'skipped', timestamp: '2026-05-01T10:00:03Z',
+          reason: 'previous run still active' },
+      ],
+    });
+    expect(out).toHaveLength(4);
+    expect(out![0]).toMatchObject({ kind: 'triggered', cronExpression: '* * * * *' });
+    expect(out![1]).toMatchObject({ kind: 'completed', durationMs: 1234, summary: 'done' });
+    expect(out![2]).toMatchObject({
+      kind: 'failed',
+      error: 'boom',
+      attempt: 2,
+      maxAttempts: 5,
+    });
+    expect(out![3]).toMatchObject({ kind: 'skipped', reason: 'previous run still active' });
+  });
+
+  it('skips events with unknown type so a future 5th kind doesn\'t crash old dashboards', () => {
+    const out = parseEventsPollResult({
+      events: [
+        { jobId: 'a', type: 'triggered', timestamp: '2026-05-01T10:00:00Z' },
+        { jobId: 'a', type: 'magicked-into-existence', timestamp: '2026-05-01T10:00:01Z' },
+      ],
+    });
+    expect(out).toHaveLength(1);
+    expect(out![0]!.kind).toBe('triggered');
+  });
+
+  it('skips events missing required fields', () => {
+    const out = parseEventsPollResult({
+      events: [
+        { jobId: 'a', type: 'triggered', timestamp: '2026-05-01T10:00:00Z' },
+        { type: 'triggered', timestamp: '2026-05-01T10:00:01Z' },     // missing jobId
+        { jobId: 'b', type: 'completed' },                            // missing timestamp
+      ],
+    });
+    expect(out).toHaveLength(1);
+  });
+});
+
+describe('recordFromLiveEvent', () => {
+  it('returns null on unknown method', () => {
+    expect(recordFromLiveEvent('scheduler.unrelated', 'a', { timestamp: 't' })).toBeNull();
+  });
+
+  it('returns null when timestamp is missing', () => {
+    expect(recordFromLiveEvent('scheduler.job_triggered', 'a', {})).toBeNull();
+  });
+
+  it('maps each live method to the right kind', () => {
+    expect(recordFromLiveEvent('scheduler.job_triggered', 'a',
+      { timestamp: 't' })?.kind).toBe('triggered');
+    expect(recordFromLiveEvent('scheduler.job_completed', 'a',
+      { timestamp: 't' })?.kind).toBe('completed');
+    expect(recordFromLiveEvent('scheduler.job_failed', 'a',
+      { timestamp: 't' })?.kind).toBe('failed');
+    expect(recordFromLiveEvent('scheduler.job_skipped', 'a',
+      { timestamp: 't' })?.kind).toBe('skipped');
+  });
+
+  it('preserves kind-specific fields', () => {
+    const r = recordFromLiveEvent('scheduler.job_failed', 'a', {
+      timestamp: '2026-05-01T10:00:00Z',
+      error: 'boom',
+      attempt: 1,
+      maxAttempts: 3,
+    });
+    expect(r).toMatchObject({
+      jobId: 'a',
+      kind: 'failed',
+      error: 'boom',
+      attempt: 1,
+      maxAttempts: 3,
+    });
+  });
+});
+
+describe('appendCapped', () => {
+  it('appends below the cap', () => {
+    expect(appendCapped([1, 2], 3, 5)).toEqual([1, 2, 3]);
+  });
+
+  it('drops oldest when at cap', () => {
+    expect(appendCapped([1, 2, 3], 4, 3)).toEqual([2, 3, 4]);
+  });
+
+  it('drops multiple when exceeding cap', () => {
+    // Edge case — we wouldn't normally hit this since the buffer is
+    // appended one item at a time, but the math has to be right.
+    expect(appendCapped([1, 2, 3, 4, 5], 6, 3)).toEqual([4, 5, 6]);
+  });
+
+  it('does not mutate the input array', () => {
+    const prev = [1, 2, 3];
+    appendCapped(prev, 4, 3);
+    expect(prev).toEqual([1, 2, 3]);
   });
 });
 
