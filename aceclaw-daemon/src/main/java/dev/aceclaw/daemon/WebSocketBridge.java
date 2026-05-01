@@ -57,6 +57,18 @@ public final class WebSocketBridge {
 
     private static final Logger log = LoggerFactory.getLogger(WebSocketBridge.class);
 
+    /**
+     * Sentinel sessionId stamped on globally-scoped envelopes (e.g. cron
+     * scheduler events from #459). Per-session reducers filter envelopes by
+     * matching the connected tab's sessionId, so this sentinel is invisible
+     * to {@code useExecutionTree} and only the global hooks
+     * ({@code useCronJobs}, …) opt in by checking for it. Late-joiners
+     * backfill via dedicated polling endpoints (e.g. {@code scheduler.events.poll})
+     * — global events deliberately do NOT go through the per-session
+     * snapshot buffer, so this sentinel never accumulates entries there.
+     */
+    public static final String GLOBAL_SESSION_ID = "__global__";
+
     private final String host;
     /**
      * Configured port. {@code 0} means "let Jetty pick an ephemeral port"; in
@@ -227,23 +239,72 @@ public final class WebSocketBridge {
      */
     public void broadcast(String sessionId, String method, Object params) {
         Objects.requireNonNull(sessionId, "sessionId");
+        // Guard against routing a globally-scoped event through the
+        // per-session path by mistake — the sentinel must only ever be
+        // emitted by broadcastGlobal, which deliberately skips the
+        // SessionEventBuffer. A typo'd call here would silently pollute
+        // the buffer with entries no snapshot.request would ever read.
+        if (GLOBAL_SESSION_ID.equals(sessionId)) {
+            throw new IllegalArgumentException(
+                    "Use broadcastGlobal(method, params) for globally-scoped events; "
+                            + "the GLOBAL_SESSION_ID sentinel must not appear in broadcast(sessionId, ...)");
+        }
         if (app == null) {
             return;
         }
-        // Increment BEFORE the no-clients short-circuit so eventId stays
-        // monotonic and gap-free across zero-client periods. #432's snapshot
-        // endpoint exposes currentEventId() as the reconnect watermark; the
-        // browser uses it to deduplicate the live stream against the snapshot,
-        // and that contract requires an unbroken sequence regardless of
-        // whether any tab was connected when each event was produced.
+        var built = buildEnvelope(sessionId, method, params);
+        if (built == null) {
+            return;
+        }
+        // Append to the per-session ring buffer unconditionally — even with
+        // zero connected clients, #432 needs the buffer populated so a tab
+        // that opens AFTER the event was emitted can replay it via
+        // snapshot.request.
+        eventBuffer.append(sessionId, built.envelope());
+        sendToAllClients(built.message());
+    }
+
+    /**
+     * Broadcasts a globally-scoped event (no owning session) to every
+     * connected client. Used by daemon-wide subsystems such as the cron
+     * scheduler (#459) whose events are not tied to any one session.
+     *
+     * <p>The envelope still carries a {@code sessionId} field — set to
+     * {@link #GLOBAL_SESSION_ID} — so the dashboard's per-session
+     * {@code useExecutionTree} naturally filters these out, and global
+     * hooks like {@code useCronJobs} opt in by matching that sentinel.
+     *
+     * <p>Globally-scoped events deliberately do NOT enter the per-session
+     * snapshot ring buffer: late-joining tabs backfill via dedicated
+     * polling endpoints (e.g. {@code scheduler.events.poll}), which is
+     * cheaper than an ever-growing global bucket inside
+     * {@link SessionEventBuffer} that no per-session snapshot.request
+     * would ever read.
+     */
+    public void broadcastGlobal(String method, Object params) {
+        if (app == null) {
+            return;
+        }
+        var built = buildEnvelope(GLOBAL_SESSION_ID, method, params);
+        if (built == null) {
+            return;
+        }
+        sendToAllClients(built.message());
+    }
+
+    /** Carrier for buildEnvelope's two outputs (object form for buffer, string form for the wire). */
+    private record Built(ObjectNode envelope, String message) {}
+
+    private Built buildEnvelope(String sessionId, String method, Object params) {
+        // Increment BEFORE any no-op early-return so eventId stays monotonic
+        // and gap-free. #432's snapshot endpoint exposes currentEventId() as
+        // the reconnect watermark; the browser uses it to deduplicate the
+        // live stream against the snapshot, and that contract requires an
+        // unbroken sequence regardless of whether any tab was connected
+        // when each event was produced.
         long eventId = eventIdCounter.incrementAndGet();
-        // Build the envelope unconditionally — even with zero connected
-        // clients, #432 needs the buffer populated so a tab that opens AFTER
-        // the event was emitted can replay it via snapshot.request.
-        ObjectNode envelope;
-        String message;
         try {
-            envelope = objectMapper.createObjectNode();
+            var envelope = objectMapper.createObjectNode();
             envelope.put("eventId", eventId);
             envelope.put("sessionId", sessionId);
             envelope.put("receivedAt", Instant.now().toString());
@@ -251,12 +312,14 @@ public final class WebSocketBridge {
             event.put("method", method);
             event.set("params", objectMapper.valueToTree(params));
             envelope.set("event", event);
-            message = objectMapper.writeValueAsString(envelope);
+            return new Built(envelope, objectMapper.writeValueAsString(envelope));
         } catch (Exception e) {
             log.warn("Failed to serialise WS broadcast for {}: {}", method, e.getMessage());
-            return;
+            return null;
         }
-        eventBuffer.append(sessionId, envelope);
+    }
+
+    private void sendToAllClients(String message) {
         if (clients.isEmpty()) {
             return;
         }
