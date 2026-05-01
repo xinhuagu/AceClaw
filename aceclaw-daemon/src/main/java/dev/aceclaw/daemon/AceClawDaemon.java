@@ -515,6 +515,14 @@ public final class AceClawDaemon {
                 switch (method) {
                     case "sessions.list" -> handleSessionsList(ctx, mapperRef, sessionsRef, agentHandler);
                     case "snapshot.request" -> handleSnapshotRequest(ctx, message, mapperRef, bridgeRef);
+                    // #459 layer 2: dashboard sidebar fetches the current
+                    // cron-job snapshot on connect. Reply is point-to-point
+                    // (not broadcast), same one-shot pattern as sessions.list.
+                    // Field reads of cronJobStore/cronScheduler are lazy via
+                    // `this` so a dashboard that connects before cron has
+                    // started just sees an empty job list.
+                    case "scheduler.cron.status" ->
+                            handleSchedulerCronStatus(ctx, mapperRef, cronJobStore, cronScheduler);
                     // Browser approve/deny → route to the same per-context
                     // CompletableFuture the CLI socket monitor would (issue
                     // #433). First response wins; the loser is logged and
@@ -1271,54 +1279,11 @@ public final class AceClawDaemon {
             }
         });
 
-        // Scheduler feed polling for foreground CLI notifications.
-        router.register("scheduler.cron.status", params -> {
-            var result = objectMapper.createObjectNode();
-            boolean schedulerRunning = cronScheduler != null && cronScheduler.isRunning();
-            result.put("schedulerRunning", schedulerRunning);
-            if (cronScheduler != null) {
-                result.put("jobRunning", cronScheduler.isJobRunning());
-                if (cronScheduler.currentJobId() != null) {
-                    result.put("currentJobId", cronScheduler.currentJobId());
-                }
-                if (cronScheduler.currentJobStartedAt() != null) {
-                    result.put("currentJobStartedAt", cronScheduler.currentJobStartedAt().toString());
-                }
-            } else {
-                result.put("jobRunning", false);
-            }
-
-            var jobs = objectMapper.createArrayNode();
-            for (CronJob job : cronJobStore.all().stream()
-                    .sorted(Comparator.comparing(CronJob::id))
-                    .toList()) {
-                var jn = objectMapper.createObjectNode();
-                jn.put("id", job.id());
-                jn.put("name", job.name());
-                jn.put("expression", job.expression());
-                jn.put("enabled", job.enabled());
-                jn.put("heartbeat", job.id().startsWith(HeartbeatRunner.JOB_ID_PREFIX));
-                jn.put("kind", cronKind(job));
-                jn.put("description", summarizePrompt(job.prompt()));
-                if (job.lastRunAt() != null) {
-                    jn.put("lastRunAt", job.lastRunAt().toString());
-                }
-                if (job.lastError() != null && !job.lastError().isBlank()) {
-                    jn.put("lastError", job.lastError());
-                }
-                try {
-                    Instant lastRun = job.lastRunAt() != null ? job.lastRunAt() : Instant.EPOCH;
-                    Instant nextFire = CronExpression.parse(job.expression()).nextFireTime(lastRun);
-                    if (nextFire != null) {
-                        jn.put("nextFireAt", nextFire.toString());
-                    }
-                } catch (Exception ignored) {
-                }
-                jobs.add(jn);
-            }
-            result.set("jobs", jobs);
-            return result;
-        });
+        // Scheduler status (CLI poll endpoint + dashboard sidebar bootstrap).
+        // Body extracted into buildCronStatusReply so the WS inbound path
+        // (#459 layer 2) can serve the same shape over the bridge.
+        router.register("scheduler.cron.status", params ->
+                buildCronStatusReply(objectMapper, cronJobStore, cronScheduler));
 
         // Scheduler feed polling for foreground CLI notifications.
         router.register("scheduler.events.poll", params -> {
@@ -1900,6 +1865,101 @@ public final class AceClawDaemon {
 
     /** Translated form of a {@link SchedulerEvent} ready to broadcast over WS. */
     record SchedulerNotification(String method, com.fasterxml.jackson.databind.node.ObjectNode params) {}
+
+    /**
+     * Builds the {@code scheduler.cron.status} reply body — a snapshot of
+     * scheduler state plus every configured job, sorted by id. Shared by
+     * the CLI's JSON-RPC handler and the dashboard's WS inbound handler so
+     * the two surfaces speak exactly the same wire shape.
+     *
+     * <p>Tolerates a null scheduler (daemon started before cron was wired)
+     * by reporting {@code schedulerRunning=false} and an empty jobs list
+     * derived from whatever the store happens to hold.
+     */
+    private static com.fasterxml.jackson.databind.node.ObjectNode buildCronStatusReply(
+            ObjectMapper mapper,
+            dev.aceclaw.daemon.cron.JobStore jobStore,
+            dev.aceclaw.daemon.cron.CronScheduler scheduler) {
+        var result = mapper.createObjectNode();
+        boolean schedulerRunning = scheduler != null && scheduler.isRunning();
+        result.put("schedulerRunning", schedulerRunning);
+        if (scheduler != null) {
+            result.put("jobRunning", scheduler.isJobRunning());
+            if (scheduler.currentJobId() != null) {
+                result.put("currentJobId", scheduler.currentJobId());
+            }
+            if (scheduler.currentJobStartedAt() != null) {
+                result.put("currentJobStartedAt", scheduler.currentJobStartedAt().toString());
+            }
+        } else {
+            result.put("jobRunning", false);
+        }
+        var jobs = mapper.createArrayNode();
+        if (jobStore != null) {
+            for (CronJob job : jobStore.all().stream()
+                    .sorted(java.util.Comparator.comparing(CronJob::id))
+                    .toList()) {
+                var jn = mapper.createObjectNode();
+                jn.put("id", job.id());
+                jn.put("name", job.name());
+                jn.put("expression", job.expression());
+                jn.put("enabled", job.enabled());
+                jn.put("heartbeat", job.id().startsWith(HeartbeatRunner.JOB_ID_PREFIX));
+                jn.put("kind", cronKind(job));
+                jn.put("description", summarizePrompt(job.prompt()));
+                if (job.lastRunAt() != null) {
+                    jn.put("lastRunAt", job.lastRunAt().toString());
+                }
+                if (job.lastError() != null && !job.lastError().isBlank()) {
+                    jn.put("lastError", job.lastError());
+                }
+                try {
+                    Instant lastRun = job.lastRunAt() != null ? job.lastRunAt() : Instant.EPOCH;
+                    Instant nextFire = dev.aceclaw.daemon.cron.CronExpression.parse(job.expression())
+                            .nextFireTime(lastRun);
+                    if (nextFire != null) {
+                        jn.put("nextFireAt", nextFire.toString());
+                    }
+                } catch (Exception ignored) {
+                    // Bad expression — surface the rest of the job, just no nextFireAt.
+                }
+                jobs.add(jn);
+            }
+        }
+        result.set("jobs", jobs);
+        return result;
+    }
+
+    /**
+     * Replies to a {@code scheduler.cron.status} inbound message from the
+     * dashboard with the same snapshot the CLI would get over JSON-RPC,
+     * wrapped as a one-shot point-to-point reply (NOT broadcast). Mirrors
+     * {@link #handleSessionsList}.
+     *
+     * <p>Reply shape:
+     * <pre>{@code
+     * {
+     *   "method": "scheduler.cron.status.result",
+     *   "schedulerRunning": <bool>,
+     *   "jobRunning": <bool>,
+     *   "jobs": [{ id, name, expression, enabled, lastRunAt?, nextFireAt?, ... }]
+     * }
+     * }</pre>
+     */
+    private static void handleSchedulerCronStatus(io.javalin.websocket.WsContext ctx,
+                                                   ObjectMapper mapper,
+                                                   dev.aceclaw.daemon.cron.JobStore jobStore,
+                                                   dev.aceclaw.daemon.cron.CronScheduler scheduler) {
+        try {
+            var body = buildCronStatusReply(mapper, jobStore, scheduler);
+            // Tag with the result method so the dashboard's hook can match it
+            // against the request it sent on connect.
+            body.put("method", "scheduler.cron.status.result");
+            ctx.send(mapper.writeValueAsString(body));
+        } catch (Exception e) {
+            log.warn("Failed to send scheduler.cron.status.result reply: {}", e.getMessage());
+        }
+    }
 
     private static String cronKind(CronJob job) {
         if (job.id() != null && job.id().startsWith(HeartbeatRunner.JOB_ID_PREFIX)) {
