@@ -114,7 +114,15 @@ public final class AceClawDaemon {
     private DeferredActionStore deferredActionStore;
     private DeferCheckTool deferCheckTool;
     /** Browser dashboard bridge (issue #431); null when {@code webSocket.enabled=false}. */
-    private WebSocketBridge webSocketBridge;
+    /**
+     * Volatile because {@link #forwardSchedulerEventToWs} reads this on
+     * eventBus subscriber threads and the field is written once in
+     * {@link #start()}. Without volatile the JMM only guarantees visibility
+     * via the eventBus queue's internal synchronization — true in practice
+     * but fragile to refactor. The volatile read is essentially free and
+     * documents the cross-thread access.
+     */
+    private volatile WebSocketBridge webSocketBridge;
 
     private volatile boolean running;
 
@@ -139,6 +147,13 @@ public final class AceClawDaemon {
         eventBus.start();
         this.schedulerEventFeed = new SchedulerEventFeed();
         eventBus.subscribe(SchedulerEvent.class, schedulerEventFeed::append);
+        // #459: also forward scheduler events to the dashboard via the WS
+        // bridge (when one is configured). Lazy-reads webSocketBridge at
+        // fire time because the bridge is constructed later in start().
+        // The null-check is pure defense in depth — the cron scheduler
+        // itself isn't started until after the bridge is up (see start()),
+        // so in practice no SchedulerEvent can fire while bridge is null.
+        eventBus.subscribe(SchedulerEvent.class, this::forwardSchedulerEventToWs);
         this.deferredEventFeed = new DeferredEventFeed();
         eventBus.subscribe(DeferEvent.class, deferredEventFeed::append);
         this.skillDraftEventFeed = new SkillDraftEventFeed();
@@ -1812,6 +1827,79 @@ public final class AceClawDaemon {
         }
         return firstLine.substring(0, 117) + "...";
     }
+
+    /**
+     * #459 layer 1: forwards a {@link SchedulerEvent} to the dashboard via
+     * the WebSocket bridge. Translates the typed event into one of four
+     * JSON-RPC notification methods ({@code scheduler.job_triggered},
+     * {@code scheduler.job_completed}, {@code scheduler.job_failed},
+     * {@code scheduler.job_skipped}) and broadcasts it globally — scheduler
+     * events are session-less, so the dashboard's per-session reducers
+     * filter them out and only the global {@code useCronJobs} hook
+     * picks them up.
+     *
+     * <p>No-op when the WS bridge is disabled (or not yet constructed) —
+     * the CLI continues to receive scheduler updates via the
+     * {@link SchedulerEventFeed} polling endpoint untouched.
+     *
+     * <p>Defensive against subscriber-thread interruption: any exception
+     * here is logged and swallowed so a misbehaving WS path can't kill
+     * the eventBus subscriber chain.
+     */
+    private void forwardSchedulerEventToWs(SchedulerEvent event) {
+        var bridge = this.webSocketBridge;
+        if (bridge == null) {
+            return;
+        }
+        try {
+            var notification = translateSchedulerEvent(objectMapper, event);
+            bridge.broadcastGlobal(notification.method(), notification.params());
+        } catch (Exception e) {
+            log.warn("Failed to forward SchedulerEvent to WS bridge: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Translation rule for {@link SchedulerEvent} → JSON-RPC notification.
+     * Pure and static so it can be unit-tested in isolation — the wiring
+     * in {@link #forwardSchedulerEventToWs} becomes a thin caller, and
+     * the dashboard's wire contract (method name + param shape) is pinned
+     * by direct unit tests instead of by a missing integration test.
+     */
+    static SchedulerNotification translateSchedulerEvent(
+            ObjectMapper mapper, SchedulerEvent event) {
+        var params = mapper.createObjectNode();
+        params.put("jobId", event.jobId());
+        String method = switch (event) {
+            case SchedulerEvent.JobTriggered e -> {
+                params.put("cronExpression", e.cronExpression());
+                params.put("timestamp", e.timestamp().toString());
+                yield "scheduler.job_triggered";
+            }
+            case SchedulerEvent.JobCompleted e -> {
+                params.put("durationMs", e.durationMs());
+                params.put("summary", e.summary());
+                params.put("timestamp", e.timestamp().toString());
+                yield "scheduler.job_completed";
+            }
+            case SchedulerEvent.JobFailed e -> {
+                params.put("error", e.error());
+                params.put("attempt", e.attempt());
+                params.put("maxAttempts", e.maxAttempts());
+                params.put("timestamp", e.timestamp().toString());
+                yield "scheduler.job_failed";
+            }
+            case SchedulerEvent.JobSkipped e -> {
+                params.put("reason", e.reason());
+                params.put("timestamp", e.timestamp().toString());
+                yield "scheduler.job_skipped";
+            }
+        };
+        return new SchedulerNotification(method, params);
+    }
+
+    /** Translated form of a {@link SchedulerEvent} ready to broadcast over WS. */
+    record SchedulerNotification(String method, com.fasterxml.jackson.databind.node.ObjectNode params) {}
 
     private static String cronKind(CronJob job) {
         if (job.id() != null && job.id().startsWith(HeartbeatRunner.JOB_ID_PREFIX)) {

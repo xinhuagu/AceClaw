@@ -408,6 +408,72 @@ final class WebSocketBridgeTest {
     }
 
     @Test
+    void broadcastGlobalSendsWithSentinelSessionIdAndSkipsBuffer() throws Exception {
+        // #459: globally-scoped events (cron scheduler) reach all clients but
+        // do NOT enter the per-session ring buffer — late-joiners backfill via
+        // dedicated polling endpoints, not snapshot.request, so the sentinel
+        // bucket would just grow forever for nobody's benefit.
+        bridge = startOnRandomPort();
+        var connected = new CountDownLatch(1);
+        bridge.addConnectionListener(_ -> connected.countDown());
+        var queue = new LinkedBlockingQueue<String>();
+        var ws = connect(queue::add);
+        assertThat(connected.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)).isTrue();
+
+        bridge.broadcastGlobal("scheduler.job_triggered",
+                Map.of("jobId", "daily-backup", "cronExpression", "0 2 * * *"));
+
+        var msg = queue.poll(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        assertThat(msg).isNotNull();
+        var node = objectMapper.readTree(msg);
+        // Sentinel sessionId so per-session reducers naturally filter it out.
+        assertThat(node.get("sessionId").asText()).isEqualTo(WebSocketBridge.GLOBAL_SESSION_ID);
+        assertThat(node.get("event").get("method").asText()).isEqualTo("scheduler.job_triggered");
+        assertThat(node.get("event").get("params").get("jobId").asText()).isEqualTo("daily-backup");
+        // Monotonic eventId is shared with regular broadcasts.
+        assertThat(node.get("eventId").asLong()).isEqualTo(1L);
+
+        // Crucial: the sentinel sessionId must NOT have anything in the per-session buffer.
+        assertThat(bridge.eventBuffer().snapshot(WebSocketBridge.GLOBAL_SESSION_ID))
+                .as("globally-scoped events must not pollute the per-session snapshot buffer")
+                .isEmpty();
+
+        ws.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    }
+
+    @Test
+    void broadcastRejectsGlobalSessionIdSentinel() throws Exception {
+        // Defense-in-depth: the GLOBAL_SESSION_ID sentinel is only meant to
+        // come from broadcastGlobal, which skips the per-session buffer.
+        // A typo'd `bridge.broadcast(GLOBAL_SESSION_ID, ...)` would
+        // silently pollute the buffer with entries no snapshot.request
+        // would ever consume; turn it into a loud failure instead.
+        bridge = startOnRandomPort();
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class,
+                () -> bridge.broadcast(WebSocketBridge.GLOBAL_SESSION_ID,
+                        "stream.text", Map.of("delta", "oops")));
+    }
+
+    @Test
+    void broadcastGlobalAndPerSessionShareEventIdSequence() throws Exception {
+        // The dashboard's snapshot-replay watermark assumes a single monotonic
+        // eventId stream; globally-scoped broadcasts must not branch off a
+        // separate counter or per-session reducers would see eventId gaps.
+        bridge = startOnRandomPort();
+        bridge.broadcast("sess-A", "stream.text", Map.of("delta", "hi"));   // eventId 1
+        bridge.broadcastGlobal("scheduler.job_triggered", Map.of("jobId", "j")); // eventId 2
+        bridge.broadcast("sess-A", "stream.text", Map.of("delta", " world")); // eventId 3
+        assertThat(bridge.currentEventId()).isEqualTo(3L);
+
+        var snap = bridge.eventBuffer().snapshot("sess-A");
+        // Per-session buffer skipped the global event (eventId 2) entirely.
+        assertThat(snap).hasSize(2);
+        assertThat(snap.get(0).get("eventId").asLong()).isEqualTo(1L);
+        assertThat(snap.get(1).get("eventId").asLong()).isEqualTo(3L);
+    }
+
+    @Test
     void clearSessionDropsBufferedEnvelopes() throws Exception {
         // Ensures the daemon's session-end callback can reclaim memory.
         bridge = startOnRandomPort();
