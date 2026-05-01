@@ -1,6 +1,8 @@
 import { useState } from 'react';
+import { CronJobsList } from './components/CronJobsList';
 import { ExecutionTree } from './components/ExecutionTree';
 import { SessionList } from './components/SessionList';
+import { useCronJobs } from './hooks/useCronJobs';
 import { useExecutionTree } from './hooks/useExecutionTree';
 import { useSessions } from './hooks/useSessions';
 
@@ -60,6 +62,7 @@ export function App() {
   const [sessionId, setSessionId] = useState(initialSession);
   const [wsUrl] = useState(initialWs);
   const sessions = useSessions(wsUrl);
+  const cronJobs = useCronJobs(wsUrl);
 
   // Selecting a session in the sidebar replaces the URL so reload preserves
   // the selection — replaceState rather than pushState so the back button
@@ -79,6 +82,7 @@ export function App() {
         sessions={sessions}
         selectedSessionId={sessionId || null}
         onSelect={selectSession}
+        footer={<CronJobsList jobs={cronJobs} />}
       />
       <div className="flex flex-1 flex-col overflow-hidden">
         {sessionId ? (
