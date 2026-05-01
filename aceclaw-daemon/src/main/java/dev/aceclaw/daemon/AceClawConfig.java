@@ -75,27 +75,27 @@ public final class AceClawConfig {
     private static final boolean DEFAULT_HEARTBEAT_ENABLED = true;
     private static final boolean DEFAULT_PLANNER_ENABLED = true;
     /**
-     * Default complexity score for triggering the planner. Bumped
-     * from 5 → 4 (initially landed at 3, dialled back after review).
+     * Default complexity score for triggering the planner. Restored
+     * to 5 after live testing showed the planner's extra LLM call is
+     * material cost, and lower thresholds either over-triggered (3:
+     * every "extract", "refactor" fired the planner) or were a
+     * borderline middle (4: still triggered on common 3+1 prompts
+     * that didn't really need a separate planning pass).
      *
-     * <p>Threshold 5 required two explicit signals — most everyday
-     * agentic prompts hit at most one, so the planner essentially
-     * never fired. Threshold 3 went too far the other way: every
-     * single "refactor X" / "extract Y" (REFACTORING regex matches
-     * "extract" too) triggered a planner LLM call before any actual
-     * work, even on trivial prompts.
-     *
-     * <p>Threshold 4 is the middle ground: single-signal +3 prompts
-     * ("refactor X" alone) stay as plain ReAct, but adding ANY
-     * second signal (a long description, a second action, multiple
-     * files, testing, …) flips on planning. Users who explicitly
-     * want the planner on a borderline prompt can use
-     * {@code /plan <prompt>} as the escape hatch — that bypasses
-     * this heuristic entirely.
+     * <p>The new model is "explicit by default": at 5, only
+     * unambiguously compound work (two distinct +2/+3 signals)
+     * triggers the heuristic. Everything else stays as plain ReAct
+     * — which is what the agent loop is good at anyway. When the
+     * operator wants planning on a borderline prompt, the
+     * {@code /plan <prompt>} slash command (#467) bypasses the
+     * heuristic entirely. That escape hatch is what makes the
+     * conservative default acceptable: the user has explicit
+     * control on the cases where the heuristic would have been
+     * wrong either way.
      *
      * <p>See {@link ComplexityEstimator} for the score table.
      */
-    private static final int DEFAULT_PLANNER_THRESHOLD = 4;
+    private static final int DEFAULT_PLANNER_THRESHOLD = 5;
     private static final boolean DEFAULT_ADAPTIVE_REPLAN_ENABLED = true;
     private static final boolean DEFAULT_CANDIDATE_INJECTION_ENABLED = true;
     private static final boolean DEFAULT_CANDIDATE_PROMOTION_ENABLED = true;
