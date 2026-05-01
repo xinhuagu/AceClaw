@@ -71,18 +71,27 @@ function populateGraph(
  * True iff the {@code child}'s containment edge from {@code parent} is
  * redundant with a flow edge that {@link addReActFlowEdges} will add.
  *
- * - A non-first {@code thinking} child of a turn: the chain enters via
- *   the previous thinking's tool outputs.
+ * - A non-first {@code thinking} child of a turn OR step: the chain
+ *   enters via the previous thinking's tool outputs, so a direct
+ *   parent → thinking edge would visually fan out from the parent
+ *   when the semantic is a linear chain.
  *
  * Text nodes are now anchored to their iteration's thinking (so they're
  * never direct children of the turn), and the redundant-containment
  * skip for them is no longer relevant.
+ *
+ * Steps are included alongside turns because each plan step runs its
+ * own ReAct loop with the same multi-iteration shape — without this,
+ * a step with N iterations would draw N containment edges (one to each
+ * thinking) on top of the flow chain, producing the same visual
+ * "everything fans out from the step" effect that this skip exists to
+ * prevent on turns.
  */
 function shouldSkipContainment(
   parent: ExecutionNode,
   child: ExecutionNode,
 ): boolean {
-  if (parent.type !== 'turn') return false;
+  if (parent.type !== 'turn' && parent.type !== 'step') return false;
   if (child.type === 'thinking') {
     const firstThinking = parent.children.find((c) => c.type === 'thinking');
     return firstThinking !== child;
