@@ -15,7 +15,7 @@ AceClaw is two things in one project:
 
 ### 1. A Java agent runtime
 
-A persistent JVM daemon that runs the ReAct + Plan/Replan loop, tools, permissions, memory, and self-learning. Pure Java 21, zero AI framework. The CLI talks to it over a Unix Domain Socket (no network surface).
+A persistent JVM daemon that runs the ReAct + Plan/Replan loop, tools, permissions, memory, and self-learning. Pure Java 21, zero AI framework. The CLI talks to it over a Unix Domain Socket; the optional dashboard uses a loopback-only WebSocket bridge with an explicit allowed-origins list.
 
 <p align="center">
   <img src="docs/img/aceclaw_daemon_architecture.drawio.png" alt="AceClaw architecture: CLI over UDS and Dashboard over WebSocket, both connected to the JVM daemon" width="640">
@@ -42,7 +42,7 @@ A React dashboard that talks to the same daemon over a loopback-only WebSocket b
 - **Self-learning** — zero-cost detectors turn behavior into typed, confidence-scored insights that survive across sessions. *([details](docs/self-learning.md))*
 - **Long-term memory** — 8-tier hierarchy, HMAC-signed entries, hybrid search, automated consolidation. *([details](docs/memory-system-design.md))*
 - **Context engineering** — budgeted 8-tier prompt assembly, 3-phase compaction, request-time pruning. *([details](docs/context-engineering.md))*
-- **Security** — UDS-only daemon socket, sealed 4-level permissions, signed memory, no network attack surface. *([details](docs/security.md))*
+- **Security** — UDS for CLI, loopback-only WebSocket for the dashboard with origin allowlist, sealed 4-level permissions, signed memory. *([details](docs/security.md))*
 
 ## Quick Start
 

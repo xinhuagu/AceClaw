@@ -1,14 +1,21 @@
 # AceClaw Security Model
 
-> Version 1.0 | 2026-03-17
+> Version 1.1 | 2026-05-01
 
-AceClaw defends across five dimensions: network isolation, permission enforcement, memory integrity, content boundaries, and data protection.
+AceClaw defends across five dimensions: local surface isolation, permission enforcement, memory integrity, content boundaries, and data protection.
 
 ---
 
-## 1. Zero Network Attack Surface
+## 1. Sealed Local Surfaces
 
-The daemon communicates exclusively via **Unix Domain Socket** (`~/.aceclaw/aceclaw.sock`). No HTTP, REST, or WebSocket listeners exist.
+The daemon exposes exactly two local surfaces, each with its own isolation model:
+
+- **Unix Domain Socket** (`~/.aceclaw/aceclaw.sock`) — primary CLI transport. POSIX-permission isolated (700, owner-only). The CLI talks to the daemon over JSON-RPC 2.0 here.
+- **Loopback WebSocket bridge** (default `127.0.0.1:3141`) — optional, off by default. When enabled (`webSocket.enabled: true` in `~/.aceclaw/config.json`), it lets the React dashboard receive a fan-out of session events and post permission decisions. Bound to localhost only and gated by an explicit `allowedOrigins` list.
+
+There are no HTTP / REST listeners, no remote endpoints, and no outbound network traffic except the LLM provider call (which is gated by your configured API key).
+
+### UDS protections
 
 | Component | Security Property |
 |-----------|-------------------|
@@ -16,6 +23,19 @@ The daemon communicates exclusively via **Unix Domain Socket** (`~/.aceclaw/acec
 | `DaemonLock` | OS-level file lock prevents concurrent daemon instances; PID file is POSIX 600 |
 | Socket cleanup | Stale socket files removed on startup to prevent ghost connections |
 | Connection isolation | Each accepted connection runs on a dedicated virtual thread |
+
+### WebSocket bridge protections
+
+The bridge is opt-in for a reason: opening any TCP listener (even loopback) widens the attack surface compared to UDS-only operation. To keep the additional surface narrow:
+
+| Component | Security Property |
+|-----------|-------------------|
+| Default state | Disabled. Must be explicitly enabled in config to listen at all |
+| Bind address | Always `127.0.0.1` (loopback) — never reachable from off-host |
+| `allowedOrigins` | Empty by default → all browsers rejected (HTTP 1008 close). Origin must be added explicitly for the dashboard to connect |
+| Non-browser clients | Tools without an `Origin` header (curl, Java HTTP client) are accepted, since cross-site browser attacks cannot suppress that header |
+| Per-session filtering | The dashboard reducer filters envelopes by sessionId — a tab on session B cannot observe session A's events even though both arrive on the same socket |
+| Permission round-trip | Dashboard approve/deny is gated by the same `PermissionManager` that gates CLI decisions; the daemon enforces a session-id guard so a tab on one session can't approve another's tool calls |
 
 ---
 
@@ -127,7 +147,7 @@ Memory tiers are loaded in strict priority order (100 → 50). Human-authored co
 
 | Principle | How AceClaw implements it |
 |-----------|---------------------------|
-| **Defense in depth** | Permission system + UDS isolation + HMAC signing + content budgets |
+| **Defense in depth** | Permission system + UDS isolation + loopback-bound WebSocket with origin allowlist + HMAC signing + content budgets |
 | **Fail-safe defaults** | Only READ auto-approved; all writes need explicit approval |
 | **Least privilege** | Sub-agents get filtered tool registries; socket/PID files owner-only |
 | **Sealed exhaustiveness** | `PermissionDecision`, `PermissionLevel`, `MemoryTier` — compiler enforces complete handling |
