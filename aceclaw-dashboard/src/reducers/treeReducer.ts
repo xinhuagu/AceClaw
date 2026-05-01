@@ -1124,11 +1124,19 @@ function replacePlanSteps(
 }
 
 /**
- * Counts how many step children of {@code planId} would be flipped to
- * cancelled by replan (i.e. type === 'step' AND status !== 'completed').
- * Used by the synthetic replan marker's metadata so the renderer can
- * surface "this revision dropped N steps and added M". Pure function;
- * returns 0 if the plan can't be found.
+ * Counts how many step children of {@code planId} would be NEWLY
+ * cancelled by this replan event. Used by the synthetic replan marker's
+ * metadata so the renderer can surface "this revision dropped N steps
+ * and added M".
+ *
+ * <p>Crucially excludes both {@code 'completed'} (preserved history)
+ * AND {@code 'cancelled'} (tombstones from earlier replans). Without
+ * the cancelled-exclusion the second replan's marker would over-count:
+ * if replan #1 dropped 3 steps and replan #2 newly drops 1, replan #2's
+ * marker would say "dropped 4" because the 3 already-cancelled
+ * tombstones still live in {@code plan.children} and would be re-counted.
+ *
+ * <p>Pure function; returns 0 if the plan can't be found.
  */
 function countCancellableSteps(
   rootNodes: ExecutionNode[],
@@ -1137,7 +1145,9 @@ function countCancellableSteps(
   const plan = findNode(rootNodes, planId);
   if (!plan) return 0;
   return plan.children.filter(
-    (c) => c.type === 'step' && c.status !== 'completed',
+    (c) => c.type === 'step'
+      && c.status !== 'completed'
+      && c.status !== 'cancelled',
   ).length;
 }
 

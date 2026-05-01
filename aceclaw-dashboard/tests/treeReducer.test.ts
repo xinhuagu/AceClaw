@@ -478,6 +478,49 @@ describe('replan as first-class node (#458)', () => {
     expect(marker!.metadata?.['cancelledStepCount']).toBe(2);
   });
 
+  it('counts only NEWLY-cancelled steps on a second replan (not previously-cancelled tombstones)', () => {
+    // Self-review P1 catch: cancelledStepCount used to include any
+    // step where status !== 'completed', which incorrectly re-counted
+    // steps already cancelled by an earlier replan. The second
+    // marker's "dropped N" metadata would lie — saying 4 when only 1
+    // step was newly dropped by THIS replan event.
+    let state = freshPlanWithThreePendingSteps();
+    // Replan #1 cancels all 3 pending steps.
+    state = runAll(
+      state,
+      envelope('stream.plan_replanned', {
+        planId: 'plan-1',
+        replanAttempt: 1,
+        newStepCount: 1,
+        rationale: 'first pivot',
+      }),
+      // One new step starts running after the replan.
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 'new-1',
+        stepIndex: 99,
+        totalSteps: 1,
+        stepName: 'new-1',
+      }),
+      // Replan #2 cancels ONLY that new running step.
+      envelope('stream.plan_replanned', {
+        planId: 'plan-1',
+        replanAttempt: 2,
+        newStepCount: 1,
+        rationale: 'second pivot',
+      }),
+    );
+    const plan = locatePlan(state);
+    const markers = plan.children.filter((c) => c.type === 'replan');
+    expect(markers).toHaveLength(2);
+    // Replan #1: dropped all 3 originally-pending steps.
+    expect(markers[0]!.metadata?.['cancelledStepCount']).toBe(3);
+    // Replan #2: only 1 step was newly cancelled (the new running one).
+    // The 3 already-cancelled tombstones from Replan #1 must NOT be
+    // re-counted, even though they're still in plan.children.
+    expect(markers[1]!.metadata?.['cancelledStepCount']).toBe(1);
+  });
+
   it('marker is positioned AFTER cancelled steps so new lazy steps land after it', () => {
     let state = freshPlanWithThreePendingSteps();
     state = runAll(
