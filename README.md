@@ -33,7 +33,7 @@ A React dashboard that talks to the same daemon over a loopback-only WebSocket b
   <img src="docs/img/aceclaw-dashboard.gif" alt="AceClaw dashboard — live execution tree" width="820">
 </p>
 
-**[Visual Agent Harness →](docs/visual-harness.md)** &nbsp;·&nbsp; **[Roadmap: debugger / decision graph / permission dashboard / learning viewer →](docs/visual-harness-roadmap.md)**
+**[Visual Agent Harness →](docs/visual-harness.md)**
 
 ## Highlights
 
