@@ -120,7 +120,13 @@ function addReActFlowEdges(
   nodes: ExecutionNode[],
 ): void {
   for (const parent of nodes) {
-    if (parent.type === 'turn') {
+    // Plan steps each run their own ReAct loop (see
+    // SequentialPlanExecutor.runStep on the daemon side), so a step
+    // with N iterations needs the same productive-tool → next-thinking
+    // flow edges that turns get. Without this, multiple thinkings
+    // under a step render as visually parallel siblings even though
+    // they're sequential in time.
+    if (parent.type === 'turn' || parent.type === 'step') {
       const thinkings = parent.children.filter((c) => c.type === 'thinking');
 
       for (let i = 0; i < thinkings.length - 1; i += 1) {

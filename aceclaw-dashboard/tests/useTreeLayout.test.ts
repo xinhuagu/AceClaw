@@ -345,6 +345,81 @@ describe('useTreeLayout', () => {
     expect(sequence).toHaveLength(0);
   });
 
+  it('emits ReAct flow edges between iterations under a STEP, not just a turn', () => {
+    // Plan steps each run their own ReAct loop; a step with N
+    // iterations needs the same productive-tool → next-thinking flow
+    // edges that a turn gets. Without these edges, multiple thinkings
+    // under the same step render as visually parallel siblings even
+    // though they're sequential in time. (#458 follow-up — caught
+    // when the user saw "parallel thinkings under a step".)
+    const tool1: ExecutionNode = {
+      id: 'tool-1',
+      type: 'tool',
+      status: 'completed',
+      label: 'read_file',
+      children: [],
+    };
+    const thinking1: ExecutionNode = {
+      id: 'think-1',
+      type: 'thinking',
+      status: 'completed',
+      label: 'iter 1',
+      children: [tool1],
+    };
+    const thinking2: ExecutionNode = {
+      id: 'think-2',
+      type: 'thinking',
+      status: 'completed',
+      label: 'iter 2',
+      children: [],
+    };
+    const step: ExecutionNode = {
+      id: 'step-1',
+      type: 'step',
+      status: 'running',
+      label: 'extract',
+      children: [thinking1, thinking2],
+    };
+    const { result } = renderHook(() => useTreeLayout(tree([step])));
+    // Flow edges are rendered as kind='sequence' (dashed) on the
+    // layout output. At least one should connect the productive tool
+    // of iter 1 to the start of iter 2.
+    const flowEdges = result.current.edges.filter((e) => e.kind === 'sequence');
+    expect(flowEdges.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not emit ReAct flow edges between thinkings under a non-loop parent', () => {
+    // Regression guard: only turns and steps host ReAct loops. A
+    // generic node with multiple thinking children (sub-agent here)
+    // shouldn't get flow edges synthesized — those would be wrong
+    // semantically since sub-agents aren't running their own ReAct
+    // loop in the parent's namespace.
+    const thinking1: ExecutionNode = {
+      id: 't1',
+      type: 'thinking',
+      status: 'completed',
+      label: 't1',
+      children: [],
+    };
+    const thinking2: ExecutionNode = {
+      id: 't2',
+      type: 'thinking',
+      status: 'completed',
+      label: 't2',
+      children: [],
+    };
+    const subagent: ExecutionNode = {
+      id: 'sa',
+      type: 'subagent',
+      status: 'running',
+      label: 'sub',
+      children: [thinking1, thinking2],
+    };
+    const { result } = renderHook(() => useTreeLayout(tree([subagent])));
+    const flowEdges = result.current.edges.filter((e) => e.kind === 'sequence');
+    expect(flowEdges).toHaveLength(0);
+  });
+
   it('attaches the dagre coordinates while preserving every ExecutionNode field', () => {
     const root: ExecutionNode = {
       id: 'r',
