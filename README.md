@@ -13,7 +13,7 @@
 
 **AceClaw is infrastructure for enterprise-grade agent systems** — stable, controllable, observable, built for environments where compliance and predictability are first-class requirements.
 
-The agent loop itself is the policy boundary: one daemon, one decision rule, one approval surface, one audit chain, one visual trace.
+Most agent platforms today govern at the protocol layer ("which MCP servers are installed?") or the connector layer ("does this tool have an allowlist?"). Both stop short of where the real decisions happen — inside the agent loop, with full context. AceClaw treats the agent loop itself as the policy boundary: one daemon, one decision rule, one approval surface, one audit chain, one visual trace.
 
 ### Java agent runtime
 
