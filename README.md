@@ -11,23 +11,23 @@
   <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white" alt="React 19">
 </p>
 
-AceClaw is two things in one project:
+**AceClaw is an attempt to make agent systems controllable, auditable, and constrainable** — to move agent governance from the protocol layer into the runtime, where every capability decision actually lives.
 
-### 1. A Java agent runtime
+Most agent platforms today govern at the protocol layer ("which MCP servers are installed?") or the connector layer ("does this tool have an allowlist?"). Both stop short of where the real decisions happen — inside the agent loop, with full context. AceClaw treats the agent loop itself as the policy boundary: one daemon, one decision rule, one approval surface, one audit chain, one visual trace.
 
-A persistent JVM daemon that runs the ReAct + Plan/Replan loop, tools, permissions, memory, and self-learning. Pure Java 21, zero AI framework. The CLI talks to it over a Unix Domain Socket; the optional dashboard uses a loopback-only WebSocket bridge with an explicit allowed-origins list.
+### Java agent runtime
+
+A persistent JVM daemon that runs the ReAct + Plan/Replan loop, tools, permissions, memory, and self-learning. Every capability use — tool execution, memory write, sub-agent spawn — flows through one policy in one place. Pure Java 21, zero AI framework. The CLI talks to it over a Unix Domain Socket; the optional dashboard uses a loopback-only WebSocket bridge with an explicit allowed-origins list.
 
 <p align="center">
   <img src="docs/img/aceclaw_daemon_architecture.drawio.png" alt="AceClaw architecture: CLI over UDS and Dashboard over WebSocket, both connected to the JVM daemon" width="640">
 </p>
 
-> AceClaw is an attempt to move agent governance from the protocol layer into the runtime — every permission decision, every tool execution, every memory write goes through one daemon, with one policy boundary, one audit chain, and one visual surface.
-
 **[Read the design philosophy →](docs/design-philosophy.md)** — why Java, why no AI framework, what drives the architecture. &nbsp;·&nbsp; **[Runtime-level governance →](docs/runtime-governance.md)** — where AceClaw fits vs. protocol- and connector-level governance, and what's still missing.
 
-### 2. A visual agent harness
+### Visual agent harness
 
-A React dashboard that talks to the same daemon over a loopback-only WebSocket bridge — runtime state visualization for a long-running agent, so you can watch and intervene in real time. The ReAct loop is laid out as a live, navigable tree: every thinking block, tool call, and observation appears as its own node so you can see the agent reason, act, observe, and iterate. Permission requests show up as inline panels you can Approve or Deny from the browser.
+A React dashboard that talks to the same daemon over the loopback-only WebSocket bridge — runtime state visualization for a long-running agent, so you can watch and intervene in real time. The ReAct loop is laid out as a live, navigable tree: every thinking block, tool call, and observation appears as its own node. Permission requests surface as inline panels you can Approve or Deny from the browser; sidebar status dots show at a glance which session needs you.
 
 <p align="center">
   <img src="docs/img/aceclaw-dashboard.gif" alt="AceClaw dashboard — live execution tree" width="820">
