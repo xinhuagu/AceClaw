@@ -11,9 +11,9 @@
   <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white" alt="React 19">
 </p>
 
-**AceClaw is an attempt to make agent systems controllable, auditable, and constrainable** — to move agent governance from the protocol layer into the runtime, where every capability decision actually lives.
+**AceClaw is infrastructure for enterprise-grade agent systems** — stable, controllable, observable, built for environments where compliance and predictability are first-class requirements.
 
-Most agent platforms today govern at the protocol layer ("which MCP servers are installed?") or the connector layer ("does this tool have an allowlist?"). Both stop short of where the real decisions happen — inside the agent loop, with full context. AceClaw treats the agent loop itself as the policy boundary: one daemon, one decision rule, one approval surface, one audit chain, one visual trace.
+Governance lives in the runtime: one daemon decides every capability use with full execution context. One decision rule, one approval surface, one audit chain, one visual trace.
 
 ### Java agent runtime
 
