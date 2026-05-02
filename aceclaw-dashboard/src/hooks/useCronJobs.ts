@@ -47,6 +47,15 @@ export interface CronJobInfo {
    *   - {@code undefined}   when no event has been observed since connect
    */
   lastStatus?: 'running' | 'completed' | 'failed' | 'skipped';
+  /**
+   * True when a permission.request is currently pending under this
+   * job's session ("cron-{jobId}"). Set when the request envelope is
+   * observed; cleared on permission.cancelled or on the next live
+   * scheduler.job_* update for the job. Renders as a yellow pulse
+   * dot in CronJobsList so the operator can see "this cron is
+   * waiting on me".
+   */
+  awaitingPermission?: boolean;
 }
 
 const STATUS_REQUEST = JSON.stringify({ method: 'scheduler.cron.status' });
@@ -110,36 +119,68 @@ export function useCronJobs(wsUrl: string | null): CronJobInfo[] {
           return;
         }
 
-        // Live envelope. Filter by the GLOBAL_SESSION_ID sentinel so we
-        // don't accidentally pick up stream.* events from any session.
-        if (data['sessionId'] !== '__global__') return;
         const event = data['event'];
         if (!isPlainObject(event)) return;
         const method = typeof event['method'] === 'string' ? event['method'] : null;
-        if (!method || !method.startsWith('scheduler.job_')) return;
+        if (!method) return;
         const rawParams = event['params'];
         const params: Record<string, unknown> = isPlainObject(rawParams) ? rawParams : {};
-        const jobId = typeof params['jobId'] === 'string' ? params['jobId'] : null;
-        if (!jobId) return;
+        const envelopeSessionId =
+          typeof data['sessionId'] === 'string' ? data['sessionId'] : null;
 
-        setJobs((prev) => {
-          if (!hasJob(prev, jobId)) {
-            // Job was created after our snapshot — applyEventDelta would
-            // silently drop the event. Re-request the status so the new
-            // row appears (the snapshot reply will replace this state
-            // wholesale; returning `prev` here just keeps the UI stable
-            // for the few ms of round-trip). The send is idempotent so
-            // React's strict-mode double-invocation is harmless.
-            try {
-              ws?.send(STATUS_REQUEST);
-            } catch {
-              // Socket transitioning — next reconnect's onopen will
-              // re-fetch anyway.
+        // Path 1: scheduler.* lifecycle events come on the GLOBAL_SESSION_ID
+        // sentinel and update lastStatus + lastRunAt (existing behaviour).
+        if (data['sessionId'] === '__global__' && method.startsWith('scheduler.job_')) {
+          const jobId = typeof params['jobId'] === 'string' ? params['jobId'] : null;
+          if (!jobId) return;
+          setJobs((prev) => {
+            if (!hasJob(prev, jobId)) {
+              // Job was created after our snapshot — applyEventDelta would
+              // silently drop the event. Re-request the status so the new
+              // row appears (the snapshot reply will replace this state
+              // wholesale; returning `prev` here just keeps the UI stable
+              // for the few ms of round-trip). The send is idempotent so
+              // React's strict-mode double-invocation is harmless.
+              try {
+                ws?.send(STATUS_REQUEST);
+              } catch {
+                // Socket transitioning — next reconnect's onopen will
+                // re-fetch anyway.
+              }
+              return prev;
             }
-            return prev;
+            // A new lifecycle event also clears any awaitingPermission flag
+            // — if the job has progressed past the permission step, stop
+            // showing yellow.
+            const cleared = prev.map((j) =>
+              j.id === jobId && j.awaitingPermission
+                ? { ...j, awaitingPermission: false }
+                : j,
+            );
+            return applyEventDelta(cleared, method, jobId, params);
+          });
+          return;
+        }
+
+        // Path 2: per-cron-session events (sessionId starts with "cron-")
+        // — currently we only care about permission.request /
+        // permission.cancelled to drive the yellow awaiting-dot.
+        if (envelopeSessionId && envelopeSessionId.startsWith('cron-')) {
+          const jobId = envelopeSessionId.slice('cron-'.length);
+          if (!jobId) return;
+          if (method === 'permission.request') {
+            setJobs((prev) => prev.map((j) =>
+              j.id === jobId ? { ...j, awaitingPermission: true } : j,
+            ));
+            return;
           }
-          return applyEventDelta(prev, method, jobId, params);
-        });
+          if (method === 'permission.cancelled') {
+            setJobs((prev) => prev.map((j) =>
+              j.id === jobId ? { ...j, awaitingPermission: false } : j,
+            ));
+            return;
+          }
+        }
       };
 
       ws.onclose = () => {

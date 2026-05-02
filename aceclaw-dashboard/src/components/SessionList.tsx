@@ -71,7 +71,7 @@ interface SessionRowProps {
 }
 
 function SessionRow({ session, selected, onSelect }: SessionRowProps) {
-  const dot = session.active ? 'bg-emerald-500' : 'bg-zinc-600';
+  const dot = sessionStatusDot(session);
   const baseBg = selected ? 'bg-zinc-800/60' : 'hover:bg-zinc-800/40';
   const accent = selected ? 'border-l-2 border-blue-500' : 'border-l-2 border-transparent';
   return (
@@ -81,7 +81,10 @@ function SessionRow({ session, selected, onSelect }: SessionRowProps) {
         onClick={() => onSelect(session.sessionId)}
         className={`flex w-full items-start gap-2 px-3 py-2 text-left text-xs transition-colors ${baseBg} ${accent}`}
       >
-        <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${dot}`} />
+        <span
+          className={`mt-1 h-2 w-2 shrink-0 rounded-full ${dot}`}
+          aria-label={`status: ${session.executionStatus ?? (session.active ? 'idle' : 'closed')}`}
+        />
         <div className="min-w-0 flex-1">
           <div className="truncate font-mono text-zinc-200" title={session.projectPath}>
             {tailPath(session.projectPath)}
@@ -108,6 +111,37 @@ function tailPath(path: string): string {
 /** First eight chars of the sessionId — enough to disambiguate in practice. */
 function shortId(id: string): string {
   return id.slice(0, 8);
+}
+
+/**
+ * Picks the status dot's tailwind class from the session's live
+ * execution status. Falls back to the older active/inactive boolean
+ * when nothing has been observed yet — a snapshot-replayed session
+ * that hasn't received any envelope still gets a sensible colour.
+ *
+ * Colour rules (mirror CronJobsList for consistency):
+ *   - awaiting → amber, pulsing (operator action needed)
+ *   - running  → blue, pulsing
+ *   - completed → emerald
+ *   - failed → rose
+ *   - active but no event yet → faint green
+ *   - inactive (closed) → grey
+ *
+ * Exported for unit tests so the rule table can't drift unnoticed.
+ */
+export function sessionStatusDot(session: SessionInfo): string {
+  switch (session.executionStatus) {
+    case 'awaiting':
+      return 'bg-amber-400 animate-pulse';
+    case 'running':
+      return 'bg-blue-500 animate-pulse';
+    case 'completed':
+      return 'bg-emerald-500';
+    case 'failed':
+      return 'bg-rose-500';
+    default:
+      return session.active ? 'bg-emerald-700' : 'bg-zinc-600';
+  }
 }
 
 /** Coarse human-friendly elapsed time. Rendered once per repaint, no ticking. */

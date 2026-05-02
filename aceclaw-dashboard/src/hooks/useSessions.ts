@@ -29,6 +29,67 @@ export interface SessionInfo {
    * for forward/backward compat with daemons that don't yet emit it.
    */
   model?: string;
+  /**
+   * Live execution status, derived from observed envelopes:
+   *   'running'   — turn in progress (also the initial state on session_started)
+   *   'awaiting'  — a permission.request is pending; agent is paused
+   *   'completed' — last turn ended cleanly (stopReason === END_TURN)
+   *   'failed'    — last turn ended with non-END_TURN stopReason
+   *   undefined   — no activity observed yet (e.g. snapshot row before any event)
+   * Used by SessionList to render a single status dot per row in place
+   * of the older active/inactive boolean.
+   */
+  executionStatus?: SessionExecutionStatus;
+}
+
+export type SessionExecutionStatus =
+  | 'running'
+  | 'awaiting'
+  | 'completed'
+  | 'failed';
+
+/**
+ * Folds a single envelope's method into a possibly-new status. Returns
+ * the input status unchanged for envelopes that don't carry execution-
+ * status meaning. Pure / exported for unit tests so the rule table
+ * doesn't drift between hook and tests.
+ *
+ * Rule table:
+ *   stream.session_started           → 'running'
+ *   stream.turn_started              → 'running'
+ *   permission.request               → 'awaiting'
+ *   permission.cancelled             → 'running' (someone else resolved it)
+ *   stream.tool_completed            → 'running' (work continues)
+ *   stream.turn_completed (END_TURN) → 'completed'
+ *   stream.turn_completed (other)    → 'failed'
+ *   anything else                    → unchanged
+ */
+export function deriveSessionStatus(
+  prev: SessionExecutionStatus | undefined,
+  method: string,
+  params: Record<string, unknown>,
+): SessionExecutionStatus | undefined {
+  switch (method) {
+    case 'stream.session_started':
+    case 'stream.turn_started':
+    case 'permission.cancelled':
+    case 'stream.tool_completed':
+      return 'running';
+    case 'permission.request':
+      return 'awaiting';
+    case 'stream.turn_completed': {
+      const stopReason = typeof params['stopReason'] === 'string'
+        ? params['stopReason']
+        : null;
+      // Older daemons that don't emit stopReason are treated as
+      // success — the field is documented optional in events.ts.
+      return stopReason === null || stopReason === 'END_TURN'
+        ? 'completed'
+        : 'failed';
+    }
+    default:
+      return prev;
+  }
 }
 
 const SESSIONS_LIST_REQUEST = JSON.stringify({ method: 'sessions.list' });
@@ -121,6 +182,14 @@ export function useSessions(wsUrl: string | null): SessionInfo[] {
         const method = typeof event['method'] === 'string' ? event['method'] : null;
         const rawParams = event['params'];
         const params: Record<string, unknown> = isPlainObject(rawParams) ? rawParams : {};
+        // Envelope sessionId — useful for status updates whose params
+        // don't carry the sessionId field (most stream.* events rely on
+        // the envelope's sessionId since the WS bridge stamps it).
+        const envelopeSessionId =
+          typeof data['sessionId'] === 'string' ? data['sessionId'] : null;
+
+        if (!method) return;
+
         if (method === 'stream.session_started') {
           const row = sessionInfoFromSessionStarted(params);
           if (!row) return;
@@ -135,15 +204,45 @@ export function useSessions(wsUrl: string | null): SessionInfo[] {
           setSessions((prev) =>
             prev.some((s) => s.sessionId === row.sessionId)
               ? prev
-              : sortByCreatedDesc([...prev, row]),
+              : sortByCreatedDesc([...prev, { ...row, executionStatus: 'running' }]),
           );
-        } else if (method === 'stream.session_ended') {
+          return;
+        }
+        if (method === 'stream.session_ended') {
           const sessionId = typeof params['sessionId'] === 'string' ? params['sessionId'] : null;
           if (!sessionId) return;
           if (isCronSessionId(sessionId)) return;
           setSessions((prev) =>
             prev.map((s) => (s.sessionId === sessionId ? { ...s, active: false } : s)),
           );
+          return;
+        }
+
+        // Status-update path (#458 follow-up): every other envelope
+        // potentially advances the live execution status of an existing
+        // session. Look up by envelope sessionId since most stream.*
+        // event params don't carry one.
+        if (envelopeSessionId && !isCronSessionId(envelopeSessionId)) {
+          setSessions((prev) => {
+            let changed = false;
+            const next = prev.map((s) => {
+              if (s.sessionId !== envelopeSessionId) return s;
+              const newStatus = deriveSessionStatus(s.executionStatus, method, params);
+              if (newStatus === s.executionStatus) return s;
+              changed = true;
+              // Conditionally include executionStatus to satisfy
+              // exactOptionalPropertyTypes — never assign `undefined`
+              // explicitly. In practice deriveSessionStatus only
+              // returns undefined when the previous status was already
+              // undefined and the method is irrelevant, in which case
+              // the equality check above already short-circuited.
+              const updated: SessionInfo = { ...s };
+              if (newStatus !== undefined) updated.executionStatus = newStatus;
+              else delete updated.executionStatus;
+              return updated;
+            });
+            return changed ? next : prev;
+          });
         }
       };
 
