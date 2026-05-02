@@ -36,6 +36,7 @@ import dev.aceclaw.memory.TrendDetector;
 import dev.aceclaw.memory.WorkspacePaths;
 import dev.aceclaw.security.DefaultPermissionPolicy;
 import dev.aceclaw.security.PermissionManager;
+import dev.aceclaw.security.audit.CapabilityAuditLog;
 import dev.aceclaw.mcp.McpClientManager;
 import dev.aceclaw.mcp.McpServerConfig;
 import dev.aceclaw.tools.*;
@@ -376,7 +377,11 @@ public final class AceClawDaemon {
 
         // 3. Permission manager — mode from config (default: "normal")
         //    Created early because sub-agent permission checker references it.
-        var permissionManager = new PermissionManager(new DefaultPermissionPolicy(config.permissionMode()));
+        //    Audit log mirrors the memory dir convention (~/.aceclaw/audit/).
+        var auditDir = Path.of(System.getProperty("user.home"), ".aceclaw", "audit");
+        var permissionManager = new PermissionManager(
+                new DefaultPermissionPolicy(config.permissionMode()),
+                buildCapabilityAuditLog(auditDir));
 
         // 4. Sub-agent infrastructure (task delegation) and skills
         var agentTypeRegistry = AgentTypeRegistry.load(workingDir);
@@ -1780,6 +1785,29 @@ public final class AceClawDaemon {
 
         log.info("Agent handler wired: provider={}, model={}, tools={}",
                 config.provider(), model, toolRegistry.size());
+    }
+
+    /**
+     * Builds the capability audit log for {@link #wireAgentHandler}, or
+     * returns {@code null} if setup fails. Best-effort by design: a
+     * read-only {@code $HOME} or a permission error on the audit
+     * directory degrades the daemon to "no audit" rather than
+     * preventing startup. The agent must keep running even if the
+     * audit subsystem is unavailable.
+     *
+     * <p>Package-private for testing — production callers go through
+     * {@link #wireAgentHandler}.
+     */
+    static CapabilityAuditLog buildCapabilityAuditLog(Path auditDir) {
+        try {
+            var auditLog = CapabilityAuditLog.create(auditDir);
+            log.info("Capability audit log initialized at {}", auditDir);
+            return auditLog;
+        } catch (IOException e) {
+            log.warn("Failed to initialize capability audit log at {}: {}. Auditing disabled.",
+                    auditDir, e.getMessage());
+            return null;
+        }
     }
 
     private static String summarizePrompt(String prompt) {
