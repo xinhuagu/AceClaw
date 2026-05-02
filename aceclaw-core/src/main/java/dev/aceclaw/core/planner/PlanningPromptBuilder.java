@@ -25,8 +25,9 @@ public final class PlanningPromptBuilder {
             - Order steps logically: research first, then implement, then verify.
             - Keep steps focused: one logical unit of work per step.
             - Default to 4-6 steps. Use 2-3 for narrowly-scoped tasks; only exceed 6 \
-              when the task has genuinely distinct phases (e.g., research → design → \
-              implement → test → deploy). Hard cap is 15.
+              when the task has many genuinely distinct phases \
+              (research, design, implementation, testing, deployment, monitoring, etc. \
+              — and only when each phase is substantively different work). Stay under 15.
             - Do NOT over-decompose. A single step covers "read context, decide, call \
               tools, summarise" as one ReAct iteration. Splitting "read X" and "use X" \
               across separate steps is wrong — they are one step. Trivial bookkeeping \
