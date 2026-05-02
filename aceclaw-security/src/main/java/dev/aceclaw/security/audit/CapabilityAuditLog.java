@@ -50,9 +50,11 @@ public final class CapabilityAuditLog {
 
     /**
      * Creates an audit log rooted at {@code auditDir}. The directory
-     * and key file are created lazily on first write — no disk side-
-     * effects from construction alone, so unit tests can build one
-     * with a tmp dir without requiring real filesystem state up front.
+     * and key file are materialised up front — {@code auditDir} is
+     * created if missing and the signing key is written to
+     * {@code audit.key} on first call (POSIX 600 where supported).
+     * Only the JSONL file itself is lazy: it appears on the first
+     * {@link #record} call.
      */
     public static CapabilityAuditLog create(Path auditDir) throws IOException {
         Objects.requireNonNull(auditDir, "auditDir");

@@ -114,7 +114,7 @@ public final class PermissionManager {
         String kind;
         String reason;
         switch (decision) {
-            case PermissionDecision.Approved a -> {
+            case PermissionDecision.Approved _ -> {
                 kind = "APPROVED";
                 reason = approvalNote;
             }

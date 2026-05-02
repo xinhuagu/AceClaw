@@ -59,11 +59,13 @@ public record CapabilityAuditEntry(
     }
 
     /**
-     * Returns this entry with {@code signature} replaced. Used by the
-     * signer to populate the signature after building the unsigned
-     * shape of the entry.
+     * Returns this entry with {@code signature} replaced. Package-
+     * private on purpose — only {@link CapabilityAuditLog} should use
+     * it, as part of the build-then-sign flow. Exposing this publicly
+     * would let callers craft signed entries off-the-side, bypassing
+     * the audit log's lock and write path.
      */
-    public CapabilityAuditEntry withSignature(String newSignature) {
+    CapabilityAuditEntry withSignature(String newSignature) {
         return new CapabilityAuditEntry(
                 timestamp, sessionId, toolName, level, decisionKind, reason, newSignature);
     }
