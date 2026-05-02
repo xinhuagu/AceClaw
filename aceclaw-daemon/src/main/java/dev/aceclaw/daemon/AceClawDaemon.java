@@ -711,8 +711,12 @@ public final class AceClawDaemon {
             var runtimeMetricsExporter = new RuntimeMetricsExporter();
             agentHandler.setRuntimeMetricsExporter(runtimeMetricsExporter);
             if (cs != null) {
-                var memoryDir = Path.of(System.getProperty("user.home"), ".aceclaw", "memory");
-                agentHandler.setInjectionAuditLog(new dev.aceclaw.memory.InjectionAuditLog(memoryDir));
+                // Resolve from homeDir (NOT user.home) so AceClawDaemon.create(Path)
+                // overrides and test isolations write the injection audit log under
+                // the same root as every other persisted thing. Same fix shape as
+                // the capability audit dir at the top of wireAgentHandler (#475).
+                agentHandler.setInjectionAuditLog(
+                        new dev.aceclaw.memory.InjectionAuditLog(homeDir.resolve("memory")));
             }
 
             log.info("Self-improvement engine wired (with strategy refinement + candidate pipeline + runtime metrics)");
