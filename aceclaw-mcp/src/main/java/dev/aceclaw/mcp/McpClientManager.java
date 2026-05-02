@@ -161,7 +161,7 @@ public final class McpClientManager implements AutoCloseable {
                 clients.put(serverName, client);
                 statuses.put(serverName, ServerStatus.CONNECTED);
                 lastErrors.remove(serverName);
-                bridgeServerTools(serverName, client, onServerTools);
+                bridgeServerTools(serverName, config, client, onServerTools);
             } else {
                 statuses.put(serverName, ServerStatus.FAILED);
                 lastReconnectAttemptMillis.put(serverName, System.currentTimeMillis());
@@ -328,7 +328,7 @@ public final class McpClientManager implements AutoCloseable {
             clients.put(serverName, client);
             statuses.put(serverName, ServerStatus.CONNECTED);
             lastErrors.remove(serverName);
-            if (!bridgeServerTools(serverName, client, onServerTools)) {
+            if (!bridgeServerTools(serverName, config, client, onServerTools)) {
                 // Connected but tool discovery failed — server already marked FAILED by bridgeServerTools
                 log.warn("MCP server '{}' reconnected but tool discovery failed", serverName);
                 return false;
@@ -472,10 +472,12 @@ public final class McpClientManager implements AutoCloseable {
      * @return true if tool discovery succeeded (even if zero tools), false on failure
      */
     private boolean bridgeServerTools(String serverName,
+                                      McpServerConfig.ServerEntry config,
                                       McpSyncClient client,
                                       Consumer<List<Tool>> onServerTools) {
         try {
-            var newlyBridged = discoverAndBridgeTools(serverName, client);
+            var timeout = resolveTimeout(config);
+            var newlyBridged = discoverAndBridgeTools(serverName, client, timeout);
             if (onServerTools != null && !newlyBridged.isEmpty()) {
                 onServerTools.accept(Collections.unmodifiableList(newlyBridged));
             }
@@ -493,7 +495,8 @@ public final class McpClientManager implements AutoCloseable {
      *
      * @throws RuntimeException if tool discovery fails — caller must handle failure
      */
-    private List<Tool> discoverAndBridgeTools(String serverName, McpSyncClient client) {
+    private List<Tool> discoverAndBridgeTools(String serverName, McpSyncClient client,
+                                               Duration timeout) {
         var toolsResult = client.listTools();
         var tools = toolsResult.tools();
 
@@ -504,7 +507,7 @@ public final class McpClientManager implements AutoCloseable {
 
         var bridgedForServer = new ArrayList<Tool>();
         for (var mcpTool : tools) {
-            var bridged = McpToolBridge.create(serverName, mcpTool, client);
+            var bridged = McpToolBridge.create(serverName, mcpTool, client, timeout);
             bridgedTools.add(bridged);
             bridgedForServer.add(bridged);
             log.debug("Bridged MCP tool: {}", bridged.name());
