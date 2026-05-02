@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  deriveSessionStatus,
   isCronSessionId,
   mergeSnapshot,
   parseSessionsListResult,
   sessionInfoFromSessionStarted,
 } from '../src/hooks/useSessions';
 import type { SessionInfo } from '../src/hooks/useSessions';
+import { sessionStatusDot } from '../src/components/SessionList';
 
 const session = (overrides: Partial<SessionInfo> & { sessionId: string }): SessionInfo => ({
   sessionId: overrides.sessionId,
@@ -265,5 +267,78 @@ describe('isCronSessionId', () => {
     expect(isCronSessionId('s1')).toBe(false);
     expect(isCronSessionId('a-cron-prefix-but-not-at-start')).toBe(false);
     expect(isCronSessionId('Cron-uppercase')).toBe(false);
+  });
+});
+
+describe('deriveSessionStatus', () => {
+  it('promotes idle to running on session_started / turn_started', () => {
+    expect(deriveSessionStatus(undefined, 'stream.session_started', {})).toBe('running');
+    expect(deriveSessionStatus(undefined, 'stream.turn_started', {})).toBe('running');
+  });
+
+  it('flips running to awaiting on permission.request', () => {
+    expect(deriveSessionStatus('running', 'permission.request', {})).toBe('awaiting');
+  });
+
+  it('clears awaiting back to running on permission.cancelled', () => {
+    expect(deriveSessionStatus('awaiting', 'permission.cancelled', {})).toBe('running');
+  });
+
+  it('keeps running through tool_completed (work continues)', () => {
+    expect(deriveSessionStatus('running', 'stream.tool_completed', {})).toBe('running');
+  });
+
+  it('settles to completed on turn_completed with stopReason END_TURN', () => {
+    expect(deriveSessionStatus('running', 'stream.turn_completed', { stopReason: 'END_TURN' }))
+      .toBe('completed');
+  });
+
+  it('settles to failed on turn_completed with non-END_TURN stopReason', () => {
+    expect(deriveSessionStatus('running', 'stream.turn_completed', { stopReason: 'MAX_TOKENS' }))
+      .toBe('failed');
+    expect(deriveSessionStatus('running', 'stream.turn_completed', { stopReason: 'ERROR' }))
+      .toBe('failed');
+  });
+
+  it('treats missing stopReason as completed (forward-compat with old daemons)', () => {
+    expect(deriveSessionStatus('running', 'stream.turn_completed', {})).toBe('completed');
+  });
+
+  it('returns the input status unchanged for unrelated methods', () => {
+    expect(deriveSessionStatus('running', 'stream.text', { delta: 'hi' })).toBe('running');
+    expect(deriveSessionStatus('completed', 'stream.thinking', {})).toBe('completed');
+    expect(deriveSessionStatus(undefined, 'random.event', {})).toBeUndefined();
+  });
+});
+
+describe('sessionStatusDot', () => {
+  function s(over: Partial<SessionInfo> = {}): SessionInfo {
+    return {
+      sessionId: 's1',
+      projectPath: '/p',
+      createdAt: '2026-04-29T08:00:00.000Z',
+      active: true,
+      ...over,
+    };
+  }
+  it('amber pulse when awaiting (operator action needed)', () => {
+    expect(sessionStatusDot(s({ executionStatus: 'awaiting' })))
+      .toContain('bg-amber-400');
+  });
+  it('blue pulse when running', () => {
+    expect(sessionStatusDot(s({ executionStatus: 'running' })))
+      .toContain('bg-blue-500');
+  });
+  it('emerald when completed', () => {
+    expect(sessionStatusDot(s({ executionStatus: 'completed' })))
+      .toBe('bg-emerald-500');
+  });
+  it('rose when failed', () => {
+    expect(sessionStatusDot(s({ executionStatus: 'failed' })))
+      .toBe('bg-rose-500');
+  });
+  it('falls back to active/inactive when no execution status observed', () => {
+    expect(sessionStatusDot(s({ active: true }))).toBe('bg-emerald-700');
+    expect(sessionStatusDot(s({ active: false }))).toBe('bg-zinc-600');
   });
 });
