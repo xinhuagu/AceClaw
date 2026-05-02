@@ -377,11 +377,14 @@ public final class AceClawDaemon {
 
         // 3. Permission manager — mode from config (default: "normal")
         //    Created early because sub-agent permission checker references it.
-        //    Audit log mirrors the memory dir convention (~/.aceclaw/audit/).
-        var auditDir = Path.of(System.getProperty("user.home"), ".aceclaw", "audit");
+        //    Audit dir is resolved against the daemon's configured homeDir
+        //    (NOT user.home) so AceClawDaemon.create(Path) overrides and
+        //    test isolations write audit artifacts under the same root as
+        //    every other persisted thing (pid, sock, transcripts,
+        //    checkpoints, ...).
         var permissionManager = new PermissionManager(
                 new DefaultPermissionPolicy(config.permissionMode()),
-                buildCapabilityAuditLog(auditDir));
+                buildCapabilityAuditLog(homeDir.resolve("audit")));
 
         // 4. Sub-agent infrastructure (task delegation) and skills
         var agentTypeRegistry = AgentTypeRegistry.load(workingDir);
