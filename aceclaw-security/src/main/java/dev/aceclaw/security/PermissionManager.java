@@ -1,8 +1,10 @@
 package dev.aceclaw.security;
 
+import dev.aceclaw.security.audit.CapabilityAuditLog;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -37,8 +39,26 @@ public final class PermissionManager {
      */
     private final Map<String, Set<String>> sessionApprovals = new ConcurrentHashMap<>();
 
+    /**
+     * Optional signed audit log of every decision (#465 Layer 8 v1).
+     * Null = audit disabled (default for unit tests that construct a
+     * manager without disk I/O setup). When non-null, every call to
+     * {@link #check} records one entry — best-effort, never throws.
+     */
+    private final CapabilityAuditLog auditLog;
+
     public PermissionManager(PermissionPolicy policy) {
+        this(policy, null);
+    }
+
+    /**
+     * Constructs a manager that signs and persists every decision to
+     * {@code auditLog}. Pass {@code null} to disable auditing (this is
+     * what the single-arg constructor does).
+     */
+    public PermissionManager(PermissionPolicy policy, CapabilityAuditLog auditLog) {
         this.policy = policy;
+        this.auditLog = auditLog;
     }
 
     /**
@@ -64,14 +84,50 @@ public final class PermissionManager {
             if (allow != null && allow.contains(request.toolName())) {
                 log.debug("Permission auto-approved (session blanket): tool={}, sessionId={}",
                         request.toolName(), sessionId);
-                return new PermissionDecision.Approved();
+                var decision = new PermissionDecision.Approved();
+                audit(request, sessionId, decision, "session-blanket-approval");
+                return decision;
             }
         }
         var decision = policy.evaluate(request);
         log.debug("Permission check: tool={}, level={}, sessionId={}, decision={}",
                 request.toolName(), request.level(), sessionId,
                 decision.getClass().getSimpleName());
+        audit(request, sessionId, decision, null);
         return decision;
+    }
+
+    /**
+     * Writes one entry to the audit log if one is attached. Flattens
+     * the sealed {@link PermissionDecision} into the on-disk string
+     * form ({@code APPROVED} / {@code DENIED} / {@code NEEDS_APPROVAL})
+     * and chooses the {@code reason} field: caller-supplied note
+     * (for the session-blanket branch), the denial reason (for
+     * Denied), the prompt (for NeedsUserApproval), or null.
+     */
+    private void audit(
+            PermissionRequest request,
+            String sessionId,
+            PermissionDecision decision,
+            String approvalNote) {
+        if (auditLog == null) return;
+        String kind;
+        String reason;
+        switch (decision) {
+            case PermissionDecision.Approved a -> {
+                kind = "APPROVED";
+                reason = approvalNote;
+            }
+            case PermissionDecision.Denied d -> {
+                kind = "DENIED";
+                reason = d.reason();
+            }
+            case PermissionDecision.NeedsUserApproval n -> {
+                kind = "NEEDS_APPROVAL";
+                reason = n.prompt();
+            }
+        }
+        auditLog.record(Instant.now(), sessionId, request.toolName(), request.level(), kind, reason);
     }
 
     /**
