@@ -11,9 +11,9 @@
   <img src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white" alt="React 19">
 </p>
 
-**AceClaw is infrastructure for enterprise-grade agent systems** — stable, controllable, observable, built for environments where compliance and predictability are first-class requirements.
+**AceClaw is runtime-level governance for enterprise-grade agent systems** — stable, controllable, observable, built for environments where compliance and predictability matter as much as capability.
 
-The agent loop is the policy boundary: capability decisions happen where the full execution context lives, and the same event stream that drives those decisions also produces the audit record and the dashboard's live trace — so what operators see, what compliance captures, and what the engine evaluates stay consistent.
+A Java daemon runs the agent loop with full execution context for every capability decision. A React harness turns the same event stream into a live, navigable trace — what the engine evaluates, what compliance captures, and what operators watch all come from one source, consistent by construction.
 
 ### Java agent runtime
 
