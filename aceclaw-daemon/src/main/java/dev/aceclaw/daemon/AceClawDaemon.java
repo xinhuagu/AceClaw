@@ -547,6 +547,17 @@ public final class AceClawDaemon {
                             ? "(none — browsers blocked)"
                             : config.webSocketAllowedOrigins());
         }
+        // health.status reports dashboard reachability so the `aceclaw dashboard`
+        // CLI subcommand (#446) can discover the URL without hard-coding 3141.
+        // Reported regardless of whether the bridge actually started (e.g. user
+        // explicitly disabled it) — the CLI uses the `enabled` flag to decide
+        // what error to print.
+        boolean dashboardBundled = WebSocketBridge.dashboardBundled();
+        String dashboardUrl = config.webSocketEnabled()
+                ? "http://" + config.webSocketHost() + ":" + config.webSocketPort()
+                : "";
+        router.setDashboardInfo(new RequestRouter.DashboardInfo(
+                config.webSocketEnabled(), dashboardUrl, dashboardBundled));
         // Use config model for anthropic (user's choice), client's resolved model for other providers
         // (factory may translate or fall back, e.g. copilot ignores anthropic model names)
         String effectiveModel = "anthropic".equals(config.provider()) ? model : llmClient.defaultModel();

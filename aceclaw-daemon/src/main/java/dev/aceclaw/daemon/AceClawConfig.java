@@ -134,8 +134,14 @@ public final class AceClawConfig {
     private static final int DEFAULT_MAX_PLAN_TOTAL_WALL_TIME_SEC = 3600;
     private static final boolean DEFAULT_DEFERRED_ACTION_ENABLED = true;
     private static final int DEFAULT_DEFERRED_ACTION_TICK_SECONDS = 5;
-    /** WebSocket bridge for browser dashboard (issue #431). Disabled by default; opt-in. */
-    private static final boolean DEFAULT_WEBSOCKET_ENABLED = false;
+    /**
+     * WebSocket bridge for browser dashboard (issue #431). Enabled by default since #446 —
+     * the daemon now serves the bundled dashboard on the same port, and the same-origin
+     * gate in {@link WebSocketBridge} keeps cross-site browsers locked out without any
+     * user config. Bind host stays {@code localhost} so it's never exposed off-machine.
+     * Users who explicitly set {@code webSocket.enabled = false} keep their override.
+     */
+    private static final boolean DEFAULT_WEBSOCKET_ENABLED = true;
     private static final int DEFAULT_WEBSOCKET_PORT = 3141;
     /** Bind only to localhost by default. Acceptance criterion of #431 (security). */
     private static final String DEFAULT_WEBSOCKET_HOST = "localhost";
@@ -1217,7 +1223,10 @@ public final class AceClawConfig {
 
     /**
      * Returns whether the browser-facing WebSocket bridge is enabled.
-     * Defaults to {@code false} — opt-in via {@code webSocket.enabled} in config.json.
+     * Defaults to {@code true} (since #446) — the daemon serves the bundled
+     * dashboard on the same port and same-origin checks block cross-site
+     * browsers. Override to {@code false} via {@code webSocket.enabled} in
+     * config.json to disable entirely.
      */
     public boolean webSocketEnabled() {
         return webSocketEnabled;

@@ -14,8 +14,8 @@ allprojects {
 }
 
 subprojects {
-    // Skip java plugin for BOM (java-platform)
-    if (name == "aceclaw-bom") return@subprojects
+    // Skip java plugin for BOM (java-platform) and dashboard (npm-built TypeScript)
+    if (name == "aceclaw-bom" || name == "aceclaw-dashboard") return@subprojects
 
     apply(plugin = "java-library")
 
