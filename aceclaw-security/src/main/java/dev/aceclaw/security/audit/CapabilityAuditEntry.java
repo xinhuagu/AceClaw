@@ -71,21 +71,45 @@ public record CapabilityAuditEntry(
     }
 
     /**
-     * Returns the canonical string used as the HMAC input. Field order
-     * is fixed and tab-separated to keep the encoding unambiguous;
-     * any rearrangement here MUST be matched on the verifier side.
+     * Returns the canonical string used as the HMAC input. Encoding
+     * is length-prefixed so that no choice of nullable / variable-width
+     * field values can collide:
      *
-     * <p>Null fields are encoded as the literal string {@code "null"}
-     * so a field that flips between null and present produces a
-     * different signature.
+     * <pre>
+     *   nullable string s → "-" if null, else "&lt;codeUnitLength&gt;:&lt;s&gt;"
+     *   non-null fields   → ":&lt;value&gt;" (length omitted, fixed shape)
+     *   joined with the literal pipe '|' character
+     * </pre>
+     *
+     * <p>The earlier scheme used tab-joined raw values with the
+     * literal string {@code "null"} for absent fields, which let
+     * {@code sessionId = null} collide with {@code sessionId = "null"},
+     * and let a tab inside a {@code reason} collide with the
+     * separator. The length prefix on each nullable field makes both
+     * collision classes impossible: an attacker can no longer forge
+     * one entry's signature into another.
+     *
+     * <p>Field order is fixed; any rearrangement here MUST be matched
+     * on the verifier side.
      */
     public String signablePayload() {
-        return String.join("\t",
-                timestamp.toString(),
-                sessionId == null ? "null" : sessionId,
-                toolName,
-                level.name(),
-                decisionKind,
-                reason == null ? "null" : reason);
+        return String.join("|",
+                ":" + timestamp.toString(),
+                encodeNullable(sessionId),
+                encodeLen(toolName),
+                ":" + level.name(),
+                ":" + decisionKind,
+                encodeNullable(reason));
+    }
+
+    private static String encodeNullable(String s) {
+        return s == null ? "-" : encodeLen(s);
+    }
+
+    private static String encodeLen(String s) {
+        // Length is char-count of the canonical string; HMAC then
+        // operates on the UTF-8 bytes of the whole joined payload,
+        // so any unicode in the value is folded in unchanged.
+        return s.length() + ":" + s;
     }
 }
