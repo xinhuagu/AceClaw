@@ -13,7 +13,7 @@
 
 **AceClaw is runtime-level governance for enterprise-grade agent systems** — stable, controllable, observable, built for environments where compliance and predictability matter as much as capability.
 
-A Java daemon runs the agent loop with full execution context for every capability decision. A React harness turns the same event stream into a live, navigable trace — what the engine evaluates, what compliance captures, and what operators watch all come from one source, consistent by construction.
+The runtime is a Java daemon that runs the agent loop with full execution context for every capability decision. A live dashboard renders the same event stream as a navigable trace — operators see exactly what the engine evaluated, and the same record drives the audit trail.
 
 ### Java agent runtime
 
