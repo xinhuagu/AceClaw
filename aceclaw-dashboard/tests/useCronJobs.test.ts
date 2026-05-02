@@ -13,6 +13,7 @@ import {
   parseStatusResult,
   type CronJobInfo,
 } from '../src/hooks/useCronJobs';
+import { statusDotColor } from '../src/components/CronJobsList';
 
 describe('parseStatusResult', () => {
   it('returns null for non-array jobs', () => {
@@ -184,5 +185,30 @@ describe('hasJob', () => {
 
   it('returns false for an empty list', () => {
     expect(hasJob([], 'a')).toBe(false);
+  });
+});
+
+describe('CronJobsList statusDotColor', () => {
+  function j(over: Partial<CronJobInfo> = {}): CronJobInfo {
+    return {
+      id: 'a', name: 'a', expression: '* * * * *', enabled: true, ...over,
+    };
+  }
+  it('awaitingPermission wins over everything (even disabled / failed)', () => {
+    expect(statusDotColor(j({ awaitingPermission: true, enabled: false })))
+      .toContain('bg-amber-400');
+    expect(statusDotColor(j({ awaitingPermission: true, lastStatus: 'running' })))
+      .toContain('bg-amber-400');
+    expect(statusDotColor(j({ awaitingPermission: true, lastStatus: 'failed' })))
+      .toContain('bg-amber-400');
+  });
+  it('disabled is dim grey when no awaiting', () => {
+    expect(statusDotColor(j({ enabled: false }))).toBe('bg-zinc-700');
+  });
+  it('lastStatus colours match the existing palette', () => {
+    expect(statusDotColor(j({ lastStatus: 'running' }))).toContain('bg-blue-500');
+    expect(statusDotColor(j({ lastStatus: 'completed' }))).toBe('bg-emerald-500');
+    expect(statusDotColor(j({ lastStatus: 'failed' }))).toBe('bg-rose-500');
+    expect(statusDotColor(j({ lastStatus: 'skipped' }))).toBe('bg-amber-500');
   });
 });

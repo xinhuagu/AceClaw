@@ -117,8 +117,19 @@ function CronJobRow({ job, selected, onSelect }: CronJobRowProps) {
 /**
  * Picks the dot colour from the most recent observed status, falling back
  * to grey when nothing's happened since the dashboard connected.
+ *
+ * Priority order:
+ *   1. awaitingPermission → yellow pulse (operator action needed —
+ *      wins over everything; a paused cron is the most actionable
+ *      signal regardless of run history)
+ *   2. disabled → dim grey
+ *   3. lastStatus running/completed/failed/skipped → mapped colours
+ *   4. fallback from snapshot metadata
+ *
+ * Exported for unit tests so the priority rules can't drift unnoticed.
  */
-function statusDotColor(job: CronJobInfo): string {
+export function statusDotColor(job: CronJobInfo): string {
+  if (job.awaitingPermission) return 'bg-amber-400 animate-pulse';
   if (!job.enabled) return 'bg-zinc-700';
   switch (job.lastStatus) {
     case 'running':
