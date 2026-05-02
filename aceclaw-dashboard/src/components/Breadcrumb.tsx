@@ -22,7 +22,15 @@ export function Breadcrumb({ path, onNavigate }: BreadcrumbProps) {
   return (
     <nav
       // pointer-events:auto re-enables clicks (parent overlay turned them off
-      // so wheel/drag still hits the SVG below).
+      // so wheel/drag still hits the SVG below). stopPropagation prevents
+      // the canvas's pointer-capture (for drag-to-pan) from stealing the
+      // button's pointerup and suppressing the synthesized click — same
+      // reason PermissionPanel does this.
+      onPointerDown={(e) => e.stopPropagation()}
+      onPointerMove={(e) => e.stopPropagation()}
+      onPointerUp={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+      onWheel={(e) => e.stopPropagation()}
       className="pointer-events-auto flex max-w-[80vw] flex-wrap items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900/85 px-2 py-1 font-mono text-[11px] text-zinc-400 shadow backdrop-blur-sm"
       aria-label="Active node path"
     >

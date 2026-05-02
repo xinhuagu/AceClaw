@@ -35,6 +35,16 @@ export function NavControls({
     <div
       // pointer-events:auto re-enables clicks (the parent overlay
       // turned them off so the SVG below can still receive wheel/drag).
+      // stopPropagation on the pointer events is critical: ExecutionTree's
+      // root onPointerDown calls setPointerCapture for canvas-drag, which
+      // would otherwise steal the subsequent pointerup from the button
+      // and prevent the synthesized click from ever firing. Mirrors what
+      // PermissionPanel does for the same reason.
+      onPointerDown={(e) => e.stopPropagation()}
+      onPointerMove={(e) => e.stopPropagation()}
+      onPointerUp={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+      onWheel={(e) => e.stopPropagation()}
       className="pointer-events-auto flex flex-col items-end gap-1 rounded-lg border border-zinc-800 bg-zinc-900/90 p-1 shadow-lg backdrop-blur-sm"
       role="toolbar"
       aria-label="Tree navigation controls"
