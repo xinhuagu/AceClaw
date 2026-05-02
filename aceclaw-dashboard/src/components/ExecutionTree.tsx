@@ -25,7 +25,6 @@ import {
 } from 'react';
 import type { ExecutionTree as ExecutionTreeState, LayoutNode } from '../types/tree';
 import { useTreeLayout } from '../hooks/useTreeLayout';
-import { Breadcrumb } from './Breadcrumb';
 import { GrowingEdge } from './GrowingEdge';
 import { GrowingNode } from './GrowingNode';
 import { NavControls } from './NavControls';
@@ -37,7 +36,6 @@ import {
   centerOnNode,
   clampScale,
   fitToWindow,
-  pathToActive,
 } from './viewport';
 // Re-exported for tests that import it from this module historically;
 // the canonical definition lives in ./viewport now.
@@ -60,8 +58,9 @@ interface ExecutionTreeProps {
 }
 
 // ZOOM_MIN / ZOOM_MAX / ViewportTransform / fitToWindow / centerOnNode
-// live in ./viewport so NavControls and Breadcrumb can share them.
-// Keeps wheel-zoom and button-zoom from drifting apart as the math evolves.
+// live in ./viewport so NavControls and the wheel/drag handlers share
+// one source of truth. Keeps wheel-zoom and button-zoom from drifting
+// apart as the math evolves.
 const ZOOM_STEP = 0.0015;
 /** Multiplicative factor applied per zoom-button press / Cmd-+/- press. */
 const BUTTON_ZOOM_FACTOR = 1.25;
@@ -303,10 +302,10 @@ export function ExecutionTree({
     [viewport.x, viewport.y, viewport.scale],
   );
 
-  // -- Navigation actions wired to NavControls + Breadcrumb + keyboard --
-  // All four go through the shared viewport helpers so wheel-zoom and
-  // button-zoom + jump-to-active and breadcrumb-click compute identical
-  // viewports for the same inputs.
+  // -- Navigation actions wired to NavControls + keyboard --
+  // All paths go through the shared viewport helpers so wheel-zoom and
+  // button-zoom + jump-to-active compute identical viewports for the
+  // same inputs.
   const containerRect = useCallback((): { cw: number; ch: number } | null => {
     const el = containerRef.current;
     if (!el) return null;
@@ -347,15 +346,6 @@ export function ExecutionTree({
     if (!r) return;
     setViewport((prev) => centerOnNode(target.x, target.y, prev.scale, r.cw, r.ch));
   }, [tree.activeNodeId, layout.nodes, containerRect]);
-
-  /** Breadcrumb segment click → centre on the segment's node at current scale. */
-  const handleBreadcrumbNavigate = useCallback((nodeId: string) => {
-    const target = layout.nodes.find((n) => n.id === nodeId);
-    if (!target) return;
-    const r = containerRect();
-    if (!r) return;
-    setViewport((prev) => centerOnNode(target.x, target.y, prev.scale, r.cw, r.ch));
-  }, [layout.nodes, containerRect]);
 
   // Keyboard shortcuts: Cmd/Ctrl + +/-/0 for zoom, F for fit, A for active.
   // Modifier guards mirror PermissionPanel's so we don't hijack typing
@@ -403,13 +393,6 @@ export function ExecutionTree({
     return () => window.removeEventListener('keydown', onKey);
   }, [handleZoom, handleFit, handleJumpToActive]);
 
-  // Path from root to active node — drives the Breadcrumb. Memo so it
-  // doesn't recompute on every viewport change, only when the tree
-  // structure or the active node moves.
-  const breadcrumbPath = useMemo(
-    () => pathToActive(tree.rootNodes, tree.activeNodeId),
-    [tree.rootNodes, tree.activeNodeId],
-  );
   // The canvas transition is enabled only when no user interaction
   // (drag/wheel) is in flight — so a pan or zoom feels direct, but a
   // newly-arrived node sliding into focus is animated.
@@ -486,14 +469,6 @@ export function ExecutionTree({
       onPointerCancel={handlePointerUp}
       className="relative h-full w-full cursor-grab overflow-hidden bg-zinc-950 active:cursor-grabbing"
     >
-      {/* Breadcrumb (top-left, fixed). Always rendered when there's an
-          active path so the user can see where the camera is following
-          AND click any segment to jump back to that scope. */}
-      {breadcrumbPath && breadcrumbPath.length > 0 ? (
-        <div className="pointer-events-none absolute left-3 top-3 z-30">
-          <Breadcrumb path={breadcrumbPath} onNavigate={handleBreadcrumbNavigate} />
-        </div>
-      ) : null}
       {/* Nav controls (bottom-right, fixed). −, +, Fit, Active + zoom %. */}
       <div className="pointer-events-none absolute bottom-3 right-3 z-30">
         <NavControls

@@ -1,13 +1,12 @@
 /**
- * Pure viewport-math helpers shared by ExecutionTree, NavControls,
- * and Breadcrumb. Extracted so the navigation logic — fit-to-window,
- * jump-to-node, button-zoom — can be unit-tested without rendering
- * the SVG tree, and so the three consumers compute identical results
- * for the same inputs (no drift between "what the wheel does" vs
- * "what the + button does").
+ * Pure viewport-math helpers shared by ExecutionTree and NavControls.
+ * Extracted so the navigation logic — fit-to-window, jump-to-node,
+ * button-zoom — can be unit-tested without rendering the SVG tree,
+ * and so wheel-zoom and button-zoom compute identical results for
+ * the same inputs.
  */
 
-import type { ExecutionNode, LayoutNode } from '../types/tree';
+import type { LayoutNode } from '../types/tree';
 
 export interface ViewportTransform {
   /** Translate X applied to the SVG group (px in screen space). */
@@ -108,37 +107,9 @@ export function zoomBy(
 }
 
 /**
- * Returns the path of nodes from a root to the node with the given id,
- * inclusive at both ends. Used by the breadcrumb so each segment can
- * link back to a specific scope (session > turn > plan > step > …).
- *
- * Returns null when the id isn't found anywhere in the forest.
- */
-export function pathToActive(
-  rootNodes: ExecutionNode[],
-  activeId: string | null,
-): ExecutionNode[] | null {
-  if (!activeId) return null;
-  for (const root of rootNodes) {
-    const path = findPath([root], activeId);
-    if (path) return path;
-  }
-  return null;
-}
-
-function findPath(nodes: ExecutionNode[], id: string): ExecutionNode[] | null {
-  for (const n of nodes) {
-    if (n.id === id) return [n];
-    const sub = findPath(n.children, id);
-    if (sub) return [n, ...sub];
-  }
-  return null;
-}
-
-/**
  * Convenience: looks up a layout-node by id from a {@link LayoutNode}
- * list. Used by Active button + breadcrumb to translate a logical node
- * id into the (x, y) coordinates {@link centerOnNode} needs.
+ * list. Used by the Active button to translate a logical node id into
+ * the (x, y) coordinates {@link centerOnNode} needs.
  */
 export function findLayoutNode(
   layoutNodes: LayoutNode[],

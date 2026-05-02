@@ -1,8 +1,7 @@
 /**
- * Pure-helper tests for the navigation math shared by ExecutionTree,
- * NavControls, and Breadcrumb. Pinning these means wheel-zoom and
- * button-zoom can never drift apart silently — both go through these
- * exact functions.
+ * Pure-helper tests for the navigation math shared by ExecutionTree
+ * and NavControls. Pinning these means wheel-zoom and button-zoom can
+ * never drift apart silently — both go through these exact functions.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -12,10 +11,8 @@ import {
   centerOnNode,
   clampScale,
   fitToWindow,
-  pathToActive,
   zoomBy,
 } from '../src/components/viewport';
-import type { ExecutionNode } from '../src/types/tree';
 
 describe('clampScale', () => {
   it('passes through values inside the range', () => {
@@ -113,53 +110,3 @@ describe('zoomBy', () => {
   });
 });
 
-describe('pathToActive', () => {
-  function leaf(id: string, type: ExecutionNode['type'] = 'tool'): ExecutionNode {
-    return { id, type, status: 'running', label: id, children: [] };
-  }
-  function parent(
-    id: string,
-    type: ExecutionNode['type'],
-    children: ExecutionNode[],
-  ): ExecutionNode {
-    return { id, type, status: 'running', label: id, children };
-  }
-
-  it('returns null when activeId is null or not found', () => {
-    expect(pathToActive([leaf('a')], null)).toBeNull();
-    expect(pathToActive([leaf('a')], 'nope')).toBeNull();
-    expect(pathToActive([], 'a')).toBeNull();
-  });
-
-  it('returns a single-element path when activeId is a root', () => {
-    const root = leaf('a');
-    expect(pathToActive([root], 'a')).toEqual([root]);
-  });
-
-  it('walks down to a deeply nested target', () => {
-    const tool = leaf('tool-1');
-    const thinking = parent('think-1', 'thinking', [tool]);
-    const step = parent('step-1', 'step', [thinking]);
-    const plan = parent('plan-1', 'plan', [step]);
-    const turn = parent('turn-1', 'turn', [plan]);
-    const session = parent('sess-1', 'session', [turn]);
-    const path = pathToActive([session], 'tool-1');
-    expect(path?.map((n) => n.id)).toEqual([
-      'sess-1',
-      'turn-1',
-      'plan-1',
-      'step-1',
-      'think-1',
-      'tool-1',
-    ]);
-  });
-
-  it('searches across multiple roots', () => {
-    const a = leaf('a');
-    const b = parent('b', 'turn', [leaf('b-child')]);
-    expect(pathToActive([a, b], 'b-child')?.map((n) => n.id)).toEqual([
-      'b',
-      'b-child',
-    ]);
-  });
-});
