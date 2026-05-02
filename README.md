@@ -13,7 +13,7 @@
 
 **AceClaw is infrastructure for enterprise-grade agent systems** — stable, controllable, observable, built for environments where compliance and predictability are first-class requirements.
 
-Governance lives in the runtime: one daemon decides every capability use with full execution context. One decision rule, one approval surface, one audit chain, one visual trace.
+The agent loop itself is the policy boundary: one daemon, one decision rule, one approval surface, one audit chain, one visual trace.
 
 ### Java agent runtime
 
