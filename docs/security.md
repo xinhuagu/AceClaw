@@ -13,7 +13,7 @@ AceClaw defends across five dimensions: local surface isolation, permission enfo
 The daemon exposes exactly two local surfaces, each with its own isolation model:
 
 - **Unix Domain Socket** (`~/.aceclaw/aceclaw.sock`) — primary CLI transport. POSIX-permission isolated (700, owner-only). The CLI talks to the daemon over JSON-RPC 2.0 here.
-- **Loopback WebSocket bridge** (default `127.0.0.1:3141`) — optional, off by default. When enabled (`webSocket.enabled: true` in `~/.aceclaw/config.json`), it lets the React dashboard receive a fan-out of session events and post permission decisions. Bound to localhost only and gated by an explicit `allowedOrigins` list.
+- **Loopback WebSocket bridge** (default `127.0.0.1:3141`) — on by default since #446 because the daemon now serves the bundled dashboard on the same port. The bridge fans out session events to the React dashboard and accepts permission decisions back. Bound to localhost only; cross-site browsers are rejected unless their origin is on the user-managed `allowedOrigins` list. Bundled-dashboard browsers pass via a same-origin gate (Origin matches the daemon's own host:port) so no `allowedOrigins` config is needed for the default UX. Disable entirely with `webSocket.enabled: false` in `~/.aceclaw/config.json`.
 
 There are no HTTP / REST listeners, no remote endpoints, and no outbound network traffic except the LLM provider call (which is gated by your configured API key).
 
@@ -28,16 +28,17 @@ There are no HTTP / REST listeners, no remote endpoints, and no outbound network
 
 ### WebSocket bridge protections
 
-The bridge is opt-in for a reason: opening any TCP listener (even loopback) widens the attack surface compared to UDS-only operation. To keep the additional surface narrow:
+The bridge opens a TCP listener (even loopback) which widens the attack surface compared to UDS-only operation. Since #446 it's on by default so the bundled dashboard works zero-config; the additional surface is constrained by:
 
 | Component | Security Property |
 |-----------|-------------------|
-| Default state | Disabled. Must be explicitly enabled in config to listen at all |
 | Bind address | Always `127.0.0.1` (loopback) — never reachable from off-host |
-| `allowedOrigins` | Empty by default → all browsers rejected (HTTP 1008 close). Origin must be added explicitly for the dashboard to connect |
+| Same-origin gate | Browsers loaded from the daemon's own `host:port` (e.g. `http://localhost:3141`, the bundled dashboard) pass without needing `allowedOrigins`, because by definition only the daemon could have served that page in the first place |
+| `allowedOrigins` | Empty by default → cross-site browser handshakes rejected (HTTP 1008 close). Add an entry only when running the dashboard from a different origin (e.g. Vite dev server on `http://localhost:5173`) |
 | Non-browser clients | Tools without an `Origin` header (curl, Java HTTP client) are accepted, since cross-site browser attacks cannot suppress that header |
 | Per-session filtering | The dashboard reducer filters envelopes by sessionId — a tab on session B cannot observe session A's events even though both arrive on the same socket |
 | Permission round-trip | Dashboard approve/deny is gated by the same `PermissionManager` that gates CLI decisions; the daemon enforces a session-id guard so a tab on one session can't approve another's tool calls |
+| Disable | `webSocket.enabled: false` in `~/.aceclaw/config.json` for users who want the daemon UDS-only |
 
 ---
 
