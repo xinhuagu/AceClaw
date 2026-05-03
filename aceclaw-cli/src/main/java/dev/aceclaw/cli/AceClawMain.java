@@ -33,7 +33,11 @@ import java.nio.file.Paths;
     mixinStandardHelpOptions = true,
     version = "aceclaw (version loaded at runtime)",
     description = "AI coding agent — Device as Agent",
-    subcommands = { AceClawMain.DaemonCommand.class, AceClawMain.ModelsCommand.class }
+    subcommands = {
+            AceClawMain.DaemonCommand.class,
+            AceClawMain.ModelsCommand.class,
+            AceClawMain.DashboardCommand.class
+    }
 )
 public final class AceClawMain implements Runnable {
 
@@ -52,6 +56,7 @@ public final class AceClawMain implements Runnable {
             String model = "unknown";
             int contextWindowTokens = 0;
             String profile = null;
+            String dashboardUrl = null;
             try {
                 JsonNode health = client.sendRequest("health.status", null);
                 model = health.path("model").asText("unknown");
@@ -62,8 +67,23 @@ public final class AceClawMain implements Runnable {
                         profile = p;
                     }
                 }
+                JsonNode dash = health.path("dashboard");
+                if (dash.path("enabled").asBoolean(false)
+                        && dash.path("bundled").asBoolean(false)
+                        && !dash.path("url").asText("").isEmpty()) {
+                    dashboardUrl = dash.path("url").asText();
+                }
             } catch (Exception e) {
                 // Non-fatal; banner will show "unknown" model
+            }
+
+            // Zero-friction discovery hint (issue #446): print the dashboard
+            // URL once when the REPL starts. Most users never read docs; one
+            // line in the terminal is the highest-leverage place to surface
+            // the new entry point. Suppressed when the dashboard isn't
+            // available (disabled in config, or built with -Pno-dashboard).
+            if (dashboardUrl != null) {
+                System.out.println("dashboard: " + dashboardUrl);
             }
 
             // Create a session for the current working directory
@@ -526,6 +546,137 @@ public final class AceClawMain implements Runnable {
             } catch (IOException e) {
                 System.err.println("Failed to connect to daemon: " + e.getMessage());
                 System.exit(1);
+            }
+        }
+    }
+
+    /**
+     * Opens the bundled browser dashboard (issue #446). Boots the daemon if it
+     * isn't already running, then queries {@code health.status} for the URL the
+     * daemon is serving on (so a user-overridden port or an ephemeral fallback
+     * is handled correctly) and opens the system browser.
+     */
+    @Command(
+        name = "dashboard",
+        description = "Open the AceClaw dashboard in a browser"
+    )
+    static final class DashboardCommand implements Runnable {
+        @Option(
+                names = "--no-open",
+                description = "Print the URL but don't open a browser (for SSH/headless)"
+        )
+        boolean noOpen;
+
+        @Override
+        public void run() {
+            try (DaemonClient client = DaemonStarter.ensureRunning()) {
+                JsonNode health = client.sendRequest("health.status", null);
+                JsonNode dashNode = health.path("dashboard");
+
+                // Pre-#446 daemons (or unexpected response shape) won't carry
+                // a "dashboard" object — surface that as a clear upgrade hint
+                // rather than letting the user stare at an empty URL.
+                if (dashNode.isMissingNode() || dashNode.isNull()) {
+                    System.err.println("This daemon does not report a dashboard URL.");
+                    System.err.println("Stop it (`aceclaw daemon stop`) and reinstall: `./gradlew :aceclaw-cli:installDist`.");
+                    System.exit(1);
+                    return;
+                }
+
+                boolean enabled = dashNode.path("enabled").asBoolean(false);
+                boolean bundled = dashNode.path("bundled").asBoolean(false);
+                String url = dashNode.path("url").asText("");
+
+                // Bundled comes first: a missing dashboard build is the more
+                // fundamental issue — even if the WS bridge were running there
+                // would be no UI to serve. A user who runs -Pno-dashboard AND
+                // hits a port conflict should be told about the build first;
+                // fixing the port without rebuilding gets them nowhere.
+                if (!bundled) {
+                    System.err.println("The dashboard wasn't bundled in this daemon build.");
+                    System.err.println("Rebuild without -Pno-dashboard, or run the dev server:");
+                    System.err.println("  cd aceclaw-dashboard && npm run dev");
+                    System.exit(1);
+                    return;
+                }
+                if (!enabled) {
+                    // Two paths land here: user explicitly disabled WS in
+                    // config.json, OR Jetty failed to bind the port (something
+                    // else on the user's machine is on 3141). Both deserve a
+                    // pointer to the daemon log because the user can't
+                    // distinguish them from CLI output alone.
+                    System.err.println("Dashboard not available — daemon's WebSocket bridge is not running.");
+                    System.err.println("Likely causes:");
+                    System.err.println("  - webSocket.enabled = false in ~/.aceclaw/config.json");
+                    System.err.println("  - the configured port (default 3141) is in use by another process");
+                    System.err.println("Check ~/.aceclaw/logs/daemon.log for the bind error.");
+                    System.exit(1);
+                    return;
+                }
+                if (url.isEmpty()) {
+                    System.err.println("Daemon reported the dashboard as enabled but no URL was returned.");
+                    System.exit(1);
+                    return;
+                }
+
+                // Always print the URL so the user can copy it even if the
+                // browser-open step fails or they're on a headless machine.
+                System.out.println("dashboard: " + url);
+
+                if (noOpen) {
+                    return;
+                }
+                if (!openInBrowser(url)) {
+                    System.out.println("(could not open browser automatically — copy the URL above)");
+                }
+            } catch (DaemonClient.DaemonClientException e) {
+                System.err.println("Error: " + e.getMessage());
+                System.exit(1);
+            } catch (IOException e) {
+                System.err.println("Failed to connect to daemon: " + e.getMessage());
+                System.exit(1);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                System.err.println("Interrupted while starting daemon.");
+                System.exit(1);
+            }
+        }
+
+        /**
+         * Opens {@code url} in the system browser. Returns false if the open
+         * attempt failed (no display, sandbox, missing helper) so the caller
+         * can fall back to printing the URL — never throws, never blocks the
+         * CLI on a failed browse attempt.
+         *
+         * <p>Note: {@code xdg-open} (Linux) and macOS {@code open} are
+         * best-effort launchers; they routinely return success even when the
+         * underlying browse failed (no DISPLAY, broken handler chain, …). We
+         * intentionally do NOT wait on the helper — a "true" return only
+         * means the helper was launched, not that a browser actually opened.
+         * The caller must always print the URL too so a failed open is
+         * recoverable from the terminal.
+         */
+        private static boolean openInBrowser(String url) {
+            java.util.Objects.requireNonNull(url, "url");
+            // Try the platform-native opener first. macOS `open` and Linux
+            // `xdg-open` work in more environments than Java's Desktop API
+            // (which can fail in headless JVMs even when a browser exists).
+            String os = System.getProperty("os.name", "").toLowerCase();
+            String[] cmd;
+            if (os.contains("mac")) {
+                cmd = new String[]{"open", url};
+            } else if (os.contains("win")) {
+                cmd = new String[]{"rundll32", "url.dll,FileProtocolHandler", url};
+            } else {
+                cmd = new String[]{"xdg-open", url};
+            }
+            try {
+                var pb = new ProcessBuilder(cmd).redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                        .redirectError(ProcessBuilder.Redirect.DISCARD);
+                pb.start();
+                return true;
+            } catch (IOException e) {
+                return false;
             }
         }
     }

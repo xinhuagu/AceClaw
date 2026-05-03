@@ -75,6 +75,7 @@ All commands installed by `install.sh`. Every command that accepts `[provider]` 
 | Command | What it does |
 |---------|-------------|
 | `aceclaw` | Start AceClaw TUI (auto-starts daemon if not running) |
+| `aceclaw dashboard` | Open the browser dashboard (auto-starts daemon, opens default browser) |
 | `aceclaw-tui [provider]` | Open another TUI window — never restarts daemon, safe for multi-session |
 | `aceclaw-restart [provider]` | Stop daemon + restart with fresh build (warns if sessions active) |
 | `aceclaw-update` | Update to latest release (refuses if sessions active) |
@@ -142,6 +143,10 @@ git clone https://github.com/xinhuagu/AceClaw.git && cd AceClaw
 ./gradlew clean build && ./gradlew :aceclaw-cli:installDist
 ./aceclaw-cli/build/install/aceclaw-cli/bin/aceclaw-cli
 ```
+
+The full build also bundles the dashboard via npm — Node 20 LTS must be on `PATH`. Backend-only contributors without Node can pass `-Pno-dashboard` to skip the dashboard build (`aceclaw dashboard` will then return a friendly 404; the daemon and CLI still build).
+
+For dashboard development with hot reload: `cd aceclaw-dashboard && npm run dev` (Vite serves on `http://localhost:5173`; add that origin to `webSocket.allowedOrigins` in `~/.aceclaw/config.json` so the daemon's WS bridge accepts the cross-origin handshake).
 
 Development scripts (from git checkout only — same provider argument support):
 

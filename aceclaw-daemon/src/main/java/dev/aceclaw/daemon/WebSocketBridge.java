@@ -3,6 +3,7 @@ package dev.aceclaw.daemon;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.javalin.Javalin;
+import io.javalin.http.staticfiles.Location;
 import io.javalin.websocket.WsContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -110,6 +111,24 @@ public final class WebSocketBridge {
     private volatile Javalin app;
     private volatile InboundHandler inboundHandler = (ctx, message) -> { /* default: drop */ };
 
+    /**
+     * Same-origin allowlist computed at {@link #start()} once the bound port is
+     * known. Browser code loaded from {@code http://localhost:{port}} (the bundled
+     * dashboard, issue #446) sends its page origin as the {@code Origin} header;
+     * we accept it without requiring any user-side {@code allowedOrigins}
+     * configuration. This is safe because a same-origin handshake by definition
+     * cannot be cross-site — a page can only mint its own origin if it loaded
+     * from that origin in the first place, which means it already passed the
+     * static-files / page-load gate served by this same daemon.
+     *
+     * <p>Populated with {@code http://localhost:{port}}, {@code http://127.0.0.1:{port}},
+     * and {@code http://[::1]:{port}} regardless of the configured bind host —
+     * those are the three stable browser-origin spellings for a loopback-bound
+     * server, and a browser may pick any of them when the user opens the URL.
+     * Empty until {@link #start()} runs.
+     */
+    private volatile Set<String> sameOriginAllowlist = Set.of();
+
     public WebSocketBridge(String host, int port, ObjectMapper objectMapper) {
         this(host, port, objectMapper, List.of());
     }
@@ -127,16 +146,46 @@ public final class WebSocketBridge {
     }
 
     /**
+     * Classpath path of the bundled dashboard's entry point. Present when the
+     * daemon JAR was built without {@code -Pno-dashboard}; absent in
+     * backend-only builds. Detected once at {@link #start()} via
+     * {@link Class#getResource(String)}.
+     */
+    static final String DASHBOARD_INDEX_RESOURCE = "/META-INF/dashboard/index.html";
+    static final String DASHBOARD_DIRECTORY_RESOURCE = "/META-INF/dashboard";
+
+    /**
      * Starts the embedded Javalin server. Idempotent.
      */
     public synchronized void start() {
         if (app != null) {
             return;
         }
+        // Clear any allowlist left behind by a previous start/stop cycle on
+        // this same instance. Without this, restart with port=0 (test path)
+        // briefly authorizes the previous run's port — the post-start seed
+        // below runs after Jetty opens the new ephemeral port, so the
+        // microseconds in between would otherwise read the stale set.
+        this.sameOriginAllowlist = Set.of();
+        boolean dashboardBundled = WebSocketBridge.class.getResource(DASHBOARD_INDEX_RESOURCE) != null;
         var instance = Javalin.create(cfg -> {
             cfg.showJavalinBanner = false;
             // Bind only to the configured host (localhost by default).
             cfg.jetty.defaultHost = host;
+            // Bundled dashboard (issue #446): serve static assets from the
+            // daemon JAR at /, with SPA fallback so any non-asset path returns
+            // index.html (lets the dashboard's React Router work, if added).
+            // Skipped in -Pno-dashboard builds — index.html simply isn't on the
+            // classpath, and a request to / falls through to the friendly 404
+            // handler registered below.
+            if (dashboardBundled) {
+                cfg.staticFiles.add(staticFiles -> {
+                    staticFiles.hostedPath = "/";
+                    staticFiles.directory = DASHBOARD_DIRECTORY_RESOURCE;
+                    staticFiles.location = Location.CLASSPATH;
+                });
+                cfg.spaRoot.addFile("/", DASHBOARD_INDEX_RESOURCE, Location.CLASSPATH);
+            }
         }).ws("/ws", ws -> {
             ws.onConnect(ctx -> {
                 if (!isOriginAllowed(ctx)) {
@@ -181,6 +230,38 @@ public final class WebSocketBridge {
                 }
             });
         });
+        // Friendly fallback for backend-only (-Pno-dashboard) builds: any
+        // unmatched route (not just exact /) returns a plain-text explanation.
+        // Javalin's per-route get("/...") only matches the exact path, so a
+        // bookmarked /dashboard or deep link gets the default 404 — looking
+        // like a daemon bug to the user instead of a missing-bundle hint.
+        // {@code error(404, …)} fires after route resolution misses, so it
+        // catches every unbound path while leaving /ws and staticFiles
+        // (registered above) untouched.
+        if (!dashboardBundled) {
+            instance.error(404, ctx -> {
+                if (!"GET".equals(ctx.method().name())) {
+                    return;
+                }
+                ctx.contentType("text/plain; charset=utf-8");
+                ctx.result("AceClaw dashboard is not bundled in this build.\n"
+                        + "Rebuild without -Pno-dashboard, or run the dev server: "
+                        + "cd aceclaw-dashboard && npm run dev\n");
+            });
+        }
+
+        // Populate the same-origin allowlist BEFORE Jetty opens the port, so a
+        // browser racing against startup cannot land on an empty allowlist and
+        // get rejected as "origin not allowed". Only possible when the port is
+        // configured (non-zero) — for the ephemeral-port test path the bound
+        // port is unknown until {@code instance.start} returns, and we accept
+        // the (microsecond-wide) race because no production caller uses port 0.
+        if (this.port != 0) {
+            this.sameOriginAllowlist = Set.of(
+                    "http://localhost:" + this.port,
+                    "http://127.0.0.1:" + this.port,
+                    "http://[::1]:" + this.port);
+        }
         instance.start(port);
         // Replace a 0 (ephemeral) port with the port Jetty actually bound. Tests
         // rely on this to avoid the TOCTOU race that {@code ServerSocket(0)} +
@@ -188,9 +269,19 @@ public final class WebSocketBridge {
         // port between probe and bridge bind.
         if (this.port == 0) {
             this.port = instance.port();
+            this.sameOriginAllowlist = Set.of(
+                    "http://localhost:" + this.port,
+                    "http://127.0.0.1:" + this.port,
+                    "http://[::1]:" + this.port);
         }
         this.app = instance;
-        log.info("WebSocket bridge listening on ws://{}:{}/ws", host, this.port);
+        if (dashboardBundled) {
+            log.info("WebSocket bridge listening on ws://{}:{}/ws (dashboard at http://{}:{}/)",
+                    host, this.port, host, this.port);
+        } else {
+            log.info("WebSocket bridge listening on ws://{}:{}/ws (dashboard not bundled)",
+                    host, this.port);
+        }
     }
 
     /**
@@ -214,6 +305,10 @@ public final class WebSocketBridge {
             for (var client : List.copyOf(clients)) {
                 dropClient(client);
             }
+            // Drop the same-origin allowlist so a later restart on the same
+            // instance can't briefly honor the previous run's port. start()
+            // re-seeds before opening the new listener.
+            sameOriginAllowlist = Set.of();
             app = null;
             log.info("WebSocket bridge stopped");
         }
@@ -431,6 +526,11 @@ public final class WebSocketBridge {
      *       native Jetty client): always allowed. Browsers cannot suppress the
      *       header, so absence means a non-browser caller and there is no
      *       cross-site exposure.</li>
+     *   <li>{@code Origin} matches the daemon's own bound port via
+     *       {@link #sameOriginAllowlist} (same-origin from the bundled dashboard,
+     *       #446): allowed without requiring user config. The page that opens
+     *       this WS can only have minted that Origin if it loaded from this
+     *       same daemon, so there is nothing cross-site to defend against.</li>
      *   <li>{@code Origin} present and listed in {@link #allowedOrigins}: allowed.</li>
      *   <li>{@code Origin} present but not listed (or list is empty): rejected.
      *       This closes the cross-site exfiltration vector that any malicious
@@ -441,6 +541,9 @@ public final class WebSocketBridge {
     private boolean isOriginAllowed(WsContext ctx) {
         String origin = ctx.header("Origin");
         if (origin == null) {
+            return true;
+        }
+        if (sameOriginAllowlist.contains(origin)) {
             return true;
         }
         return allowedOrigins.contains(origin);
@@ -468,6 +571,14 @@ public final class WebSocketBridge {
     /** Returns the host the bridge was configured to bind to. */
     public String host() {
         return host;
+    }
+
+    /**
+     * Returns whether the bundled dashboard (issue #446) was on the daemon's
+     * classpath at startup. False in {@code -Pno-dashboard} builds.
+     */
+    public static boolean dashboardBundled() {
+        return WebSocketBridge.class.getResource(DASHBOARD_INDEX_RESOURCE) != null;
     }
 
     /**

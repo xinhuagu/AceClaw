@@ -61,6 +61,28 @@ public final class RequestRouter {
     private volatile int contextWindowTokens;
     private volatile HealthMonitor healthMonitor;
     private volatile Supplier<JsonNode> mcpStatusSupplier;
+    private volatile DashboardInfo dashboardInfo;
+
+    /**
+     * Snapshot of where the bundled browser dashboard (issue #446) is reachable.
+     * Reported via {@code health.status} so the {@code aceclaw dashboard} CLI
+     * subcommand can ask the daemon "where do I open the browser?" instead of
+     * hard-coding 3141 — covers the case where the user overrode the port in
+     * {@code config.json} or the bridge fell back to an ephemeral one.
+     *
+     * @param enabled whether the WebSocket bridge / static-files handler is up
+     * @param url     fully-formed URL the user can open (e.g.
+     *                {@code http://localhost:3141}); empty when disabled
+     * @param bundled whether {@code index.html} was found on the daemon's
+     *                classpath. False in {@code -Pno-dashboard} builds — the
+     *                CLI should refuse to open the browser with a message
+     *                explaining how to rebuild.
+     */
+    public record DashboardInfo(boolean enabled, String url, boolean bundled) {
+        public DashboardInfo {
+            url = url != null ? url : "";
+        }
+    }
 
     public RequestRouter(SessionManager sessionManager, ObjectMapper objectMapper) {
         this(sessionManager, new WorkspaceAttachmentRegistry(), objectMapper);
@@ -119,6 +141,14 @@ public final class RequestRouter {
      */
     public void setMcpStatusSupplier(Supplier<JsonNode> mcpStatusSupplier) {
         this.mcpStatusSupplier = mcpStatusSupplier;
+    }
+
+    /**
+     * Sets the dashboard / WebSocket bridge info reported by {@code health.status}.
+     * Pass {@code null} to clear (the default is null = field omitted from response).
+     */
+    public void setDashboardInfo(DashboardInfo info) {
+        this.dashboardInfo = info;
     }
 
     /**
@@ -433,6 +463,16 @@ public final class RequestRouter {
             } catch (Exception e) {
                 log.debug("Failed to resolve MCP status: {}", e.getMessage());
             }
+        }
+        var dash = this.dashboardInfo;
+        if (dash != null) {
+            var dashNode = objectMapper.createObjectNode();
+            dashNode.put("enabled", dash.enabled());
+            dashNode.put("bundled", dash.bundled());
+            if (!dash.url().isEmpty()) {
+                dashNode.put("url", dash.url());
+            }
+            result.set("dashboard", dashNode);
         }
         return result;
     }

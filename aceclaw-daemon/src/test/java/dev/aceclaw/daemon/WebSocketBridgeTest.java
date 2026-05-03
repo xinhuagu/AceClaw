@@ -242,6 +242,33 @@ final class WebSocketBridgeTest {
     }
 
     @Test
+    void acceptsSameOriginHandshakeWithoutAllowedOriginsConfig() throws Exception {
+        // Same-origin from the bundled dashboard (issue #446): browser code loaded
+        // from http://localhost:{port} (or 127.0.0.1) sends Origin equal to its
+        // page origin. The bridge must accept without any user-configured
+        // allowedOrigins entry — that's the whole point of the bundled dashboard
+        // shipping zero-config.
+        bridge = startOnRandomPort(List.of());
+        int port = bridge.port();
+
+        var connected = new CountDownLatch(1);
+        bridge.addConnectionListener(_ -> connected.countDown());
+
+        var queue = new LinkedBlockingQueue<String>();
+        var listener = new BufferingListener(queue::add);
+        var ws = HttpClient.newHttpClient().newWebSocketBuilder()
+                .header("Origin", "http://localhost:" + port)
+                .buildAsync(URI.create("ws://127.0.0.1:" + port + "/ws"), listener)
+                .get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+
+        assertThat(connected.await(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)).isTrue();
+        bridge.broadcast("sess-1", "stream.text", Map.of("delta", "hello"));
+        assertThat(queue.poll(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)).isNotNull();
+
+        ws.sendClose(WebSocket.NORMAL_CLOSURE, "bye").get(AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+    }
+
+    @Test
     void acceptsHandshakeWithAllowedOrigin() throws Exception {
         bridge = startOnRandomPort(List.of("https://dashboard.local"));
 
