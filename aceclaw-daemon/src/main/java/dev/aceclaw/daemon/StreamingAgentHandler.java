@@ -49,13 +49,10 @@ import dev.aceclaw.memory.CandidateStore;
 import dev.aceclaw.memory.DailyJournal;
 import dev.aceclaw.memory.MarkdownMemoryStore;
 import dev.aceclaw.memory.MemoryEntry;
-import dev.aceclaw.security.Capability;
-import dev.aceclaw.security.CapabilityAware;
 import dev.aceclaw.security.PermissionDecision;
 import dev.aceclaw.security.PermissionLevel;
 import dev.aceclaw.security.PermissionManager;
 import dev.aceclaw.security.PermissionRequest;
-import dev.aceclaw.security.Provenance;
 import dev.aceclaw.tools.AppleScriptTool;
 import dev.aceclaw.tools.BashExecTool;
 import dev.aceclaw.tools.EditFileTool;
@@ -3983,54 +3980,14 @@ public final class StreamingAgentHandler {
             var toolDescription = buildToolDescription(delegate.name(), effectiveInputJson);
             final String finalInputJson = effectiveInputJson;
 
-            // #480 PR 2: tools that implement CapabilityAware advertise a
-            // structured Capability so PermissionManager / audit log see the
-            // real intent (e.g. FileWrite("/tmp/x", OVERWRITE)) rather than
-            // the flat tool name. The allowlist stays keyed by tool name
-            // (delegate.name()) so existing "always allow X" approvals keep
-            // working through migration; the rich human description carries
-            // through to the user's prompt unchanged. Falls back to the
-            // legacy PermissionRequest path for tools that haven't migrated
-            // yet — single audit/decision pipeline either way.
-            PermissionDecision decision;
-            if (delegate instanceof CapabilityAware capAware) {
-                // Three outcomes from the capability conversion, each
-                // handled distinctly:
-                //  - returns a capability   → take the structured path
-                //  - throws on bad args     → fall back to legacy (logged)
-                //  - returns null           → contract violation, fail fast
-                // The fallback is deliberately narrow. Errors from
-                // permissionManager.check itself (policy / audit) MUST
-                // surface — silently re-running the legacy path on those
-                // would mask real bugs and could downgrade the decision
-                // pipeline. (Codex + CodeRabbit reviews on #482.)
-                Capability capability;
-                boolean conversionThrew = false;
-                try {
-                    capability = capAware.toCapability(objectMapper.readTree(finalInputJson));
-                } catch (RuntimeException | java.io.IOException toCapErr) {
-                    log.warn("CapabilityAware tool {} rejected args; falling back to legacy permission path: {}",
-                            delegate.name(), toCapErr.getMessage());
-                    capability = null;
-                    conversionThrew = true;
-                }
-                if (capability == null && !conversionThrew) {
-                    throw new IllegalStateException(
-                            "CapabilityAware tool " + delegate.name()
-                                    + " returned null capability (contract violation)");
-                }
-                if (capability != null) {
-                    var provenance = Provenance.legacy(sessionId);
-                    decision = permissionManager.check(
-                            capability, provenance, delegate.name(), toolDescription);
-                } else {
-                    var permRequest = new PermissionRequest(delegate.name(), toolDescription, level);
-                    decision = permissionManager.check(permRequest, sessionId);
-                }
-            } else {
-                var permRequest = new PermissionRequest(delegate.name(), toolDescription, level);
-                decision = permissionManager.check(permRequest, sessionId);
-            }
+            // #480 PR 2: routing the call through ToolPermissionRouter keeps
+            // the structured-vs-legacy branching logic in one testable place.
+            // CapabilityAware tools take the structured path; everything else
+            // hits the legacy PermissionRequest entry point. Both ultimately
+            // share PermissionManager's single decision/audit pipeline.
+            var decision = ToolPermissionRouter.check(
+                    delegate, finalInputJson, sessionId, toolDescription, level,
+                    permissionManager, objectMapper);
             var overrideStatus = antiPatternOverrideSupplier != null
                     ? antiPatternOverrideSupplier.get()
                     : new AntiPatternGateOverrideStatus(sessionId, delegate.name(), false, 0L, "");

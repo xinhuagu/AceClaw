@@ -89,13 +89,19 @@ public record Provenance(
     }
 
     /**
-     * Compatibility bridge for {@link PermissionManager#check(PermissionRequest, String)}
-     * — the legacy entry point that only knows {@code (request, sessionId)}.
-     * Constructs the same shape {@link #forSession} produces, but is named
-     * differently so a grep for {@code Provenance.legacy} finds every site
-     * that hasn't yet been migrated to the structured API.
+     * Convenience for callers that have a {@code String} sessionId from a
+     * pre-#480 surface (legacy {@code PermissionRequest} shim) or from the
+     * dispatcher (which doesn't yet have a {@link PromptId} or
+     * {@link PlanStepId} to thread — those land in PR 3). Maps {@code null}
+     * to {@link #daemonInternal()} and a non-null value to {@link #forSession}.
+     *
+     * <p>Named {@code fromNullableSessionId} (rather than {@code legacy})
+     * so the call sites describe what they actually have — a possibly-null
+     * raw string id — without implying the path is legacy-only. A grep for
+     * this name finds every site that lacks the full PR 3 chain wiring,
+     * which is the migration signal we actually care about.
      */
-    public static Provenance legacy(String sessionId) {
+    public static Provenance fromNullableSessionId(String sessionId) {
         if (sessionId == null) {
             return daemonInternal();
         }

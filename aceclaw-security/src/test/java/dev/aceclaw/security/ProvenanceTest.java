@@ -53,12 +53,13 @@ final class ProvenanceTest {
     }
 
     @Test
-    void legacyFactoryDispatchesByNullability() {
-        // The legacy bridge from PermissionManager.check(PermissionRequest,
-        // sessionId) lands here. null sessionId means daemon-internal;
-        // non-null wraps as a SessionId.
-        assertThat(Provenance.legacy(null).sessionId()).isEmpty();
-        assertThat(Provenance.legacy("sess-x").sessionId())
+    void fromNullableSessionIdDispatchesByNullability() {
+        // The bridge from callers that have a possibly-null raw String id
+        // (PermissionManager legacy shim, dispatcher pre-PR-3) lands here.
+        // null sessionId means daemon-internal; non-null wraps as a
+        // SessionId.
+        assertThat(Provenance.fromNullableSessionId(null).sessionId()).isEmpty();
+        assertThat(Provenance.fromNullableSessionId("sess-x").sessionId())
                 .map(SessionId::value)
                 .contains("sess-x");
     }

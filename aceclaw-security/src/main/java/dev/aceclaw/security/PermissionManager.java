@@ -82,7 +82,7 @@ public final class PermissionManager {
     public PermissionDecision check(PermissionRequest request, String sessionId) {
         Objects.requireNonNull(request, "request");
         var capability = new Capability.LegacyToolUse(request.toolName(), request.level());
-        var provenance = Provenance.legacy(sessionId);
+        var provenance = Provenance.fromNullableSessionId(sessionId);
         // Legacy callers' allowlist key is already the tool name — pass it
         // through unchanged so existing "always allow X" approvals stay valid.
         return check(capability, provenance, request.toolName(), request.description());
