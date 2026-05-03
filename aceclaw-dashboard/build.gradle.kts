@@ -8,6 +8,7 @@
 // dashboard wasn't bundled.
 
 import org.gradle.api.tasks.Exec
+import org.gradle.internal.os.OperatingSystem
 
 // Use isPresent so `-Pno-dashboard` (no explicit value) works. Gradle stores a
 // missing-value property as empty string, which `.toBoolean()` reads as false.
@@ -17,9 +18,18 @@ val dashboardSrc = layout.projectDirectory.dir("src")
 val dashboardDist = layout.projectDirectory.dir("dist")
 val nodeModules = layout.projectDirectory.dir("node_modules")
 
+// Windows ships npm as npm.cmd / npm.bat — Java's ProcessBuilder doesn't honor
+// PATHEXT, so `commandLine("npm", ...)` would fail with "No such file" on
+// platform-full (Windows). Resolve the shim suffix once.
+val npmCmd = if (OperatingSystem.current().isWindows) "npm.cmd" else "npm"
+
 // `npm ci` — deterministic install from package-lock.json. Up-to-date when the lockfile
 // hasn't changed and node_modules already exists. Faster than `npm install` and won't
 // silently mutate the lockfile.
+//
+// NOT marked cacheable: node_modules is platform-specific (esbuild, sharp, etc. ship
+// native binaries) and >100 MB, so build-cache restoration is slower than just running
+// `npm ci` again. Up-to-date check via inputs/outputs gates re-runs locally.
 val npmCi = tasks.register<Exec>("npmCi") {
     group = "build"
     description = "Installs dashboard npm dependencies via npm ci"
@@ -27,10 +37,9 @@ val npmCi = tasks.register<Exec>("npmCi") {
     inputs.file("package-lock.json")
     inputs.file("package.json")
     outputs.dir(nodeModules)
-    outputs.cacheIf { true }
 
     workingDir = projectDir
-    commandLine("npm", "ci")
+    commandLine(npmCmd, "ci")
 
     onlyIf { !skipDashboard }
 }
@@ -53,7 +62,7 @@ val npmBuild = tasks.register<Exec>("npmBuild") {
     outputs.cacheIf { true }
 
     workingDir = projectDir
-    commandLine("npm", "run", "build")
+    commandLine(npmCmd, "run", "build")
 
     onlyIf { !skipDashboard }
 }

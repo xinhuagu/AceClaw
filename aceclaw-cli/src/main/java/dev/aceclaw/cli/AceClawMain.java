@@ -578,7 +578,7 @@ public final class AceClawMain implements Runnable {
                 // rather than letting the user stare at an empty URL.
                 if (dashNode.isMissingNode() || dashNode.isNull()) {
                     System.err.println("This daemon does not report a dashboard URL.");
-                    System.err.println("Restart it after rebuilding (./gradlew :aceclaw-daemon:installDist).");
+                    System.err.println("Stop it (`aceclaw daemon stop`) and reinstall: `./gradlew :aceclaw-cli:installDist`.");
                     System.exit(1);
                     return;
                 }

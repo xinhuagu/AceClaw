@@ -552,9 +552,19 @@ public final class AceClawDaemon {
         // Reported regardless of whether the bridge actually started (e.g. user
         // explicitly disabled it) — the CLI uses the `enabled` flag to decide
         // what error to print.
+        //
+        // 0.0.0.0 (and ::) bind every interface but isn't a valid clickable
+        // URL — Chrome, Firefox, and Safari all refuse it. Normalize to
+        // localhost for the user-facing URL while keeping the configured host
+        // for actual binding. The bridge itself still listens on every
+        // interface; we just hand the user the loopback name.
         boolean dashboardBundled = WebSocketBridge.dashboardBundled();
+        String urlHost = switch (config.webSocketHost()) {
+            case "0.0.0.0", "::", "::0" -> "localhost";
+            default -> config.webSocketHost();
+        };
         String dashboardUrl = config.webSocketEnabled()
-                ? "http://" + config.webSocketHost() + ":" + config.webSocketPort()
+                ? "http://" + urlHost + ":" + config.webSocketPort()
                 : "";
         router.setDashboardInfo(new RequestRouter.DashboardInfo(
                 config.webSocketEnabled(), dashboardUrl, dashboardBundled));

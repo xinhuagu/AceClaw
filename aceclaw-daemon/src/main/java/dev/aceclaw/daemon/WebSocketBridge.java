@@ -238,6 +238,17 @@ public final class WebSocketBridge {
             });
         }
 
+        // Populate the same-origin allowlist BEFORE Jetty opens the port, so a
+        // browser racing against startup cannot land on an empty allowlist and
+        // get rejected as "origin not allowed". Only possible when the port is
+        // configured (non-zero) — for the ephemeral-port test path the bound
+        // port is unknown until {@code instance.start} returns, and we accept
+        // the (microsecond-wide) race because no production caller uses port 0.
+        if (this.port != 0) {
+            this.sameOriginAllowlist = Set.of(
+                    "http://localhost:" + this.port,
+                    "http://127.0.0.1:" + this.port);
+        }
         instance.start(port);
         // Replace a 0 (ephemeral) port with the port Jetty actually bound. Tests
         // rely on this to avoid the TOCTOU race that {@code ServerSocket(0)} +
@@ -245,10 +256,10 @@ public final class WebSocketBridge {
         // port between probe and bridge bind.
         if (this.port == 0) {
             this.port = instance.port();
+            this.sameOriginAllowlist = Set.of(
+                    "http://localhost:" + this.port,
+                    "http://127.0.0.1:" + this.port);
         }
-        this.sameOriginAllowlist = Set.of(
-                "http://localhost:" + this.port,
-                "http://127.0.0.1:" + this.port);
         this.app = instance;
         if (dashboardBundled) {
             log.info("WebSocket bridge listening on ws://{}:{}/ws (dashboard at http://{}:{}/)",
