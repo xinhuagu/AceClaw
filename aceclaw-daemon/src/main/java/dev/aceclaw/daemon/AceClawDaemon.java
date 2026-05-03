@@ -2383,6 +2383,10 @@ public final class AceClawDaemon {
                         || configuredHost.equals("::")
                         || configuredHost.equals("::0")) {
                     urlHost = "localhost";
+                } else if (configuredHost.startsWith("[")) {
+                    // User already wrote it RFC-3986-style ("[::1]"); take as-is
+                    // — wrapping again would produce http://[[::1]]:3141.
+                    urlHost = configuredHost;
                 } else if (configuredHost.contains(":")) {
                     urlHost = "[" + configuredHost + "]";
                 } else {
