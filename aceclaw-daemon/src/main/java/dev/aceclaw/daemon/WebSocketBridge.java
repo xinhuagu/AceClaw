@@ -160,6 +160,12 @@ public final class WebSocketBridge {
         if (app != null) {
             return;
         }
+        // Clear any allowlist left behind by a previous start/stop cycle on
+        // this same instance. Without this, restart with port=0 (test path)
+        // briefly authorizes the previous run's port — the post-start seed
+        // below runs after Jetty opens the new ephemeral port, so the
+        // microseconds in between would otherwise read the stale set.
+        this.sameOriginAllowlist = Set.of();
         boolean dashboardBundled = WebSocketBridge.class.getResource(DASHBOARD_INDEX_RESOURCE) != null;
         var instance = Javalin.create(cfg -> {
             cfg.showJavalinBanner = false;
@@ -223,14 +229,19 @@ public final class WebSocketBridge {
                 }
             });
         });
-        // Friendly fallback for backend-only (-Pno-dashboard) builds: any GET
-        // not handled by /ws or staticFiles falls through to here. Returning a
-        // plain-text explanation beats Javalin's default 404 because it tells
-        // the user precisely why the dashboard didn't load instead of looking
-        // like a daemon bug.
+        // Friendly fallback for backend-only (-Pno-dashboard) builds: any
+        // unmatched route (not just exact /) returns a plain-text explanation.
+        // Javalin's per-route get("/...") only matches the exact path, so a
+        // bookmarked /dashboard or deep link gets the default 404 — looking
+        // like a daemon bug to the user instead of a missing-bundle hint.
+        // {@code error(404, …)} fires after route resolution misses, so it
+        // catches every unbound path while leaving /ws and staticFiles
+        // (registered above) untouched.
         if (!dashboardBundled) {
-            instance.get("/", ctx -> {
-                ctx.status(404);
+            instance.error(404, ctx -> {
+                if (!"GET".equals(ctx.method().name())) {
+                    return;
+                }
                 ctx.contentType("text/plain; charset=utf-8");
                 ctx.result("AceClaw dashboard is not bundled in this build.\n"
                         + "Rebuild without -Pno-dashboard, or run the dev server: "
@@ -291,6 +302,10 @@ public final class WebSocketBridge {
             for (var client : List.copyOf(clients)) {
                 dropClient(client);
             }
+            // Drop the same-origin allowlist so a later restart on the same
+            // instance can't briefly honor the previous run's port. start()
+            // re-seeds before opening the new listener.
+            sameOriginAllowlist = Set.of();
             app = null;
             log.info("WebSocket bridge stopped");
         }

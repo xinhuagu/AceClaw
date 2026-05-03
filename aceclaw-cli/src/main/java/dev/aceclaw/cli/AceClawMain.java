@@ -647,8 +647,17 @@ public final class AceClawMain implements Runnable {
          * attempt failed (no display, sandbox, missing helper) so the caller
          * can fall back to printing the URL — never throws, never blocks the
          * CLI on a failed browse attempt.
+         *
+         * <p>Note: {@code xdg-open} (Linux) and macOS {@code open} are
+         * best-effort launchers; they routinely return success even when the
+         * underlying browse failed (no DISPLAY, broken handler chain, …). We
+         * intentionally do NOT wait on the helper — a "true" return only
+         * means the helper was launched, not that a browser actually opened.
+         * The caller must always print the URL too so a failed open is
+         * recoverable from the terminal.
          */
         private static boolean openInBrowser(String url) {
+            java.util.Objects.requireNonNull(url, "url");
             // Try the platform-native opener first. macOS `open` and Linux
             // `xdg-open` work in more environments than Java's Desktop API
             // (which can fail in headless JVMs even when a browser exists).
