@@ -78,21 +78,19 @@ final class CapabilityTest {
     }
 
     @Test
-    void httpFetchGetIsIngressOnly() {
-        var cap = new Capability.HttpFetch(URI.create("https://example.com"), "GET");
-
-        assertThat(cap.risk()).isEqualTo(PermissionLevel.EXECUTE);
-        assertThat(cap.dataFlow())
-                .as("safe HTTP methods upload no body")
-                .isEqualTo(DataFlow.INGRESS);
-    }
-
-    @Test
-    void httpFetchPostIsBidirectional() {
-        var cap = new Capability.HttpFetch(URI.create("https://example.com"), "POST");
-
-        assertThat(cap.risk()).isEqualTo(PermissionLevel.EXECUTE);
-        assertThat(cap.dataFlow()).isEqualTo(DataFlow.BOTH);
+    void httpFetchAllMethodsAreBidirectional() {
+        // Even GET/HEAD ship URL query strings, headers, and cookies
+        // outbound — those are exfiltration vectors. Classify every HTTP
+        // method as BOTH so a "block-egress" policy cannot be bypassed by
+        // hiding payload in a GET querystring. Per-payload inspection
+        // belongs in PolicyEngine (#465 Scope #2).
+        for (var method : java.util.List.of("GET", "HEAD", "POST", "PUT", "DELETE", "PATCH")) {
+            var cap = new Capability.HttpFetch(URI.create("https://example.com"), method);
+            assertThat(cap.risk()).isEqualTo(PermissionLevel.EXECUTE);
+            assertThat(cap.dataFlow())
+                    .as("HTTP %s must be BOTH (URL/headers are egress vectors)", method)
+                    .isEqualTo(DataFlow.BOTH);
+        }
     }
 
     @Test

@@ -3,6 +3,9 @@ package dev.aceclaw.tools;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.Tool;
+import dev.aceclaw.security.Capability;
+import dev.aceclaw.security.CapabilityAware;
+import dev.aceclaw.security.WriteMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -23,7 +26,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * it can be overwritten. This prevents accidental data loss from blind writes.
  * New files (that don't exist yet) are exempt from this check.
  */
-public final class WriteFileTool implements Tool {
+public final class WriteFileTool implements Tool, CapabilityAware {
 
     private static final Logger log = LoggerFactory.getLogger(WriteFileTool.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -139,5 +142,47 @@ public final class WriteFileTool implements Tool {
 
     private Path resolveFilePath(String raw) {
         return PathResolver.resolve(raw, workingDir);
+    }
+
+    /**
+     * #480 PR 2: advertise this tool's intent as a structured
+     * {@link Capability.FileWrite} so PermissionManager / audit log /
+     * dashboard see the actual path and write mode rather than the flat
+     * {@code "write_file"} string.
+     *
+     * <p>Distinguishes {@link WriteMode#CREATE_NEW} from
+     * {@link WriteMode#OVERWRITE} by checking both
+     * {@link Files#exists(Path, java.nio.file.LinkOption...)} and
+     * {@link Files#notExists(Path, java.nio.file.LinkOption...)}. Both
+     * return {@code false} when existence cannot be determined (permission
+     * denied, broken symlink, …); collapsing that case to {@code CREATE_NEW}
+     * would let a "create-only" policy approve a request that may actually
+     * overwrite an existing-but-unreadable file. Reject indeterminate state
+     * explicitly — the dispatcher's catch-and-fall-back to the legacy path
+     * will still surface a normal user-approval prompt.
+     *
+     * <p>The tool's read-before-write gate in {@link #execute(String)} also
+     * catches blind overwrites at the execution layer; the two together
+     * keep the snapshot-vs-execute window safe — even if the file appears
+     * between the capability check and the write, the read-tracking set
+     * will reject it.
+     */
+    @Override
+    public Capability toCapability(JsonNode args) {
+        if (args == null || !args.has("file_path") || args.get("file_path").asText().isBlank()) {
+            throw new IllegalArgumentException("write_file requires a non-blank file_path");
+        }
+        var filePath = resolveFilePath(args.get("file_path").asText());
+        final WriteMode mode;
+        if (Files.exists(filePath)) {
+            mode = WriteMode.OVERWRITE;
+        } else if (Files.notExists(filePath)) {
+            mode = WriteMode.CREATE_NEW;
+        } else {
+            throw new IllegalArgumentException(
+                    "write_file cannot determine whether target exists (permission denied or broken link?): "
+                            + filePath);
+        }
+        return new Capability.FileWrite(filePath, mode);
     }
 }

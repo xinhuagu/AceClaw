@@ -71,6 +71,31 @@ public sealed interface Capability {
     String displayLabel();
 
     /**
+     * Default allowlist key used by {@link PermissionManager#check(Capability, Provenance)}
+     * — the convenience overload — when no explicit key is supplied. Returns
+     * the variant's simple class name (e.g. {@code "FileRead"}); useful for
+     * daemon-internal callers that have no originating tool name.
+     *
+     * <p><strong>Tool dispatchers must NOT rely on this default.</strong>
+     * They should call
+     * {@link PermissionManager#check(Capability, Provenance, String, String)}
+     * with the originating tool's name as the allowlist key, so that user
+     * approvals granted before #480 (keyed by tool name like
+     * {@code "write_file"}) keep auto-approving the migrated structured
+     * path. Two different tools producing the same capability variant
+     * intentionally remain separate allowlist entries — "always allow this
+     * tool" is a per-tool decision, while capability-level rules belong in
+     * PolicyEngine (#465 Scope #2).
+     *
+     * <p>{@link LegacyToolUse} overrides this to return its recorded
+     * {@code toolName} so the convenience overload also stays compatible
+     * for that bridge variant.
+     */
+    default String allowlistKey() {
+        return getClass().getSimpleName();
+    }
+
+    /**
      * Renders a {@link Path} with forward slashes regardless of the host OS.
      * Audit logs and dashboard labels are observed across platforms (a Linux
      * operator viewing a Windows daemon's events shouldn't see backslashes
@@ -156,11 +181,15 @@ public sealed interface Capability {
 
         @Override public PermissionLevel risk() { return PermissionLevel.EXECUTE; }
         @Override public DataFlow dataFlow() {
-            // GET/HEAD are read-only request bodies; everything else can
-            // ship payload, so DataFlow.BOTH is the safe default.
-            return ("GET".equalsIgnoreCase(method) || "HEAD".equalsIgnoreCase(method))
-                    ? DataFlow.INGRESS
-                    : DataFlow.BOTH;
+            // ALL HTTP methods are EGRESS-capable, including GET/HEAD: URL
+            // query strings, headers, cookies, and (in some clients) bodies
+            // ship data outbound regardless of the verb. Classifying GET as
+            // INGRESS-only would let a "block-egress" policy be bypassed by
+            // exfiltrating via querystring — a real-world attack pattern.
+            // Keeping a single answer (BOTH) avoids that whole class of
+            // bypass; per-payload inspection belongs in PolicyEngine
+            // (#465 Scope #2). (Codex review on #481, addressed in #482.)
+            return DataFlow.BOTH;
         }
         @Override public String displayLabel() { return method + " " + url; }
     }
@@ -265,5 +294,15 @@ public sealed interface Capability {
             };
         }
         @Override public String displayLabel() { return "legacy:" + toolName; }
+
+        /**
+         * Preserves the existing tool-name keyed allowlist semantics: a user
+         * who clicked "always allow {@code write_file}" before #480 must
+         * keep being auto-approved even after their tool dispatch goes
+         * through the {@link LegacyToolUse} bridge. Returning the recorded
+         * {@code toolName} (instead of the default {@code "LegacyToolUse"})
+         * makes that work without touching the allowlist storage format.
+         */
+        @Override public String allowlistKey() { return toolName; }
     }
 }
