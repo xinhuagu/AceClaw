@@ -549,25 +549,15 @@ public final class AceClawDaemon {
         }
         // health.status reports dashboard reachability so the `aceclaw dashboard`
         // CLI subcommand (#446) can discover the URL without hard-coding 3141.
-        // Reported regardless of whether the bridge actually started (e.g. user
-        // explicitly disabled it) — the CLI uses the `enabled` flag to decide
-        // what error to print.
-        //
-        // 0.0.0.0 (and ::) bind every interface but isn't a valid clickable
-        // URL — Chrome, Firefox, and Safari all refuse it. Normalize to
-        // localhost for the user-facing URL while keeping the configured host
-        // for actual binding. The bridge itself still listens on every
-        // interface; we just hand the user the loopback name.
+        // Initial state is "not yet running" — the real URL is published below
+        // by {@link #publishDashboardInfo} only AFTER the bridge has actually
+        // bound its port. If the user disabled WS in config, or Jetty fails to
+        // bind (port conflict with Jupyter / Docker / another local service),
+        // {@code enabled} stays false and the CLI prints a precise error
+        // instead of luring the user into opening someone else's service.
         boolean dashboardBundled = WebSocketBridge.dashboardBundled();
-        String urlHost = switch (config.webSocketHost()) {
-            case "0.0.0.0", "::", "::0" -> "localhost";
-            default -> config.webSocketHost();
-        };
-        String dashboardUrl = config.webSocketEnabled()
-                ? "http://" + urlHost + ":" + config.webSocketPort()
-                : "";
         router.setDashboardInfo(new RequestRouter.DashboardInfo(
-                config.webSocketEnabled(), dashboardUrl, dashboardBundled));
+                false, "", dashboardBundled));
         // Use config model for anthropic (user's choice), client's resolved model for other providers
         // (factory may translate or fall back, e.g. copilot ignores anthropic model names)
         String effectiveModel = "anthropic".equals(config.provider()) ? model : llmClient.defaultModel();
@@ -2371,6 +2361,25 @@ public final class AceClawDaemon {
         if (webSocketBridge != null) {
             try {
                 webSocketBridge.start();
+                // Republish dashboard info with the actually-bound URL so
+                // health.status (and therefore the `aceclaw dashboard` CLI)
+                // only points users at a port that's really ours. If start
+                // threw, we leave the placeholder DashboardInfo set during
+                // configuration (enabled=false), so the CLI prints a precise
+                // bind-failure message instead of an uninteresting 200 from
+                // whatever else is on 3141.
+                //
+                // 0.0.0.0 (and ::) bind every interface but isn't a clickable
+                // browser URL — Chrome, Firefox, Safari all refuse it.
+                // Normalize the URL host to localhost while leaving the
+                // configured bind alone.
+                String urlHost = switch (webSocketBridge.host()) {
+                    case "0.0.0.0", "::", "::0" -> "localhost";
+                    default -> webSocketBridge.host();
+                };
+                String dashboardUrl = "http://" + urlHost + ":" + webSocketBridge.port();
+                router.setDashboardInfo(new RequestRouter.DashboardInfo(
+                        true, dashboardUrl, WebSocketBridge.dashboardBundled()));
             } catch (Exception e) {
                 log.error("WebSocket bridge failed to start (continuing without it): {}",
                         e.getMessage(), e);

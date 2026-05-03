@@ -588,8 +588,16 @@ public final class AceClawMain implements Runnable {
                 String url = dashNode.path("url").asText("");
 
                 if (!enabled) {
-                    System.err.println("WebSocket bridge is disabled (webSocket.enabled = false in config.json).");
-                    System.err.println("Remove that override or set it to true, then run `aceclaw daemon stop` and try again.");
+                    // Two paths land here: user explicitly disabled WS in
+                    // config.json, OR Jetty failed to bind the port (something
+                    // else on the user's machine is on 3141). Both deserve a
+                    // pointer to the daemon log because the user can't
+                    // distinguish them from CLI output alone.
+                    System.err.println("Dashboard not available — daemon's WebSocket bridge is not running.");
+                    System.err.println("Likely causes:");
+                    System.err.println("  - webSocket.enabled = false in ~/.aceclaw/config.json");
+                    System.err.println("  - the configured port (default 3141) is in use by another process");
+                    System.err.println("Check ~/.aceclaw/logs/daemon.log for the bind error.");
                     System.exit(1);
                     return;
                 }
