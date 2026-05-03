@@ -35,12 +35,25 @@ jobs:
       - name: Compute next version
         id: version
         run: |
-          # Read version from gradle.properties (source of truth).
-          # SNAPSHOT suffix is stripped; result is the release version.
+          # gradle.properties holds the in-progress SNAPSHOT (e.g. 0.3.19-SNAPSHOT).
+          # `patch` releases that version as-is; `minor` and `major` re-derive
+          # the release version from semver rules so the user can pick the bump
+          # type at trigger time without first hand-editing gradle.properties.
+          # The post-release "Bump to next SNAPSHOT" step always advances by
+          # patch+1 from whatever we publish here.
           CURRENT=$(grep '^version=' gradle.properties | cut -d= -f2)
           BARE="${CURRENT%-SNAPSHOT}"
-          echo "next=v${BARE}" >> "$GITHUB_OUTPUT"
-          echo "Next version: v${BARE}"
+          MAJOR=$(echo "$BARE" | cut -d. -f1)
+          MINOR=$(echo "$BARE" | cut -d. -f2)
+          PATCH=$(echo "$BARE" | cut -d. -f3)
+          case "${{ inputs.bump }}" in
+            major) NEXT="$((MAJOR + 1)).0.0" ;;
+            minor) NEXT="${MAJOR}.$((MINOR + 1)).0" ;;
+            patch) NEXT="${BARE}" ;;
+            *) echo "Invalid bump: ${{ inputs.bump }}"; exit 1 ;;
+          esac
+          echo "next=v${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "Next version: v${NEXT} (bump=${{ inputs.bump }}, current=${CURRENT})"
 
       - name: Bump gradle.properties
         run: |
