@@ -4008,8 +4008,14 @@ public final class StreamingAgentHandler {
             var toolDescription = buildToolDescription(delegate.name(), effectiveInputJson);
             final String finalInputJson = effectiveInputJson;
 
-            var permRequest = new PermissionRequest(delegate.name(), toolDescription, level);
-            var decision = permissionManager.check(permRequest, sessionId);
+            // #480 PR 2: routing the call through ToolPermissionRouter keeps
+            // the structured-vs-legacy branching logic in one testable place.
+            // CapabilityAware tools take the structured path; everything else
+            // hits the legacy PermissionRequest entry point. Both ultimately
+            // share PermissionManager's single decision/audit pipeline.
+            var decision = ToolPermissionRouter.check(
+                    delegate, finalInputJson, sessionId, toolDescription, level,
+                    permissionManager, objectMapper);
             var overrideStatus = antiPatternOverrideSupplier != null
                     ? antiPatternOverrideSupplier.get()
                     : new AntiPatternGateOverrideStatus(sessionId, delegate.name(), false, 0L, "");
