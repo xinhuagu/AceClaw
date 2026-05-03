@@ -70,6 +70,18 @@ public sealed interface Capability {
      */
     String displayLabel();
 
+    /**
+     * Renders a {@link Path} with forward slashes regardless of the host OS.
+     * Audit logs and dashboard labels are observed across platforms (a Linux
+     * operator viewing a Windows daemon's events shouldn't see backslashes
+     * that confuse readers and break grep). Native path semantics are
+     * preserved at the API boundary; this function only affects the
+     * <em>display</em> form.
+     */
+    private static String renderPath(Path path) {
+        return path.toString().replace('\\', '/');
+    }
+
     // -- Filesystem -----------------------------------------------------
 
     record FileRead(Path path) implements Capability {
@@ -79,7 +91,7 @@ public sealed interface Capability {
 
         @Override public PermissionLevel risk() { return PermissionLevel.READ; }
         @Override public DataFlow dataFlow() { return DataFlow.INGRESS; }
-        @Override public String displayLabel() { return "read " + path; }
+        @Override public String displayLabel() { return "read " + renderPath(path); }
     }
 
     record FileWrite(Path path, WriteMode mode) implements Capability {
@@ -90,17 +102,26 @@ public sealed interface Capability {
 
         @Override public PermissionLevel risk() { return PermissionLevel.WRITE; }
         @Override public DataFlow dataFlow() { return DataFlow.EGRESS; }
-        @Override public String displayLabel() { return "write " + path + " (" + mode + ")"; }
+        @Override public String displayLabel() { return "write " + renderPath(path) + " (" + mode + ")"; }
     }
 
+    /**
+     * Deletion is classified as {@link PermissionLevel#DANGEROUS} rather than
+     * {@code WRITE} so that {@code accept-edits} mode (which auto-approves
+     * {@code WRITE}) does NOT silently delete files — operators expect that
+     * mode to remove the prompt for "edit a file", not "rm -rf the project".
+     * Only {@code DANGEROUS} requires explicit approval in every mode except
+     * {@code yolo}, matching the existing {@link DefaultPermissionPolicy}
+     * behaviour for destructive ops.
+     */
     record FileDelete(Path path) implements Capability {
         public FileDelete {
             Objects.requireNonNull(path, "path");
         }
 
-        @Override public PermissionLevel risk() { return PermissionLevel.WRITE; }
+        @Override public PermissionLevel risk() { return PermissionLevel.DANGEROUS; }
         @Override public DataFlow dataFlow() { return DataFlow.EGRESS; }
-        @Override public String displayLabel() { return "delete " + path; }
+        @Override public String displayLabel() { return "delete " + renderPath(path); }
     }
 
     // -- Process --------------------------------------------------------
@@ -128,6 +149,9 @@ public sealed interface Capability {
         public HttpFetch {
             Objects.requireNonNull(url, "url");
             Objects.requireNonNull(method, "method");
+            if (method.isBlank()) {
+                throw new IllegalArgumentException("method must not be blank");
+            }
         }
 
         @Override public PermissionLevel risk() { return PermissionLevel.EXECUTE; }
@@ -229,11 +253,15 @@ public sealed interface Capability {
 
         @Override public PermissionLevel risk() { return declaredLevel; }
         @Override public DataFlow dataFlow() {
-            // Read-vs-write is the only thing a flat record reliably implied;
-            // anything finer-grained is unknowable from v1 fields.
+            // Best-effort mapping from the v1 flat-record level. EXECUTE and
+            // DANGEROUS go to BOTH (matching {@link BashExec}, the canonical
+            // EXECUTE-level capability) — those operations typically read and
+            // write at the same time. Pure WRITE → EGRESS; READ → INGRESS.
+            // Anything finer-grained is unknowable from v1 fields.
             return switch (declaredLevel) {
                 case READ -> DataFlow.INGRESS;
-                case WRITE, EXECUTE, DANGEROUS -> DataFlow.EGRESS;
+                case WRITE -> DataFlow.EGRESS;
+                case EXECUTE, DANGEROUS -> DataFlow.BOTH;
             };
         }
         @Override public String displayLabel() { return "legacy:" + toolName; }

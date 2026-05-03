@@ -30,6 +30,8 @@ final class CapabilityTest {
 
         assertThat(cap.risk()).isEqualTo(PermissionLevel.READ);
         assertThat(cap.dataFlow()).isEqualTo(DataFlow.INGRESS);
+        // displayLabel uses forward slashes regardless of host OS so audit
+        // logs and dashboard text stay platform-independent.
         assertThat(cap.displayLabel()).isEqualTo("read /etc/hosts");
     }
 
@@ -39,15 +41,31 @@ final class CapabilityTest {
 
         assertThat(cap.risk()).isEqualTo(PermissionLevel.WRITE);
         assertThat(cap.dataFlow()).isEqualTo(DataFlow.EGRESS);
-        assertThat(cap.displayLabel()).contains("/tmp/x").contains("OVERWRITE");
+        assertThat(cap.displayLabel()).isEqualTo("write /tmp/x (OVERWRITE)");
     }
 
     @Test
-    void fileDeleteDerivesWriteEgress() {
+    void fileDeleteIsDangerousNotPlainWrite() {
+        // Deletion must NOT be auto-approved by accept-edits mode. WRITE
+        // would be — DANGEROUS is the level that always prompts.
         var cap = new Capability.FileDelete(Path.of("/tmp/x"));
 
-        assertThat(cap.risk()).isEqualTo(PermissionLevel.WRITE);
+        assertThat(cap.risk())
+                .as("rm-style ops must require explicit approval, not be auto-edited")
+                .isEqualTo(PermissionLevel.DANGEROUS);
         assertThat(cap.dataFlow()).isEqualTo(DataFlow.EGRESS);
+        assertThat(cap.displayLabel()).isEqualTo("delete /tmp/x");
+    }
+
+    @Test
+    void filePathDisplayUsesForwardSlashesOnAnyOS() {
+        // The Java NIO Path's native separator is '\' on Windows. We render
+        // it as '/' so audit logs and the dashboard look the same to a
+        // Linux operator viewing a Windows daemon and vice versa.
+        var winStyle = Path.of("C:\\tmp\\x");
+        var label = new Capability.FileRead(winStyle).displayLabel();
+        assertThat(label).doesNotContain("\\");
+        assertThat(label).contains("/");
     }
 
     @Test
@@ -63,6 +81,7 @@ final class CapabilityTest {
     void httpFetchGetIsIngressOnly() {
         var cap = new Capability.HttpFetch(URI.create("https://example.com"), "GET");
 
+        assertThat(cap.risk()).isEqualTo(PermissionLevel.EXECUTE);
         assertThat(cap.dataFlow())
                 .as("safe HTTP methods upload no body")
                 .isEqualTo(DataFlow.INGRESS);
@@ -72,7 +91,20 @@ final class CapabilityTest {
     void httpFetchPostIsBidirectional() {
         var cap = new Capability.HttpFetch(URI.create("https://example.com"), "POST");
 
+        assertThat(cap.risk()).isEqualTo(PermissionLevel.EXECUTE);
         assertThat(cap.dataFlow()).isEqualTo(DataFlow.BOTH);
+    }
+
+    @Test
+    void httpFetchRejectsBlankMethod() {
+        // Blank method would silently fall through to BOTH and look like a
+        // POST. Make it surface at construction so the bug doesn't get
+        // recorded in the audit log under a misleading data-flow.
+        assertThatThrownBy(() -> new Capability.HttpFetch(URI.create("https://x"), ""))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("method");
+        assertThatThrownBy(() -> new Capability.HttpFetch(URI.create("https://x"), "  "))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
@@ -130,6 +162,23 @@ final class CapabilityTest {
                 .isEqualTo(PermissionLevel.WRITE);
         assertThat(cap.dataFlow()).isEqualTo(DataFlow.EGRESS);
         assertThat(cap.displayLabel()).startsWith("legacy:");
+    }
+
+    @Test
+    void legacyExecuteAndDangerousMapToBothLikeBashExec() {
+        // EXECUTE-class operations are usually bidirectional (read output +
+        // write side effects). Match BashExec's BOTH so audit-replay
+        // statistics aren't skewed compared to current entries.
+        assertThat(new Capability.LegacyToolUse("bash", PermissionLevel.EXECUTE).dataFlow())
+                .isEqualTo(DataFlow.BOTH);
+        assertThat(new Capability.LegacyToolUse("force_push", PermissionLevel.DANGEROUS).dataFlow())
+                .isEqualTo(DataFlow.BOTH);
+    }
+
+    @Test
+    void legacyReadMapsToIngress() {
+        assertThat(new Capability.LegacyToolUse("read_file", PermissionLevel.READ).dataFlow())
+                .isEqualTo(DataFlow.INGRESS);
     }
 
     @Test
