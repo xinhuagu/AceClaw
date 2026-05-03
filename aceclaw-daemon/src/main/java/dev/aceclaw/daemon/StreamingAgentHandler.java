@@ -49,10 +49,12 @@ import dev.aceclaw.memory.CandidateStore;
 import dev.aceclaw.memory.DailyJournal;
 import dev.aceclaw.memory.MarkdownMemoryStore;
 import dev.aceclaw.memory.MemoryEntry;
+import dev.aceclaw.security.CapabilityAware;
 import dev.aceclaw.security.PermissionDecision;
 import dev.aceclaw.security.PermissionLevel;
 import dev.aceclaw.security.PermissionManager;
 import dev.aceclaw.security.PermissionRequest;
+import dev.aceclaw.security.Provenance;
 import dev.aceclaw.tools.AppleScriptTool;
 import dev.aceclaw.tools.BashExecTool;
 import dev.aceclaw.tools.EditFileTool;
@@ -3980,8 +3982,36 @@ public final class StreamingAgentHandler {
             var toolDescription = buildToolDescription(delegate.name(), effectiveInputJson);
             final String finalInputJson = effectiveInputJson;
 
-            var permRequest = new PermissionRequest(delegate.name(), toolDescription, level);
-            var decision = permissionManager.check(permRequest, sessionId);
+            // #480 PR 2: tools that implement CapabilityAware advertise a
+            // structured Capability so PermissionManager / audit log see the
+            // real intent (e.g. FileWrite("/tmp/x", OVERWRITE)) rather than
+            // the flat tool name. The allowlist stays keyed by tool name
+            // (delegate.name()) so existing "always allow X" approvals keep
+            // working through migration; the rich human description carries
+            // through to the user's prompt unchanged. Falls back to the
+            // legacy PermissionRequest path for tools that haven't migrated
+            // yet — single audit/decision pipeline either way.
+            PermissionDecision decision;
+            if (delegate instanceof CapabilityAware capAware) {
+                try {
+                    var capability = capAware.toCapability(objectMapper.readTree(finalInputJson));
+                    var provenance = Provenance.legacy(sessionId);
+                    decision = permissionManager.check(
+                            capability, provenance, delegate.name(), toolDescription);
+                } catch (RuntimeException | java.io.IOException toCapErr) {
+                    // Tool's toCapability() refused (bad args, etc.) — fall
+                    // back to legacy path so the user gets the same
+                    // "needs approval" prompt with description rather than
+                    // an opaque crash. Logged so the regression is visible.
+                    log.warn("CapabilityAware tool {} rejected args; falling back to legacy permission path: {}",
+                            delegate.name(), toCapErr.getMessage());
+                    var permRequest = new PermissionRequest(delegate.name(), toolDescription, level);
+                    decision = permissionManager.check(permRequest, sessionId);
+                }
+            } else {
+                var permRequest = new PermissionRequest(delegate.name(), toolDescription, level);
+                decision = permissionManager.check(permRequest, sessionId);
+            }
             var overrideStatus = antiPatternOverrideSupplier != null
                     ? antiPatternOverrideSupplier.get()
                     : new AntiPatternGateOverrideStatus(sessionId, delegate.name(), false, 0L, "");

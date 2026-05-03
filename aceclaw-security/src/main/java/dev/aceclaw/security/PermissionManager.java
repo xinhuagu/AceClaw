@@ -63,37 +63,100 @@ public final class PermissionManager {
 
     /**
      * Checks whether the given request is permitted within the given
-     * session.
+     * session. <strong>Legacy entry point</strong> retained for callers that
+     * still construct flat {@link PermissionRequest}s; under the hood it
+     * wraps the request as a {@link Capability.LegacyToolUse} and delegates
+     * to {@link #check(Capability, Provenance)}, so legacy and structured
+     * paths share one decision-and-audit pipeline (#480 Layer 1, PR 2).
      *
-     * <p>Order: session-level blanket approval → policy. The
-     * blanket-approval lookup is per-session — a tool approved in
-     * session A is NOT auto-approved in session B (issue #456).
+     * <p>Order is unchanged: session-level blanket approval → policy. The
+     * blanket-approval lookup is per-session — a tool approved in session A
+     * is NOT auto-approved in session B (issue #456).
      *
      * @param request   the permission request
      * @param sessionId the session this check belongs to. {@code null}
-     *                  skips the per-session allow-list lookup and
-     *                  goes straight to the policy — useful for
-     *                  daemon-internal checks where no session owns
-     *                  the request.
+     *                  skips the per-session allow-list lookup — daemon-
+     *                  internal checks (cron, boot scripts) use this.
      * @return the decision
      */
     public PermissionDecision check(PermissionRequest request, String sessionId) {
         Objects.requireNonNull(request, "request");
-        if (sessionId != null) {
-            var allow = sessionApprovals.get(sessionId);
-            if (allow != null && allow.contains(request.toolName())) {
-                log.debug("Permission auto-approved (session blanket): tool={}, sessionId={}",
-                        request.toolName(), sessionId);
+        var capability = new Capability.LegacyToolUse(request.toolName(), request.level());
+        var provenance = Provenance.legacy(sessionId);
+        // Legacy callers' allowlist key is already the tool name — pass it
+        // through unchanged so existing "always allow X" approvals stay valid.
+        return check(capability, provenance, request.toolName(), request.description());
+    }
+
+    /**
+     * Structured-capability entry point introduced by #480 PR 2. Takes a
+     * {@link Capability} (one of the sealed variants) plus the
+     * {@link Provenance} that records how the agent arrived at this check,
+     * and returns the same decision the legacy method does.
+     *
+     * <p>This convenience overload uses the capability's
+     * {@link Capability#allowlistKey() default allowlist key} (the variant
+     * class name) and {@link Capability#displayLabel()} as the prompt
+     * description. Tool dispatchers should prefer
+     * {@link #check(Capability, Provenance, String, String)} so existing
+     * tool-name-keyed allowlists keep working through migration and the
+     * user sees a richer prompt than the synthetic {@code displayLabel()}.
+     */
+    public PermissionDecision check(Capability capability, Provenance provenance) {
+        return check(capability, provenance, capability.allowlistKey(), capability.displayLabel());
+    }
+
+    /**
+     * Full structured-capability entry point. Caller supplies an explicit
+     * {@code allowlistKey} (typically the originating tool's name) and a
+     * {@code description} (typically the dispatcher's rich human-readable
+     * tool summary). Used by the dispatcher in {@code StreamingAgentHandler}
+     * so that:
+     *
+     * <ul>
+     *   <li>"Always allow {@code write_file}" approvals granted before #480
+     *       keep auto-approving even after {@code WriteFileTool} migrates
+     *       to {@code CapabilityAware} — the allowlist is keyed by tool
+     *       name, not by capability variant.</li>
+     *   <li>The user sees the same prompt for both legacy and migrated
+     *       tools — no UX regression during migration.</li>
+     * </ul>
+     *
+     * <p>Pipeline is unchanged: session allowlist first, then policy.
+     * PolicyEngine (#465 Scope #2) will eventually consume the structured
+     * {@link Capability} directly; until then this method bridges by
+     * constructing a {@link PermissionRequest} on the fly.
+     */
+    public PermissionDecision check(
+            Capability capability,
+            Provenance provenance,
+            String allowlistKey,
+            String description) {
+        Objects.requireNonNull(capability, "capability");
+        Objects.requireNonNull(provenance, "provenance");
+        Objects.requireNonNull(allowlistKey, "allowlistKey");
+        Objects.requireNonNull(description, "description");
+
+        String sessionIdOrNull = provenance.sessionId().map(s -> s.value()).orElse(null);
+        if (sessionIdOrNull != null) {
+            var allow = sessionApprovals.get(sessionIdOrNull);
+            if (allow != null && allow.contains(allowlistKey)) {
+                log.debug("Permission auto-approved (session blanket): key={}, sessionId={}",
+                        allowlistKey, sessionIdOrNull);
                 var decision = new PermissionDecision.Approved();
-                audit(request, sessionId, decision, "session-blanket-approval");
+                audit(allowlistKey, capability.risk(), sessionIdOrNull, decision, "session-blanket-approval");
                 return decision;
             }
         }
+
+        // PolicyEngine is still PermissionRequest-shaped today (#465 Scope
+        // #2 will change that). Build a request from the capability.
+        var request = new PermissionRequest(allowlistKey, description, capability.risk());
         var decision = policy.evaluate(request);
-        log.debug("Permission check: tool={}, level={}, sessionId={}, decision={}",
-                request.toolName(), request.level(), sessionId,
+        log.debug("Permission check: key={}, level={}, sessionId={}, decision={}",
+                allowlistKey, capability.risk(), sessionIdOrNull,
                 decision.getClass().getSimpleName());
-        audit(request, sessionId, decision, null);
+        audit(allowlistKey, capability.risk(), sessionIdOrNull, decision, null);
         return decision;
     }
 
@@ -104,9 +167,15 @@ public final class PermissionManager {
      * and chooses the {@code reason} field: caller-supplied note
      * (for the session-blanket branch), the denial reason (for
      * Denied), the prompt (for NeedsUserApproval), or null.
+     *
+     * <p>Audit shape is still v1 (flat fields) in PR 2 — PR 3 will swap
+     * in a structured form that carries the {@link Capability} and
+     * {@link Provenance} directly. For now we project them down to the
+     * v1 fields {@code (toolName, level)}.
      */
     private void audit(
-            PermissionRequest request,
+            String allowlistKey,
+            PermissionLevel risk,
             String sessionId,
             PermissionDecision decision,
             String approvalNote) {
@@ -127,7 +196,7 @@ public final class PermissionManager {
                 reason = n.prompt();
             }
         }
-        auditLog.record(Instant.now(), sessionId, request.toolName(), request.level(), kind, reason);
+        auditLog.record(Instant.now(), sessionId, allowlistKey, risk, kind, reason);
     }
 
     /**
