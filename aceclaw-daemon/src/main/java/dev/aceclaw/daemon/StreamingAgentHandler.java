@@ -49,6 +49,7 @@ import dev.aceclaw.memory.CandidateStore;
 import dev.aceclaw.memory.DailyJournal;
 import dev.aceclaw.memory.MarkdownMemoryStore;
 import dev.aceclaw.memory.MemoryEntry;
+import dev.aceclaw.security.Capability;
 import dev.aceclaw.security.CapabilityAware;
 import dev.aceclaw.security.PermissionDecision;
 import dev.aceclaw.security.PermissionLevel;
@@ -3993,18 +3994,28 @@ public final class StreamingAgentHandler {
             // yet — single audit/decision pipeline either way.
             PermissionDecision decision;
             if (delegate instanceof CapabilityAware capAware) {
+                // Only the args-to-Capability conversion is allowed to fall
+                // back to the legacy path. A failure here means the tool's
+                // toCapability() refused malformed args (or JSON parse blew
+                // up); fallback gives the user the same "needs approval"
+                // prompt with description rather than an opaque crash.
+                // Errors raised by permissionManager.check itself (policy,
+                // audit, runtime) MUST surface — silently re-running the
+                // legacy path on those would mask real bugs and could
+                // downgrade the decision pipeline. (Codex review on #482.)
+                Capability capability;
                 try {
-                    var capability = capAware.toCapability(objectMapper.readTree(finalInputJson));
+                    capability = capAware.toCapability(objectMapper.readTree(finalInputJson));
+                } catch (RuntimeException | java.io.IOException toCapErr) {
+                    log.warn("CapabilityAware tool {} rejected args; falling back to legacy permission path: {}",
+                            delegate.name(), toCapErr.getMessage());
+                    capability = null;
+                }
+                if (capability != null) {
                     var provenance = Provenance.legacy(sessionId);
                     decision = permissionManager.check(
                             capability, provenance, delegate.name(), toolDescription);
-                } catch (RuntimeException | java.io.IOException toCapErr) {
-                    // Tool's toCapability() refused (bad args, etc.) — fall
-                    // back to legacy path so the user gets the same
-                    // "needs approval" prompt with description rather than
-                    // an opaque crash. Logged so the regression is visible.
-                    log.warn("CapabilityAware tool {} rejected args; falling back to legacy permission path: {}",
-                            delegate.name(), toCapErr.getMessage());
+                } else {
                     var permRequest = new PermissionRequest(delegate.name(), toolDescription, level);
                     decision = permissionManager.check(permRequest, sessionId);
                 }
