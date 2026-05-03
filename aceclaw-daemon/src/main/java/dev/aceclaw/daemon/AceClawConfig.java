@@ -135,11 +135,15 @@ public final class AceClawConfig {
     private static final boolean DEFAULT_DEFERRED_ACTION_ENABLED = true;
     private static final int DEFAULT_DEFERRED_ACTION_TICK_SECONDS = 5;
     /**
-     * WebSocket bridge for browser dashboard (issue #431). Enabled by default since #446 —
-     * the daemon now serves the bundled dashboard on the same port, and the same-origin
-     * gate in {@link WebSocketBridge} keeps cross-site browsers locked out without any
-     * user config. Bind host stays {@code localhost} so it's never exposed off-machine.
-     * Users who explicitly set {@code webSocket.enabled = false} keep their override.
+     * WebSocket bridge for browser dashboard (issue #431). Enabled by default since #446
+     * <em>but only when the bind host is loopback</em> — the daemon now serves the
+     * bundled dashboard on the same port, and the same-origin gate in {@link
+     * WebSocketBridge} keeps cross-site browsers locked out without user config. The
+     * loopback gate avoids a security regression for pre-existing configs that set
+     * {@code webSocket.host = "0.0.0.0"} without ever setting {@code webSocket.enabled}
+     * — flipping the default on for those users would suddenly expose the daemon to
+     * everyone on their LAN. {@link #load} downgrades this default to {@code false}
+     * when a non-loopback host is configured without an explicit enabled flag.
      */
     private static final boolean DEFAULT_WEBSOCKET_ENABLED = true;
     private static final int DEFAULT_WEBSOCKET_PORT = 3141;
@@ -151,6 +155,19 @@ public final class AceClawConfig {
     /** Codex CLI credentials file for OpenAI Codex OAuth. */
     private static final Path CODEX_AUTH_FILE = Path.of(System.getProperty("user.home"), ".codex", "auth.json");
     private static final boolean DEFAULT_CONTEXT_1M = false;
+
+    /**
+     * Hosts treated as loopback for the purpose of safely defaulting the
+     * WebSocket bridge on. Non-loopback hosts (e.g. {@code 0.0.0.0},
+     * {@code 192.168.x.y}) require an explicit {@code webSocket.enabled = true}
+     * — see {@link #DEFAULT_WEBSOCKET_ENABLED} javadoc.
+     */
+    private static boolean isLoopbackHost(String host) {
+        return "localhost".equals(host)
+                || "127.0.0.1".equals(host)
+                || "::1".equals(host)
+                || "[::1]".equals(host);
+    }
 
     private String provider;
     private String baseUrl;
@@ -226,6 +243,14 @@ public final class AceClawConfig {
     private boolean deferredActionEnabled;
     private int deferredActionTickSeconds;
     private boolean webSocketEnabled;
+    /**
+     * Tracks whether any config file explicitly set {@code webSocket.enabled}.
+     * When false at the end of {@link #load}, the loopback-gating rule from
+     * {@link #DEFAULT_WEBSOCKET_ENABLED}'s javadoc applies — non-loopback
+     * hosts force enabled to false to avoid silently exposing the daemon to
+     * a LAN that the user never opted into.
+     */
+    private boolean webSocketEnabledExplicit;
     private int webSocketPort;
     private String webSocketHost;
     /**
@@ -722,6 +747,23 @@ public final class AceClawConfig {
                 && config.refreshToken == null) {
             // Non-Anthropic provider with OAuth token still needs refresh token
             config.loadClaudeCliCredentials();
+        }
+
+        // Loopback gate (#446): the new default-on for {@code webSocket.enabled}
+        // is only safe on a loopback bind. Pre-existing configs that set
+        // {@code webSocket.host = "0.0.0.0"} but never set
+        // {@code webSocket.enabled} would otherwise be silently exposed to
+        // their LAN. Apply the gate after all merge/profile/env passes so
+        // the final resolved host wins, and only when no file in the chain
+        // explicitly opted in.
+        if (!config.webSocketEnabledExplicit
+                && config.webSocketEnabled
+                && !isLoopbackHost(config.webSocketHost)) {
+            log.info(
+                    "webSocket.host = '{}' is non-loopback; defaulting webSocket.enabled to false. "
+                            + "Set webSocket.enabled = true in config.json to opt in explicitly.",
+                    config.webSocketHost);
+            config.webSocketEnabled = false;
         }
 
         log.info("Config loaded: provider={}, model={}, maxTokens={}, thinkingBudget={}, maxTurns={}, adaptiveContinuationEnabled={}, adaptiveMaxSegments={}, contextWindow={}, logLevel={}, baseUrl={}, apiKey={}, refreshToken={}",
@@ -1760,6 +1802,7 @@ public final class AceClawConfig {
         if (fileConfig.webSocket != null) {
             if (fileConfig.webSocket.enabled != null) {
                 this.webSocketEnabled = fileConfig.webSocket.enabled;
+                this.webSocketEnabledExplicit = true;
             }
             if (fileConfig.webSocket.port != null) {
                 int p = fileConfig.webSocket.port;

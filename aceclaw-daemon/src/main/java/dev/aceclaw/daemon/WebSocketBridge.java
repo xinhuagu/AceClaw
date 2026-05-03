@@ -121,9 +121,10 @@ public final class WebSocketBridge {
      * from that origin in the first place, which means it already passed the
      * static-files / page-load gate served by this same daemon.
      *
-     * <p>Populated with both {@code http://localhost:{port}} and
-     * {@code http://127.0.0.1:{port}} regardless of the configured bind host
-     * (they are the two stable browser origins for a localhost-bound server).
+     * <p>Populated with {@code http://localhost:{port}}, {@code http://127.0.0.1:{port}},
+     * and {@code http://[::1]:{port}} regardless of the configured bind host —
+     * those are the three stable browser-origin spellings for a loopback-bound
+     * server, and a browser may pick any of them when the user opens the URL.
      * Empty until {@link #start()} runs.
      */
     private volatile Set<String> sameOriginAllowlist = Set.of();
@@ -258,7 +259,8 @@ public final class WebSocketBridge {
         if (this.port != 0) {
             this.sameOriginAllowlist = Set.of(
                     "http://localhost:" + this.port,
-                    "http://127.0.0.1:" + this.port);
+                    "http://127.0.0.1:" + this.port,
+                    "http://[::1]:" + this.port);
         }
         instance.start(port);
         // Replace a 0 (ephemeral) port with the port Jetty actually bound. Tests
@@ -269,7 +271,8 @@ public final class WebSocketBridge {
             this.port = instance.port();
             this.sameOriginAllowlist = Set.of(
                     "http://localhost:" + this.port,
-                    "http://127.0.0.1:" + this.port);
+                    "http://127.0.0.1:" + this.port,
+                    "http://[::1]:" + this.port);
         }
         this.app = instance;
         if (dashboardBundled) {
