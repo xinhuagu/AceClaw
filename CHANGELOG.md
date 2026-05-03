@@ -1,5 +1,52 @@
 # Changelog
 
+## [0.3.19] - 2026-05-03
+
+### Bug Fixes
+
+- One text node per ReAct iteration, anchored on its thinking (#450)
+- Include projectPath in stream.session_started (#452) (#453)
+
+### Documentation
+
+- Pair each intro image with its section
+- Lead with the ReAct loop visualization, drop race detail
+- Add Node 20 LTS + React 19 badges, pin engines.node
+- Name it "runtime state visualization" in the harness intro
+- Visual-harness roadmap — debugger, decision graph, permission dashboard, learning viewer
+- Drop roadmap link from README
+- Tagline harness link as runtime's observability + control plane
+- Catch up with the WebSocket bridge
+- Position AceClaw as runtime-level governance
+- Lead with the thesis, drop "two things in one project"
+- Positive enterprise framing in README opener
+- Collapse the second paragraph back into one clean enumeration
+- Restore protocol/connector contrast as context for the "one ..." enumeration
+- Rewrite the architecture sentence — no comparisons, no "one one one"
+- Weave runtime + harness into the opener; runtime-level governance framing
+- Drop React mention; tighten "compliance captures" to "audit trail"
+- README opener says only what's actually shipped
+
+### Features
+
+- Execution event schema for browser clients (#439) (#440)
+- WebSocket bridge + EventMultiplexer + missing events (#431) (#441)
+- React + Vite + TS + Tailwind + Framer Motion + dagre scaffold (#434) (#442)
+- EventReducer + useExecutionTree hook (#435) (#443)
+- ExecutionTree component — animated SVG live tree (#436) (#444)
+- Multi-session discovery — sessions.list + sidebar (#445) (#447)
+- Snapshot.request endpoint for late-joining clients (#432) (#448)
+- Accept permission.response over WebSocket (#433) (#454)
+- Inline permission approve/deny panel (#437) (#455)
+- Bridge SchedulerEvent to WebSocket for cron viz (#459) (#460)
+- Cron jobs sidebar panel (#459 layer 2) (#461)
+- Cron-as-session — drill into a cron run as a tree (#459) (#464)
+- Replan as a first-class tree node + plan badge (#458) (#466)
+- Lower planner threshold 5→3 + /plan slash command (#467)
+- Nav controls + breadcrumb for the execution tree (#472)
+- Signed capability audit log v1 (#474)
+- Wire capability audit log into startup (#475)
+- Aceclaw dashboard subcommand — daemon serves bundled dist (#446)
 ## [0.3.18] - 2026-04-20
 
 ### Bug Fixes
