@@ -181,11 +181,15 @@ public sealed interface Capability {
 
         @Override public PermissionLevel risk() { return PermissionLevel.EXECUTE; }
         @Override public DataFlow dataFlow() {
-            // GET/HEAD are read-only request bodies; everything else can
-            // ship payload, so DataFlow.BOTH is the safe default.
-            return ("GET".equalsIgnoreCase(method) || "HEAD".equalsIgnoreCase(method))
-                    ? DataFlow.INGRESS
-                    : DataFlow.BOTH;
+            // ALL HTTP methods are EGRESS-capable, including GET/HEAD: URL
+            // query strings, headers, cookies, and (in some clients) bodies
+            // ship data outbound regardless of the verb. Classifying GET as
+            // INGRESS-only would let a "block-egress" policy be bypassed by
+            // exfiltrating via querystring — a real-world attack pattern.
+            // Keeping a single answer (BOTH) avoids that whole class of
+            // bypass; per-payload inspection belongs in PolicyEngine
+            // (#465 Scope #2). (Codex review on #481, addressed in #482.)
+            return DataFlow.BOTH;
         }
         @Override public String displayLabel() { return method + " " + url; }
     }
