@@ -83,29 +83,32 @@ final class ToolPermissionRouter {
         Objects.requireNonNull(mapper, "mapper");
 
         if (!(delegate instanceof CapabilityAware capAware)) {
-            var legacyRequest = new PermissionRequest(delegate.name(), description, fallbackLevel);
-            return permissionManager.check(legacyRequest, sessionId);
+            return checkLegacy(delegate, description, fallbackLevel, sessionId, permissionManager);
         }
 
         Capability capability;
-        boolean conversionThrew = false;
         try {
             capability = capAware.toCapability(mapper.readTree(inputJson));
         } catch (RuntimeException | IOException toCapErr) {
             log.warn("CapabilityAware tool {} rejected args; falling back to legacy permission path: {}",
                     delegate.name(), toCapErr.getMessage());
-            capability = null;
-            conversionThrew = true;
+            return checkLegacy(delegate, description, fallbackLevel, sessionId, permissionManager);
         }
-        if (capability == null && !conversionThrew) {
+        if (capability == null) {
             throw new IllegalStateException(
                     "CapabilityAware tool " + delegate.name()
                             + " returned null capability (contract violation)");
         }
-        if (capability != null) {
-            var provenance = Provenance.fromNullableSessionId(sessionId);
-            return permissionManager.check(capability, provenance, delegate.name(), description);
-        }
+        var provenance = Provenance.fromNullableSessionId(sessionId);
+        return permissionManager.check(capability, provenance, delegate.name(), description);
+    }
+
+    private static PermissionDecision checkLegacy(
+            Tool delegate,
+            String description,
+            PermissionLevel fallbackLevel,
+            String sessionId,
+            PermissionManager permissionManager) {
         var legacyRequest = new PermissionRequest(delegate.name(), description, fallbackLevel);
         return permissionManager.check(legacyRequest, sessionId);
     }
