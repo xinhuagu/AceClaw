@@ -587,6 +587,18 @@ public final class AceClawMain implements Runnable {
                 boolean bundled = dashNode.path("bundled").asBoolean(false);
                 String url = dashNode.path("url").asText("");
 
+                // Bundled comes first: a missing dashboard build is the more
+                // fundamental issue — even if the WS bridge were running there
+                // would be no UI to serve. A user who runs -Pno-dashboard AND
+                // hits a port conflict should be told about the build first;
+                // fixing the port without rebuilding gets them nowhere.
+                if (!bundled) {
+                    System.err.println("The dashboard wasn't bundled in this daemon build.");
+                    System.err.println("Rebuild without -Pno-dashboard, or run the dev server:");
+                    System.err.println("  cd aceclaw-dashboard && npm run dev");
+                    System.exit(1);
+                    return;
+                }
                 if (!enabled) {
                     // Two paths land here: user explicitly disabled WS in
                     // config.json, OR Jetty failed to bind the port (something
@@ -598,13 +610,6 @@ public final class AceClawMain implements Runnable {
                     System.err.println("  - webSocket.enabled = false in ~/.aceclaw/config.json");
                     System.err.println("  - the configured port (default 3141) is in use by another process");
                     System.err.println("Check ~/.aceclaw/logs/daemon.log for the bind error.");
-                    System.exit(1);
-                    return;
-                }
-                if (!bundled) {
-                    System.err.println("The dashboard wasn't bundled in this daemon build.");
-                    System.err.println("Rebuild without -Pno-dashboard, or run the dev server:");
-                    System.err.println("  cd aceclaw-dashboard && npm run dev");
                     System.exit(1);
                     return;
                 }

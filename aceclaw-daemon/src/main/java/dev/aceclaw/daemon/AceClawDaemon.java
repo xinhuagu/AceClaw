@@ -2372,11 +2372,22 @@ public final class AceClawDaemon {
                 // 0.0.0.0 (and ::) bind every interface but isn't a clickable
                 // browser URL — Chrome, Firefox, Safari all refuse it.
                 // Normalize the URL host to localhost while leaving the
-                // configured bind alone.
-                String urlHost = switch (webSocketBridge.host()) {
-                    case "0.0.0.0", "::", "::0" -> "localhost";
-                    default -> webSocketBridge.host();
-                };
+                // configured bind alone. Other IPv6 literals (::1, fe80::…)
+                // need bracket-wrapping per RFC 3986; without brackets,
+                // {@code http://::1:3141} is parsed as host {@code ::1} +
+                // port {@code 3141}'s containing colon, which the browser
+                // rejects.
+                String configuredHost = webSocketBridge.host();
+                String urlHost;
+                if (configuredHost.equals("0.0.0.0")
+                        || configuredHost.equals("::")
+                        || configuredHost.equals("::0")) {
+                    urlHost = "localhost";
+                } else if (configuredHost.contains(":")) {
+                    urlHost = "[" + configuredHost + "]";
+                } else {
+                    urlHost = configuredHost;
+                }
                 String dashboardUrl = "http://" + urlHost + ":" + webSocketBridge.port();
                 router.setDashboardInfo(new RequestRouter.DashboardInfo(
                         true, dashboardUrl, WebSocketBridge.dashboardBundled()));
