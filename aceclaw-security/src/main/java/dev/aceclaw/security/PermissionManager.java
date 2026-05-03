@@ -103,6 +103,8 @@ public final class PermissionManager {
      * user sees a richer prompt than the synthetic {@code displayLabel()}.
      */
     public PermissionDecision check(Capability capability, Provenance provenance) {
+        Objects.requireNonNull(capability, "capability");
+        Objects.requireNonNull(provenance, "provenance");
         return check(capability, provenance, capability.allowlistKey(), capability.displayLabel());
     }
 

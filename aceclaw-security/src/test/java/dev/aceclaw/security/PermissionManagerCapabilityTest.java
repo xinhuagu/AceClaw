@@ -21,10 +21,6 @@ final class PermissionManagerCapabilityTest {
     private static final PermissionPolicy DENY = req ->
             new PermissionDecision.Denied("test policy denies");
 
-    /** Always-approve policy. */
-    private static final PermissionPolicy APPROVE = req ->
-            new PermissionDecision.Approved();
-
     @Test
     void structuredCheckUsesCapabilityRiskInPolicyRequest() {
         // PolicyEngine doesn't yet consume Capability directly (#465 Scope
@@ -120,17 +116,21 @@ final class PermissionManagerCapabilityTest {
     void daemonInternalProvenanceSkipsAllowlistLookup() {
         // Provenance.daemonInternal() leaves sessionId empty. Without a
         // session, the manager falls straight through to the policy — same
-        // semantics as the legacy path's null-sessionId case.
-        var pm = new PermissionManager(APPROVE);
-        // Even with an approval in some session, daemon-internal goes
-        // straight to policy.
+        // semantics as the legacy path's null-sessionId case. Use DENY here
+        // (not APPROVE) so the assertion actually proves the bypass: if
+        // daemonInternal accidentally reused the session approval, this
+        // test would now wrongly approve. With DENY, only the bypass path
+        // can produce the expected Denied outcome.
+        var pm = new PermissionManager(DENY);
         pm.approveForSession("sess-X", "FileRead");
 
         var decision = pm.check(
                 new Capability.FileRead(Path.of("/etc/hosts")),
                 Provenance.daemonInternal());
 
-        assertThat(decision).isInstanceOf(PermissionDecision.Approved.class);
+        assertThat(decision)
+                .as("daemon-internal must skip the session allowlist and hit policy")
+                .isInstanceOf(PermissionDecision.Denied.class);
     }
 
     @Test

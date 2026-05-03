@@ -151,14 +151,21 @@ public final class WriteFileTool implements Tool, CapabilityAware {
      * {@code "write_file"} string.
      *
      * <p>Distinguishes {@link WriteMode#CREATE_NEW} from
-     * {@link WriteMode#OVERWRITE} via {@link Files#exists(Path, java.nio.file.LinkOption...)}
-     * at check time. This lets a "create-only" policy refuse overwrites
-     * without re-inspecting filesystem state. The tool's
-     * read-before-write gate in {@link #execute(String)} also catches
-     * blind overwrites at the execution layer; the two together keep the
-     * snapshot-vs-execute window safe — even if the file appears between
-     * the capability check and the write, the read-tracking set will
-     * reject it.
+     * {@link WriteMode#OVERWRITE} by checking both
+     * {@link Files#exists(Path, java.nio.file.LinkOption...)} and
+     * {@link Files#notExists(Path, java.nio.file.LinkOption...)}. Both
+     * return {@code false} when existence cannot be determined (permission
+     * denied, broken symlink, …); collapsing that case to {@code CREATE_NEW}
+     * would let a "create-only" policy approve a request that may actually
+     * overwrite an existing-but-unreadable file. Reject indeterminate state
+     * explicitly — the dispatcher's catch-and-fall-back to the legacy path
+     * will still surface a normal user-approval prompt.
+     *
+     * <p>The tool's read-before-write gate in {@link #execute(String)} also
+     * catches blind overwrites at the execution layer; the two together
+     * keep the snapshot-vs-execute window safe — even if the file appears
+     * between the capability check and the write, the read-tracking set
+     * will reject it.
      */
     @Override
     public Capability toCapability(JsonNode args) {
@@ -166,7 +173,16 @@ public final class WriteFileTool implements Tool, CapabilityAware {
             throw new IllegalArgumentException("write_file requires a non-blank file_path");
         }
         var filePath = resolveFilePath(args.get("file_path").asText());
-        var mode = Files.exists(filePath) ? WriteMode.OVERWRITE : WriteMode.CREATE_NEW;
+        final WriteMode mode;
+        if (Files.exists(filePath)) {
+            mode = WriteMode.OVERWRITE;
+        } else if (Files.notExists(filePath)) {
+            mode = WriteMode.CREATE_NEW;
+        } else {
+            throw new IllegalArgumentException(
+                    "write_file cannot determine whether target exists (permission denied or broken link?): "
+                            + filePath);
+        }
         return new Capability.FileWrite(filePath, mode);
     }
 }
