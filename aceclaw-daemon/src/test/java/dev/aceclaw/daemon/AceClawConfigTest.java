@@ -26,6 +26,56 @@ class AceClawConfigTest {
         assertThat(config.provider()).isEqualTo("openai-codex");
     }
 
+    // -- WebSocket loopback gating (#446) --
+
+    @Test
+    void webSocketDefaultsOnForLoopbackHost(@TempDir Path tempDir) throws Exception {
+        // Default config (no webSocket section) → loopback host → enabled=true.
+        // Pin the new default-on behavior for the bundled-dashboard UX.
+        var projectConfig = tempDir.resolve(".aceclaw").resolve("config.json");
+        Files.createDirectories(projectConfig.getParent());
+        Files.writeString(projectConfig, "{}");
+
+        var config = AceClawConfig.load(tempDir, null);
+
+        assertThat(config.webSocketHost()).isEqualTo("localhost");
+        assertThat(config.webSocketEnabled()).isTrue();
+    }
+
+    @Test
+    void webSocketGatedOffForNonLoopbackHostWithoutExplicitEnable(@TempDir Path tempDir) throws Exception {
+        // Pre-existing config that set host=0.0.0.0 but never set enabled
+        // relied on the OLD default (false). Flipping the default to true
+        // would silently expose that user's daemon to LAN. The loopback gate
+        // catches this — we must NOT default-on for non-loopback hosts.
+        var projectConfig = tempDir.resolve(".aceclaw").resolve("config.json");
+        Files.createDirectories(projectConfig.getParent());
+        Files.writeString(projectConfig,
+                "{\"webSocket\":{\"host\":\"0.0.0.0\"}}");
+
+        var config = AceClawConfig.load(tempDir, null);
+
+        assertThat(config.webSocketHost()).isEqualTo("0.0.0.0");
+        assertThat(config.webSocketEnabled())
+                .as("non-loopback host without explicit enabled must stay disabled")
+                .isFalse();
+    }
+
+    @Test
+    void webSocketRespectsExplicitEnableEvenOnNonLoopbackHost(@TempDir Path tempDir) throws Exception {
+        // If the user opts in explicitly with enabled=true and a non-loopback
+        // host, we honor that — the gate is a safety net for IMPLICIT
+        // exposure, not a policy override.
+        var projectConfig = tempDir.resolve(".aceclaw").resolve("config.json");
+        Files.createDirectories(projectConfig.getParent());
+        Files.writeString(projectConfig,
+                "{\"webSocket\":{\"enabled\":true,\"host\":\"0.0.0.0\"}}");
+
+        var config = AceClawConfig.load(tempDir, null);
+
+        assertThat(config.webSocketEnabled()).isTrue();
+    }
+
     // -- applyKeychainCredential tests --
 
     /**

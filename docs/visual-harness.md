@@ -47,23 +47,33 @@ AceClawEventBus  ──►  WebSocketBridge  ──►  treeReducer (pure fn)
 ## Run it locally
 
 ```bash
-# 1. Start the daemon with the WebSocket bridge enabled
-#    (~/.aceclaw/config.json):
-# {
-#   "webSocket": { "enabled": true, "port": 3141, "allowedOrigins": ["http://localhost:5173"] }
-# }
-aceclaw-restart
-
-# 2. Run the dashboard
-cd aceclaw-dashboard
-pnpm install   # or npm install
-pnpm dev       # http://localhost:5173/
-
-# 3. Pick a session in the sidebar, or open with a known id:
-#    http://localhost:5173/?session=<id>&ws=ws://localhost:3141/ws
+aceclaw dashboard
 ```
 
-The dashboard lives under [`aceclaw-dashboard/`](../aceclaw-dashboard/). It's a React 19 + Vite + Tailwind 4 app with a dagre-driven SVG tree and framer-motion node animations; reducer and hook layers are unit-tested with Vitest.
+That's it. The daemon serves the bundled production dashboard on `http://localhost:3141` (same port as the WebSocket bridge), so there's no second process, no `allowedOrigins` config, and no manual `?session=` URL to paste — the sidebar lists every active session.
+
+The subcommand auto-starts the daemon if it isn't already running. Pass `--no-open` to print the URL without opening a browser (useful over SSH).
+
+### Dashboard development (hot reload)
+
+If you're hacking on the dashboard itself, the bundled build won't pick up your edits live. Use the Vite dev server instead:
+
+```bash
+# 1. Allow the Vite origin in the daemon's config (~/.aceclaw/config.json):
+# {
+#   "webSocket": { "allowedOrigins": ["http://localhost:5173"] }
+# }
+aceclaw-restart   # or `aceclaw daemon stop && aceclaw daemon start`
+
+# 2. Run Vite
+cd aceclaw-dashboard
+npm install
+npm run dev       # http://localhost:5173/
+```
+
+The bundled-vs-dev split exists because same-origin auto-passes the WS handshake at `localhost:3141` (the bundled path) but a 5173 origin is cross-site and needs an explicit allowlist entry — that's by design, so a malicious page can't open `ws://localhost:3141/ws` from somewhere else and observe your runtime events.
+
+The dashboard lives under [`aceclaw-dashboard/`](../aceclaw-dashboard/). It's a React 19 + Vite + Tailwind 4 app with a dagre-driven SVG tree and framer-motion node animations; reducer and hook layers are unit-tested with Vitest. Backend contributors who don't have Node 20 can build with `-Pno-dashboard` to skip the dashboard packaging — `aceclaw dashboard` will then return a 404 explaining the missing bundle.
 
 ## What's next
 

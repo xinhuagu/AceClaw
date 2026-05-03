@@ -72,6 +72,11 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: aceclaw-dashboard/package-lock.json
       - uses: gradle/actions/setup-gradle@v4
 
       - run: ./gradlew clean build :aceclaw-cli:distTar :aceclaw-cli:distZip --no-daemon

@@ -6,6 +6,7 @@ include(
     "aceclaw-infra",
     "aceclaw-core",
     "aceclaw-daemon",
+    "aceclaw-dashboard",
     "aceclaw-llm",
     "aceclaw-tools",
     "aceclaw-memory",

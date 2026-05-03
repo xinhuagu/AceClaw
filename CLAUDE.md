@@ -60,7 +60,7 @@ CLI (Picocli + JLine3)            Dashboard (React + Vite)
                    v              v
 Daemon (persistent JVM)
   ├── RequestRouter → dispatches methods to handlers
-  ├── WebSocketBridge → fans daemon events out to connected dashboards (off by default)
+  ├── WebSocketBridge → fans daemon events out to connected dashboards; also serves the bundled dashboard at /
   ├── EventMultiplexer → tees per-request notifications to both CLI sink and WS bridge
   ├── WorkspaceAttachmentRegistry → one live TUI per workspace
   ├── StreamingAgentHandler → runs ReAct loop with permission checks + task planner
