@@ -189,6 +189,33 @@ final class ToolPermissionRouterTest {
     }
 
     @Test
+    void nullInputJsonFallsBackToLegacyInsteadOfCrashing() {
+        // Upstream (ContentBlock.ToolUse, PermissionAwareTool's parse
+        // path) can deliver a tool call with no arguments payload. The
+        // router must treat that as "couldn't build a Capability, prompt
+        // via legacy" rather than throw NPE — otherwise a recoverable
+        // upstream flow becomes an unhandled crash. (Codex review on
+        // #482, second pass.)
+        var policy = new CapturingPolicy();
+        var pm = new PermissionManager(policy);
+        var tool = new SpyCapabilityAwareTool();
+
+        var decision = ToolPermissionRouter.check(
+                tool, null, "sess-1", "fallback prompt", PermissionLevel.WRITE, pm, MAPPER);
+
+        assertThat(decision).isInstanceOf(PermissionDecision.Approved.class);
+        assertThat(tool.toCapabilityCalls.get())
+                .as("null input never reaches toCapability — readTree fails first, caught, legacy fallback")
+                .isZero();
+        assertThat(policy.last.get().toolName())
+                .as("legacy fallback was used")
+                .isEqualTo("spy_tool");
+        assertThat(policy.last.get().level())
+                .as("legacy fallback uses caller-supplied level")
+                .isEqualTo(PermissionLevel.WRITE);
+    }
+
+    @Test
     void daemonInternalCallNullSessionIdGoesThroughBothPaths() {
         // Cron, boot scripts, and other daemon-internal callers pass
         // sessionId == null. The router must accept it (no NPE) and

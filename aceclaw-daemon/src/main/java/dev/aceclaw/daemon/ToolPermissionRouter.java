@@ -57,7 +57,9 @@ final class ToolPermissionRouter {
      * Routes a tool call to the structured or legacy permission entry point.
      *
      * @param delegate        the tool being invoked (may or may not be {@link CapabilityAware})
-     * @param inputJson       the JSON args the LLM supplied to the tool
+     * @param inputJson       the JSON args the LLM supplied to the tool, or {@code null}
+     *                        / malformed if upstream couldn't produce a payload — those
+     *                        cases fall back to the legacy permission path (no crash)
      * @param sessionId       the owning session id, or {@code null} for daemon-internal calls
      * @param description     rich human-readable description for the approval prompt
      * @param fallbackLevel   risk level used when going through the legacy path
@@ -76,11 +78,15 @@ final class ToolPermissionRouter {
             PermissionManager permissionManager,
             ObjectMapper mapper) {
         Objects.requireNonNull(delegate, "delegate");
-        Objects.requireNonNull(inputJson, "inputJson");
         Objects.requireNonNull(description, "description");
         Objects.requireNonNull(fallbackLevel, "fallbackLevel");
         Objects.requireNonNull(permissionManager, "permissionManager");
         Objects.requireNonNull(mapper, "mapper");
+        // inputJson is intentionally NOT null-guarded — upstream (e.g.
+        // ContentBlock.ToolUse, PermissionAwareTool's parse path) tolerates
+        // missing/invalid arguments and the dispatcher previously absorbed
+        // them in the try-catch below. Hard-failing here would convert a
+        // recoverable flow into an unhandled crash. (Codex review on #482.)
 
         if (!(delegate instanceof CapabilityAware capAware)) {
             return checkLegacy(delegate, description, fallbackLevel, sessionId, permissionManager);
@@ -90,6 +96,9 @@ final class ToolPermissionRouter {
         try {
             capability = capAware.toCapability(mapper.readTree(inputJson));
         } catch (RuntimeException | IOException toCapErr) {
+            // Catches NPE from mapper.readTree(null), IOException from
+            // malformed JSON, IllegalArgumentException from toCapability's
+            // own arg validation — all fall back to the legacy prompt path.
             log.warn("CapabilityAware tool {} rejected args; falling back to legacy permission path: {}",
                     delegate.name(), toCapErr.getMessage());
             return checkLegacy(delegate, description, fallbackLevel, sessionId, permissionManager);
