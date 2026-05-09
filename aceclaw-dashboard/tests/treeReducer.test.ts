@@ -3339,6 +3339,130 @@ describe('appendTextToCurrentTurn honours parentStepId (#485 follow-up)', () => 
   });
 });
 
+describe('scopeChanged late-delivery isolation (#485 follow-up)', () => {
+  // Build state where step 1 is COMPLETED, step 2 is RUNNING with a
+  // running tool under it. A late thinking/text for step 1 must NOT
+  // touch step 2's running tool, and multi-chunk late deltas for the
+  // same older step must accumulate into one node, not fragment.
+  function liveStep2WithRunningTool() {
+    return runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 2,
+        goal: 'g',
+        steps: [
+          { index: 1, name: 's1', description: '' },
+          { index: 2, name: 's2', description: '' },
+        ],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 2,
+        stepName: 's1',
+      }),
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 50,
+        tokensUsed: 25,
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's2',
+        stepIndex: 2,
+        totalSteps: 2,
+        stepName: 's2',
+      }),
+      envelope('stream.thinking', {
+        delta: 'step 2 reasoning',
+        parentStepId: stepNodeId('plan-1', 2),
+      }),
+      envelope('stream.tool_use', {
+        id: 't-live',
+        name: 'read_file',
+        parentStepId: stepNodeId('plan-1', 2),
+      }),
+    );
+  }
+
+  it('late thinking for older step does NOT seal live step running tool (Codex P2 self-found)', () => {
+    let state = liveStep2WithRunningTool();
+    expect(findById(state, 't-live').status).toBe('running');
+    const liveAnchorsBefore = {
+      currentThinkingId: state.currentThinkingId,
+      currentTextId: state.currentTextId,
+      activeNodeId: state.activeNodeId,
+      thinkingSealed: state.thinkingSealed,
+      textIsOpen: state.textIsOpen,
+    };
+
+    state = runAll(
+      state,
+      envelope('stream.thinking', {
+        delta: 'late chunk for step 1',
+        parentStepId: stepNodeId('plan-1', 1),
+      }),
+    );
+
+    // Live tool unchanged.
+    expect(findById(state, 't-live').status).toBe('running');
+    // Live anchors unchanged.
+    expect(state.currentThinkingId).toBe(liveAnchorsBefore.currentThinkingId);
+    expect(state.currentTextId).toBe(liveAnchorsBefore.currentTextId);
+    expect(state.activeNodeId).toBe(liveAnchorsBefore.activeNodeId);
+    expect(state.thinkingSealed).toBe(liveAnchorsBefore.thinkingSealed);
+    expect(state.textIsOpen).toBe(liveAnchorsBefore.textIsOpen);
+    // Late content lands under step 1.
+    const step1 = findById(state, stepNodeId('plan-1', 1));
+    const late = step1.children.find((c) => c.type === 'thinking' && (c.text ?? '').includes('late chunk'));
+    expect(late).toBeDefined();
+  });
+
+  it('multi-chunk late text accumulates into one node rather than fragmenting (Codex P2 #490)', () => {
+    let state = liveStep2WithRunningTool();
+    // Three late text deltas for step 1 (a completed step).
+    state = runAll(
+      state,
+      envelope('stream.text', {
+        delta: 'first ',
+        parentStepId: stepNodeId('plan-1', 1),
+      }),
+      envelope('stream.text', {
+        delta: 'second ',
+        parentStepId: stepNodeId('plan-1', 1),
+      }),
+      envelope('stream.text', {
+        delta: 'third',
+        parentStepId: stepNodeId('plan-1', 1),
+      }),
+    );
+    const step1 = findById(state, stepNodeId('plan-1', 1));
+    const lateTexts = step1.children.filter((c) => c.type === 'text');
+    // One node accumulates all three chunks instead of three siblings.
+    expect(lateTexts).toHaveLength(1);
+    expect(lateTexts[0]?.text ?? '').toBe('first second third');
+    // Live tool still untouched.
+    expect(findById(state, 't-live').status).toBe('running');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Step events arriving before plan_created — don't dangle activeNodeId
 // ---------------------------------------------------------------------------

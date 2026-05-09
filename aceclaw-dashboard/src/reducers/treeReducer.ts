@@ -191,7 +191,17 @@ function findCurrentAgentScope(state: ExecutionTree): ExecutionNode | null {
 function resolveAgentScope(
   state: ExecutionTree,
   parentStepId: string | undefined,
-): { turn: ExecutionNode | null; override: boolean } {
+): {
+  turn: ExecutionNode | null;
+  /** Explicit step diverges from the activeNodeId-based heuristic OR a
+   *  stale iteration anchor lives outside the explicit step's subtree. */
+  override: boolean;
+  /** Stronger flavour: explicit step is a *different* live scope than the
+   *  heuristic. Late events for an OLDER step land here — handlers must
+   *  not provisionally complete the live step's running children or
+   *  rotate iteration anchors, since those belong to a different scope. */
+  scopeChanged: boolean;
+} {
   const explicitNode = parentStepId
     ? findNode(state.rootNodes, parentStepId)
     : null;
@@ -199,16 +209,16 @@ function resolveAgentScope(
   const heuristic = findCurrentAgentScope(state);
   const turn = explicit ?? heuristic;
   if (!explicit) {
-    return { turn, override: false };
+    return { turn, override: false, scopeChanged: false };
   }
   if (explicit.id !== (heuristic?.id ?? null)) {
-    return { turn, override: true };
+    return { turn, override: true, scopeChanged: true };
   }
   const candidate = state.currentTextId ?? state.currentThinkingId;
   const candidateInside = !candidate
     ? true
     : findNode(explicit.children, candidate) !== null;
-  return { turn, override: !candidateInside };
+  return { turn, override: !candidateInside, scopeChanged: false };
 }
 
 /**
@@ -809,8 +819,19 @@ function appendTextToCurrentTurn(
   // (#485 follow-up) so a text delta routes to the right step even
   // when activeNodeId / currentTextId / currentThinkingId belong to a
   // previous step's iteration.
-  const { turn, override } = resolveAgentScope(state, params.parentStepId);
+  const { turn, override, scopeChanged } = resolveAgentScope(
+    state,
+    params.parentStepId,
+  );
   if (!turn) return state;
+
+  // Same scopeChanged rule as appendThinkingToCurrentTurn: late text
+  // for a different step must NOT mintIterationThinking against the
+  // live currentThinkingId. Accumulate under a stable per-step late
+  // text anchor instead.
+  if (scopeChanged) {
+    return appendLateText(state, turn, params.delta);
+  }
 
   // If we're starting a new iteration's text without a fresh
   // stream.thinking event, mint a SYNTHETIC thinking node to anchor
@@ -922,6 +943,82 @@ function appendTextToCurrentTurn(
  *   synthetic placeholders (the "model didn't think" case is already
  *   over by the time we infer the iteration boundary from a text delta)
  */
+/**
+ * Appends a late thinking delta under {@code step} when
+ * {@link resolveAgentScope} flagged scopeChanged: the event targets a
+ * step that is not the live scope. Accumulates onto a stable
+ * {@code {stepId}:late:thinking} node so multi-chunk late responses
+ * don't fragment into one synthetic thinking per delta.
+ *
+ * Critical: this path must NOT touch the live step's iteration anchors
+ * (currentThinkingId / currentTextId / activeNodeId / thinkingSealed /
+ * textIsOpen) — those belong to a different scope. mintIterationThinking
+ * would also walk currentThinkingId's subtree and provisionally-complete
+ * its running children, which is wrong when the live step is mid-flight.
+ */
+function appendLateThinking(
+  state: ExecutionTree,
+  step: ExecutionNode,
+  delta: string,
+): ExecutionTree {
+  const lateId = `${step.id}:late:thinking`;
+  const existing = findNode(state.rootNodes, lateId);
+  if (existing) {
+    return {
+      ...state,
+      rootNodes: mapNode(state.rootNodes, lateId, (t) => ({
+        ...t,
+        text: (t.text ?? '') + delta,
+      })),
+    };
+  }
+  const node: ExecutionNode = {
+    id: lateId,
+    type: 'thinking',
+    status: 'running',
+    label: 'thinking',
+    children: [],
+    text: delta,
+  };
+  return {
+    ...state,
+    rootNodes: appendChild(state.rootNodes, step.id, node),
+  };
+}
+
+/** Late-text twin of {@link appendLateThinking}. */
+function appendLateText(
+  state: ExecutionTree,
+  step: ExecutionNode,
+  delta: string,
+): ExecutionTree {
+  const lateId = `${step.id}:late:text`;
+  const existing = findNode(state.rootNodes, lateId);
+  const accumulated = (existing?.text ?? '') + delta;
+  if (existing) {
+    return {
+      ...state,
+      rootNodes: mapNode(state.rootNodes, lateId, (t) => ({
+        ...t,
+        text: accumulated,
+        label: previewLabel(accumulated),
+      })),
+    };
+  }
+  const node: ExecutionNode = {
+    id: lateId,
+    type: 'text',
+    status: 'running',
+    label: previewLabel(accumulated),
+    children: [],
+    text: accumulated,
+  };
+  return {
+    ...state,
+    rootNodes: appendChild(state.rootNodes, step.id, node),
+  };
+}
+
 function mintIterationThinking(
   state: ExecutionTree,
   turn: ExecutionNode,
@@ -993,8 +1090,22 @@ function appendThinkingToCurrentTurn(
   // (#485 follow-up) so a thinking delta routes to the right step even
   // when activeNodeId is stale or the leftover currentThinkingId
   // belongs to a previous step's iteration.
-  const { turn, override } = resolveAgentScope(state, params.parentStepId);
+  const { turn, override, scopeChanged } = resolveAgentScope(
+    state,
+    params.parentStepId,
+  );
   if (!turn) return state;
+
+  // scopeChanged: the late event targets a DIFFERENT step than the
+  // live one. mintIterationThinking would (a) provisionally-complete
+  // the live step's running tools/text via the still-current
+  // currentThinkingId, and (b) fragment a multi-chunk late response
+  // into one synthetic thinking per delta because the next chunk
+  // would not find a "running" parent. Instead, accumulate late
+  // chunks under a stable per-step late-anchor node.
+  if (scopeChanged) {
+    return appendLateThinking(state, turn, params.delta);
+  }
 
   // Same iteration: append the delta to the existing thinking node.
   // Skip under override — the live thinking belongs to a different
