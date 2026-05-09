@@ -126,6 +126,19 @@ export interface ToolUseParams {
   name: string;
   /** Optional one-line summary of the input (path, command, etc.). */
   summary?: string;
+  /**
+   * Plan step that owns this tool call, when emitted from inside a
+   * SequentialPlanExecutor step. Optional for forward / backward compat:
+   * older daemons (and non-plan ReAct turns) omit it, and the reducer
+   * falls back to its anchor heuristic ({@code currentTextId} →
+   * {@code currentThinkingId} → enclosing turn).
+   *
+   * When present, the reducer prefers an explicit lookup of this step
+   * over the anchor heuristic, so that tools attribute correctly even
+   * when {@code stream.tool_use} arrives after {@code stream.plan_step_completed}
+   * for the step they belonged to (issue #485 PR 3/3).
+   */
+  parentStepId?: string;
 }
 
 /** stream.tool_completed — terminal event for a tool call. */

@@ -1138,6 +1138,27 @@ class DaemonIntegrationTest {
                     .anyMatch(n -> "stream.plan_completed".equals(n.path("method").asText()));
             assertThat(hasPlanCompleted).isTrue();
 
+            // #485 PR 3/3: tool_use emitted from inside a plan step must
+            // carry parentStepId in the dashboard's composed form
+            // ({planId}:step:{1-based-index}). This proves the listener
+            // wired the StreamingNotificationHandler tracker on step start.
+            String planId = result.notifications().stream()
+                    .filter(n -> "stream.plan_created".equals(n.path("method").asText()))
+                    .findFirst()
+                    .map(n -> n.path("params").path("planId").asText())
+                    .orElseThrow(() -> new AssertionError("plan_created notification missing"));
+            var toolUseDuringStep = result.notifications().stream()
+                    .filter(n -> "stream.tool_use".equals(n.path("method").asText()))
+                    .filter(n -> "read_file".equals(n.path("params").path("name").asText()))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError("tool_use notification missing"));
+            assertThat(toolUseDuringStep.path("params").has("parentStepId"))
+                    .as("tool_use during plan step must carry parentStepId")
+                    .isTrue();
+            assertThat(toolUseDuringStep.path("params").path("parentStepId").asText())
+                    .as("parentStepId must be the dashboard's composed step node id")
+                    .isEqualTo(planId + ":step:1");
+
             // Verify checkpoint files were created on disk
             List<Path> checkpointFiles;
             try (var files = Files.list(checkpointDir)) {
