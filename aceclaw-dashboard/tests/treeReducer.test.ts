@@ -3091,6 +3091,704 @@ describe('addToolNode honours parentStepId from daemon (#485)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// parentStepId on stream.thinking / stream.text (#485 follow-up): the
+// daemon tags thinking + text deltas with the same composed step id it
+// already attaches to tool_use, so iteration anchors stay routed to the
+// right step even when activeNodeId or currentTextId / currentThinkingId
+// belong to a previous step's iteration.
+// ---------------------------------------------------------------------------
+
+describe('appendThinkingToCurrentTurn honours parentStepId (#485 follow-up)', () => {
+  function planWithStep1Thinking() {
+    // Step 1 emits thinking, then completes. currentThinkingId is left
+    // pointing at step 1's thinking node (sealed once the iteration
+    // ends, but still inside step 1's subtree).
+    return runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 2,
+        goal: 'g',
+        steps: [
+          { index: 1, name: 's1', description: '' },
+          { index: 2, name: 's2', description: '' },
+        ],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 2,
+        stepName: 's1',
+      }),
+      envelope('stream.thinking', { delta: 'step 1 reasoning' }),
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 50,
+        tokensUsed: 25,
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's2',
+        stepIndex: 2,
+        totalSteps: 2,
+        stepName: 's2',
+      }),
+    );
+  }
+
+  it('routes a thinking delta to the explicit step even when current anchor is from a prior step', () => {
+    let state = planWithStep1Thinking();
+    const step1Id = stepNodeId('plan-1', 1);
+    const step2Id = stepNodeId('plan-1', 2);
+    // Sanity: leftover thinking anchor lives under step 1.
+    function hasDescendant(node: ExecutionNode, id: string): boolean {
+      if (node.children.some((c) => c.id === id)) return true;
+      return node.children.some((c) => hasDescendant(c, id));
+    }
+    expect(state.currentThinkingId).not.toBeNull();
+    expect(hasDescendant(findById(state, step1Id), state.currentThinkingId!)).toBe(true);
+
+    state = runAll(
+      state,
+      envelope('stream.thinking', {
+        delta: 'step 2 reasoning',
+        parentStepId: step2Id,
+      }),
+    );
+
+    // Step 2's new thinking must land under step 2, not step 1.
+    const step2 = findById(state, step2Id);
+    const step2Thinking = step2.children.find((c) => c.type === 'thinking');
+    expect(step2Thinking).toBeDefined();
+    expect(step2Thinking?.text ?? '').toContain('step 2 reasoning');
+    // And step 1's content must not absorb the new delta.
+    const step1 = findById(state, step1Id);
+    const step1Thinking = step1.children.find((c) => c.type === 'thinking');
+    expect(step1Thinking?.text ?? '').not.toContain('step 2 reasoning');
+  });
+
+  it('continues the same-iteration delta when explicit and live anchors agree', () => {
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 1,
+        goal: 'g',
+        steps: [{ index: 1, name: 's1', description: '' }],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 's1',
+      }),
+      envelope('stream.thinking', {
+        delta: 'first chunk ',
+        parentStepId: stepNodeId('plan-1', 1),
+      }),
+      envelope('stream.thinking', {
+        delta: 'second chunk',
+        parentStepId: stepNodeId('plan-1', 1),
+      }),
+    );
+    const step = findById(state, stepNodeId('plan-1', 1));
+    const thinkingNodes = step.children.filter((c) => c.type === 'thinking');
+    // Both deltas land in the SAME thinking node (same iteration), not
+    // two separate nodes from spurious override-driven minting.
+    expect(thinkingNodes).toHaveLength(1);
+    expect(thinkingNodes[0]?.text ?? '').toBe('first chunk second chunk');
+  });
+});
+
+describe('appendTextToCurrentTurn honours parentStepId (#485 follow-up)', () => {
+  it('routes a text delta to the explicit step when activeNodeId / anchors are stale', () => {
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 2,
+        goal: 'g',
+        steps: [
+          { index: 1, name: 's1', description: '' },
+          { index: 2, name: 's2', description: '' },
+        ],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 2,
+        stepName: 's1',
+      }),
+      // Step 1 emits text → currentTextId points into step 1's subtree.
+      envelope('stream.text', { delta: 'step 1 result' }),
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 50,
+        tokensUsed: 25,
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's2',
+        stepIndex: 2,
+        totalSteps: 2,
+        stepName: 's2',
+      }),
+    );
+
+    const step1Id = stepNodeId('plan-1', 1);
+    const step2Id = stepNodeId('plan-1', 2);
+
+    state = runAll(
+      state,
+      envelope('stream.text', {
+        delta: 'step 2 narration',
+        parentStepId: step2Id,
+      }),
+    );
+
+    function hasDescendantWithText(node: ExecutionNode, snippet: string): boolean {
+      if (node.children.some((c) => (c.text ?? '').includes(snippet))) return true;
+      return node.children.some((c) => hasDescendantWithText(c, snippet));
+    }
+    // Step 2's narration lands under step 2.
+    expect(hasDescendantWithText(findById(state, step2Id), 'step 2 narration')).toBe(true);
+    // Step 1's leftover text does NOT absorb step 2's delta.
+    expect(hasDescendantWithText(findById(state, step1Id), 'step 2 narration')).toBe(false);
+  });
+
+  it('falls back to the heuristic when parentStepId is missing (regression guard)', () => {
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 1,
+        goal: 'g',
+        steps: [{ index: 1, name: 's1', description: '' }],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 's1',
+      }),
+      envelope('stream.text', { delta: 'plain narration' }),
+    );
+
+    const step = findById(state, stepNodeId('plan-1', 1));
+    function hasDescendantWithText(node: ExecutionNode, snippet: string): boolean {
+      if (node.children.some((c) => (c.text ?? '').includes(snippet))) return true;
+      return node.children.some((c) => hasDescendantWithText(c, snippet));
+    }
+    expect(hasDescendantWithText(step, 'plain narration')).toBe(true);
+  });
+});
+
+describe('scopeChanged late-delivery isolation (#485 follow-up)', () => {
+  // Build state where step 1 is COMPLETED, step 2 is RUNNING with a
+  // running tool under it. A late thinking/text for step 1 must NOT
+  // touch step 2's running tool, and multi-chunk late deltas for the
+  // same older step must accumulate into one node, not fragment.
+  function liveStep2WithRunningTool() {
+    return runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 2,
+        goal: 'g',
+        steps: [
+          { index: 1, name: 's1', description: '' },
+          { index: 2, name: 's2', description: '' },
+        ],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 2,
+        stepName: 's1',
+      }),
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 50,
+        tokensUsed: 25,
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's2',
+        stepIndex: 2,
+        totalSteps: 2,
+        stepName: 's2',
+      }),
+      envelope('stream.thinking', {
+        delta: 'step 2 reasoning',
+        parentStepId: stepNodeId('plan-1', 2),
+      }),
+      envelope('stream.tool_use', {
+        id: 't-live',
+        name: 'read_file',
+        parentStepId: stepNodeId('plan-1', 2),
+      }),
+    );
+  }
+
+  it('late thinking for older step does NOT seal live step running tool (Codex P2 self-found)', () => {
+    let state = liveStep2WithRunningTool();
+    expect(findById(state, 't-live').status).toBe('running');
+    const liveAnchorsBefore = {
+      currentThinkingId: state.currentThinkingId,
+      currentTextId: state.currentTextId,
+      activeNodeId: state.activeNodeId,
+      thinkingSealed: state.thinkingSealed,
+      textIsOpen: state.textIsOpen,
+    };
+
+    state = runAll(
+      state,
+      envelope('stream.thinking', {
+        delta: 'late chunk for step 1',
+        parentStepId: stepNodeId('plan-1', 1),
+      }),
+    );
+
+    // Live tool unchanged.
+    expect(findById(state, 't-live').status).toBe('running');
+    // Live anchors unchanged.
+    expect(state.currentThinkingId).toBe(liveAnchorsBefore.currentThinkingId);
+    expect(state.currentTextId).toBe(liveAnchorsBefore.currentTextId);
+    expect(state.activeNodeId).toBe(liveAnchorsBefore.activeNodeId);
+    expect(state.thinkingSealed).toBe(liveAnchorsBefore.thinkingSealed);
+    expect(state.textIsOpen).toBe(liveAnchorsBefore.textIsOpen);
+    // Late content lands under step 1.
+    const step1 = findById(state, stepNodeId('plan-1', 1));
+    const late = step1.children.find((c) => c.type === 'thinking' && (c.text ?? '').includes('late chunk'));
+    expect(late).toBeDefined();
+  });
+
+  it('pending explicit step (race ahead of plan_step_started) is treated as live, not late (Codex #490)', () => {
+    // plan_created mints a 'pending' skeleton for step 2. In the race
+    // window before plan_step_started for step 2 is reduced, the
+    // daemon's first stream.thinking for step 2 arrives carrying
+    // parentStepId=step-2. Without the pending-is-live carve-out, this
+    // would be classified as scopeChanged → late path → first chunk
+    // lands in {step-2}:late:thinking. Once plan_step_started arrives
+    // and subsequent chunks no longer fire scopeChanged, those go to
+    // mintIterationThinking — splitting one streamed response across
+    // two nodes.
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 2,
+        goal: 'g',
+        steps: [
+          { index: 1, name: 's1', description: '' },
+          { index: 2, name: 's2', description: '' },
+        ],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 2,
+        stepName: 's1',
+      }),
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 50,
+        tokensUsed: 25,
+      }),
+      // Race window: thinking for step 2 arrives BEFORE its plan_step_started.
+      envelope('stream.thinking', {
+        delta: 'race chunk one ',
+        parentStepId: stepNodeId('plan-1', 2),
+      }),
+      // Then plan_step_started arrives.
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's2',
+        stepIndex: 2,
+        totalSteps: 2,
+        stepName: 's2',
+      }),
+      envelope('stream.thinking', {
+        delta: 'race chunk two',
+        parentStepId: stepNodeId('plan-1', 2),
+      }),
+    );
+
+    const step2 = findById(state, stepNodeId('plan-1', 2));
+    // No `:late:thinking` orphan should exist — both chunks live in
+    // the normal iteration thinking node.
+    const lateNode = step2.children.find((c) => c.id.endsWith(':late:thinking'));
+    expect(lateNode).toBeUndefined();
+    // Both chunks must accumulate into the same iteration thinking,
+    // not be split across two nodes.
+    const thinkingNodes = step2.children.filter((c) => c.type === 'thinking');
+    expect(thinkingNodes).toHaveLength(1);
+    expect(thinkingNodes[0]?.text ?? '').toBe('race chunk one race chunk two');
+  });
+
+  it('late nodes inherit terminal status from their owning step (CodeRabbit M1 #490)', () => {
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 2,
+        goal: 'g',
+        steps: [
+          { index: 1, name: 's1', description: '' },
+          { index: 2, name: 's2', description: '' },
+        ],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 2,
+        stepName: 's1',
+      }),
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 50,
+        tokensUsed: 25,
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's2',
+        stepIndex: 2,
+        totalSteps: 2,
+        stepName: 's2',
+      }),
+      // Late delivery to step 1 (completed). Late node must be 'completed',
+      // not 'running' — otherwise it pulses indefinitely under a finished step.
+      envelope('stream.thinking', {
+        delta: 'late chunk for step 1',
+        parentStepId: stepNodeId('plan-1', 1),
+      }),
+    );
+
+    const step1 = findById(state, stepNodeId('plan-1', 1));
+    const lateThinking = step1.children.find((c) => c.id.endsWith(':late:thinking'));
+    expect(lateThinking).toBeDefined();
+    expect(lateThinking?.status).toBe('completed');
+  });
+
+  it('non-cancelled replan tombstone falls back to live synthetic step (Codex #490)', () => {
+    // Step 1 starts, COMPLETES, then a replan reuses stepIndex=1 →
+    // dashboard's activateStep preserves the completed tombstone at
+    // the composed id and creates the live replacement at a synthetic
+    // `:r{n}` id. The daemon's currentStepId tracker still emits the
+    // composed form. Without the sibling-search fix, every post-replan
+    // delta would route to the COMPLETED tombstone instead of the
+    // running synthetic step.
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 1,
+        goal: 'g',
+        steps: [{ index: 1, name: 's1', description: '' }],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 's1',
+      }),
+      // Step 1 completes (not cancelled — naturally finished).
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 50,
+        tokensUsed: 25,
+      }),
+      // Replan reuses stepIndex=1 → activateStep mints synthetic.
+      envelope('stream.plan_replanned', {
+        planId: 'plan-1',
+        replanAttempt: 1,
+        newStepCount: 1,
+        rationale: 'try a different angle',
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1-replan',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 's1-replan',
+      }),
+    );
+
+    const tombstoneId = stepNodeId('plan-1', 1);
+    const tombstone = findById(state, tombstoneId);
+    // The tombstone here is the COMPLETED original — replacePlanSteps
+    // only cancels non-completed/non-cancelled steps, so a normally-
+    // finished step keeps its 'completed' status. (For a 'failed' /
+    // 'paused' tombstone the same sibling-search rule applies — see
+    // resolveExplicitStep.)
+    // replacePlanSteps explicitly excludes 'completed' steps from the
+    // cancellation pass (countCancellableSteps), so the original step's
+    // history is preserved as 'completed'. Asserting strictly catches
+    // regressions where replan would downgrade a finished step's record.
+    expect(tombstone.status).toBe('completed');
+    const plan = state.rootNodes[0]!.children[0]!.children[0]!;
+    const liveSynthetic = plan.children.find(
+      (c) => c.metadata?.['createdByReplan'] === true,
+    );
+    expect(liveSynthetic?.status).toBe('running');
+
+    // Daemon emits parentStepId=composed (= tombstone id).
+    state = runAll(
+      state,
+      envelope('stream.thinking', {
+        delta: 'replan reasoning',
+        parentStepId: tombstoneId,
+      }),
+    );
+
+    // Tombstone receives nothing; live synthetic step does.
+    function hasDescendantWithText(node: ExecutionNode, snippet: string): boolean {
+      if (node.children.some((c) => (c.text ?? '').includes(snippet))) return true;
+      return node.children.some((c) => hasDescendantWithText(c, snippet));
+    }
+    expect(hasDescendantWithText(findById(state, tombstoneId), 'replan reasoning')).toBe(false);
+    expect(hasDescendantWithText(findById(state, liveSynthetic!.id), 'replan reasoning')).toBe(true);
+  });
+
+  it('redirects to latest synthetic replacement even after it has also completed (Codex #490)', () => {
+    // Step 1 completes → replan creates `plan-1:step:1:r1` → that
+    // synthetic also completes → late delta for the composed id
+    // arrives. Detection must NOT gate on the synthetic still being
+    // running; it should redirect to the synthetic regardless of
+    // status, so the late content accumulates under the most recent
+    // replacement (not the original historical tombstone).
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 1,
+        goal: 'g',
+        steps: [{ index: 1, name: 's1', description: '' }],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 's1',
+      }),
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 50,
+        tokensUsed: 25,
+      }),
+      envelope('stream.plan_replanned', {
+        planId: 'plan-1',
+        replanAttempt: 1,
+        newStepCount: 1,
+        rationale: 'try again',
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1-replan',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 's1-replan',
+      }),
+      // Synthetic replacement also completes.
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1-replan',
+        stepIndex: 1,
+        stepName: 's1-replan',
+        success: true,
+        durationMs: 50,
+        tokensUsed: 25,
+      }),
+    );
+    const tombstoneId = stepNodeId('plan-1', 1);
+    const plan = state.rootNodes[0]!.children[0]!.children[0]!;
+    const synthetic = plan.children.find(
+      (c) => c.metadata?.['createdByReplan'] === true,
+    );
+    expect(synthetic?.status).toBe('completed');
+
+    state = runAll(
+      state,
+      envelope('stream.thinking', {
+        delta: 'late after both done',
+        parentStepId: tombstoneId,
+      }),
+    );
+
+    function hasDescendantWithText(node: ExecutionNode, snippet: string): boolean {
+      if (node.children.some((c) => (c.text ?? '').includes(snippet))) return true;
+      return node.children.some((c) => hasDescendantWithText(c, snippet));
+    }
+    // Original tombstone gets nothing; synthetic gets the late content.
+    expect(hasDescendantWithText(findById(state, tombstoneId), 'late after both done')).toBe(false);
+    expect(hasDescendantWithText(findById(state, synthetic!.id), 'late after both done')).toBe(true);
+  });
+
+  it('multi-chunk late text accumulates into one node rather than fragmenting (Codex P2 #490)', () => {
+    let state = liveStep2WithRunningTool();
+    // Three late text deltas for step 1 (a completed step).
+    state = runAll(
+      state,
+      envelope('stream.text', {
+        delta: 'first ',
+        parentStepId: stepNodeId('plan-1', 1),
+      }),
+      envelope('stream.text', {
+        delta: 'second ',
+        parentStepId: stepNodeId('plan-1', 1),
+      }),
+      envelope('stream.text', {
+        delta: 'third',
+        parentStepId: stepNodeId('plan-1', 1),
+      }),
+    );
+    const step1 = findById(state, stepNodeId('plan-1', 1));
+    const lateTexts = step1.children.filter((c) => c.type === 'text');
+    // One node accumulates all three chunks instead of three siblings.
+    expect(lateTexts).toHaveLength(1);
+    expect(lateTexts[0]?.text ?? '').toBe('first second third');
+    // Live tool still untouched.
+    expect(findById(state, 't-live').status).toBe('running');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Step events arriving before plan_created — don't dangle activeNodeId
 // ---------------------------------------------------------------------------
 

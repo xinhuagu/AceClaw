@@ -1159,6 +1159,23 @@ class DaemonIntegrationTest {
                     .as("parentStepId must be the dashboard's composed step node id")
                     .isEqualTo(planId + ":step:1");
 
+            // #485 follow-up: stream.thinking and stream.text emitted from
+            // inside a plan step must also carry parentStepId so the
+            // reducer can route iteration anchors (currentThinkingId /
+            // currentTextId) to the right step. The MockLlmClient response
+            // for step 1 includes a final text ("Found the API."), so we
+            // expect at least one stream.text envelope tagged for step 1.
+            var textInsideStep = result.notifications().stream()
+                    .filter(n -> "stream.text".equals(n.path("method").asText()))
+                    .filter(n -> n.path("params").has("parentStepId"))
+                    .findFirst();
+            assertThat(textInsideStep)
+                    .as("at least one stream.text during a plan step must carry parentStepId")
+                    .isPresent();
+            assertThat(textInsideStep.get().path("params").path("parentStepId").asText())
+                    .as("text parentStepId must be the dashboard's composed step node id")
+                    .startsWith(planId + ":step:");
+
             // Verify checkpoint files were created on disk
             List<Path> checkpointFiles;
             try (var files = Files.list(checkpointDir)) {

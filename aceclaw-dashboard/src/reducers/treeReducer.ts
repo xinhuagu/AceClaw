@@ -170,6 +170,119 @@ function findCurrentAgentScope(state: ExecutionTree): ExecutionNode | null {
 }
 
 /**
+ * Resolves the scope an inbound stream event should attach to and
+ * reports whether the daemon's explicit {@code parentStepId} disagrees
+ * with the activeNodeId-based heuristic. The override flag tells
+ * callers to bypass iteration-local anchors (currentThinkingId /
+ * currentTextId / activeNodeId) that may belong to a different step's
+ * iteration — same logic family as {@link addToolNode}'s explicitOverride.
+ *
+ * Override fires when:
+ *   - the explicit step's id differs from the heuristic scope, OR
+ *   - a candidate iteration anchor (currentTextId / currentThinkingId)
+ *     is NOT inside the explicit step's subtree (a leftover anchor
+ *     from a previous step that activateStep didn't clear).
+ *
+ * Skips the explicit step entirely when it resolves to a 'cancelled'
+ * replan tombstone — its composed id collides with the cancelled
+ * skeleton, but the actually-running step under the same plan carries
+ * a synthetic {@code :r{n}} id (issue #485).
+ */
+/**
+ * Resolves an explicit {@code parentStepId} to a usable step node, or
+ * {@code null} when the lookup hits a replan tombstone that the daemon
+ * still names by its composed id.
+ *
+ * <p>Background: when {@link activateStep} sees the composed id is
+ * already taken by a non-pending step (replan reused the index after
+ * the original step was cancelled / completed / failed / paused),
+ * it preserves the tombstone and mints the live replacement at a
+ * {@code `:r{n}`} id under the same plan. The daemon's
+ * {@code currentStepId} tracker still emits the composed form, so a
+ * naive lookup of {@code parentStepId} returns the dead step. Detect
+ * this by sibling search: if the plan has a running step whose id
+ * starts with {@code `{parentStepId}:r`}, the explicit lookup is
+ * dead — return null so callers fall back to {@link findCurrentAgentScope}
+ * which finds the live synthetic replacement via activeNodeId.
+ */
+function resolveExplicitStep(
+  state: ExecutionTree,
+  parentStepId: string | undefined,
+): ExecutionNode | null {
+  if (!parentStepId) return null;
+  const node = findNode(state.rootNodes, parentStepId);
+  if (!node) return null;
+  if (node.status === 'cancelled') return null;
+  // Replan-replacement detection: when activateStep saw the composed
+  // id was already taken, it preserved the tombstone and minted a
+  // {composedId}:r{n} synthetic replacement under the same plan. The
+  // daemon's currentStepId tracker still emits the composed form, so
+  // any late delta naming the composed id should redirect to the
+  // *latest* synthetic — irrespective of its own status. Without the
+  // status-agnostic redirect, a delta arriving after the synthetic
+  // replacement has also completed would land back on the original
+  // tombstone (Codex feedback on PR #490).
+  const path = findPath(state.rootNodes, parentStepId);
+  const planNode = path?.find((n) => n.type === 'plan');
+  if (planNode) {
+    const replacementPrefix = `${parentStepId}:r`;
+    const replacements = planNode.children.filter(
+      (c) => c.type === 'step' && c.id.startsWith(replacementPrefix),
+    );
+    if (replacements.length > 0) {
+      const latest = replacements.reduce((acc, c) => {
+        const n = parseInt(acc.id.slice(replacementPrefix.length), 10);
+        const m = parseInt(c.id.slice(replacementPrefix.length), 10);
+        return Number.isFinite(m) && m > n ? c : acc;
+      });
+      return latest.status === 'cancelled' ? null : latest;
+    }
+  }
+  return node;
+}
+
+function resolveAgentScope(
+  state: ExecutionTree,
+  parentStepId: string | undefined,
+): {
+  turn: ExecutionNode | null;
+  /** Explicit step diverges from the activeNodeId-based heuristic OR a
+   *  stale iteration anchor lives outside the explicit step's subtree. */
+  override: boolean;
+  /** Stronger flavour: explicit step is a *different* live scope than the
+   *  heuristic. Late events for an OLDER step land here — handlers must
+   *  not provisionally complete the live step's running children or
+   *  rotate iteration anchors, since those belong to a different scope. */
+  scopeChanged: boolean;
+} {
+  const explicit = resolveExplicitStep(state, parentStepId);
+  // 'pending' = plan_step_started hasn't been reduced yet but
+  // plan_created already minted the skeleton. The daemon ALWAYS sets
+  // currentStepId from its own listener for the running step, so a
+  // pending explicit means we lost an event-ordering race — the step
+  // is about to become live. Treat it as live: override but NOT
+  // scopeChanged, so the handler mints a fresh iteration under it
+  // and rotates anchors normally. Otherwise the first delta lands in
+  // a `:late:*` node and the rest, after plan_step_started arrives,
+  // mint a new iteration node — splitting one streamed response.
+  const explicitIsLive =
+    explicit?.status === 'pending' || explicit?.status === 'running';
+  const heuristic = findCurrentAgentScope(state);
+  const turn = explicit ?? heuristic;
+  if (!explicit) {
+    return { turn, override: false, scopeChanged: false };
+  }
+  if (explicit.id !== (heuristic?.id ?? null)) {
+    return { turn, override: true, scopeChanged: !explicitIsLive };
+  }
+  const candidate = state.currentTextId ?? state.currentThinkingId;
+  const candidateInside = !candidate
+    ? true
+    : findNode(explicit.children, candidate) !== null;
+  return { turn, override: !candidateInside, scopeChanged: false };
+}
+
+/**
  * Replaces a node anywhere in the forest by id. Returns a new forest with
  * structural sharing for branches that did not change.
  */
@@ -472,20 +585,12 @@ function addToolNode(
   // authoritative because the daemon sets it from inside the listener
   // for the actually-running step, not from a tree-walk over a
   // potentially-stale snapshot.
-  const explicitParentNode = params.parentStepId
-    ? findNode(state.rootNodes, params.parentStepId)
-    : null;
-  // Skip override when the resolved step is a replan tombstone (status
-  // 'cancelled'): the composed id collides with the cancelled skeleton
-  // left behind by replacePlanSteps, but the actually-running step
-  // carries a synthetic `:r{n}` id under the same plan. Treating the
-  // tombstone as authoritative would attach all post-replan tools to
-  // the cancelled step. 'completed' / 'failed' are fine to attach to —
-  // late tools for a naturally-finished step are exactly what this PR
-  // exists to handle.
-  const explicitParentStep = explicitParentNode?.status === 'cancelled'
-    ? null
-    : explicitParentNode;
+  // resolveExplicitStep handles replan tombstone detection: a composed
+  // id whose plan has a sibling running synthetic `:r{n}` step is
+  // tombstoned and falls through to the heuristic. Late tools for
+  // legitimately-finished steps (no synthetic replacement) still take
+  // the override path — that's the PR's whole point.
+  const explicitParentStep = resolveExplicitStep(state, params.parentStepId);
   const heuristicScope = findCurrentAgentScope(state);
   const turn = explicitParentStep ?? heuristicScope;
   // When we override the heuristic, also bypass currentTextId /
@@ -763,14 +868,27 @@ function appendTextToCurrentTurn(
   // skips its thinking block (model went straight from tool result to
   // final response) would silently merge into the previous iter's
   // text node, because both ids would key on the same currentThinkingId.
-  // findCurrentAgentScope returns running step if one is active,
-  // else running turn — so step-scoped agent loops anchor correctly.
-  const turn = findCurrentAgentScope(state);
+  // resolveAgentScope honours the daemon's explicit parentStepId
+  // (#485 follow-up) so a text delta routes to the right step even
+  // when activeNodeId / currentTextId / currentThinkingId belong to a
+  // previous step's iteration.
+  const { turn, override, scopeChanged } = resolveAgentScope(
+    state,
+    params.parentStepId,
+  );
   if (!turn) return state;
+
+  // Same scopeChanged rule as appendThinkingToCurrentTurn: late text
+  // for a different step must NOT mintIterationThinking against the
+  // live currentThinkingId. Accumulate under a stable per-step late
+  // text anchor instead.
+  if (scopeChanged) {
+    return appendLateText(state, turn, params.delta);
+  }
 
   // If we're starting a new iteration's text without a fresh
   // stream.thinking event, mint a SYNTHETIC thinking node to anchor
-  // it. Two cases trigger this:
+  // it. Three cases trigger this:
   //   1. textIsOpen=false + thinkingSealed=true: previous iteration
   //      closed by a tool_use, next call started with text directly.
   //   2. textIsOpen=false + currentThinkingId=null: this is the very
@@ -779,6 +897,9 @@ function appendTextToCurrentTurn(
   //      thinking the text would land as a turn-direct child and
   //      addReActFlowEdges (which only iterates thinking siblings)
   //      would orphan it from the ReAct chain.
+  //   3. override=true: explicit parent step disagrees with the live
+  //      anchors. Force a fresh iteration thinking under the explicit
+  //      step so the new text doesn't extend a sibling-step's text.
   //
   // The synthetic thinking is created status=completed — the model
   // already finished thinking by the time we infer the boundary from
@@ -786,8 +907,9 @@ function appendTextToCurrentTurn(
   // so the layout chains identically.
   let workingState = state;
   if (
-    !state.textIsOpen &&
-    (state.thinkingSealed || state.currentThinkingId === null)
+    override ||
+    (!state.textIsOpen &&
+      (state.thinkingSealed || state.currentThinkingId === null))
   ) {
     workingState = mintIterationThinking(state, turn, '', 'completed').state;
   }
@@ -874,6 +996,108 @@ function appendTextToCurrentTurn(
  *   synthetic placeholders (the "model didn't think" case is already
  *   over by the time we infer the iteration boundary from a text delta)
  */
+/**
+ * Appends a late thinking delta under {@code step} when
+ * {@link resolveAgentScope} flagged scopeChanged: the event targets a
+ * step that is not the live scope. Accumulates onto a stable
+ * {@code {stepId}:late:thinking} node so multi-chunk late responses
+ * don't fragment into one synthetic thinking per delta.
+ *
+ * Critical: this path must NOT touch the live step's iteration anchors
+ * (currentThinkingId / currentTextId / activeNodeId / thinkingSealed /
+ * textIsOpen) — those belong to a different scope. mintIterationThinking
+ * would also walk currentThinkingId's subtree and provisionally-complete
+ * its running children, which is wrong when the live step is mid-flight.
+ */
+/**
+ * Inherits the late node's status from its owning step so a node under
+ * a terminal step doesn't render as a perpetually pulsing 'running'
+ * leaf (CodeRabbit feedback on PR #490). 'failed' / 'paused' steps
+ * map to 'cancelled' (the late content was orphaned by the failure
+ * rather than naturally completing); 'completed' inherits as
+ * 'completed'; 'running' / 'pending' (live or about-to-be-live) keep
+ * 'running' so future deltas can extend.
+ */
+function lateNodeStatusFor(step: ExecutionNode): ExecutionStatus {
+  switch (step.status) {
+    case 'completed':
+      return 'completed';
+    case 'failed':
+    case 'cancelled':
+    case 'paused':
+      return 'cancelled';
+    default:
+      return 'running';
+  }
+}
+
+function appendLateThinking(
+  state: ExecutionTree,
+  step: ExecutionNode,
+  delta: string,
+): ExecutionTree {
+  const lateId = `${step.id}:late:thinking`;
+  const status = lateNodeStatusFor(step);
+  const existing = findNode(state.rootNodes, lateId);
+  if (existing) {
+    return {
+      ...state,
+      rootNodes: mapNode(state.rootNodes, lateId, (t) => ({
+        ...t,
+        status,
+        text: (t.text ?? '') + delta,
+      })),
+    };
+  }
+  const node: ExecutionNode = {
+    id: lateId,
+    type: 'thinking',
+    status,
+    label: 'thinking',
+    children: [],
+    text: delta,
+  };
+  return {
+    ...state,
+    rootNodes: appendChild(state.rootNodes, step.id, node),
+  };
+}
+
+/** Late-text twin of {@link appendLateThinking}. */
+function appendLateText(
+  state: ExecutionTree,
+  step: ExecutionNode,
+  delta: string,
+): ExecutionTree {
+  const lateId = `${step.id}:late:text`;
+  const status = lateNodeStatusFor(step);
+  const existing = findNode(state.rootNodes, lateId);
+  const accumulated = (existing?.text ?? '') + delta;
+  if (existing) {
+    return {
+      ...state,
+      rootNodes: mapNode(state.rootNodes, lateId, (t) => ({
+        ...t,
+        status,
+        text: accumulated,
+        label: previewLabel(accumulated),
+      })),
+    };
+  }
+  const node: ExecutionNode = {
+    id: lateId,
+    type: 'text',
+    status,
+    label: previewLabel(accumulated),
+    children: [],
+    text: accumulated,
+  };
+  return {
+    ...state,
+    rootNodes: appendChild(state.rootNodes, step.id, node),
+  };
+}
+
 function mintIterationThinking(
   state: ExecutionTree,
   turn: ExecutionNode,
@@ -939,14 +1163,33 @@ function appendThinkingToCurrentTurn(
   // current thinking node, so the next thinking delta starts a fresh one.
   // Parallel tool_use events from a single LLM response don't seal the
   // anchor between themselves (no thinking delta arrives between them), so
-  // they correctly attach to the same parent. findCurrentAgentScope
-  // returns the running step when one is active so each plan step's
-  // thinking lands under itself rather than on the enclosing turn.
-  const turn = findCurrentAgentScope(state);
+  // they correctly attach to the same parent.
+  //
+  // resolveAgentScope honours the daemon's explicit parentStepId
+  // (#485 follow-up) so a thinking delta routes to the right step even
+  // when activeNodeId is stale or the leftover currentThinkingId
+  // belongs to a previous step's iteration.
+  const { turn, override, scopeChanged } = resolveAgentScope(
+    state,
+    params.parentStepId,
+  );
   if (!turn) return state;
 
+  // scopeChanged: the late event targets a DIFFERENT step than the
+  // live one. mintIterationThinking would (a) provisionally-complete
+  // the live step's running tools/text via the still-current
+  // currentThinkingId, and (b) fragment a multi-chunk late response
+  // into one synthetic thinking per delta because the next chunk
+  // would not find a "running" parent. Instead, accumulate late
+  // chunks under a stable per-step late-anchor node.
+  if (scopeChanged) {
+    return appendLateThinking(state, turn, params.delta);
+  }
+
   // Same iteration: append the delta to the existing thinking node.
-  if (state.currentThinkingId && !state.thinkingSealed) {
+  // Skip under override — the live thinking belongs to a different
+  // scope and must not absorb this iteration's delta.
+  if (!override && state.currentThinkingId && !state.thinkingSealed) {
     return {
       ...state,
       rootNodes: mapNode(state.rootNodes, state.currentThinkingId, (t) => ({

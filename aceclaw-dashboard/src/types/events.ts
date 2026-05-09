@@ -111,11 +111,26 @@ export interface TurnCompletedParams {
 /** stream.thinking — extended thinking deltas. */
 export interface ThinkingDeltaParams {
   delta: string;
+  /**
+   * Plan step that owns this thinking iteration, when emitted from inside
+   * a SequentialPlanExecutor step. Same shape and intent as
+   * {@link ToolUseParams.parentStepId} (#485): lets the reducer route
+   * thinking under the right step without depending on activeNodeId
+   * being current. Optional for forward / backward compat.
+   */
+  parentStepId?: string;
 }
 
 /** stream.text — assistant text token deltas. */
 export interface TextDeltaParams {
   delta: string;
+  /**
+   * Plan step that owns this text iteration, mirroring
+   * {@link ThinkingDeltaParams.parentStepId} so narration text stays
+   * grouped under the step it belongs to even when arrival ordering
+   * disagrees with the heuristic anchor.
+   */
+  parentStepId?: string;
 }
 
 /** stream.tool_use — emitted at tool-use block start (input may still be partial). */

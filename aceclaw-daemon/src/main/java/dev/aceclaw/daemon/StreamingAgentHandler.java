@@ -3404,6 +3404,10 @@ public final class StreamingAgentHandler {
             try {
                 var params = objectMapper.createObjectNode();
                 params.put("delta", event.text());
+                String stepId = currentStepId.get();
+                if (stepId != null) {
+                    params.put("parentStepId", stepId);
+                }
                 context.sendNotification("stream.thinking", params);
             } catch (IOException e) {
                 log.warn("Failed to send thinking delta notification: {}", e.getMessage());
@@ -3415,6 +3419,10 @@ public final class StreamingAgentHandler {
             try {
                 var params = objectMapper.createObjectNode();
                 params.put("delta", event.text());
+                String stepId = currentStepId.get();
+                if (stepId != null) {
+                    params.put("parentStepId", stepId);
+                }
                 context.sendNotification("stream.text", params);
             } catch (IOException e) {
                 log.warn("Failed to send text delta notification: {}", e.getMessage());
