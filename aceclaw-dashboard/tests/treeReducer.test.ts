@@ -2296,6 +2296,177 @@ describe('completeStep resolves replanned synthetic steps after focus moves', ()
 });
 
 // ---------------------------------------------------------------------------
+// Step subtree convergence (#485): when stream.tool_completed is lost in
+// transit, the tool node would otherwise stay 'running' under a step that
+// has long since finished. completeStep walks the step subtree and flips
+// any still-running descendants to a terminal state.
+// ---------------------------------------------------------------------------
+
+describe('completeStep converges still-running descendants (#485)', () => {
+  function planStartedWithToolRunning() {
+    return runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 1,
+        goal: 'g',
+        steps: [{ index: 1, name: 's1', description: '' }],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 's1',
+      }),
+      envelope('stream.tool_use', { id: 't1', name: 'read_file' }),
+    );
+  }
+
+  it('flips a running tool to completed and bumps completedTools when the step succeeds', () => {
+    const before = planStartedWithToolRunning();
+    expect(findById(before, 't1').status).toBe('running');
+    const beforeCompletedTools = before.stats.completedTools;
+
+    // Note: stream.tool_completed deliberately omitted to simulate event loss.
+    const after = runAll(
+      before,
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 100,
+        tokensUsed: 50,
+      }),
+    );
+
+    const step = findById(after, stepNodeId('plan-1', 1));
+    expect(step.status).toBe('completed');
+    expect(findById(after, 't1').status).toBe('completed');
+    expect(after.stats.completedTools).toBe(beforeCompletedTools + 1);
+    expect(after.stats.failedTools).toBe(before.stats.failedTools);
+  });
+
+  it('flips a running tool to cancelled and bumps failedTools when the step fails', () => {
+    const before = planStartedWithToolRunning();
+    const beforeFailedTools = before.stats.failedTools;
+
+    const after = runAll(
+      before,
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: false,
+        durationMs: 100,
+        tokensUsed: 50,
+      }),
+    );
+
+    expect(findById(after, stepNodeId('plan-1', 1)).status).toBe('failed');
+    expect(findById(after, 't1').status).toBe('cancelled');
+    expect(after.stats.failedTools).toBe(beforeFailedTools + 1);
+    expect(after.stats.completedTools).toBe(before.stats.completedTools);
+  });
+
+  it('does not double-count a tool that already completed normally', () => {
+    const before = runAll(
+      planStartedWithToolRunning(),
+      envelope('stream.tool_completed', { id: 't1', name: 'read_file', isError: false, durationMs: 10 }),
+    );
+    expect(findById(before, 't1').status).toBe('completed');
+    const beforeCompletedTools = before.stats.completedTools;
+
+    const after = runAll(
+      before,
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 100,
+        tokensUsed: 50,
+      }),
+    );
+
+    expect(findById(after, 't1').status).toBe('completed');
+    // Tool was already counted by completeToolNode; convergence must not
+    // bump completedTools again.
+    expect(after.stats.completedTools).toBe(beforeCompletedTools);
+  });
+
+  it('converges multiple parallel running tools under the same step', () => {
+    // Two parallel tool_use events from the same LLM response — neither
+    // tool_completed arrives, so both stay running. plan_step_completed
+    // must flip both and bump completedTools by 2.
+    const before = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 1,
+        goal: 'g',
+        steps: [{ index: 1, name: 's1', description: '' }],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 's1',
+      }),
+      envelope('stream.tool_use', { id: 't1', name: 'read_file' }),
+      envelope('stream.tool_use', { id: 't2', name: 'read_file' }),
+    );
+    expect(findById(before, 't1').status).toBe('running');
+    expect(findById(before, 't2').status).toBe('running');
+    const beforeCompletedTools = before.stats.completedTools;
+
+    const after = runAll(
+      before,
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 100,
+        tokensUsed: 50,
+      }),
+    );
+
+    expect(findById(after, 't1').status).toBe('completed');
+    expect(findById(after, 't2').status).toBe('completed');
+    expect(after.stats.completedTools).toBe(beforeCompletedTools + 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Step events arriving before plan_created — don't dangle activeNodeId
 // ---------------------------------------------------------------------------
 
