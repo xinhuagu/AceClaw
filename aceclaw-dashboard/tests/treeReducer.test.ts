@@ -2467,6 +2467,152 @@ describe('completeStep converges still-running descendants (#485)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Plan subtree convergence (#485 PR 2/3): when a step-level completion event
+// is lost entirely, completeStep never runs but the plan's terminal event
+// still arrives. completePlan / failPlan walk the plan subtree to converge
+// any still-running step (and its still-running tool children) so the plan
+// node and its descendants render a coherent terminal state.
+// ---------------------------------------------------------------------------
+
+describe('completePlan / failPlan converge still-running descendants (#485)', () => {
+  function planWithRunningStepAndTool() {
+    return runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 1,
+        goal: 'g',
+        steps: [{ index: 1, name: 's1', description: '' }],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 's1',
+      }),
+      envelope('stream.tool_use', { id: 't1', name: 'read_file' }),
+    );
+  }
+
+  it('completePlan(success=true) converges a still-running step + tool to completed', () => {
+    const before = planWithRunningStepAndTool();
+    const beforeCompletedTools = before.stats.completedTools;
+    expect(findById(before, stepNodeId('plan-1', 1)).status).toBe('running');
+    expect(findById(before, 't1').status).toBe('running');
+
+    // Step-level completion deliberately omitted — only the plan-level event
+    // arrives, simulating a lost stream.plan_step_completed.
+    const after = runAll(
+      before,
+      envelope('stream.plan_completed', {
+        planId: 'plan-1',
+        success: true,
+        totalDurationMs: 200,
+        stepsCompleted: 1,
+        totalSteps: 1,
+      }),
+    );
+
+    expect(findById(after, 'plan-1').status).toBe('completed');
+    expect(findById(after, stepNodeId('plan-1', 1)).status).toBe('completed');
+    expect(findById(after, 't1').status).toBe('completed');
+    expect(after.stats.completedTools).toBe(beforeCompletedTools + 1);
+  });
+
+  it('completePlan(success=false) flips descendants to cancelled and bumps failedTools', () => {
+    const before = planWithRunningStepAndTool();
+    const beforeFailedTools = before.stats.failedTools;
+
+    const after = runAll(
+      before,
+      envelope('stream.plan_completed', {
+        planId: 'plan-1',
+        success: false,
+        totalDurationMs: 200,
+        stepsCompleted: 0,
+        totalSteps: 1,
+      }),
+    );
+
+    expect(findById(after, 'plan-1').status).toBe('failed');
+    expect(findById(after, stepNodeId('plan-1', 1)).status).toBe('cancelled');
+    expect(findById(after, 't1').status).toBe('cancelled');
+    expect(after.stats.failedTools).toBe(beforeFailedTools + 1);
+  });
+
+  it('failPlan (escalation) converges descendants to cancelled and bumps failedTools', () => {
+    const before = planWithRunningStepAndTool();
+    const beforeFailedTools = before.stats.failedTools;
+
+    const after = runAll(
+      before,
+      envelope('stream.plan_escalated', {
+        planId: 'plan-1',
+        reason: 'replanner gave up',
+      }),
+    );
+
+    const plan = findById(after, 'plan-1');
+    expect(plan.status).toBe('failed');
+    expect(plan.error).toBe('replanner gave up');
+    expect(findById(after, stepNodeId('plan-1', 1)).status).toBe('cancelled');
+    expect(findById(after, 't1').status).toBe('cancelled');
+    expect(after.stats.failedTools).toBe(beforeFailedTools + 1);
+  });
+
+  it('completePlan does not double-count tools whose step already completed normally', () => {
+    const before = runAll(
+      planWithRunningStepAndTool(),
+      envelope('stream.tool_completed', {
+        id: 't1',
+        name: 'read_file',
+        isError: false,
+        durationMs: 10,
+      }),
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 100,
+        tokensUsed: 50,
+      }),
+    );
+    expect(findById(before, stepNodeId('plan-1', 1)).status).toBe('completed');
+    expect(findById(before, 't1').status).toBe('completed');
+    const beforeCompletedTools = before.stats.completedTools;
+
+    const after = runAll(
+      before,
+      envelope('stream.plan_completed', {
+        planId: 'plan-1',
+        success: true,
+        totalDurationMs: 200,
+        stepsCompleted: 1,
+        totalSteps: 1,
+      }),
+    );
+
+    // Step + tool already terminal before plan_completed, so the convergence
+    // walk finds nothing to flip and stats stay put.
+    expect(after.stats.completedTools).toBe(beforeCompletedTools);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Step events arriving before plan_created — don't dangle activeNodeId
 // ---------------------------------------------------------------------------
 
