@@ -2386,7 +2386,7 @@ describe('completeStep converges still-running descendants (#485)', () => {
   it('does not double-count a tool that already completed normally', () => {
     const before = runAll(
       planStartedWithToolRunning(),
-      envelope('stream.tool_completed', { id: 't1', isError: false, durationMs: 10 }),
+      envelope('stream.tool_completed', { id: 't1', name: 'read_file', isError: false, durationMs: 10 }),
     );
     expect(findById(before, 't1').status).toBe('completed');
     const beforeCompletedTools = before.stats.completedTools;
