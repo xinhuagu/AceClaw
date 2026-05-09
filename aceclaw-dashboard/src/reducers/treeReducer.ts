@@ -245,13 +245,24 @@ function resolveAgentScope(
   scopeChanged: boolean;
 } {
   const explicit = resolveExplicitStep(state, parentStepId);
+  // 'pending' = plan_step_started hasn't been reduced yet but
+  // plan_created already minted the skeleton. The daemon ALWAYS sets
+  // currentStepId from its own listener for the running step, so a
+  // pending explicit means we lost an event-ordering race — the step
+  // is about to become live. Treat it as live: override but NOT
+  // scopeChanged, so the handler mints a fresh iteration under it
+  // and rotates anchors normally. Otherwise the first delta lands in
+  // a `:late:*` node and the rest, after plan_step_started arrives,
+  // mint a new iteration node — splitting one streamed response.
+  const explicitIsLive =
+    explicit?.status === 'pending' || explicit?.status === 'running';
   const heuristic = findCurrentAgentScope(state);
   const turn = explicit ?? heuristic;
   if (!explicit) {
     return { turn, override: false, scopeChanged: false };
   }
   if (explicit.id !== (heuristic?.id ?? null)) {
-    return { turn, override: true, scopeChanged: true };
+    return { turn, override: true, scopeChanged: !explicitIsLive };
   }
   const candidate = state.currentTextId ?? state.currentThinkingId;
   const candidateInside = !candidate
@@ -987,18 +998,42 @@ function appendTextToCurrentTurn(
  * would also walk currentThinkingId's subtree and provisionally-complete
  * its running children, which is wrong when the live step is mid-flight.
  */
+/**
+ * Inherits the late node's status from its owning step so a node under
+ * a terminal step doesn't render as a perpetually pulsing 'running'
+ * leaf (CodeRabbit feedback on PR #490). 'failed' / 'paused' steps
+ * map to 'cancelled' (the late content was orphaned by the failure
+ * rather than naturally completing); 'completed' inherits as
+ * 'completed'; 'running' / 'pending' (live or about-to-be-live) keep
+ * 'running' so future deltas can extend.
+ */
+function lateNodeStatusFor(step: ExecutionNode): ExecutionStatus {
+  switch (step.status) {
+    case 'completed':
+      return 'completed';
+    case 'failed':
+    case 'cancelled':
+    case 'paused':
+      return 'cancelled';
+    default:
+      return 'running';
+  }
+}
+
 function appendLateThinking(
   state: ExecutionTree,
   step: ExecutionNode,
   delta: string,
 ): ExecutionTree {
   const lateId = `${step.id}:late:thinking`;
+  const status = lateNodeStatusFor(step);
   const existing = findNode(state.rootNodes, lateId);
   if (existing) {
     return {
       ...state,
       rootNodes: mapNode(state.rootNodes, lateId, (t) => ({
         ...t,
+        status,
         text: (t.text ?? '') + delta,
       })),
     };
@@ -1006,7 +1041,7 @@ function appendLateThinking(
   const node: ExecutionNode = {
     id: lateId,
     type: 'thinking',
-    status: 'running',
+    status,
     label: 'thinking',
     children: [],
     text: delta,
@@ -1024,6 +1059,7 @@ function appendLateText(
   delta: string,
 ): ExecutionTree {
   const lateId = `${step.id}:late:text`;
+  const status = lateNodeStatusFor(step);
   const existing = findNode(state.rootNodes, lateId);
   const accumulated = (existing?.text ?? '') + delta;
   if (existing) {
@@ -1031,6 +1067,7 @@ function appendLateText(
       ...state,
       rootNodes: mapNode(state.rootNodes, lateId, (t) => ({
         ...t,
+        status,
         text: accumulated,
         label: previewLabel(accumulated),
       })),
@@ -1039,7 +1076,7 @@ function appendLateText(
   const node: ExecutionNode = {
     id: lateId,
     type: 'text',
-    status: 'running',
+    status,
     label: previewLabel(accumulated),
     children: [],
     text: accumulated,

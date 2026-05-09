@@ -3435,6 +3435,145 @@ describe('scopeChanged late-delivery isolation (#485 follow-up)', () => {
     expect(late).toBeDefined();
   });
 
+  it('pending explicit step (race ahead of plan_step_started) is treated as live, not late (Codex #490)', () => {
+    // plan_created mints a 'pending' skeleton for step 2. In the race
+    // window before plan_step_started for step 2 is reduced, the
+    // daemon's first stream.thinking for step 2 arrives carrying
+    // parentStepId=step-2. Without the pending-is-live carve-out, this
+    // would be classified as scopeChanged → late path → first chunk
+    // lands in {step-2}:late:thinking. Once plan_step_started arrives
+    // and subsequent chunks no longer fire scopeChanged, those go to
+    // mintIterationThinking — splitting one streamed response across
+    // two nodes.
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 2,
+        goal: 'g',
+        steps: [
+          { index: 1, name: 's1', description: '' },
+          { index: 2, name: 's2', description: '' },
+        ],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 2,
+        stepName: 's1',
+      }),
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 50,
+        tokensUsed: 25,
+      }),
+      // Race window: thinking for step 2 arrives BEFORE its plan_step_started.
+      envelope('stream.thinking', {
+        delta: 'race chunk one ',
+        parentStepId: stepNodeId('plan-1', 2),
+      }),
+      // Then plan_step_started arrives.
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's2',
+        stepIndex: 2,
+        totalSteps: 2,
+        stepName: 's2',
+      }),
+      envelope('stream.thinking', {
+        delta: 'race chunk two',
+        parentStepId: stepNodeId('plan-1', 2),
+      }),
+    );
+
+    const step2 = findById(state, stepNodeId('plan-1', 2));
+    // No `:late:thinking` orphan should exist — both chunks live in
+    // the normal iteration thinking node.
+    const lateNode = step2.children.find((c) => c.id.endsWith(':late:thinking'));
+    expect(lateNode).toBeUndefined();
+    // Both chunks must accumulate into the same iteration thinking,
+    // not be split across two nodes.
+    const thinkingNodes = step2.children.filter((c) => c.type === 'thinking');
+    expect(thinkingNodes).toHaveLength(1);
+    expect(thinkingNodes[0]?.text ?? '').toBe('race chunk one race chunk two');
+  });
+
+  it('late nodes inherit terminal status from their owning step (CodeRabbit M1 #490)', () => {
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 2,
+        goal: 'g',
+        steps: [
+          { index: 1, name: 's1', description: '' },
+          { index: 2, name: 's2', description: '' },
+        ],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 2,
+        stepName: 's1',
+      }),
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 50,
+        tokensUsed: 25,
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's2',
+        stepIndex: 2,
+        totalSteps: 2,
+        stepName: 's2',
+      }),
+      // Late delivery to step 1 (completed). Late node must be 'completed',
+      // not 'running' — otherwise it pulses indefinitely under a finished step.
+      envelope('stream.thinking', {
+        delta: 'late chunk for step 1',
+        parentStepId: stepNodeId('plan-1', 1),
+      }),
+    );
+
+    const step1 = findById(state, stepNodeId('plan-1', 1));
+    const lateThinking = step1.children.find((c) => c.id.endsWith(':late:thinking'));
+    expect(lateThinking).toBeDefined();
+    expect(lateThinking?.status).toBe('completed');
+  });
+
   it('non-cancelled replan tombstone falls back to live synthetic step (Codex #490)', () => {
     // Step 1 starts, COMPLETES, then a replan reuses stepIndex=1 →
     // dashboard's activateStep preserves the completed tombstone at
@@ -3502,7 +3641,11 @@ describe('scopeChanged late-delivery isolation (#485 follow-up)', () => {
     // finished step keeps its 'completed' status. (For a 'failed' /
     // 'paused' tombstone the same sibling-search rule applies — see
     // resolveExplicitStep.)
-    expect(['completed', 'cancelled']).toContain(tombstone.status);
+    // replacePlanSteps explicitly excludes 'completed' steps from the
+    // cancellation pass (countCancellableSteps), so the original step's
+    // history is preserved as 'completed'. Asserting strictly catches
+    // regressions where replan would downgrade a finished step's record.
+    expect(tombstone.status).toBe('completed');
     const plan = state.rootNodes[0]!.children[0]!.children[0]!;
     const liveSynthetic = plan.children.find(
       (c) => c.metadata?.['createdByReplan'] === true,
