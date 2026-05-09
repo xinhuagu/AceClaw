@@ -3435,6 +3435,98 @@ describe('scopeChanged late-delivery isolation (#485 follow-up)', () => {
     expect(late).toBeDefined();
   });
 
+  it('non-cancelled replan tombstone falls back to live synthetic step (Codex #490)', () => {
+    // Step 1 starts, COMPLETES, then a replan reuses stepIndex=1 →
+    // dashboard's activateStep preserves the completed tombstone at
+    // the composed id and creates the live replacement at a synthetic
+    // `:r{n}` id. The daemon's currentStepId tracker still emits the
+    // composed form. Without the sibling-search fix, every post-replan
+    // delta would route to the COMPLETED tombstone instead of the
+    // running synthetic step.
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 1,
+        goal: 'g',
+        steps: [{ index: 1, name: 's1', description: '' }],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 's1',
+      }),
+      // Step 1 completes (not cancelled — naturally finished).
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 50,
+        tokensUsed: 25,
+      }),
+      // Replan reuses stepIndex=1 → activateStep mints synthetic.
+      envelope('stream.plan_replanned', {
+        planId: 'plan-1',
+        replanAttempt: 1,
+        newStepCount: 1,
+        rationale: 'try a different angle',
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1-replan',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 's1-replan',
+      }),
+    );
+
+    const tombstoneId = stepNodeId('plan-1', 1);
+    const tombstone = findById(state, tombstoneId);
+    // The tombstone here is the COMPLETED original — replacePlanSteps
+    // only cancels non-completed/non-cancelled steps, so a normally-
+    // finished step keeps its 'completed' status. (For a 'failed' /
+    // 'paused' tombstone the same sibling-search rule applies — see
+    // resolveExplicitStep.)
+    expect(['completed', 'cancelled']).toContain(tombstone.status);
+    const plan = state.rootNodes[0]!.children[0]!.children[0]!;
+    const liveSynthetic = plan.children.find(
+      (c) => c.metadata?.['createdByReplan'] === true,
+    );
+    expect(liveSynthetic?.status).toBe('running');
+
+    // Daemon emits parentStepId=composed (= tombstone id).
+    state = runAll(
+      state,
+      envelope('stream.thinking', {
+        delta: 'replan reasoning',
+        parentStepId: tombstoneId,
+      }),
+    );
+
+    // Tombstone receives nothing; live synthetic step does.
+    function hasDescendantWithText(node: ExecutionNode, snippet: string): boolean {
+      if (node.children.some((c) => (c.text ?? '').includes(snippet))) return true;
+      return node.children.some((c) => hasDescendantWithText(c, snippet));
+    }
+    expect(hasDescendantWithText(findById(state, tombstoneId), 'replan reasoning')).toBe(false);
+    expect(hasDescendantWithText(findById(state, liveSynthetic!.id), 'replan reasoning')).toBe(true);
+  });
+
   it('multi-chunk late text accumulates into one node rather than fragmenting (Codex P2 #490)', () => {
     let state = liveStep2WithRunningTool();
     // Three late text deltas for step 1 (a completed step).

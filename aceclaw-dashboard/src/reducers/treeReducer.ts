@@ -188,6 +188,48 @@ function findCurrentAgentScope(state: ExecutionTree): ExecutionNode | null {
  * skeleton, but the actually-running step under the same plan carries
  * a synthetic {@code :r{n}} id (issue #485).
  */
+/**
+ * Resolves an explicit {@code parentStepId} to a usable step node, or
+ * {@code null} when the lookup hits a replan tombstone that the daemon
+ * still names by its composed id.
+ *
+ * <p>Background: when {@link activateStep} sees the composed id is
+ * already taken by a non-pending step (replan reused the index after
+ * the original step was cancelled / completed / failed / paused),
+ * it preserves the tombstone and mints the live replacement at a
+ * {@code `:r{n}`} id under the same plan. The daemon's
+ * {@code currentStepId} tracker still emits the composed form, so a
+ * naive lookup of {@code parentStepId} returns the dead step. Detect
+ * this by sibling search: if the plan has a running step whose id
+ * starts with {@code `{parentStepId}:r`}, the explicit lookup is
+ * dead — return null so callers fall back to {@link findCurrentAgentScope}
+ * which finds the live synthetic replacement via activeNodeId.
+ */
+function resolveExplicitStep(
+  state: ExecutionTree,
+  parentStepId: string | undefined,
+): ExecutionNode | null {
+  if (!parentStepId) return null;
+  const node = findNode(state.rootNodes, parentStepId);
+  if (!node) return null;
+  if (node.status === 'cancelled') return null;
+  if (node.status === 'running') return node;
+  // Non-running, non-cancelled (completed / failed / paused). Could be
+  // a legitimate late-delivery target or a replan tombstone — sibling
+  // search disambiguates.
+  const path = findPath(state.rootNodes, parentStepId);
+  const planNode = path?.find((n) => n.type === 'plan');
+  if (!planNode) return node;
+  const replacementPrefix = `${parentStepId}:r`;
+  const tombstoned = planNode.children.some(
+    (c) =>
+      c.type === 'step' &&
+      c.status === 'running' &&
+      c.id.startsWith(replacementPrefix),
+  );
+  return tombstoned ? null : node;
+}
+
 function resolveAgentScope(
   state: ExecutionTree,
   parentStepId: string | undefined,
@@ -202,10 +244,7 @@ function resolveAgentScope(
    *  rotate iteration anchors, since those belong to a different scope. */
   scopeChanged: boolean;
 } {
-  const explicitNode = parentStepId
-    ? findNode(state.rootNodes, parentStepId)
-    : null;
-  const explicit = explicitNode?.status === 'cancelled' ? null : explicitNode;
+  const explicit = resolveExplicitStep(state, parentStepId);
   const heuristic = findCurrentAgentScope(state);
   const turn = explicit ?? heuristic;
   if (!explicit) {
@@ -524,20 +563,12 @@ function addToolNode(
   // authoritative because the daemon sets it from inside the listener
   // for the actually-running step, not from a tree-walk over a
   // potentially-stale snapshot.
-  const explicitParentNode = params.parentStepId
-    ? findNode(state.rootNodes, params.parentStepId)
-    : null;
-  // Skip override when the resolved step is a replan tombstone (status
-  // 'cancelled'): the composed id collides with the cancelled skeleton
-  // left behind by replacePlanSteps, but the actually-running step
-  // carries a synthetic `:r{n}` id under the same plan. Treating the
-  // tombstone as authoritative would attach all post-replan tools to
-  // the cancelled step. 'completed' / 'failed' are fine to attach to —
-  // late tools for a naturally-finished step are exactly what this PR
-  // exists to handle.
-  const explicitParentStep = explicitParentNode?.status === 'cancelled'
-    ? null
-    : explicitParentNode;
+  // resolveExplicitStep handles replan tombstone detection: a composed
+  // id whose plan has a sibling running synthetic `:r{n}` step is
+  // tombstoned and falls through to the heuristic. Late tools for
+  // legitimately-finished steps (no synthetic replacement) still take
+  // the override path — that's the PR's whole point.
+  const explicitParentStep = resolveExplicitStep(state, params.parentStepId);
   const heuristicScope = findCurrentAgentScope(state);
   const turn = explicitParentStep ?? heuristicScope;
   // When we override the heuristic, also bypass currentTextId /
