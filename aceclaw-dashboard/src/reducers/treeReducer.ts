@@ -208,6 +208,49 @@ function appendChild(
 }
 
 /**
+ * Walks {@code children} and returns a new forest where every descendant
+ * still in {@code 'running'} has been flipped to {@code terminal}. The
+ * {@code flippedTools} counter is mutated in place so the caller can update
+ * sidebar stats for tool nodes that were converged this way.
+ *
+ * Used at scope boundaries (plan step / plan completion — issue #485) to
+ * recover when an intermediate {@code stream.tool_completed} or
+ * {@code stream.thinking.complete} event was lost in transit. Without this,
+ * a dropped completion event leaves a perpetually pulsing tool/thinking node
+ * under a step or plan that has long since finished.
+ *
+ * The traversal preserves structural sharing — branches with no running
+ * descendants return the same array reference so React reconciliation skips
+ * them.
+ */
+function convergeRunningSubtree(
+  children: readonly ExecutionNode[],
+  terminal: ExecutionStatus,
+  flippedTools: { count: number },
+): ExecutionNode[] {
+  let changed = false;
+  const next = children.map((c) => {
+    const newGrandkids = convergeRunningSubtree(c.children, terminal, flippedTools);
+    const grandkidsChanged = newGrandkids !== c.children;
+    if (c.status === 'running') {
+      changed = true;
+      if (c.type === 'tool') flippedTools.count++;
+      return {
+        ...c,
+        status: terminal,
+        children: grandkidsChanged ? newGrandkids : c.children,
+      };
+    }
+    if (grandkidsChanged) {
+      changed = true;
+      return { ...c, children: newGrandkids };
+    }
+    return c;
+  });
+  return changed ? next : (children as ExecutionNode[]);
+}
+
+/**
  * Finds the natural parent for a new turn or plan: the deepest running step
  * (when a plan is mid-execution), else the deepest session ancestor of the
  * current active node, else any session matching {@code sessionId} at the
@@ -1047,16 +1090,38 @@ function completeStep(
     return state;
   }
 
+  // Step subtree convergence (#485): if intermediate completion events were
+  // lost, descendant tool/thinking/text nodes can be stuck running under a
+  // step that has just finished. Flip them to a terminal state along with
+  // the step itself, mirroring the step's outcome — success → completed,
+  // failure → cancelled (the step bailed, descendants were aborted, not
+  // independently successful).
+  const flippedTools = { count: 0 };
+  const subtreeTerminal: ExecutionStatus = params.success ? 'completed' : 'cancelled';
   const rootNodes = mapNode(state.rootNodes, stepId, (n) => ({
     ...n,
     status: params.success ? 'completed' : 'failed',
     duration: params.durationMs,
+    children: convergeRunningSubtree(n.children, subtreeTerminal, flippedTools),
   }));
+  // Stats: tools flipped via convergence have never gone through
+  // completeToolNode, so totalTools is already counted but completedTools /
+  // failedTools wasn't. Bump them now so the sidebar stays consistent with
+  // the converged subtree.
+  const stats = flippedTools.count > 0
+    ? {
+        ...state.stats,
+        completedTools:
+          state.stats.completedTools + (params.success ? flippedTools.count : 0),
+        failedTools:
+          state.stats.failedTools + (params.success ? 0 : flippedTools.count),
+      }
+    : state.stats;
   // Step done → next pending sibling inherits focus, else the plan, else
   // leave focus alone (plan was missing too).
   const planAfter = findNode(rootNodes, params.planId);
   if (!planAfter) {
-    return { ...state, rootNodes };
+    return { ...state, rootNodes, stats };
   }
   const nextPending = planAfter.children.find(
     (c) => c.type === 'step' && c.status === 'pending',
@@ -1064,6 +1129,7 @@ function completeStep(
   return {
     ...state,
     rootNodes,
+    stats,
     activeNodeId: nextPending ? nextPending.id : params.planId,
   };
 }
