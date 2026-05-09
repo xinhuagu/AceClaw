@@ -1240,33 +1240,59 @@ function completePlan(
   state: ExecutionTree,
   params: PlanCompletedParams,
 ): ExecutionTree {
-  return {
-    ...state,
-    rootNodes: mapNode(state.rootNodes, params.planId, (n) => ({
-      ...n,
-      status: params.success ? 'completed' : 'failed',
-      duration: params.totalDurationMs,
-      metadata: {
-        ...(n.metadata ?? {}),
-        stepsCompleted: params.stepsCompleted,
-        totalSteps: params.totalSteps,
-      },
-    })),
-  };
+  // Plan subtree convergence (#485 PR 2/3): a step-level completion event
+  // that was lost in transit would otherwise leave a step (and its tool
+  // descendants) stuck running under a plan that just finished. Apply the
+  // same subtree flip that completeStep does, but at the plan boundary —
+  // success → completed, failure → cancelled (descendants that never
+  // reported completion are treated as aborted, not independently
+  // successful).
+  const flippedTools = { count: 0 };
+  const subtreeTerminal: ExecutionStatus = params.success ? 'completed' : 'cancelled';
+  const rootNodes = mapNode(state.rootNodes, params.planId, (n) => ({
+    ...n,
+    status: params.success ? 'completed' : 'failed',
+    duration: params.totalDurationMs,
+    metadata: {
+      ...(n.metadata ?? {}),
+      stepsCompleted: params.stepsCompleted,
+      totalSteps: params.totalSteps,
+    },
+    children: convergeRunningSubtree(n.children, subtreeTerminal, flippedTools),
+  }));
+  const stats = flippedTools.count > 0
+    ? {
+        ...state.stats,
+        completedTools:
+          state.stats.completedTools + (params.success ? flippedTools.count : 0),
+        failedTools:
+          state.stats.failedTools + (params.success ? 0 : flippedTools.count),
+      }
+    : state.stats;
+  return { ...state, rootNodes, stats };
 }
 
 function failPlan(
   state: ExecutionTree,
   params: PlanEscalatedParams,
 ): ExecutionTree {
-  return {
-    ...state,
-    rootNodes: mapNode(state.rootNodes, params.planId, (n) => ({
-      ...n,
-      status: 'failed',
-      error: params.reason,
-    })),
-  };
+  // Plan escalation is unconditionally a failure path — converge any still-
+  // running descendants to 'cancelled' and account them as failed tools so
+  // the sidebar reflects the abort, not a phantom in-flight tool count.
+  const flippedTools = { count: 0 };
+  const rootNodes = mapNode(state.rootNodes, params.planId, (n) => ({
+    ...n,
+    status: 'failed',
+    error: params.reason,
+    children: convergeRunningSubtree(n.children, 'cancelled', flippedTools),
+  }));
+  const stats = flippedTools.count > 0
+    ? {
+        ...state.stats,
+        failedTools: state.stats.failedTools + flippedTools.count,
+      }
+    : state.stats;
+  return { ...state, rootNodes, stats };
 }
 
 function addSubAgentNode(
