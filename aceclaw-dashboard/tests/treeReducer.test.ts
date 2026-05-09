@@ -2470,6 +2470,484 @@ describe('completeStep converges still-running descendants (#485)', () => {
 // Step events arriving before plan_created — don't dangle activeNodeId
 // ---------------------------------------------------------------------------
 
+
+// ---------------------------------------------------------------------------
+// parentStepId on stream.tool_use (#485 PR 3/3): the daemon tags each
+// tool_use with the composed step id ({planId}:step:{1-based-index}) so
+// the reducer can attribute the tool to the right step even when events
+// arrive out of order (e.g. plan_step_completed overtaking a late
+// tool_use).
+// ---------------------------------------------------------------------------
+
+describe('stepNodeId wire format guard (#485)', () => {
+  // The daemon hardcodes the same `${planId}:step:${1-based-index}` form
+  // when emitting parentStepId on stream.tool_use (see
+  // StreamingAgentHandler.java — the executePlannedPrompt and
+  // executeResumedPlan listeners both compose it inline). If this format
+  // ever changes here without a matching daemon change, every tool_use
+  // would silently stop attributing to its step. Lock the contract so a
+  // format change immediately fails CI on the dashboard side.
+  it('produces the exact form the daemon emits as parentStepId', () => {
+    expect(stepNodeId('plan-1', 1)).toBe('plan-1:step:1');
+    expect(stepNodeId('uuid-foo-bar', 42)).toBe('uuid-foo-bar:step:42');
+  });
+});
+
+describe('addToolNode honours parentStepId from daemon (#485)', () => {
+  it('attaches a tool to the explicit parent step even after step has flipped to completed', () => {
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 1,
+        goal: 'g',
+        steps: [{ index: 1, name: 's1', description: '' }],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 's1',
+      }),
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 100,
+        tokensUsed: 50,
+      }),
+    );
+    const stepId = stepNodeId('plan-1', 1);
+    expect(findById(state, stepId).status).toBe('completed');
+    const childCountBefore = findById(state, stepId).children.length;
+
+    state = runAll(
+      state,
+      envelope('stream.tool_use', {
+        id: 't1',
+        name: 'read_file',
+        parentStepId: stepId,
+      }),
+    );
+
+    const stepAfter = findById(state, stepId);
+    expect(stepAfter.children.length).toBeGreaterThan(childCountBefore);
+    const tool = stepAfter.children.find((c) => c.id === 't1');
+    expect(tool).toBeDefined();
+    expect(tool?.type).toBe('tool');
+  });
+
+  it('falls back to the heuristic when parentStepId is missing (regression guard)', () => {
+    const before = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 1,
+        goal: 'g',
+        steps: [{ index: 1, name: 's1', description: '' }],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 's1',
+      }),
+    );
+    const after = runAll(
+      before,
+      envelope('stream.tool_use', { id: 't1', name: 'read_file' }),
+    );
+    const step = findById(after, stepNodeId('plan-1', 1));
+    // Tool can sit directly under the step or under a synthesized
+    // thinking node beneath it — assert the subtree contains it.
+    function hasDescendant(node: ExecutionNode, id: string): boolean {
+      if (node.children.some((c) => c.id === id)) return true;
+      return node.children.some((c) => hasDescendant(c, id));
+    }
+    expect(hasDescendant(step, 't1')).toBe(true);
+  });
+
+  it('does not mint an orphan synthetic thinking under explicit override (CodeRabbit #488)', () => {
+    // Regression guard: when explicit parentStepId routes the tool
+    // directly to the step, the iteration-boundary synthesis above
+    // must NOT mint a thinking node — the tool would bypass it,
+    // leaving an empty completed thinking hanging off the step.
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 1,
+        goal: 'g',
+        steps: [{ index: 1, name: 's1', description: '' }],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 's1',
+      }),
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 100,
+        tokensUsed: 50,
+      }),
+    );
+    const stepId = stepNodeId('plan-1', 1);
+    state = runAll(
+      state,
+      envelope('stream.tool_use', {
+        id: 't1',
+        name: 'read_file',
+        parentStepId: stepId,
+      }),
+    );
+
+    const stepAfter = findById(state, stepId);
+    const orphanThinking = stepAfter.children.find(
+      (c) => c.type === 'thinking' && c.children.length === 0,
+    );
+    expect(orphanThinking).toBeUndefined();
+    // Tool itself should be a direct child of the step under override.
+    expect(stepAfter.children.find((c) => c.id === 't1')).toBeDefined();
+  });
+
+  it('skips override when parentStepId resolves to a replan tombstone (Codex #488)', () => {
+    // After replan, the failed/cancelled skeleton at the composed id
+    // (e.g. plan-1:step:1) sticks around as a tombstone, and the new
+    // running step gets a synthetic `:r{n}` id under the same plan.
+    // The daemon still tags subsequent tool_use with the composed
+    // form. If the reducer naively trusted that, all post-replan
+    // tools would attach to the cancelled step. The fix: skip
+    // override when the resolved step is 'cancelled', falling back
+    // to the heuristic which finds the live synthetic step.
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 1,
+        goal: 'g',
+        steps: [{ index: 1, name: 's1', description: '' }],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 's1',
+      }),
+      envelope('stream.plan_replanned', {
+        planId: 'plan-1',
+        replanAttempt: 1,
+        newStepCount: 1,
+        rationale: 'changed approach',
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1-replan',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 's1-replan',
+      }),
+    );
+    const tombstoneId = stepNodeId('plan-1', 1);
+    expect(findById(state, tombstoneId).status).toBe('cancelled');
+    const plan = state.rootNodes[0]!.children[0]!.children[0]!;
+    const liveStep = plan.children.find(
+      (c) => c.metadata?.['createdByReplan'] === true,
+    );
+    expect(liveStep?.status).toBe('running');
+
+    state = runAll(
+      state,
+      envelope('stream.tool_use', {
+        id: 't1',
+        name: 'read_file',
+        // Daemon's hardcoded composed form — collides with the tombstone.
+        parentStepId: tombstoneId,
+      }),
+    );
+
+    // Tombstone gets no children; live synthetic step gets the tool.
+    const tombstoneAfter = findById(state, tombstoneId);
+    expect(tombstoneAfter.children.find((c) => c.id === 't1')).toBeUndefined();
+    function hasDescendant(node: ExecutionNode, id: string): boolean {
+      if (node.children.some((c) => c.id === id)) return true;
+      return node.children.some((c) => hasDescendant(c, id));
+    }
+    const liveStepAfter = findById(state, liveStep!.id);
+    expect(hasDescendant(liveStepAfter, 't1')).toBe(true);
+  });
+
+  it('preserves live-scope anchors when an explicit-parent tool arrives late (Codex #488)', () => {
+    // Step 1 runs and emits a thinking + tool that completes. Step 2
+    // starts and emits its own thinking — currentThinkingId now points
+    // to step 2's live thinking. A delayed tool_use for step 1 arrives
+    // (parentStepId resolves to the completed step 1). Without the
+    // override-aware guards, this late event would flip step 2's
+    // running thinking to completed, seal thinkingSealed, and move
+    // activeNodeId — breaking the rendering of step 2's subsequent
+    // events. The fix: under explicitOverride, leave global anchors
+    // untouched.
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 2,
+        goal: 'g',
+        steps: [
+          { index: 1, name: 's1', description: '' },
+          { index: 2, name: 's2', description: '' },
+        ],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 2,
+        stepName: 's1',
+      }),
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 50,
+        tokensUsed: 25,
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's2',
+        stepIndex: 2,
+        totalSteps: 2,
+        stepName: 's2',
+      }),
+      // Step 2's live iteration bookkeeping: thinking + first tool.
+      envelope('stream.thinking', { delta: 'planning step 2…' }),
+    );
+    const liveThinkingIdBefore = state.currentThinkingId;
+    const liveActiveBefore = state.activeNodeId;
+    const liveThinkingSealedBefore = state.thinkingSealed;
+    expect(liveThinkingIdBefore).not.toBeNull();
+
+    // Delayed tool_use for step 1 (completed). parentStepId routes it
+    // back to step 1. This must not disturb step 2's live anchors.
+    state = runAll(
+      state,
+      envelope('stream.tool_use', {
+        id: 't-late',
+        name: 'read_file',
+        parentStepId: stepNodeId('plan-1', 1),
+      }),
+    );
+
+    expect(state.currentThinkingId).toBe(liveThinkingIdBefore);
+    expect(state.activeNodeId).toBe(liveActiveBefore);
+    expect(state.thinkingSealed).toBe(liveThinkingSealedBefore);
+    // Step 2's live thinking must still be running.
+    const liveThinking = findById(state, liveThinkingIdBefore!);
+    expect(liveThinking.status).toBe('running');
+  });
+
+  it('forces override when explicit + heuristic agree but candidate anchor is stale (Codex #488)', () => {
+    // Step 1 ends with currentTextId set to its final-text node. Step 2
+    // starts (activateStep moves activeNodeId but does NOT clear the
+    // text/thinking anchors). Step 2's first tool_use arrives with
+    // parentStepId pointing at step 2.
+    //
+    // Without the candidate-inside-explicit guard, explicitParentStep
+    // and heuristicScope both resolve to step 2 → explicitOverride
+    // stays false → anchorId falls through to the leftover step-1
+    // currentTextId, and the step-2 tool attaches under step 1's text.
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 2,
+        goal: 'g',
+        steps: [
+          { index: 1, name: 's1', description: '' },
+          { index: 2, name: 's2', description: '' },
+        ],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 2,
+        stepName: 's1',
+      }),
+      // Step 1 emits text → currentTextId is set to a node under step 1.
+      envelope('stream.text', { delta: 'finished step 1' }),
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 50,
+        tokensUsed: 25,
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's2',
+        stepIndex: 2,
+        totalSteps: 2,
+        stepName: 's2',
+      }),
+    );
+    // Confirm the leftover anchor really points into step 1's subtree.
+    function hasDescendant(node: ExecutionNode, id: string): boolean {
+      if (node.children.some((c) => c.id === id)) return true;
+      return node.children.some((c) => hasDescendant(c, id));
+    }
+    const step1Id = stepNodeId('plan-1', 1);
+    const step2Id = stepNodeId('plan-1', 2);
+    const step1 = findById(state, step1Id);
+    expect(state.currentTextId).not.toBeNull();
+    expect(hasDescendant(step1, state.currentTextId!)).toBe(true);
+
+    // Step 2's first tool_use, daemon-tagged with parentStepId=step 2.
+    state = runAll(
+      state,
+      envelope('stream.tool_use', {
+        id: 't1',
+        name: 'read_file',
+        parentStepId: step2Id,
+      }),
+    );
+
+    // Tool must end up in step 2's subtree, NOT under step 1's leftover text.
+    expect(hasDescendant(findById(state, step2Id), 't1')).toBe(true);
+    expect(hasDescendant(findById(state, step1Id), 't1')).toBe(false);
+  });
+
+  it('falls back to the heuristic when parentStepId references a non-existent node', () => {
+    const before = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 1,
+        goal: 'g',
+        steps: [{ index: 1, name: 's1', description: '' }],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 's1',
+      }),
+    );
+    const after = runAll(
+      before,
+      envelope('stream.tool_use', {
+        id: 't1',
+        name: 'read_file',
+        parentStepId: 'plan-NEVER-EXISTED:step:99',
+      }),
+    );
+    const step = findById(after, stepNodeId('plan-1', 1));
+    // Tool can sit directly under the step or under a synthesized
+    // thinking node beneath it — assert the subtree contains it.
+    function hasDescendant(node: ExecutionNode, id: string): boolean {
+      if (node.children.some((c) => c.id === id)) return true;
+      return node.children.some((c) => hasDescendant(c, id));
+    }
+    expect(hasDescendant(step, 't1')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step events arriving before plan_created — don't dangle activeNodeId
+// ---------------------------------------------------------------------------
+
 describe('plan/step events without plan skeleton', () => {
   it('plan_step_started without a plan is a state no-op', () => {
     const before = runAll(

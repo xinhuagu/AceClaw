@@ -710,9 +710,20 @@ public final class StreamingAgentHandler {
 
         // 3. Execute the plan
         var conversationHistory = toMessages(session.messages());
+        // Track the running plan step so stream.tool_use notifications can
+        // carry an explicit parentStepId (#485 PR 3/3). null when eventHandler
+        // is not the production StreamingNotificationHandler (e.g. test
+        // doubles) — in that case, parentStepId tagging is silently skipped.
+        StreamingNotificationHandler streamHandler =
+                eventHandler instanceof StreamingNotificationHandler h ? h : null;
         var listener = new SequentialPlanExecutor.PlanEventListener() {
             @Override
             public void onStepStarted(PlannedStep step, int stepIndex, int totalSteps) {
+                if (streamHandler != null) {
+                    // Composed form mirrors the dashboard's stepNodeId(planId, 1-based)
+                    // so the reducer can look up the step node by id directly.
+                    streamHandler.setCurrentStepId(plan.planId() + ":step:" + (stepIndex + 1));
+                }
                 try {
                     var p = objectMapper.createObjectNode();
                     p.put("planId", plan.planId());
@@ -745,6 +756,9 @@ public final class StreamingAgentHandler {
 
             @Override
             public void onPlanCompleted(TaskPlan completedPlan, boolean success, long totalDurationMs) {
+                if (streamHandler != null) {
+                    streamHandler.setCurrentStepId(null);
+                }
                 try {
                     var p = objectMapper.createObjectNode();
                     p.put("planId", completedPlan.planId());
@@ -774,6 +788,9 @@ public final class StreamingAgentHandler {
 
             @Override
             public void onPlanEscalated(TaskPlan escalatedPlan, String reason) {
+                if (streamHandler != null) {
+                    streamHandler.setCurrentStepId(null);
+                }
                 try {
                     var p = objectMapper.createObjectNode();
                     p.put("planId", escalatedPlan.planId());
@@ -2854,14 +2871,22 @@ public final class StreamingAgentHandler {
         }
 
         // 8. Create notification listener for the resumed plan
+        // Same parentStepId tagging as the fresh-plan path (#485 PR 3/3) — null
+        // when eventHandler isn't the production handler.
+        StreamingNotificationHandler resumedStreamHandler =
+                eventHandler instanceof StreamingNotificationHandler h ? h : null;
         var notificationListener = new SequentialPlanExecutor.PlanEventListener() {
             @Override
             public void onStepStarted(PlannedStep step, int stepIndex, int totalSteps) {
+                int oneBasedIndex = cp.nextStepIndex() + stepIndex + 1;
+                if (resumedStreamHandler != null) {
+                    resumedStreamHandler.setCurrentStepId(resumedPlanId + ":step:" + oneBasedIndex);
+                }
                 try {
                     var p = objectMapper.createObjectNode();
                     p.put("planId", resumedPlanId);
                     p.put("stepId", step.stepId());
-                    p.put("stepIndex", cp.nextStepIndex() + stepIndex + 1);
+                    p.put("stepIndex", oneBasedIndex);
                     p.put("totalSteps", cp.plan().steps().size());
                     p.put("stepName", step.name());
                     cancelContext.sendNotification("stream.plan_step_started", p);
@@ -2889,6 +2914,9 @@ public final class StreamingAgentHandler {
 
             @Override
             public void onPlanCompleted(TaskPlan completedPlan, boolean success, long totalDurationMs) {
+                if (resumedStreamHandler != null) {
+                    resumedStreamHandler.setCurrentStepId(null);
+                }
                 try {
                     var p = objectMapper.createObjectNode();
                     p.put("planId", resumedPlanId);
@@ -2920,6 +2948,9 @@ public final class StreamingAgentHandler {
 
             @Override
             public void onPlanEscalated(TaskPlan escalatedPlan, String reason) {
+                if (resumedStreamHandler != null) {
+                    resumedStreamHandler.setCurrentStepId(null);
+                }
                 try {
                     var p = objectMapper.createObjectNode();
                     p.put("planId", escalatedPlan.planId());
@@ -3341,10 +3372,31 @@ public final class StreamingAgentHandler {
 
         private final StreamContext context;
         private final ObjectMapper objectMapper;
+        /**
+         * Plan step id (in the dashboard's composed {@code planId:step:index}
+         * form) currently in scope, or {@code null} for non-plan ReAct turns.
+         * Set by the {@link SequentialPlanExecutor.PlanEventListener} on
+         * {@code onStepStarted} and cleared on plan termination — see #485
+         * PR 3/3. Read on {@code onContentBlockStart} for ToolUse so each
+         * {@code stream.tool_use} carries an explicit parent reference,
+         * removing the dashboard's reliance on event ordering for tool-to-step
+         * attribution.
+         */
+        private final java.util.concurrent.atomic.AtomicReference<String> currentStepId
+                = new java.util.concurrent.atomic.AtomicReference<>();
 
         StreamingNotificationHandler(StreamContext context, ObjectMapper objectMapper) {
             this.context = context;
             this.objectMapper = objectMapper;
+        }
+
+        /**
+         * Sets (or clears with {@code null}) the dashboard-form step id used
+         * to tag {@code stream.tool_use} notifications. Caller is responsible
+         * for setting on step start and clearing on plan termination.
+         */
+        void setCurrentStepId(String stepId) {
+            currentStepId.set(stepId);
         }
 
         @Override
@@ -3379,6 +3431,10 @@ public final class StreamingAgentHandler {
                     String summary = summarizeToolInput(toolUse.name(), toolUse.inputJson(), objectMapper);
                     if (!summary.isBlank()) {
                         params.put("summary", summary);
+                    }
+                    String stepId = currentStepId.get();
+                    if (stepId != null) {
+                        params.put("parentStepId", stepId);
                     }
                     context.sendNotification("stream.tool_use", params);
                 } catch (IOException e) {

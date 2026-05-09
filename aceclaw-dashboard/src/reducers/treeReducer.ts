@@ -463,7 +463,55 @@ function addToolNode(
   // continuity but the helper returns the nearest running turn OR
   // step, so plan-step agent loops anchor on the step (not the
   // enclosing turn) — see findCurrentAgentScope.
-  const turn = findCurrentAgentScope(state);
+  //
+  // #485 PR 3/3: when the daemon tags the tool_use with an explicit
+  // parentStepId, prefer that node over the heuristic. The heuristic
+  // walks up from activeNodeId — it can disagree with the explicit
+  // parent if an out-of-order plan_step_completed flipped the step out
+  // of 'running' before this tool_use arrived. The explicit field is
+  // authoritative because the daemon sets it from inside the listener
+  // for the actually-running step, not from a tree-walk over a
+  // potentially-stale snapshot.
+  const explicitParentNode = params.parentStepId
+    ? findNode(state.rootNodes, params.parentStepId)
+    : null;
+  // Skip override when the resolved step is a replan tombstone (status
+  // 'cancelled'): the composed id collides with the cancelled skeleton
+  // left behind by replacePlanSteps, but the actually-running step
+  // carries a synthetic `:r{n}` id under the same plan. Treating the
+  // tombstone as authoritative would attach all post-replan tools to
+  // the cancelled step. 'completed' / 'failed' are fine to attach to —
+  // late tools for a naturally-finished step are exactly what this PR
+  // exists to handle.
+  const explicitParentStep = explicitParentNode?.status === 'cancelled'
+    ? null
+    : explicitParentNode;
+  const heuristicScope = findCurrentAgentScope(state);
+  const turn = explicitParentStep ?? heuristicScope;
+  // When we override the heuristic, also bypass currentTextId /
+  // currentThinkingId below — those anchors may still belong to the
+  // enclosing-turn scope and would re-route the tool away from the
+  // explicit parent step.
+  // Compare by id rather than object reference — future helpers that wrap
+  // findNode (memoization, snapshot cloning, …) would silently break the
+  // override-detection if it relied on identity equality.
+  //
+  // Also force override when the candidate anchor (state.currentTextId or
+  // state.currentThinkingId) is NOT inside the explicit step's subtree.
+  // Step boundaries do not currently clear those anchors, so a step-1
+  // leftover text can capture step-2's first tool even when explicit and
+  // heuristic agree on the step (Codex feedback on #488). Override flips
+  // the anchor selection below to the step itself, bypassing the stale
+  // text/thinking.
+  const candidateAnchorId = state.currentTextId ?? state.currentThinkingId;
+  const candidateInsideExplicit = !explicitParentStep || !candidateAnchorId
+    ? true
+    : findNode(explicitParentStep.children, candidateAnchorId) !== null;
+  const explicitOverride = explicitParentStep !== null
+    && (
+      explicitParentStep.id !== (heuristicScope?.id ?? null)
+      || !candidateInsideExplicit
+    );
 
   // Iteration-boundary synthesis (mirrors appendTextToCurrentTurn):
   // when this tool_use is the FIRST event of a new iteration with no
@@ -478,8 +526,14 @@ function addToolNode(
   // Suppress the synthesis when there's a running sibling tool under
   // the current anchor — that signals parallel tools from the SAME LLM
   // call, which must keep sharing the existing anchor.
+  //
+  // Also suppress under explicitOverride (#485 PR 3/3): the anchor
+  // selection below will route this tool directly to the named step
+  // and bypass currentThinkingId entirely, so a freshly-minted thinking
+  // would just sit orphaned under the step with no children.
   let workingState = state;
   if (
+    !explicitOverride &&
     turn &&
     state.currentTextId === null &&
     (state.currentThinkingId === null || state.thinkingSealed)
@@ -507,9 +561,12 @@ function addToolNode(
   // share the same anchor. textIsOpen=false (after a tool closed the
   // text) keeps the anchor for parallel-tool grouping but signals to
   // the next text delta that it's a NEW iteration.
-  const anchorId =
-    state.currentTextId ?? state.currentThinkingId ?? (turn ? turn.id : null);
-  const narrationId = state.currentTextId;
+  const anchorId = explicitOverride
+    ? (turn ? turn.id : null)
+    : state.currentTextId ?? state.currentThinkingId ?? (turn ? turn.id : null);
+  // Narration anchor is also dropped under explicit override — the open
+  // text node belongs to a different scope's iteration.
+  const narrationId = explicitOverride ? null : state.currentTextId;
 
   const tool: ExecutionNode = {
     id: params.id,
@@ -550,7 +607,13 @@ function addToolNode(
   // for this iteration — both should stop pulsing immediately so the
   // visual state matches reality. Only flip 'running' → 'completed'
   // so a node that already failed/etc. isn't clobbered.
-  if (state.currentThinkingId) {
+  //
+  // Skip both flips under explicitOverride: those anchors belong to
+  // whatever step is actually running right now (the explicit-parent
+  // tool is for a different, possibly older, scope) — flipping them
+  // here would prematurely close the live step's thinking and force
+  // its next text/tool_use to mint a fresh iteration boundary.
+  if (!explicitOverride && state.currentThinkingId) {
     rootNodes = mapNode(rootNodes, state.currentThinkingId, (t) =>
       t.status === 'running' ? { ...t, status: 'completed' as const } : t,
     );
@@ -561,20 +624,31 @@ function addToolNode(
     );
   }
 
-  let next: ExecutionTree = {
-    ...state,
-    rootNodes,
-    activeNodeId: tool.id,
-    // Seal both anchors: a tool_use means the model has stopped
-    // thinking AND stopped talking; the next thinking OR text delta is
-    // from a NEW LLM call (next ReAct iteration). Parallel tool_use
-    // events that follow within the SAME call don't have a thinking
-    // or text delta between them, so currentThinkingId / currentTextId
-    // stay valid for parallel-tool grouping.
-    thinkingSealed: true,
-    textIsOpen: false,
-    stats: { ...state.stats, totalTools: state.stats.totalTools + 1 },
-  };
+  // Anchor mutation also gates on explicitOverride: a late tool_use
+  // for an older scope must not move activeNodeId, seal the live
+  // thinking, or close the live text. The tool inserts as a passive
+  // child of the explicit step; the live step's iteration bookkeeping
+  // continues uninterrupted.
+  let next: ExecutionTree = explicitOverride
+    ? {
+        ...state,
+        rootNodes,
+        stats: { ...state.stats, totalTools: state.stats.totalTools + 1 },
+      }
+    : {
+        ...state,
+        rootNodes,
+        activeNodeId: tool.id,
+        // Seal both anchors: a tool_use means the model has stopped
+        // thinking AND stopped talking; the next thinking OR text delta is
+        // from a NEW LLM call (next ReAct iteration). Parallel tool_use
+        // events that follow within the SAME call don't have a thinking
+        // or text delta between them, so currentThinkingId / currentTextId
+        // stay valid for parallel-tool grouping.
+        thinkingSealed: true,
+        textIsOpen: false,
+        stats: { ...state.stats, totalTools: state.stats.totalTools + 1 },
+      };
   // Drain any buffered permission.request that arrived BEFORE this
   // tool_use event (parallel virtual threads on the daemon dispatch
   // permission.request and stream.tool_use independently — wire order
