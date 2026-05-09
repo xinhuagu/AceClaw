@@ -213,21 +213,32 @@ function resolveExplicitStep(
   const node = findNode(state.rootNodes, parentStepId);
   if (!node) return null;
   if (node.status === 'cancelled') return null;
-  if (node.status === 'running') return node;
-  // Non-running, non-cancelled (completed / failed / paused). Could be
-  // a legitimate late-delivery target or a replan tombstone — sibling
-  // search disambiguates.
+  // Replan-replacement detection: when activateStep saw the composed
+  // id was already taken, it preserved the tombstone and minted a
+  // {composedId}:r{n} synthetic replacement under the same plan. The
+  // daemon's currentStepId tracker still emits the composed form, so
+  // any late delta naming the composed id should redirect to the
+  // *latest* synthetic — irrespective of its own status. Without the
+  // status-agnostic redirect, a delta arriving after the synthetic
+  // replacement has also completed would land back on the original
+  // tombstone (Codex feedback on PR #490).
   const path = findPath(state.rootNodes, parentStepId);
   const planNode = path?.find((n) => n.type === 'plan');
-  if (!planNode) return node;
-  const replacementPrefix = `${parentStepId}:r`;
-  const tombstoned = planNode.children.some(
-    (c) =>
-      c.type === 'step' &&
-      c.status === 'running' &&
-      c.id.startsWith(replacementPrefix),
-  );
-  return tombstoned ? null : node;
+  if (planNode) {
+    const replacementPrefix = `${parentStepId}:r`;
+    const replacements = planNode.children.filter(
+      (c) => c.type === 'step' && c.id.startsWith(replacementPrefix),
+    );
+    if (replacements.length > 0) {
+      const latest = replacements.reduce((acc, c) => {
+        const n = parseInt(acc.id.slice(replacementPrefix.length), 10);
+        const m = parseInt(c.id.slice(replacementPrefix.length), 10);
+        return Number.isFinite(m) && m > n ? c : acc;
+      });
+      return latest.status === 'cancelled' ? null : latest;
+    }
+  }
+  return node;
 }
 
 function resolveAgentScope(

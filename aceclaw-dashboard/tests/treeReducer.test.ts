@@ -3670,6 +3670,96 @@ describe('scopeChanged late-delivery isolation (#485 follow-up)', () => {
     expect(hasDescendantWithText(findById(state, liveSynthetic!.id), 'replan reasoning')).toBe(true);
   });
 
+  it('redirects to latest synthetic replacement even after it has also completed (Codex #490)', () => {
+    // Step 1 completes → replan creates `plan-1:step:1:r1` → that
+    // synthetic also completes → late delta for the composed id
+    // arrives. Detection must NOT gate on the synthetic still being
+    // running; it should redirect to the synthetic regardless of
+    // status, so the late content accumulates under the most recent
+    // replacement (not the original historical tombstone).
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 1,
+        goal: 'g',
+        steps: [{ index: 1, name: 's1', description: '' }],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 's1',
+      }),
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 50,
+        tokensUsed: 25,
+      }),
+      envelope('stream.plan_replanned', {
+        planId: 'plan-1',
+        replanAttempt: 1,
+        newStepCount: 1,
+        rationale: 'try again',
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1-replan',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 's1-replan',
+      }),
+      // Synthetic replacement also completes.
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1-replan',
+        stepIndex: 1,
+        stepName: 's1-replan',
+        success: true,
+        durationMs: 50,
+        tokensUsed: 25,
+      }),
+    );
+    const tombstoneId = stepNodeId('plan-1', 1);
+    const plan = state.rootNodes[0]!.children[0]!.children[0]!;
+    const synthetic = plan.children.find(
+      (c) => c.metadata?.['createdByReplan'] === true,
+    );
+    expect(synthetic?.status).toBe('completed');
+
+    state = runAll(
+      state,
+      envelope('stream.thinking', {
+        delta: 'late after both done',
+        parentStepId: tombstoneId,
+      }),
+    );
+
+    function hasDescendantWithText(node: ExecutionNode, snippet: string): boolean {
+      if (node.children.some((c) => (c.text ?? '').includes(snippet))) return true;
+      return node.children.some((c) => hasDescendantWithText(c, snippet));
+    }
+    // Original tombstone gets nothing; synthetic gets the late content.
+    expect(hasDescendantWithText(findById(state, tombstoneId), 'late after both done')).toBe(false);
+    expect(hasDescendantWithText(findById(state, synthetic!.id), 'late after both done')).toBe(true);
+  });
+
   it('multi-chunk late text accumulates into one node rather than fragmenting (Codex P2 #490)', () => {
     let state = liveStep2WithRunningTool();
     // Three late text deltas for step 1 (a completed step).
