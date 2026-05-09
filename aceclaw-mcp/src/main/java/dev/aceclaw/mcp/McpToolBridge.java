@@ -8,8 +8,14 @@ import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Adapts an MCP tool to the AceClaw {@link Tool} interface.
@@ -25,19 +31,24 @@ public final class McpToolBridge implements Tool {
     private static final Logger log = LoggerFactory.getLogger(McpToolBridge.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
+    /** Dedicated executor for blocking MCP RPC calls (virtual threads are interruptible). */
+    private static final ExecutorService MCP_TOOL_EXECUTOR = Executors.newVirtualThreadPerTaskExecutor();
+
     private final String qualifiedName;
     private final String mcpToolName;
     private final String description;
     private final JsonNode inputSchema;
     private final McpSyncClient client;
+    private final Duration timeout;
 
     private McpToolBridge(String qualifiedName, String mcpToolName, String description,
-                          JsonNode inputSchema, McpSyncClient client) {
+                          JsonNode inputSchema, McpSyncClient client, Duration timeout) {
         this.qualifiedName = qualifiedName;
         this.mcpToolName = mcpToolName;
         this.description = description;
         this.inputSchema = inputSchema;
         this.client = client;
+        this.timeout = timeout;
     }
 
     /**
@@ -46,9 +57,11 @@ public final class McpToolBridge implements Tool {
      * @param serverName the MCP server name (from config)
      * @param mcpTool    the MCP tool definition
      * @param client     the MCP client for tool execution
+     * @param timeout    per-server request timeout (from config); if null, the SDK's own timeout applies
      * @return a new tool bridge instance
      */
-    public static McpToolBridge create(String serverName, McpSchema.Tool mcpTool, McpSyncClient client) {
+    public static McpToolBridge create(String serverName, McpSchema.Tool mcpTool,
+                                       McpSyncClient client, Duration timeout) {
         var qualifiedName = "mcp__" + serverName + "__" + mcpTool.name();
 
         // Convert MCP input schema to Jackson JsonNode
@@ -63,7 +76,14 @@ public final class McpToolBridge implements Tool {
         }
 
         return new McpToolBridge(qualifiedName, mcpTool.name(),
-                mcpTool.description(), inputSchema, client);
+                mcpTool.description(), inputSchema, client, timeout);
+    }
+
+    /**
+     * Creates a bridged tool with the default SDK timeout (no AceClaw-side timeout wrapper).
+     */
+    public static McpToolBridge create(String serverName, McpSchema.Tool mcpTool, McpSyncClient client) {
+        return create(serverName, mcpTool, client, null);
     }
 
     @Override
@@ -95,9 +115,33 @@ public final class McpToolBridge implements Tool {
             args = parsed;
         }
 
-        // Call the MCP tool
+        // Call the MCP tool on a virtual thread so cancel(true) actually interrupts it.
+        // Uses the per-server timeout from config, or falls back to the SDK's own timeout.
         var request = new McpSchema.CallToolRequest(mcpToolName, args);
-        var result = client.callTool(request);
+        McpSchema.CallToolResult result;
+        var future = MCP_TOOL_EXECUTOR.submit(() -> client.callTool(request));
+        try {
+            if (timeout != null) {
+                result = future.get(timeout.toSeconds(), TimeUnit.SECONDS);
+            } else {
+                result = future.get();
+            }
+        } catch (TimeoutException e) {
+            future.cancel(true);
+            long timeoutSecs = timeout.toSeconds();
+            log.warn("MCP tool '{}' timed out after {}s", qualifiedName, timeoutSecs);
+            return new ToolResult(
+                    "MCP tool '" + qualifiedName + "' timed out after " + timeoutSecs
+                            + " seconds. The MCP server may be unresponsive.",
+                    true);
+        } catch (ExecutionException e) {
+            throw e.getCause() instanceof Exception cause ? cause
+                    : new RuntimeException("MCP tool execution failed", e.getCause());
+        } catch (InterruptedException e) {
+            future.cancel(true);
+            Thread.currentThread().interrupt();
+            return new ToolResult("MCP tool '" + qualifiedName + "' was interrupted", true);
+        }
 
         // Extract text content from the result
         var output = extractContent(result);
