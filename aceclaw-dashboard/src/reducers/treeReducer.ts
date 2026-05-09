@@ -170,6 +170,48 @@ function findCurrentAgentScope(state: ExecutionTree): ExecutionNode | null {
 }
 
 /**
+ * Resolves the scope an inbound stream event should attach to and
+ * reports whether the daemon's explicit {@code parentStepId} disagrees
+ * with the activeNodeId-based heuristic. The override flag tells
+ * callers to bypass iteration-local anchors (currentThinkingId /
+ * currentTextId / activeNodeId) that may belong to a different step's
+ * iteration — same logic family as {@link addToolNode}'s explicitOverride.
+ *
+ * Override fires when:
+ *   - the explicit step's id differs from the heuristic scope, OR
+ *   - a candidate iteration anchor (currentTextId / currentThinkingId)
+ *     is NOT inside the explicit step's subtree (a leftover anchor
+ *     from a previous step that activateStep didn't clear).
+ *
+ * Skips the explicit step entirely when it resolves to a 'cancelled'
+ * replan tombstone — its composed id collides with the cancelled
+ * skeleton, but the actually-running step under the same plan carries
+ * a synthetic {@code :r{n}} id (issue #485).
+ */
+function resolveAgentScope(
+  state: ExecutionTree,
+  parentStepId: string | undefined,
+): { turn: ExecutionNode | null; override: boolean } {
+  const explicitNode = parentStepId
+    ? findNode(state.rootNodes, parentStepId)
+    : null;
+  const explicit = explicitNode?.status === 'cancelled' ? null : explicitNode;
+  const heuristic = findCurrentAgentScope(state);
+  const turn = explicit ?? heuristic;
+  if (!explicit) {
+    return { turn, override: false };
+  }
+  if (explicit.id !== (heuristic?.id ?? null)) {
+    return { turn, override: true };
+  }
+  const candidate = state.currentTextId ?? state.currentThinkingId;
+  const candidateInside = !candidate
+    ? true
+    : findNode(explicit.children, candidate) !== null;
+  return { turn, override: !candidateInside };
+}
+
+/**
  * Replaces a node anywhere in the forest by id. Returns a new forest with
  * structural sharing for branches that did not change.
  */
@@ -763,14 +805,16 @@ function appendTextToCurrentTurn(
   // skips its thinking block (model went straight from tool result to
   // final response) would silently merge into the previous iter's
   // text node, because both ids would key on the same currentThinkingId.
-  // findCurrentAgentScope returns running step if one is active,
-  // else running turn — so step-scoped agent loops anchor correctly.
-  const turn = findCurrentAgentScope(state);
+  // resolveAgentScope honours the daemon's explicit parentStepId
+  // (#485 follow-up) so a text delta routes to the right step even
+  // when activeNodeId / currentTextId / currentThinkingId belong to a
+  // previous step's iteration.
+  const { turn, override } = resolveAgentScope(state, params.parentStepId);
   if (!turn) return state;
 
   // If we're starting a new iteration's text without a fresh
   // stream.thinking event, mint a SYNTHETIC thinking node to anchor
-  // it. Two cases trigger this:
+  // it. Three cases trigger this:
   //   1. textIsOpen=false + thinkingSealed=true: previous iteration
   //      closed by a tool_use, next call started with text directly.
   //   2. textIsOpen=false + currentThinkingId=null: this is the very
@@ -779,6 +823,9 @@ function appendTextToCurrentTurn(
   //      thinking the text would land as a turn-direct child and
   //      addReActFlowEdges (which only iterates thinking siblings)
   //      would orphan it from the ReAct chain.
+  //   3. override=true: explicit parent step disagrees with the live
+  //      anchors. Force a fresh iteration thinking under the explicit
+  //      step so the new text doesn't extend a sibling-step's text.
   //
   // The synthetic thinking is created status=completed — the model
   // already finished thinking by the time we infer the boundary from
@@ -786,8 +833,9 @@ function appendTextToCurrentTurn(
   // so the layout chains identically.
   let workingState = state;
   if (
-    !state.textIsOpen &&
-    (state.thinkingSealed || state.currentThinkingId === null)
+    override ||
+    (!state.textIsOpen &&
+      (state.thinkingSealed || state.currentThinkingId === null))
   ) {
     workingState = mintIterationThinking(state, turn, '', 'completed').state;
   }
@@ -939,14 +987,19 @@ function appendThinkingToCurrentTurn(
   // current thinking node, so the next thinking delta starts a fresh one.
   // Parallel tool_use events from a single LLM response don't seal the
   // anchor between themselves (no thinking delta arrives between them), so
-  // they correctly attach to the same parent. findCurrentAgentScope
-  // returns the running step when one is active so each plan step's
-  // thinking lands under itself rather than on the enclosing turn.
-  const turn = findCurrentAgentScope(state);
+  // they correctly attach to the same parent.
+  //
+  // resolveAgentScope honours the daemon's explicit parentStepId
+  // (#485 follow-up) so a thinking delta routes to the right step even
+  // when activeNodeId is stale or the leftover currentThinkingId
+  // belongs to a previous step's iteration.
+  const { turn, override } = resolveAgentScope(state, params.parentStepId);
   if (!turn) return state;
 
   // Same iteration: append the delta to the existing thinking node.
-  if (state.currentThinkingId && !state.thinkingSealed) {
+  // Skip under override — the live thinking belongs to a different
+  // scope and must not absorb this iteration's delta.
+  if (!override && state.currentThinkingId && !state.thinkingSealed) {
     return {
       ...state,
       rootNodes: mapNode(state.rootNodes, state.currentThinkingId, (t) => ({

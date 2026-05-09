@@ -3091,6 +3091,255 @@ describe('addToolNode honours parentStepId from daemon (#485)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// parentStepId on stream.thinking / stream.text (#485 follow-up): the
+// daemon tags thinking + text deltas with the same composed step id it
+// already attaches to tool_use, so iteration anchors stay routed to the
+// right step even when activeNodeId or currentTextId / currentThinkingId
+// belong to a previous step's iteration.
+// ---------------------------------------------------------------------------
+
+describe('appendThinkingToCurrentTurn honours parentStepId (#485 follow-up)', () => {
+  function planWithStep1Thinking() {
+    // Step 1 emits thinking, then completes. currentThinkingId is left
+    // pointing at step 1's thinking node (sealed once the iteration
+    // ends, but still inside step 1's subtree).
+    return runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 2,
+        goal: 'g',
+        steps: [
+          { index: 1, name: 's1', description: '' },
+          { index: 2, name: 's2', description: '' },
+        ],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 2,
+        stepName: 's1',
+      }),
+      envelope('stream.thinking', { delta: 'step 1 reasoning' }),
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 50,
+        tokensUsed: 25,
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's2',
+        stepIndex: 2,
+        totalSteps: 2,
+        stepName: 's2',
+      }),
+    );
+  }
+
+  it('routes a thinking delta to the explicit step even when current anchor is from a prior step', () => {
+    let state = planWithStep1Thinking();
+    const step1Id = stepNodeId('plan-1', 1);
+    const step2Id = stepNodeId('plan-1', 2);
+    // Sanity: leftover thinking anchor lives under step 1.
+    function hasDescendant(node: ExecutionNode, id: string): boolean {
+      if (node.children.some((c) => c.id === id)) return true;
+      return node.children.some((c) => hasDescendant(c, id));
+    }
+    expect(state.currentThinkingId).not.toBeNull();
+    expect(hasDescendant(findById(state, step1Id), state.currentThinkingId!)).toBe(true);
+
+    state = runAll(
+      state,
+      envelope('stream.thinking', {
+        delta: 'step 2 reasoning',
+        parentStepId: step2Id,
+      }),
+    );
+
+    // Step 2's new thinking must land under step 2, not step 1.
+    const step2 = findById(state, step2Id);
+    const step2Thinking = step2.children.find((c) => c.type === 'thinking');
+    expect(step2Thinking).toBeDefined();
+    expect(step2Thinking?.text ?? '').toContain('step 2 reasoning');
+    // And step 1's content must not absorb the new delta.
+    const step1 = findById(state, step1Id);
+    const step1Thinking = step1.children.find((c) => c.type === 'thinking');
+    expect(step1Thinking?.text ?? '').not.toContain('step 2 reasoning');
+  });
+
+  it('continues the same-iteration delta when explicit and live anchors agree', () => {
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 1,
+        goal: 'g',
+        steps: [{ index: 1, name: 's1', description: '' }],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 's1',
+      }),
+      envelope('stream.thinking', {
+        delta: 'first chunk ',
+        parentStepId: stepNodeId('plan-1', 1),
+      }),
+      envelope('stream.thinking', {
+        delta: 'second chunk',
+        parentStepId: stepNodeId('plan-1', 1),
+      }),
+    );
+    const step = findById(state, stepNodeId('plan-1', 1));
+    const thinkingNodes = step.children.filter((c) => c.type === 'thinking');
+    // Both deltas land in the SAME thinking node (same iteration), not
+    // two separate nodes from spurious override-driven minting.
+    expect(thinkingNodes).toHaveLength(1);
+    expect(thinkingNodes[0]?.text ?? '').toBe('first chunk second chunk');
+  });
+});
+
+describe('appendTextToCurrentTurn honours parentStepId (#485 follow-up)', () => {
+  it('routes a text delta to the explicit step when activeNodeId / anchors are stale', () => {
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 2,
+        goal: 'g',
+        steps: [
+          { index: 1, name: 's1', description: '' },
+          { index: 2, name: 's2', description: '' },
+        ],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 2,
+        stepName: 's1',
+      }),
+      // Step 1 emits text → currentTextId points into step 1's subtree.
+      envelope('stream.text', { delta: 'step 1 result' }),
+      envelope('stream.plan_step_completed', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        stepName: 's1',
+        success: true,
+        durationMs: 50,
+        tokensUsed: 25,
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's2',
+        stepIndex: 2,
+        totalSteps: 2,
+        stepName: 's2',
+      }),
+    );
+
+    const step1Id = stepNodeId('plan-1', 1);
+    const step2Id = stepNodeId('plan-1', 2);
+
+    state = runAll(
+      state,
+      envelope('stream.text', {
+        delta: 'step 2 narration',
+        parentStepId: step2Id,
+      }),
+    );
+
+    function hasDescendantWithText(node: ExecutionNode, snippet: string): boolean {
+      if (node.children.some((c) => (c.text ?? '').includes(snippet))) return true;
+      return node.children.some((c) => hasDescendantWithText(c, snippet));
+    }
+    // Step 2's narration lands under step 2.
+    expect(hasDescendantWithText(findById(state, step2Id), 'step 2 narration')).toBe(true);
+    // Step 1's leftover text does NOT absorb step 2's delta.
+    expect(hasDescendantWithText(findById(state, step1Id), 'step 2 narration')).toBe(false);
+  });
+
+  it('falls back to the heuristic when parentStepId is missing (regression guard)', () => {
+    let state = runAll(
+      freshTree(),
+      envelope('stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'm',
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.turn_started', {
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        turnNumber: 1,
+        timestamp: new Date(2026, 0, 1).toISOString(),
+      }),
+      envelope('stream.plan_created', {
+        planId: 'plan-1',
+        stepCount: 1,
+        goal: 'g',
+        steps: [{ index: 1, name: 's1', description: '' }],
+      }),
+      envelope('stream.plan_step_started', {
+        planId: 'plan-1',
+        stepId: 's1',
+        stepIndex: 1,
+        totalSteps: 1,
+        stepName: 's1',
+      }),
+      envelope('stream.text', { delta: 'plain narration' }),
+    );
+
+    const step = findById(state, stepNodeId('plan-1', 1));
+    function hasDescendantWithText(node: ExecutionNode, snippet: string): boolean {
+      if (node.children.some((c) => (c.text ?? '').includes(snippet))) return true;
+      return node.children.some((c) => hasDescendantWithText(c, snippet));
+    }
+    expect(hasDescendantWithText(step, 'plain narration')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Step events arriving before plan_created — don't dangle activeNodeId
 // ---------------------------------------------------------------------------
 
