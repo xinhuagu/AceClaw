@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.1] - 2026-05-09
+
+### Bug Fixes
+
+- Converge step subtree on plan_step_completed (#485 PR 1/3) (#486)
+- Converge plan subtree on plan_completed/plan_escalated (#485 PR 2/3) (#489)
+
+### Features
+
+- Capability sealed type + ID record wrappers (#480 PR 1/3)
+- Provenance + CapabilityAware + WriteFileTool migration (#480 PR 2/3)
+- ParentStepId on stream.tool_use (#485 PR 3/3) (#488)
+- ParentStepId on stream.thinking + stream.text (#485 follow-up) (#490)
 ## [0.4.0] - 2026-05-03
 
 ### Bug Fixes
