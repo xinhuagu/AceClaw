@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.4.2] - 2026-05-10
+
+### Features
+
+- Runtime governance fills the dispatcher (#480 PR 3/3 + #457) (#491)
 ## [0.4.1] - 2026-05-09
 
 ### Bug Fixes
