@@ -3,6 +3,8 @@ package dev.aceclaw.tools;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.Tool;
+import dev.aceclaw.security.Capability;
+import dev.aceclaw.security.CapabilityAware;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
@@ -27,7 +29,7 @@ import java.util.List;
  * higher-quality results. Otherwise, falls back to DuckDuckGo Lite (free,
  * no API key required).
  */
-public final class WebSearchTool implements Tool {
+public final class WebSearchTool implements Tool, CapabilityAware {
 
     private static final Logger log = LoggerFactory.getLogger(WebSearchTool.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -288,4 +290,38 @@ public final class WebSearchTool implements Tool {
      * A single DuckDuckGo search result.
      */
     record DdgResult(String title, String url, String snippet) {}
+
+    /**
+     * #480 PR 3: structured {@link Capability.HttpFetch}. The capability
+     * surfaces both the actual upstream endpoint AND the actual HTTP
+     * method that {@link #execute(String)} will use:
+     *
+     * <ul>
+     *   <li>Brave Search ({@code apiKey} present): {@code GET BRAVE_SEARCH_URL}.</li>
+     *   <li>DuckDuckGo Lite fallback (no key): {@code POST DDG_LITE_URL} —
+     *       see {@code performDdgSearch}, which sends a form-encoded body.</li>
+     * </ul>
+     *
+     * <p>Hard-coding {@code "GET"} for both branches (the original v3 PR
+     * shape) silently misclassified every keyless invocation: an audit
+     * reader saw "GET" for a request that actually went out as "POST",
+     * and any future PolicyEngine rule that distinguishes verbs (e.g.
+     * "deny outbound POST to non-allowlisted hosts") would mis-classify
+     * the DDG path. The capability MUST mirror what the runtime does.
+     *
+     * <p>The {@code query} args field is policy-material but lives in the
+     * audit entry's prompt/description, not in the capability — keeping
+     * the variant payload minimal mirrors how {@link Capability.McpInvoke}
+     * omits args.
+     */
+    @Override
+    public Capability toCapability(JsonNode args) {
+        if (args == null || !args.has("query") || args.get("query").asText().isBlank()) {
+            throw new IllegalArgumentException("web_search requires a non-blank query");
+        }
+        boolean useBrave = apiKey != null && !apiKey.isBlank();
+        return new Capability.HttpFetch(
+                URI.create(useBrave ? BRAVE_SEARCH_URL : DDG_LITE_URL),
+                useBrave ? "GET" : "POST");
+    }
 }

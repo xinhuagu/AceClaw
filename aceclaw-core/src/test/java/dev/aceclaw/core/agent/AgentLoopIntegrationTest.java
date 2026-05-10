@@ -155,7 +155,7 @@ class AgentLoopIntegrationTest {
         var config = AgentLoopConfig.builder()
                 .sessionId("perm-session")
                 .eventBus(eventBus)
-                .permissionChecker((toolName, input) ->
+                .permissionChecker((toolName, input, sid) ->
                         ToolPermissionResult.denied("Not allowed"))
                 .build();
 
@@ -190,7 +190,7 @@ class AgentLoopIntegrationTest {
         var config = AgentLoopConfig.builder()
                 .sessionId("perm-ok")
                 .eventBus(eventBus)
-                .permissionChecker((toolName, input) -> ToolPermissionResult.ALLOWED)
+                .permissionChecker((toolName, input, sid) -> ToolPermissionResult.ALLOWED)
                 .build();
 
         var loop = new AgentLoop(llm, registry, "model", null, config);

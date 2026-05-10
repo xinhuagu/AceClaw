@@ -146,7 +146,7 @@ public final class PermissionManager {
                 log.debug("Permission auto-approved (session blanket): key={}, sessionId={}",
                         allowlistKey, sessionIdOrNull);
                 var decision = new PermissionDecision.Approved();
-                audit(allowlistKey, capability.risk(), sessionIdOrNull, decision, "session-blanket-approval");
+                audit(allowlistKey, capability, provenance, decision, "session-blanket-approval");
                 return decision;
             }
         }
@@ -158,47 +158,74 @@ public final class PermissionManager {
         log.debug("Permission check: key={}, level={}, sessionId={}, decision={}",
                 allowlistKey, capability.risk(), sessionIdOrNull,
                 decision.getClass().getSimpleName());
-        audit(allowlistKey, capability.risk(), sessionIdOrNull, decision, null);
+        audit(allowlistKey, capability, provenance, decision, null);
         return decision;
     }
 
     /**
-     * Writes one entry to the audit log if one is attached. Flattens
-     * the sealed {@link PermissionDecision} into the on-disk string
-     * form ({@code APPROVED} / {@code DENIED} / {@code NEEDS_APPROVAL})
-     * and chooses the {@code reason} field: caller-supplied note
-     * (for the session-blanket branch), the denial reason (for
-     * Denied), the prompt (for NeedsUserApproval), or null.
+     * Writes one v2 audit entry — structured {@link Capability} and full
+     * {@link Provenance} (#480 PR 3). Flattens the sealed
+     * {@link PermissionDecision} into the on-disk string form
+     * ({@code APPROVED} / {@code DENIED} / {@code NEEDS_APPROVAL}) and
+     * chooses the {@code reason} field: caller-supplied note (for the
+     * session-blanket branch), the denial reason (for Denied), the prompt
+     * (for NeedsUserApproval), or null.
      *
-     * <p>Audit shape is still v1 (flat fields) in PR 2 — PR 3 will swap
-     * in a structured form that carries the {@link Capability} and
-     * {@link Provenance} directly. For now we project them down to the
-     * v1 fields {@code (toolName, level)}.
+     * <p>The on-disk record carries:
+     *
+     * <ul>
+     *   <li>{@code allowlistKey} → {@code toolName} field — keeps v1 query
+     *       tooling that filters by tool name working unchanged across the
+     *       schema bump (e.g. "show me all bash decisions" still works).</li>
+     *   <li>{@code capability.risk()} → {@code level} field — same reason.
+     *       For migrated tools this matches the variant's structural risk
+     *       (and reflects {@code BashExec}'s self-escalation to
+     *       {@code DANGEROUS}); for legacy callers (the
+     *       {@link #check(PermissionRequest, String)} shim wraps as
+     *       {@link Capability.LegacyToolUse}) it carries the
+     *       declared level.</li>
+     *   <li>{@code capability} and {@code provenance} → typed JSON nested
+     *       objects, so PolicyEngine and the dashboard timeline see paths,
+     *       URLs, plan-step IDs, etc. directly without having to parse the
+     *       human prompt.</li>
+     * </ul>
      */
     private void audit(
             String allowlistKey,
-            PermissionLevel risk,
-            String sessionId,
+            Capability capability,
+            Provenance provenance,
             PermissionDecision decision,
             String approvalNote) {
         if (auditLog == null) return;
-        String kind;
-        String reason;
-        switch (decision) {
-            case PermissionDecision.Approved _ -> {
-                kind = "APPROVED";
-                reason = approvalNote;
+        // Audit is best-effort by contract — a degraded log must not abort
+        // the agent. CapabilityAuditLog.appendEntry already swallows
+        // IOException internally, but the v2 path's signablePayload(...)
+        // can surface a serialisation IllegalStateException through here,
+        // and any other unchecked exception would propagate out of the
+        // permission check. Wrap the whole branch so audit failures
+        // produce a warning, not a turn-killing error.
+        try {
+            String kind;
+            String reason;
+            switch (decision) {
+                case PermissionDecision.Approved _ -> {
+                    kind = "APPROVED";
+                    reason = approvalNote;
+                }
+                case PermissionDecision.Denied d -> {
+                    kind = "DENIED";
+                    reason = d.reason();
+                }
+                case PermissionDecision.NeedsUserApproval n -> {
+                    kind = "NEEDS_APPROVAL";
+                    reason = n.prompt();
+                }
             }
-            case PermissionDecision.Denied d -> {
-                kind = "DENIED";
-                reason = d.reason();
-            }
-            case PermissionDecision.NeedsUserApproval n -> {
-                kind = "NEEDS_APPROVAL";
-                reason = n.prompt();
-            }
+            auditLog.record(Instant.now(), allowlistKey, capability, provenance, kind, reason);
+        } catch (RuntimeException auditFailure) {
+            log.warn("Audit log write failed for tool={}, level={}: {}",
+                    allowlistKey, capability.risk(), auditFailure.getMessage());
         }
-        auditLog.record(Instant.now(), sessionId, allowlistKey, risk, kind, reason);
     }
 
     /**

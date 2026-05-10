@@ -33,6 +33,190 @@ import static org.assertj.core.api.Assertions.assertThat;
 final class CapabilityAuditLogTest {
 
     @Test
+    void v2EntryRoundtripsCapabilityAndProvenance(@TempDir Path tmp) throws IOException {
+        // The defining test for #480 PR 3's audit shift: a v2 record must
+        // serialize the typed Capability + Provenance, verify on read, and
+        // come back as the same variant with the same fields. If this
+        // fails the on-disk format diverged from what the codecs expect.
+        //
+        // Path is built with {@code tmp.resolve(...)} (not a hardcoded
+        // {@code "/tmp/x"}) because Jackson's default {@link Path}
+        // (de)serializer round-trips through {@code Path.toUri() ->
+        // Paths.get(URI)}, which on Windows resolves a leading-slash path
+        // against the working drive (so {@code "/tmp/x"} becomes
+        // {@code D:\tmp\x} after the round trip and a string-shape
+        // assertion fails). Using a real {@code @TempDir} path keeps the
+        // identity stable on every host OS — {@link Path#equals} compares
+        // normalised platform-native form, which the round trip preserves.
+        var auditLog = CapabilityAuditLog.create(tmp);
+        var ts = Instant.parse("2026-05-08T09:30:00Z");
+        var targetPath = tmp.resolve("subdir").resolve("payload.txt");
+        var cap = new dev.aceclaw.security.Capability.FileWrite(
+                targetPath,
+                dev.aceclaw.security.WriteMode.OVERWRITE);
+        var prov = dev.aceclaw.security.Provenance.forSession(
+                new dev.aceclaw.security.ids.SessionId("sess-A"));
+
+        auditLog.record(ts, "write_file", cap, prov, "APPROVED", null);
+
+        var entries = auditLog.readVerified();
+        assertThat(entries).hasSize(1);
+        var e = entries.getFirst();
+
+        // Denormalised v1 fields populated for query-tool compatibility:
+        // toolName carries the dispatcher's allowlist key, level mirrors
+        // the capability's structural risk class.
+        assertThat(e.toolName()).isEqualTo("write_file");
+        assertThat(e.level())
+                .as("v2 entry's flat level field must match the capability's risk")
+                .isEqualTo(dev.aceclaw.security.PermissionLevel.WRITE);
+        assertThat(e.sessionId()).isEqualTo("sess-A");
+        assertThat(e.schemaVersion()).isEqualTo(CapabilityAuditEntry.SCHEMA_V2);
+
+        // Structured payload survives the round trip.
+        assertThat(e.capability())
+                .isInstanceOf(dev.aceclaw.security.Capability.FileWrite.class);
+        var fw = (dev.aceclaw.security.Capability.FileWrite) e.capability();
+        assertThat(fw.path())
+                .as("Path round-trips identically (Path.equals, not toString)")
+                .isEqualTo(targetPath);
+        assertThat(fw.mode()).isEqualTo(dev.aceclaw.security.WriteMode.OVERWRITE);
+        assertThat(e.provenance().sessionId().get().value()).isEqualTo("sess-A");
+    }
+
+    @Test
+    void v2FileSearchRoundtripsWithoutKindCollision(@TempDir Path tmp) throws IOException {
+        // Regression for the Jackson type-discriminator collision (Codex
+        // P2 on #491). FileSearch.kind (the SearchKind enum) used to
+        // share JSON property name "kind" with the @JsonTypeInfo
+        // discriminator on Capability — duplicate keys collapsed
+        // last-wins on read, the discriminator became "GLOB"/"GREP"/"LIST"
+        // instead of "FileSearch", and every glob/grep/list_directory v2
+        // entry got dropped from readVerified() with no audit trail.
+        // The fix: discriminator is now property "@type", which cannot
+        // collide because "@" is not a legal Java identifier prefix.
+        var auditLog = CapabilityAuditLog.create(tmp);
+        for (var kind : dev.aceclaw.security.SearchKind.values()) {
+            var cap = new dev.aceclaw.security.Capability.FileSearch(
+                    tmp.resolve("project"), "**/*.java", kind);
+            var prov = dev.aceclaw.security.Provenance.forSession(
+                    new dev.aceclaw.security.ids.SessionId("sess-fs"));
+            auditLog.record(Instant.now(), kind == dev.aceclaw.security.SearchKind.GLOB
+                    ? "glob" : kind == dev.aceclaw.security.SearchKind.GREP ? "grep" : "list_directory",
+                    cap, prov, "APPROVED", null);
+        }
+
+        var entries = auditLog.readVerified();
+        assertThat(entries)
+                .as("all 3 FileSearch variants must verify after the @type discriminator rename — "
+                        + "regression guard for Codex P2 (kind/SearchKind collision)")
+                .hasSize(dev.aceclaw.security.SearchKind.values().length);
+
+        // Each entry must round-trip into the right SearchKind, not lose
+        // the field to the type-discriminator overwrite.
+        for (var entry : entries) {
+            assertThat(entry.capability())
+                    .isInstanceOf(dev.aceclaw.security.Capability.FileSearch.class);
+            var fs = (dev.aceclaw.security.Capability.FileSearch) entry.capability();
+            assertThat(fs.kind()).isNotNull();  // would be null pre-fix (collapsed key)
+        }
+    }
+
+    @Test
+    void v1EntriesContinueToVerifyAfterSchemaBump(@TempDir Path tmp) throws IOException {
+        // Migration safety: v1 entries written under PR 2 must continue to
+        // verify after PR 3 bumps the schema. The v1 signablePayload format
+        // is preserved bit-for-bit; this test pins that.
+        var auditLog = CapabilityAuditLog.create(tmp);
+        auditLog.record(Instant.now(), "sess-X", "bash",
+                dev.aceclaw.security.PermissionLevel.EXECUTE, "APPROVED", null);
+
+        var entries = auditLog.readVerified();
+        assertThat(entries).hasSize(1);
+        var e = entries.getFirst();
+        assertThat(e.schemaVersion()).isEqualTo(CapabilityAuditEntry.SCHEMA_V1);
+        assertThat(e.capability()).isNull();
+        assertThat(e.provenance()).isNull();
+    }
+
+    @Test
+    void mixedV1AndV2EntriesInSameFileBothVerify(@TempDir Path tmp) throws IOException {
+        // Real-world deployment: an existing audit file has v1 entries
+        // already. After upgrading to PR 3, new entries are v2. The same
+        // file must continue to read cleanly with all entries verifying
+        // under the same key — proving each line's HMAC is computed
+        // against its own schema, not a single global shape.
+        var auditLog = CapabilityAuditLog.create(tmp);
+
+        // Three v1 lines (legacy 6-arg overload) interleaved with two v2.
+        auditLog.record(Instant.now(), "s1", "read_file",
+                dev.aceclaw.security.PermissionLevel.READ, "APPROVED", null);
+        auditLog.record(Instant.now(), "write_file",
+                new dev.aceclaw.security.Capability.FileWrite(
+                        java.nio.file.Path.of("/tmp/a"),
+                        dev.aceclaw.security.WriteMode.CREATE_NEW),
+                dev.aceclaw.security.Provenance.forSession(
+                        new dev.aceclaw.security.ids.SessionId("s2")),
+                "APPROVED", null);
+        auditLog.record(Instant.now(), "s3", "bash",
+                dev.aceclaw.security.PermissionLevel.EXECUTE, "DENIED",
+                "blocked by policy");
+        auditLog.record(Instant.now(), "bash",
+                new dev.aceclaw.security.Capability.BashExec(
+                        "rm -rf /tmp/x", java.nio.file.Path.of("/tmp")),
+                dev.aceclaw.security.Provenance.forSession(
+                        new dev.aceclaw.security.ids.SessionId("s4")),
+                "NEEDS_APPROVAL", "destructive command");
+        auditLog.record(Instant.now(), null, "internal",
+                dev.aceclaw.security.PermissionLevel.READ, "APPROVED", null);
+
+        var entries = auditLog.readVerified();
+        assertThat(entries).hasSize(5);
+        assertThat(entries.stream().map(CapabilityAuditEntry::schemaVersion).toList())
+                .containsExactly(
+                        CapabilityAuditEntry.SCHEMA_V1, CapabilityAuditEntry.SCHEMA_V2,
+                        CapabilityAuditEntry.SCHEMA_V1, CapabilityAuditEntry.SCHEMA_V2,
+                        CapabilityAuditEntry.SCHEMA_V1);
+
+        // The v2 BashExec entry must have escalated to DANGEROUS via the
+        // variant's self-classification — pinning that the on-disk
+        // {@code level} field reflects the capability's actual risk class
+        // after escalation, not the {@code EXECUTE} default.
+        var bashEntry = entries.get(3);
+        assertThat(bashEntry.level())
+                .as("destructive bash must be recorded as DANGEROUS in audit, not EXECUTE")
+                .isEqualTo(dev.aceclaw.security.PermissionLevel.DANGEROUS);
+    }
+
+    @Test
+    void v2EntryHmacChangesIfCapabilityFieldsChange(@TempDir Path tmp) throws IOException {
+        // Tamper-evidence guard: editing the structured payload (e.g.
+        // changing /tmp/x → /etc/passwd in the on-disk JSON) must invalidate
+        // the signature. The v2 signablePayload includes a canonical-
+        // serialised form of the capability, so any field change flips it.
+        var auditLog = CapabilityAuditLog.create(tmp);
+        var prov = dev.aceclaw.security.Provenance.forSession(
+                new dev.aceclaw.security.ids.SessionId("s"));
+        auditLog.record(Instant.now(), "write_file",
+                new dev.aceclaw.security.Capability.FileWrite(
+                        java.nio.file.Path.of("/tmp/x"),
+                        dev.aceclaw.security.WriteMode.OVERWRITE),
+                prov, "APPROVED", null);
+
+        // Hand-edit the path on disk — same signature, different capability.
+        var contents = java.nio.file.Files.readString(auditLog.auditFile());
+        var tampered = contents.replace("/tmp/x", "/etc/passwd");
+        assertThat(tampered).isNotEqualTo(contents);
+        java.nio.file.Files.writeString(auditLog.auditFile(), tampered);
+
+        // Read should drop the tampered line — the audit is tamper-evident.
+        assertThat(auditLog.readVerified())
+                .as("path-tampered v2 entry must fail signature verification")
+                .isEmpty();
+    }
+
+
+    @Test
     void recordAndReadRoundtripPreservesAllFields(@TempDir Path tmp) throws IOException {
         var auditLog = CapabilityAuditLog.create(tmp);
 

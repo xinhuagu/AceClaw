@@ -9,6 +9,7 @@ import dev.aceclaw.security.PermissionLevel;
 import dev.aceclaw.security.PermissionManager;
 import dev.aceclaw.security.PermissionRequest;
 import dev.aceclaw.security.Provenance;
+import dev.aceclaw.security.ids.SessionId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -77,7 +78,37 @@ final class ToolPermissionRouter {
             PermissionLevel fallbackLevel,
             PermissionManager permissionManager,
             ObjectMapper mapper) {
+        // Legacy entry point — preserved for tests and any caller that does
+        // not yet have a richer Provenance to thread. Builds the minimum
+        // Provenance from sessionId only and delegates to the structured form.
+        return check(delegate, inputJson, Provenance.fromNullableSessionId(sessionId),
+                description, fallbackLevel, permissionManager, mapper);
+    }
+
+    /**
+     * Structured-Provenance entry point introduced by #480 PR 3. Caller is
+     * responsible for building the {@link Provenance} with whatever fields
+     * it has in scope — typically {@link Provenance#rootPrompt()} from the
+     * {@code agent.prompt} entry point and {@link Provenance#planStepId()}
+     * from the planner's per-step context. This is what makes
+     * {@link Provenance}'s optional fields stop being empty.
+     *
+     * <p>The legacy 7-arg overload above remains, building the minimal
+     * Provenance from sessionId alone, so existing callers and tests stay
+     * compiling unchanged.
+     *
+     * @param provenance the full provenance chain context for this check
+     */
+    static PermissionDecision check(
+            Tool delegate,
+            String inputJson,
+            Provenance provenance,
+            String description,
+            PermissionLevel fallbackLevel,
+            PermissionManager permissionManager,
+            ObjectMapper mapper) {
         Objects.requireNonNull(delegate, "delegate");
+        Objects.requireNonNull(provenance, "provenance");
         Objects.requireNonNull(description, "description");
         Objects.requireNonNull(fallbackLevel, "fallbackLevel");
         Objects.requireNonNull(permissionManager, "permissionManager");
@@ -87,6 +118,8 @@ final class ToolPermissionRouter {
         // missing/invalid arguments and the dispatcher previously absorbed
         // them in the try-catch below. Hard-failing here would convert a
         // recoverable flow into an unhandled crash. (Codex review on #482.)
+
+        String sessionId = provenance.sessionId().map(SessionId::value).orElse(null);
 
         if (!(delegate instanceof CapabilityAware capAware)) {
             return checkLegacy(delegate, description, fallbackLevel, sessionId, permissionManager);
@@ -108,7 +141,6 @@ final class ToolPermissionRouter {
                     "CapabilityAware tool " + delegate.name()
                             + " returned null capability (contract violation)");
         }
-        var provenance = Provenance.fromNullableSessionId(sessionId);
         return permissionManager.check(capability, provenance, delegate.name(), description);
     }
 

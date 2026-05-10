@@ -42,7 +42,12 @@ public final class CronPermissionChecker implements ToolPermissionChecker {
     }
 
     @Override
-    public ToolPermissionResult check(String toolName, String inputJson) {
+    public ToolPermissionResult check(String toolName, String inputJson, String sessionId) {
+        // Cron execution has no user-facing session — sessionId is null
+        // and ignored. Cron's allow-list is per-job, not per-session, and
+        // the per-session leak that motivated #457 doesn't apply here
+        // (cron jobs are not interactive and never request session
+        // approval through the daemon's blanket-allow path).
         if (READ_ONLY_TOOLS.contains(toolName) || allowedTools.contains(toolName)) {
             return ToolPermissionResult.ALLOWED;
         }

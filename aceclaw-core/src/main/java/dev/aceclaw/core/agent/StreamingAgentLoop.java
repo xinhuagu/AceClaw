@@ -799,7 +799,11 @@ public final class StreamingAgentLoop {
         // Check permission before execution
         if (config.permissionChecker() != null) {
             try {
-                var permResult = config.permissionChecker().check(toolUse.name(), toolUse.inputJson());
+                // #457: pass sessionId so sub-agent allow-list scoping is
+                // per-session — see AgentLoop comment for the full leak
+                // story this prevents.
+                var permResult = config.permissionChecker().check(
+                        toolUse.name(), toolUse.inputJson(), config.sessionId());
                 if (permResult == null || !permResult.allowed()) {
                     String reason = permResult != null ? permResult.reason() : "permission check returned null";
                     log.info("Tool {} denied: {}", toolUse.name(), reason);

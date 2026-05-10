@@ -105,11 +105,19 @@ public final class SubAgentRunner {
      * @throws LlmException if the LLM call fails
      */
     public String run(SubAgentConfig config, String prompt, StreamEventHandler handler) throws LlmException {
-        return run(config, prompt, handler, null);
+        return run(config, prompt, handler, null, null);
     }
 
     /**
-     * Runs a sub-agent with cancellation support.
+     * Runs a sub-agent with cancellation support, no parent session bound.
+     *
+     * <p>Pre-#457 entry point — kept so existing callers and tests stay
+     * compiling. Without a parent sessionId the sub-agent's permission
+     * check sees {@code config.sessionId() == null}, which means
+     * {@link SubAgentPermissionChecker} cannot consult the per-session
+     * allow-list and falls back to deny for all non-read-only tools.
+     * Production callers reaching tools the user has approved should use
+     * {@link #run(SubAgentConfig, String, StreamEventHandler, CancellationToken, String)}.
      *
      * @param config            the sub-agent type configuration
      * @param prompt            the task prompt for the sub-agent
@@ -120,35 +128,66 @@ public final class SubAgentRunner {
      */
     public String run(SubAgentConfig config, String prompt, StreamEventHandler handler,
                       CancellationToken cancellationToken) throws LlmException {
-        return runWithTranscript(config, prompt, handler, cancellationToken).text();
+        return run(config, prompt, handler, cancellationToken, null);
+    }
+
+    /**
+     * Runs a sub-agent with cancellation support and the parent agent's
+     * sessionId threaded into the loop config (#457).
+     *
+     * <p>The parent's sessionId becomes {@code AgentLoopConfig.sessionId()},
+     * which {@link StreamingAgentLoop} passes to
+     * {@link ToolPermissionChecker#check(String, String, String)} so
+     * {@link SubAgentPermissionChecker} can look up the allow-list under
+     * the SAME session id the user approved against. Without this,
+     * approvals never apply to sub-agents — every non-read-only tool
+     * silently denies.
+     *
+     * @param parentSessionId the calling agent's session id, or {@code null}
+     *                        for daemon-internal callers (cron, boot
+     *                        scripts) that have no session in scope
+     */
+    public String run(SubAgentConfig config, String prompt, StreamEventHandler handler,
+                      CancellationToken cancellationToken, String parentSessionId) throws LlmException {
+        return runWithTranscript(config, prompt, handler, cancellationToken, parentSessionId).text();
     }
 
     /**
      * Runs a sub-agent with cancellation support, returning the full result
-     * including transcript and turn details.
-     *
-     * @param config            the sub-agent type configuration
-     * @param prompt            the task prompt for the sub-agent
-     * @param handler           optional stream event handler (may be null for silent execution)
-     * @param cancellationToken optional cancellation token from parent (may be null)
-     * @return the full sub-agent result with text, turn, and transcript
-     * @throws LlmException if the LLM call fails
+     * including transcript and turn details. Pre-#457 form.
      */
     public SubAgentResult runWithTranscript(SubAgentConfig config, String prompt,
                                             StreamEventHandler handler,
                                             CancellationToken cancellationToken) throws LlmException {
-        return runWithTranscript(config, prompt, handler, cancellationToken,
-                UUID.randomUUID().toString());
+        return runWithTranscript(config, prompt, handler, cancellationToken, null);
     }
 
     /**
-     * Internal: runs a sub-agent with a pre-assigned task ID.
-     * Used by {@link #runInBackground} to share the same ID across
-     * BackgroundTask, SubAgentResult, and transcript.
+     * Runs a sub-agent and returns the full result, threading the parent's
+     * {@code parentSessionId} into the loop config (#457). See
+     * {@link #run(SubAgentConfig, String, StreamEventHandler, CancellationToken, String)}
+     * for the why.
+     */
+    public SubAgentResult runWithTranscript(SubAgentConfig config, String prompt,
+                                            StreamEventHandler handler,
+                                            CancellationToken cancellationToken,
+                                            String parentSessionId) throws LlmException {
+        return runWithTranscript(config, prompt, handler, cancellationToken,
+                parentSessionId, UUID.randomUUID().toString());
+    }
+
+    /**
+     * Internal: runs a sub-agent with a pre-assigned task ID and the
+     * parent's sessionId. Used by {@link #runInBackground} to share the
+     * same task ID across BackgroundTask, SubAgentResult, and transcript;
+     * {@code parentSessionId} threads through to {@link AgentLoopConfig}
+     * so the per-session permission check (#457) can find the right
+     * allow-list.
      */
     private SubAgentResult runWithTranscript(SubAgentConfig config, String prompt,
                                              StreamEventHandler handler,
                                              CancellationToken cancellationToken,
+                                             String parentSessionId,
                                              String taskId) throws LlmException {
         Instant startedAt = Instant.now();
 
@@ -156,8 +195,9 @@ public final class SubAgentRunner {
         var filteredRegistry = createFilteredRegistry(config);
         String systemPrompt = buildSystemPrompt(config);
 
-        log.info("Starting sub-agent '{}' [{}]: model={}, tools={}, maxTurns={}",
-                config.name(), taskId, resolvedModel, filteredRegistry.size(), config.maxTurns());
+        log.info("Starting sub-agent '{}' [{}]: model={}, tools={}, maxTurns={}, parentSessionId={}",
+                config.name(), taskId, resolvedModel, filteredRegistry.size(), config.maxTurns(),
+                parentSessionId);
 
         // Build loop config with optional permission checker
         var loopConfigBuilder = AgentLoopConfig.builder();
@@ -165,6 +205,14 @@ public final class SubAgentRunner {
             loopConfigBuilder.permissionChecker(permissionChecker);
         }
         loopConfigBuilder.maxIterations(config.maxTurns());
+        // #457: thread parent sessionId so SubAgentPermissionChecker can
+        // see the right allow-list. {@code null} means "no session in
+        // scope" — fail-closed for non-read-only tools, which is correct
+        // for daemon-internal callers (cron, boot) but wrong for the
+        // task-tool path (TaskTool.forRequest must inject parent's id).
+        if (parentSessionId != null) {
+            loopConfigBuilder.sessionId(parentSessionId);
+        }
         var loopConfig = loopConfigBuilder.build();
 
         // Sub-agents use no compaction (short-lived, fresh context)
@@ -224,6 +272,19 @@ public final class SubAgentRunner {
      */
     public BackgroundTask runInBackground(SubAgentConfig config, String prompt,
                                           CancellationToken cancellationToken) {
+        return runInBackground(config, prompt, cancellationToken, null);
+    }
+
+    /**
+     * Launches a sub-agent in the background, threading the parent's
+     * sessionId into the loop config (#457). The background task's
+     * permission check uses {@code parentSessionId} for the allow-list
+     * lookup, so a tool the user approved in the parent session is
+     * also approved when the background task uses it.
+     */
+    public BackgroundTask runInBackground(SubAgentConfig config, String prompt,
+                                          CancellationToken cancellationToken,
+                                          String parentSessionId) {
         cleanupCompletedTasks();
 
         String taskId = UUID.randomUUID().toString();
@@ -232,7 +293,8 @@ public final class SubAgentRunner {
         var factory = Thread.ofVirtual().name("bg-task-" + taskId.substring(0, 8)).factory();
         var future = CompletableFuture.supplyAsync(() -> {
             try {
-                return runWithTranscript(config, prompt, null, cancellationToken, taskId);
+                return runWithTranscript(config, prompt, null, cancellationToken,
+                        parentSessionId, taskId);
             } catch (Exception e) {
                 throw new java.util.concurrent.CompletionException(e);
             }
@@ -241,8 +303,8 @@ public final class SubAgentRunner {
         var task = new BackgroundTask(taskId, config.name(), prompt, future, startedAt);
         backgroundTasks.put(taskId, task);
 
-        log.info("Launched background task [{}]: agent={}, prompt length={}",
-                taskId, config.name(), prompt.length());
+        log.info("Launched background task [{}]: agent={}, prompt length={}, parentSessionId={}",
+                taskId, config.name(), prompt.length(), parentSessionId);
 
         return task;
     }

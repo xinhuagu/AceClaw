@@ -11,6 +11,8 @@ import dev.aceclaw.core.agent.SubAgentConfig;
 import dev.aceclaw.core.agent.SubAgentRunner;
 import dev.aceclaw.core.agent.Tool;
 import dev.aceclaw.core.llm.StreamEventHandler;
+import dev.aceclaw.security.Capability;
+import dev.aceclaw.security.CapabilityAware;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -27,7 +29,7 @@ import java.util.List;
  *       a sub-agent that runs in isolation via {@link SubAgentRunner}</li>
  * </ul>
  */
-public final class SkillTool implements Tool, CancellationAware {
+public final class SkillTool implements Tool, CapabilityAware, CancellationAware {
 
     private static final Logger log = LoggerFactory.getLogger(SkillTool.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -191,7 +193,16 @@ public final class SkillTool implements Tool, CancellationAware {
             handler.onSubAgentStart("skill:" + skillName, prompt);
         }
         try {
-            var result = subAgentRunner.run(subConfig, prompt, handler, cancellationToken);
+            // #457: thread currentSessionId so the forked skill's sub-agent
+            // sees the parent session's allow-list. SkillTool already
+            // tracks currentSessionId via forRequest(...) — we just have to
+            // forward it through the new 5-arg run() overload here.
+            // Without this, every non-read-only tool the forked skill
+            // tries to use gets fail-closed denied, mirroring the original
+            // P1 that motivated #457 — just in a different code path.
+            // (Codex re-review on #491, commit 03472f43b0.)
+            var result = subAgentRunner.run(subConfig, prompt, handler,
+                    cancellationToken, currentSessionId);
             if (result.isEmpty()) {
                 return new ToolResult("Skill '" + skillName + "' completed but produced no output.", false);
             }
@@ -204,5 +215,20 @@ public final class SkillTool implements Tool, CancellationAware {
                 handler.onSubAgentEnd("skill:" + skillName);
             }
         }
+    }
+
+    /**
+     * #480 PR 3: structured {@link Capability.SkillInvoke}. Modelled
+     * separately from {@link Capability.McpInvoke} because skills are
+     * versioned, in-process, first-party code units while MCP is an
+     * out-of-process server — a policy that disables third-party MCP
+     * servers should not also disable first-party skills, and vice versa.
+     */
+    @Override
+    public Capability toCapability(JsonNode args) {
+        if (args == null || !args.has("name") || args.get("name").asText().isBlank()) {
+            throw new IllegalArgumentException("skill requires a non-blank name");
+        }
+        return new Capability.SkillInvoke(args.get("name").asText());
     }
 }

@@ -3,6 +3,8 @@ package dev.aceclaw.tools;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.Tool;
+import dev.aceclaw.security.Capability;
+import dev.aceclaw.security.CapabilityAware;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -18,7 +20,7 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>macOS only. Supports optional region capture and text extraction.
  */
-public final class ScreenCaptureTool implements Tool {
+public final class ScreenCaptureTool implements Tool, CapabilityAware {
 
     private static final Logger log = LoggerFactory.getLogger(ScreenCaptureTool.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -241,5 +243,35 @@ public final class ScreenCaptureTool implements Tool {
             log.warn("OCR failed: {}", e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * #480 PR 3: structured {@link Capability.ScreenCapture}. Reason is
+     * derived from the args ({@code region} for partial captures, OCR
+     * marker for text-extraction captures) so the audit log and prompt
+     * tell the operator at a glance whether the agent took a full-screen
+     * snapshot for OCR or a small region — surface for downstream privacy
+     * review without inflating the variant payload.
+     */
+    @Override
+    public Capability toCapability(JsonNode args) {
+        // Default to "full screen" so the audit/prompt always says
+        // something concrete — without this, a no-args invocation
+        // produced Capability.ScreenCapture("") which renders as
+        // bare "screen capture" with no detail. CodeRabbit review on #491.
+        boolean hasRegion = args != null && args.has("region") && !args.get("region").isNull()
+                && !args.get("region").asText().isBlank();
+        boolean wantsOcr = args != null && args.has("ocr") && args.get("ocr").asBoolean(false);
+
+        var reason = new StringBuilder();
+        if (hasRegion) {
+            reason.append("region ").append(args.get("region").asText());
+        } else {
+            reason.append("full screen");
+        }
+        if (wantsOcr) {
+            reason.append(", ocr");
+        }
+        return new Capability.ScreenCapture(reason.toString());
     }
 }

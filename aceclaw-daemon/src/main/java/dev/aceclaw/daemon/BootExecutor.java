@@ -225,7 +225,10 @@ public final class BootExecutor {
     static final class BootPermissionChecker implements ToolPermissionChecker {
 
         @Override
-        public ToolPermissionResult check(String toolName, String inputJson) {
+        public ToolPermissionResult check(String toolName, String inputJson, String sessionId) {
+            // Boot execution has no user session — sessionId is null and
+            // intentionally ignored. The allow-list is static (read-only
+            // tools only) so per-session scoping is not relevant here.
             if (BOOT_ALLOWED_TOOLS.contains(toolName)) {
                 return ToolPermissionResult.ALLOWED;
             }

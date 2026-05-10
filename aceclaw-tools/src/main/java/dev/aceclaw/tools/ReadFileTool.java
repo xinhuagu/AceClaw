@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.aceclaw.core.agent.Tool;
+import dev.aceclaw.security.Capability;
+import dev.aceclaw.security.CapabilityAware;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,7 +30,7 @@ import java.util.Set;
  * <p>Integrates with {@link WriteFileTool} to track which files have been read,
  * enforcing the read-before-write safety requirement.
  */
-public final class ReadFileTool implements Tool {
+public final class ReadFileTool implements Tool, CapabilityAware {
 
     private static final Logger log = LoggerFactory.getLogger(ReadFileTool.class);
 
@@ -305,5 +307,23 @@ public final class ReadFileTool implements Tool {
             return input.get(field).asText();
         }
         return defaultValue;
+    }
+
+    /**
+     * #480 PR 3: structured {@link Capability.FileRead}. Path resolution
+     * matches {@link #execute(String)} so policy and execution see the same
+     * absolute path; otherwise a "deny /etc reads" rule could approve the
+     * relative-path form and refuse only the absolute form, opening a trivial
+     * bypass. Offset/limit args do NOT change the capability — reading bytes
+     * 100-200 of a file is still a {@code FileRead}; range-level policy is
+     * out of scope for the structural variant.
+     */
+    @Override
+    public Capability toCapability(JsonNode args) {
+        if (args == null || !args.has("file_path") || args.get("file_path").asText().isBlank()) {
+            throw new IllegalArgumentException("read_file requires a non-blank file_path");
+        }
+        return new Capability.FileRead(
+                PathResolver.resolve(args.get("file_path").asText(), workingDir));
     }
 }

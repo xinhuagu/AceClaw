@@ -3,6 +3,9 @@ package dev.aceclaw.tools;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.Tool;
+import dev.aceclaw.security.Capability;
+import dev.aceclaw.security.CapabilityAware;
+import dev.aceclaw.security.SearchKind;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -19,7 +22,7 @@ import java.util.List;
  * <p>Uses {@link java.nio.file.FileSystem#getPathMatcher(String)} with glob
  * syntax. Returns matching file paths sorted by modification time (most recent first).
  */
-public final class GlobSearchTool implements Tool {
+public final class GlobSearchTool implements Tool, CapabilityAware {
 
     private static final Logger log = LoggerFactory.getLogger(GlobSearchTool.class);
 
@@ -161,5 +164,20 @@ public final class GlobSearchTool implements Tool {
             return PathResolver.resolve(input.get("path").asText(), workingDir);
         }
         return workingDir;
+    }
+
+    /**
+     * #480 PR 3: structured {@link Capability.FileSearch} with
+     * {@link SearchKind#GLOB}. Reuses {@link #resolveSearchDir(JsonNode)}
+     * so the policy and execution see the same root path; otherwise a
+     * "deny glob in /etc" rule could approve a relative form and refuse
+     * only the absolute form.
+     */
+    @Override
+    public Capability toCapability(JsonNode args) {
+        if (args == null || !args.has("pattern") || args.get("pattern").asText().isBlank()) {
+            throw new IllegalArgumentException("glob requires a non-blank pattern");
+        }
+        return new Capability.FileSearch(resolveSearchDir(args), args.get("pattern").asText(), SearchKind.GLOB);
     }
 }

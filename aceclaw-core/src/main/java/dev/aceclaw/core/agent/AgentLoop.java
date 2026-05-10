@@ -253,7 +253,13 @@ public final class AgentLoop {
         // Check permission before execution
         if (config.permissionChecker() != null) {
             try {
-                var permResult = config.permissionChecker().check(toolUse.name(), toolUse.inputJson());
+                // #457: pass sessionId so sub-agent allow-list scoping is
+                // per-session — pre-fix this passed only (toolName, inputJson)
+                // and the SubAgentPermissionChecker fell back to a daemon-
+                // wide "any session approved this tool?" lookup that leaked
+                // approvals across workspaces.
+                var permResult = config.permissionChecker().check(
+                        toolUse.name(), toolUse.inputJson(), config.sessionId());
                 if (permResult == null || !permResult.allowed()) {
                     String reason = permResult != null ? permResult.reason() : "permission check returned null";
                     log.info("Tool {} denied: {}", toolUse.name(), reason);

@@ -3,6 +3,9 @@ package dev.aceclaw.tools;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.Tool;
+import dev.aceclaw.security.Capability;
+import dev.aceclaw.security.CapabilityAware;
+import dev.aceclaw.security.SearchKind;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -22,7 +25,7 @@ import java.util.regex.PatternSyntaxException;
  * <p>Walks the file tree and searches each text file for matching lines.
  * Supports optional glob-based file filtering and context lines.
  */
-public final class GrepSearchTool implements Tool {
+public final class GrepSearchTool implements Tool, CapabilityAware {
 
     private static final Logger log = LoggerFactory.getLogger(GrepSearchTool.class);
 
@@ -301,4 +304,20 @@ public final class GrepSearchTool implements Tool {
     }
 
     private record MatchResult(Path file, int lineNumber, String formattedMatch) {}
+
+    /**
+     * #480 PR 3: structured {@link Capability.FileSearch} with
+     * {@link SearchKind#GREP}. {@code GREP} is heavier than {@code GLOB}
+     * because it opens and reads file content; sharing the same variant
+     * with a {@link SearchKind} discriminator means policies can write
+     * one rule for "deny FileSearch in /etc" and a separate rule for
+     * "deny GREP specifically (don't read .env files)".
+     */
+    @Override
+    public Capability toCapability(JsonNode args) {
+        if (args == null || !args.has("pattern") || args.get("pattern").asText().isBlank()) {
+            throw new IllegalArgumentException("grep requires a non-blank pattern");
+        }
+        return new Capability.FileSearch(resolveSearchPath(args), args.get("pattern").asText(), SearchKind.GREP);
+    }
 }

@@ -8,6 +8,8 @@ import dev.aceclaw.core.agent.CancellationToken;
 import dev.aceclaw.core.agent.SubAgentConfig;
 import dev.aceclaw.core.agent.SubAgentRunner;
 import dev.aceclaw.core.agent.Tool;
+import dev.aceclaw.security.Capability;
+import dev.aceclaw.security.CapabilityAware;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -24,7 +26,7 @@ import org.slf4j.LoggerFactory;
  * <p>Implements {@link CancellationAware} so the parent loop's cancellation
  * token propagates to the sub-agent loop.
  */
-public final class TaskTool implements Tool, CancellationAware {
+public final class TaskTool implements Tool, CapabilityAware, CancellationAware {
 
     private static final Logger log = LoggerFactory.getLogger(TaskTool.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -32,10 +34,43 @@ public final class TaskTool implements Tool, CancellationAware {
     private final SubAgentRunner runner;
     private final AgentTypeRegistry typeRegistry;
     private volatile CancellationToken cancellationToken;
+    /**
+     * The calling agent's session id, threaded into
+     * {@link SubAgentRunner#run(SubAgentConfig, String,
+     * dev.aceclaw.core.llm.StreamEventHandler, CancellationToken, String)}
+     * so the per-session permission check (#457) can find the right
+     * allow-list when the sub-agent invokes a tool the user approved in
+     * the parent session. {@code null} on the unbound instance held by
+     * the daemon's tool registry; populated by {@link #forRequest(String)}
+     * just before the tool runs.
+     */
+    private volatile String currentSessionId;
 
     public TaskTool(SubAgentRunner runner, AgentTypeRegistry typeRegistry) {
+        this(runner, typeRegistry, null);
+    }
+
+    private TaskTool(SubAgentRunner runner, AgentTypeRegistry typeRegistry, String currentSessionId) {
         this.runner = runner;
         this.typeRegistry = typeRegistry;
+        this.currentSessionId = currentSessionId;
+    }
+
+    /**
+     * Returns a request-bound {@code TaskTool} so the parent session id
+     * threads into {@link SubAgentRunner}'s loop config. Mirrors
+     * {@code SkillTool.forRequest(...)}; concurrent sessions must not
+     * share a single mutable instance because {@code currentSessionId}
+     * would race between requests.
+     *
+     * <p>Without this, the registry-level instance has
+     * {@code currentSessionId == null}, every {@code runner.run(...)}
+     * call lands in the loop with {@code config.sessionId() == null},
+     * and {@link SubAgentPermissionChecker} fails-closed for every
+     * non-read-only tool — even ones the user already approved.
+     */
+    public TaskTool forRequest(String sessionId) {
+        return new TaskTool(runner, typeRegistry, sessionId);
     }
 
     @Override
@@ -116,10 +151,16 @@ public final class TaskTool implements Tool, CancellationAware {
     }
 
     private ToolResult executeSynchronous(SubAgentConfig config, String agentType, String prompt) {
-        log.info("Delegating task to sub-agent '{}': prompt length={}", agentType, prompt.length());
+        log.info("Delegating task to sub-agent '{}': prompt length={}, parentSessionId={}",
+                agentType, prompt.length(), currentSessionId);
 
         try {
-            var result = runner.run(config, prompt, null, cancellationToken);
+            // #457: pass currentSessionId so the sub-agent's permission
+            // check sees the parent session's allow-list. Null means
+            // unbound (registry-level instance) — the runner falls
+            // through to the legacy null-session path which deny-fails
+            // for non-read-only tools. forRequest(...) prevents that.
+            var result = runner.run(config, prompt, null, cancellationToken, currentSessionId);
             if (result.isEmpty()) {
                 return new ToolResult("Sub-agent completed but produced no text output.", false);
             }
@@ -131,10 +172,13 @@ public final class TaskTool implements Tool, CancellationAware {
     }
 
     private ToolResult executeBackground(SubAgentConfig config, String agentType, String prompt) {
-        log.info("Launching background sub-agent '{}': prompt length={}", agentType, prompt.length());
+        log.info("Launching background sub-agent '{}': prompt length={}, parentSessionId={}",
+                agentType, prompt.length(), currentSessionId);
 
         try {
-            var task = runner.runInBackground(config, prompt, cancellationToken);
+            // #457: same threading as the synchronous path — the
+            // background task inherits the parent's allow-list scope.
+            var task = runner.runInBackground(config, prompt, cancellationToken, currentSessionId);
             return new ToolResult(
                     "Background task launched successfully.\n" +
                     "Task ID: " + task.taskId() + "\n" +
@@ -145,5 +189,20 @@ public final class TaskTool implements Tool, CancellationAware {
             log.error("Failed to launch background sub-agent '{}': {}", agentType, e.getMessage(), e);
             return new ToolResult("Failed to launch background task: " + e.getMessage(), true);
         }
+    }
+
+    /**
+     * #480 PR 3: structured {@link Capability.SubAgentSpawn}. Depth is
+     * carried by {@link dev.aceclaw.security.Provenance#subAgentDepth()}
+     * on the audit entry, not by the variant — at {@code toCapability}
+     * time we don't have the calling agent's depth in scope, so a
+     * variant-side field would always be wrong for nested spawns.
+     */
+    @Override
+    public Capability toCapability(JsonNode args) {
+        if (args == null || !args.has("agent_type") || args.get("agent_type").asText().isBlank()) {
+            throw new IllegalArgumentException("task requires a non-blank agent_type");
+        }
+        return new Capability.SubAgentSpawn(args.get("agent_type").asText());
     }
 }
