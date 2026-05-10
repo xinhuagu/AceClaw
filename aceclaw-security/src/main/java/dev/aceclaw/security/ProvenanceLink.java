@@ -1,5 +1,7 @@
 package dev.aceclaw.security;
 
+import com.fasterxml.jackson.annotation.JsonSubTypes;
+import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import dev.aceclaw.security.ids.PlanStepId;
 
 import java.time.Instant;
@@ -17,6 +19,12 @@ import java.util.Objects;
  * {@code switch} with no default — adding a new kind of link forces every
  * consumer to update.
  */
+@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "kind")
+@JsonSubTypes({
+        @JsonSubTypes.Type(value = ProvenanceLink.PlanStepEntered.class, name = "PlanStepEntered"),
+        @JsonSubTypes.Type(value = ProvenanceLink.SubAgentSpawned.class, name = "SubAgentSpawned"),
+        @JsonSubTypes.Type(value = ProvenanceLink.RetryAttempt.class, name = "RetryAttempt"),
+})
 public sealed interface ProvenanceLink {
 
     /** Wall-clock instant the link was recorded. */

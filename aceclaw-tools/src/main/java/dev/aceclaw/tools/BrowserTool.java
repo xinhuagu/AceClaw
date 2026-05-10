@@ -8,12 +8,16 @@ import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
 import com.microsoft.playwright.options.ScreenshotType;
 import dev.aceclaw.core.agent.Tool;
+import dev.aceclaw.security.Capability;
+import dev.aceclaw.security.CapabilityAware;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Base64;
+import java.util.Optional;
 
 /**
  * Browser automation tool using Playwright for Java.
@@ -23,7 +27,7 @@ import java.util.Base64;
  *
  * <p>Implements {@link AutoCloseable} for cleanup on daemon shutdown.
  */
-public final class BrowserTool implements Tool, AutoCloseable {
+public final class BrowserTool implements Tool, CapabilityAware, AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(BrowserTool.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -317,5 +321,31 @@ public final class BrowserTool implements Tool, AutoCloseable {
         if (output.length() <= MAX_OUTPUT_CHARS) return output;
         return output.substring(0, MAX_OUTPUT_CHARS) +
                "\n... (output truncated, " + output.length() + " total characters)";
+    }
+
+    /**
+     * #480 PR 3: structured {@link Capability.BrowserAction}. The {@code url}
+     * field is populated only for actions that target one ({@code navigate}),
+     * leaving it empty for {@code click} / {@code type} / {@code screenshot}
+     * etc. — that lets domain-allowlist policies match exactly the requests
+     * they care about. An invalid URL is dropped to {@link Optional#empty()}
+     * rather than thrown so the policy can still see {@code action} and
+     * decide; the underlying tool will surface the URL error during execution.
+     */
+    @Override
+    public Capability toCapability(JsonNode args) {
+        if (args == null || !args.has("action") || args.get("action").asText().isBlank()) {
+            throw new IllegalArgumentException("browser requires a non-blank action");
+        }
+        Optional<URI> uri = Optional.empty();
+        if (args.has("url") && !args.get("url").isNull() && !args.get("url").asText().isBlank()) {
+            try {
+                uri = Optional.of(URI.create(args.get("url").asText()));
+            } catch (IllegalArgumentException ignored) {
+                // Leave empty — invalid URL surfaces in execute(), not at the
+                // policy boundary.
+            }
+        }
+        return new Capability.BrowserAction(args.get("action").asText(), uri);
     }
 }

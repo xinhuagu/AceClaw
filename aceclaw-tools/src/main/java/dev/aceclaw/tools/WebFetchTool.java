@@ -3,6 +3,8 @@ package dev.aceclaw.tools;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.Tool;
+import dev.aceclaw.security.Capability;
+import dev.aceclaw.security.CapabilityAware;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Element;
 import org.slf4j.Logger;
@@ -21,7 +23,7 @@ import java.time.Duration;
  * <p>Uses {@link java.net.http.HttpClient} for HTTP requests and Jsoup for
  * HTML-to-text conversion. Follows redirects, 30s timeout, 30K char output cap.
  */
-public final class WebFetchTool implements Tool {
+public final class WebFetchTool implements Tool, CapabilityAware {
 
     private static final Logger log = LoggerFactory.getLogger(WebFetchTool.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -169,5 +171,28 @@ public final class WebFetchTool implements Tool {
         if (output.length() <= MAX_OUTPUT_CHARS) return output;
         return output.substring(0, MAX_OUTPUT_CHARS) +
                "\n... (output truncated, " + output.length() + " total characters)";
+    }
+
+    /**
+     * #480 PR 3: structured {@link Capability.HttpFetch}. Method is always
+     * {@code GET} — {@code web_fetch} is read-only by construction (it only
+     * exposes a {@code .GET()} HttpRequest builder). The capability still
+     * reports {@link dev.aceclaw.security.DataFlow#BOTH} (per
+     * {@link Capability.HttpFetch}'s own contract) because GET requests
+     * carry URL/header/cookie payloads outbound and a "block egress" policy
+     * must not be bypassable by hiding data in a query string.
+     */
+    @Override
+    public Capability toCapability(JsonNode args) {
+        if (args == null || !args.has("url") || args.get("url").asText().isBlank()) {
+            throw new IllegalArgumentException("web_fetch requires a non-blank url");
+        }
+        URI uri;
+        try {
+            uri = URI.create(args.get("url").asText().strip());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("web_fetch url is not a valid URI: " + e.getMessage(), e);
+        }
+        return new Capability.HttpFetch(uri, "GET");
     }
 }

@@ -1,10 +1,14 @@
 package dev.aceclaw.security;
 
+import com.fasterxml.jackson.annotation.JsonSubTypes;
+import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import dev.aceclaw.security.ids.MemoryKey;
 
 import java.net.URI;
 import java.nio.file.Path;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.regex.Pattern;
 
 /**
  * One concrete capability the agent loop wants to use, in a shape that makes
@@ -39,10 +43,12 @@ import java.util.Objects;
  * <h3>{@link #risk()} is derived, not declared</h3>
  *
  * Callers cannot lie about a capability's risk class. {@link FileRead} is
- * always {@code READ}; {@link BashExec} is {@code EXECUTE} (PR-1 baseline);
- * future patch will let {@code BashExec} self-escalate to {@code DANGEROUS}
- * for known destructive patterns. Either way, the escalation lives in the
- * variant — not at the call site.
+ * always {@code READ}; {@link BashExec} is {@code EXECUTE} for benign
+ * commands and self-escalates to {@code DANGEROUS} for known-destructive
+ * patterns ({@code rm -rf}, {@code mkfs}, {@code git push --force}, etc.).
+ * The escalation lives in the variant, not at the call site, so every
+ * surface — audit log, dashboard label, user prompt — agrees about which
+ * commands are dangerous without each one re-implementing the rule set.
  *
  * <h3>{@link LegacyToolUse}</h3>
  *
@@ -51,6 +57,24 @@ import java.util.Objects;
  * present so the legacy deserializer has a {@code Capability} variant to
  * land on.
  */
+@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "kind")
+@JsonSubTypes({
+        @JsonSubTypes.Type(value = Capability.FileRead.class, name = "FileRead"),
+        @JsonSubTypes.Type(value = Capability.FileWrite.class, name = "FileWrite"),
+        @JsonSubTypes.Type(value = Capability.FileDelete.class, name = "FileDelete"),
+        @JsonSubTypes.Type(value = Capability.FileSearch.class, name = "FileSearch"),
+        @JsonSubTypes.Type(value = Capability.BashExec.class, name = "BashExec"),
+        @JsonSubTypes.Type(value = Capability.OsScript.class, name = "OsScript"),
+        @JsonSubTypes.Type(value = Capability.BrowserAction.class, name = "BrowserAction"),
+        @JsonSubTypes.Type(value = Capability.ScreenCapture.class, name = "ScreenCapture"),
+        @JsonSubTypes.Type(value = Capability.SkillInvoke.class, name = "SkillInvoke"),
+        @JsonSubTypes.Type(value = Capability.HttpFetch.class, name = "HttpFetch"),
+        @JsonSubTypes.Type(value = Capability.McpInvoke.class, name = "McpInvoke"),
+        @JsonSubTypes.Type(value = Capability.MemoryWrite.class, name = "MemoryWrite"),
+        @JsonSubTypes.Type(value = Capability.MemoryRead.class, name = "MemoryRead"),
+        @JsonSubTypes.Type(value = Capability.SubAgentSpawn.class, name = "SubAgentSpawn"),
+        @JsonSubTypes.Type(value = Capability.LegacyToolUse.class, name = "LegacyToolUse"),
+})
 public sealed interface Capability {
 
     /**
@@ -149,23 +173,173 @@ public sealed interface Capability {
         @Override public String displayLabel() { return "delete " + renderPath(path); }
     }
 
+    // -- Filesystem search ----------------------------------------------
+
+    /**
+     * Search-the-filesystem capability used by {@code glob}, {@code grep},
+     * and {@code list_directory}. Distinguishing them as a typed
+     * {@link SearchKind} (not three separate variants) means policies can
+     * write "deny all FileSearch in /etc" once instead of three times, while
+     * still letting a tighter rule say "deny GREP specifically because it
+     * reads file content."
+     *
+     * <p>Risk is {@code READ} for every kind: search semantically discloses
+     * filesystem state to the agent, which is INGRESS. {@code GREP} reads
+     * file bytes — heavier than {@code GLOB} or {@code LIST} which only see
+     * names — but PolicyEngine (#465 Scope #2) is the place to encode that
+     * difference, not the variant's flat risk class.
+     */
+    record FileSearch(Path root, String pattern, SearchKind kind) implements Capability {
+        public FileSearch {
+            Objects.requireNonNull(root, "root");
+            Objects.requireNonNull(pattern, "pattern");
+            Objects.requireNonNull(kind, "kind");
+        }
+
+        @Override public PermissionLevel risk() { return PermissionLevel.READ; }
+        @Override public DataFlow dataFlow() { return DataFlow.INGRESS; }
+        @Override public String displayLabel() {
+            return switch (kind) {
+                case GLOB -> "glob " + pattern + " in " + renderPath(root);
+                case GREP -> "grep " + pattern + " in " + renderPath(root);
+                case LIST -> "list " + renderPath(root);
+            };
+        }
+    }
+
     // -- Process --------------------------------------------------------
 
     /**
-     * Shell command execution. {@link #risk()} returns {@code EXECUTE} in
-     * this PR; #465 Scope #2 (PolicyEngine) is where DANGEROUS escalation
-     * for destructive command patterns will live, so the rule set is in
-     * one place rather than scattered across capability variants.
+     * Shell command execution. {@link #risk()} returns {@code EXECUTE} for
+     * normal commands and self-escalates to {@code DANGEROUS} when the
+     * command matches a known-destructive pattern (e.g. {@code rm -rf},
+     * {@code dd}, {@code mkfs}, {@code :(){ :|:& };:}, fork bombs).
+     *
+     * <p>The escalation lives in the variant rather than in PolicyEngine
+     * because the rule is structural ("any rm -rf is dangerous") rather
+     * than policy ("our org's rule about rm-rf"); centralising it here
+     * means audit-log readers, dashboard event labels, and the user prompt
+     * all see {@code DANGEROUS} for the same set of commands without each
+     * surface re-implementing the detection.
+     *
+     * <p>{@link #DESTRUCTIVE_PATTERN} is intentionally conservative — false
+     * negatives (a destructive command not flagged) fall back to the
+     * standard {@code EXECUTE} prompt, which is the same answer the user
+     * would have got pre-#480. False positives ({@code DANGEROUS} on a
+     * benign-looking command) just produce one extra prompt; no one loses
+     * data.
      */
     record BashExec(String command, Path cwd) implements Capability {
+
+        /**
+         * Destructive command patterns that escalate this capability's
+         * {@link #risk()} from {@code EXECUTE} to {@code DANGEROUS}. Order
+         * matters only for readability — the matcher only checks for any
+         * match. Patterns target the most common irrecoverable destruction
+         * vectors:
+         *
+         * <ul>
+         *   <li>{@code rm -rf} / {@code rm -fr} — recursive force delete.
+         *       Single dash, double dash, and combined flags all match.</li>
+         *   <li>{@code sudo rm} — privileged delete (even non-recursive
+         *       sudo rm is irreversible at the privilege boundary).</li>
+         *   <li>{@code dd} writing to a block device — wipes drives.</li>
+         *   <li>{@code mkfs} / {@code mke2fs} — filesystem (re)creation.</li>
+         *   <li>{@code shred} / {@code wipe} — secure-erase utilities.</li>
+         *   <li>{@code chmod -R 000} / {@code chown -R} on root paths —
+         *       lockout patterns.</li>
+         *   <li>Fork bomb {@code :(){ :|:& };:} — DoS the host.</li>
+         *   <li>{@code git push --force} / {@code git push -f} on a non-
+         *       feature ref — destroys upstream history. The pattern
+         *       intentionally matches both forms; PolicyEngine can later
+         *       relax this for feature branches.</li>
+         *   <li>{@code git reset --hard} — discards uncommitted work.</li>
+         *   <li>{@code curl ... | sh} / {@code wget ... | sh} — pipe-to-shell
+         *       installs run arbitrary remote code unprivilegedly. Flagged
+         *       as destructive because the agent cannot verify what's on
+         *       the other side of the URL.</li>
+         * </ul>
+         *
+         * <p>Whitespace tolerance: the regex uses {@code \s+} so flag
+         * combinations like {@code rm   -rf} or {@code rm\t-rf} match.
+         * {@code (?i)} is intentionally NOT applied — Unix command names
+         * are case-sensitive and {@code RM} is not a real binary; matching
+         * case-insensitively would invite trivial bypass theatrics that
+         * give a false sense of coverage.
+         */
+        private static final Pattern DESTRUCTIVE_PATTERN = Pattern.compile(
+                "(?:^|[\\s;&|`(])(?:" +
+                        // rm: command name is case-sensitive (RM is not a real binary), but
+                        // flag letters can be either case — BSD's recursive flag is -R, GNU's
+                        // is -r. We must match both or rm -Rf bypasses the rule.
+                        "rm\\s+(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF][a-zA-Z]*|-[a-zA-Z]*[fF][a-zA-Z]*[rR][a-zA-Z]*|--recursive\\s+--force|--force\\s+--recursive)" +
+                        "|sudo\\s+rm" +
+                        "|dd\\s+[^|]*of=/dev/" +
+                        "|mkfs(?:\\.[a-z0-9]+)?\\s" +
+                        "|mke2fs\\s" +
+                        "|shred\\s" +
+                        "|\\bwipe\\s+-" +
+                        "|chmod\\s+-R\\s+0?00\\s+/" +
+                        "|chown\\s+-R\\s+[^/]+/(?:\\s|$)" +
+                        "|:\\(\\)\\s*\\{\\s*:\\|:&\\s*\\}\\s*;:" +
+                        "|git\\s+push\\s+(?:-f\\b|--force\\b)" +
+                        "|git\\s+reset\\s+--hard" +
+                        "|(?:curl|wget)\\s[^|]*\\|\\s*(?:sudo\\s+)?(?:bash|sh|zsh)\\b" +
+                        ")");
+
         public BashExec {
             Objects.requireNonNull(command, "command");
             Objects.requireNonNull(cwd, "cwd");
         }
 
+        /**
+         * Returns whether {@code command} matches a known-destructive pattern.
+         * Exposed package-private so {@code BashExecToolCapabilityTest} can
+         * exercise the rule set directly without round-tripping through a
+         * full capability instance.
+         */
+        static boolean isDestructive(String command) {
+            return command != null && DESTRUCTIVE_PATTERN.matcher(command).find();
+        }
+
+        @Override public PermissionLevel risk() {
+            return isDestructive(command) ? PermissionLevel.DANGEROUS : PermissionLevel.EXECUTE;
+        }
+        @Override public DataFlow dataFlow() { return DataFlow.BOTH; }
+        @Override public String displayLabel() {
+            return (isDestructive(command) ? "exec[DANGEROUS]: " : "exec: ") + command;
+        }
+    }
+
+    /**
+     * Host-OS scripting capability for languages other than the system
+     * shell — currently AppleScript on macOS. Modelled as its own variant
+     * (not as {@link BashExec}) so policies can ban {@code applescript}
+     * (which can drive arbitrary GUI apps and read clipboard / mail / etc.)
+     * without also banning {@code bash}, and so the audit log records the
+     * actual interpreter rather than wrapping everything in a fake bash
+     * label. Risk is {@code EXECUTE}; data-flow is {@code BOTH}.
+     */
+    record OsScript(String language, String source) implements Capability {
+        public OsScript {
+            Objects.requireNonNull(language, "language");
+            Objects.requireNonNull(source, "source");
+            if (language.isBlank()) {
+                throw new IllegalArgumentException("language must not be blank");
+            }
+        }
+
         @Override public PermissionLevel risk() { return PermissionLevel.EXECUTE; }
         @Override public DataFlow dataFlow() { return DataFlow.BOTH; }
-        @Override public String displayLabel() { return "exec: " + command; }
+        @Override public String displayLabel() {
+            // First line of the script gives the operator a hint without
+            // dumping a 200-line payload into the audit display.
+            int newline = source.indexOf('\n');
+            String firstLine = newline < 0 ? source : source.substring(0, newline);
+            return language + ": " + (firstLine.length() > 80
+                    ? firstLine.substring(0, 80) + "..."
+                    : firstLine);
+        }
     }
 
     // -- Network --------------------------------------------------------
@@ -192,6 +366,89 @@ public sealed interface Capability {
             return DataFlow.BOTH;
         }
         @Override public String displayLabel() { return method + " " + url; }
+    }
+
+    // -- Browser --------------------------------------------------------
+
+    /**
+     * Browser automation capability (Playwright / driven Chromium): navigate,
+     * click, type, screenshot, evaluate JS in the page. Risk is
+     * {@code EXECUTE} because the action vocabulary includes JS evaluation
+     * and arbitrary navigation, which can fetch and exfiltrate. {@code url}
+     * is {@link Optional#empty()} for actions that don't target a URL
+     * (e.g. {@code "click"}, {@code "screenshot"}); when present it lets
+     * policies whitelist domains.
+     *
+     * <p>Action vocabulary is intentionally a free string rather than an
+     * enum: the underlying browser library evolves, and the policy surface
+     * shouldn't have to ship a new enum value every time. PolicyEngine can
+     * pattern-match on {@code action.startsWith("evaluate")} etc.
+     */
+    record BrowserAction(String action, Optional<URI> url) implements Capability {
+        public BrowserAction {
+            Objects.requireNonNull(action, "action");
+            Objects.requireNonNull(url, "url");
+            if (action.isBlank()) {
+                throw new IllegalArgumentException("action must not be blank");
+            }
+        }
+
+        @Override public PermissionLevel risk() { return PermissionLevel.EXECUTE; }
+        @Override public DataFlow dataFlow() { return DataFlow.BOTH; }
+        @Override public String displayLabel() {
+            return url.map(u -> "browser " + action + " " + u)
+                      .orElseGet(() -> "browser " + action);
+        }
+    }
+
+    // -- Screen ---------------------------------------------------------
+
+    /**
+     * Screen-capture capability. Modelled as its own variant rather than
+     * folded into a generic "capture-from-host" so a privacy policy can
+     * deny {@code ScreenCapture} without also denying {@link FileRead}:
+     * screen contents include unrelated apps, notifications, and any
+     * sensitive material the operator happens to have visible. Risk is
+     * {@code READ} (data flows in to the agent), but the human display
+     * label flags the privacy character so dashboard readers see at a
+     * glance that this isn't a normal file read.
+     */
+    record ScreenCapture(String reason) implements Capability {
+        public ScreenCapture {
+            Objects.requireNonNull(reason, "reason");
+        }
+
+        @Override public PermissionLevel risk() { return PermissionLevel.READ; }
+        @Override public DataFlow dataFlow() { return DataFlow.INGRESS; }
+        @Override public String displayLabel() {
+            return reason.isBlank() ? "screen capture" : "screen capture: " + reason;
+        }
+    }
+
+    // -- Skill ----------------------------------------------------------
+
+    /**
+     * Invocation of a registered local skill (Claude Code's skill system).
+     * Distinct from {@link McpInvoke}: skills are versioned, in-process
+     * code units; MCP is an out-of-process server. A policy that wants to
+     * disable third-party MCP servers should not also disable first-party
+     * skills, and vice-versa.
+     *
+     * <p>Args are intentionally not stored — same reason as {@link McpInvoke}
+     * (size, secrets). PolicyEngine sees {@code skillName} and decides
+     * whether deeper inspection is required.
+     */
+    record SkillInvoke(String skillName) implements Capability {
+        public SkillInvoke {
+            Objects.requireNonNull(skillName, "skillName");
+            if (skillName.isBlank()) {
+                throw new IllegalArgumentException("skillName must not be blank");
+            }
+        }
+
+        @Override public PermissionLevel risk() { return PermissionLevel.EXECUTE; }
+        @Override public DataFlow dataFlow() { return DataFlow.BOTH; }
+        @Override public String displayLabel() { return "skill " + skillName; }
     }
 
     // -- MCP ------------------------------------------------------------

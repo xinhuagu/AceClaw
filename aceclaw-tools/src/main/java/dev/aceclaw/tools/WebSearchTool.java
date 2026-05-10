@@ -3,6 +3,8 @@ package dev.aceclaw.tools;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.Tool;
+import dev.aceclaw.security.Capability;
+import dev.aceclaw.security.CapabilityAware;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
@@ -27,7 +29,7 @@ import java.util.List;
  * higher-quality results. Otherwise, falls back to DuckDuckGo Lite (free,
  * no API key required).
  */
-public final class WebSearchTool implements Tool {
+public final class WebSearchTool implements Tool, CapabilityAware {
 
     private static final Logger log = LoggerFactory.getLogger(WebSearchTool.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -288,4 +290,26 @@ public final class WebSearchTool implements Tool {
      * A single DuckDuckGo search result.
      */
     record DdgResult(String title, String url, String snippet) {}
+
+    /**
+     * #480 PR 3: structured {@link Capability.HttpFetch}. The capability
+     * surfaces the actual upstream endpoint ({@code BRAVE_SEARCH_URL} when
+     * the API key is present, {@code DDG_LITE_URL} otherwise) rather than
+     * a fictional "search query" URL — that lets a "deny api.search.brave.com"
+     * policy work without inspecting payload, and lets audit readers see
+     * which backend the search hit. The {@code query} args field is policy-
+     * material but lives in the audit entry's prompt/description, not in
+     * the capability — keeping the variant payload minimal mirrors how
+     * {@link Capability.McpInvoke} omits args.
+     */
+    @Override
+    public Capability toCapability(JsonNode args) {
+        if (args == null || !args.has("query") || args.get("query").asText().isBlank()) {
+            throw new IllegalArgumentException("web_search requires a non-blank query");
+        }
+        String endpoint = (apiKey != null && !apiKey.isBlank())
+                ? BRAVE_SEARCH_URL
+                : DDG_LITE_URL;
+        return new Capability.HttpFetch(URI.create(endpoint), "GET");
+    }
 }

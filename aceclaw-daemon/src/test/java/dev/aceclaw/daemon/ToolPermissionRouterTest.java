@@ -225,13 +225,16 @@ final class ToolPermissionRouterTest {
         var policy = new CapturingPolicy();
         var pm = new PermissionManager(policy);
 
+        // Cast null to String to disambiguate from the structured-Provenance
+        // overload added in #480 PR 3 — both 7-arg shapes accept a null
+        // 3rd arg by type, so the compiler can't pick one without help.
         ToolPermissionRouter.check(
-                new SpyCapabilityAwareTool(), "{}", null, "no session",
+                new SpyCapabilityAwareTool(), "{}", (String) null, "no session",
                 PermissionLevel.WRITE, pm, MAPPER);
         assertThat(policy.last.get().toolName()).isEqualTo("spy_tool");
 
         ToolPermissionRouter.check(
-                new LegacyOnlyTool(), "{}", null, "no session",
+                new LegacyOnlyTool(), "{}", (String) null, "no session",
                 PermissionLevel.READ, pm, MAPPER);
         assertThat(policy.last.get().toolName()).isEqualTo("legacy_tool");
     }

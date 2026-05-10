@@ -406,14 +406,14 @@ public final class AceClawDaemon {
             readOnlyTools = java.util.Set.copyOf(readOnlyTools);
             log.info("Sub-agent auto-approve tools extended with: {}", extraTools);
         }
-        // Sub-agent allow-list lookup is daemon-wide for now (issue #456
-        // follow-up). The checker is constructed once at startup with no
-        // session in scope, so it asks "has any session approved this
-        // tool?" — preserving pre-#456 behaviour where a sub-agent in
-        // session B could reach a tool session A had approved. Threading
-        // sessionId through ToolPermissionChecker is a separate refactor.
+        // Sub-agent allow-list lookup is now per-session (#457): the
+        // checker receives the calling agent's sessionId on every check
+        // and looks up the allow-list keyed on that session. This closes
+        // the leak where a sub-agent in session B silently inherited an
+        // approval the user granted in session A — a regression of #456
+        // confined to the sub-agent path until threading was done.
         var subAgentPermChecker = new SubAgentPermissionChecker(
-                readOnlyTools, permissionManager::hasAnySessionApproval);
+                readOnlyTools, permissionManager::hasSessionApproval);
 
         // Project rules for sub-agent system prompts
         String projectRules = SystemPromptLoader.extractProjectRules(workingDir);

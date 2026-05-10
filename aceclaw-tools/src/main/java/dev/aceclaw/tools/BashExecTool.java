@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.CancellationAware;
 import dev.aceclaw.core.agent.CancellationToken;
 import dev.aceclaw.core.agent.Tool;
+import dev.aceclaw.security.Capability;
+import dev.aceclaw.security.CapabilityAware;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -27,7 +29,7 @@ import java.util.regex.Pattern;
  * On Windows, commands are executed via {@code cmd.exe /c}.
  * Timeout is configurable; output is captured and truncated if it exceeds size limits.
  */
-public final class BashExecTool implements Tool, CancellationAware {
+public final class BashExecTool implements Tool, CapabilityAware, CancellationAware {
 
     private static final Logger log = LoggerFactory.getLogger(BashExecTool.class);
 
@@ -335,5 +337,22 @@ public final class BashExecTool implements Tool, CancellationAware {
         }
         return output.substring(0, MAX_OUTPUT_CHARS) +
                "\n... (output truncated, " + output.length() + " total characters)";
+    }
+
+    /**
+     * #480 PR 3: structured {@link Capability.BashExec}. The destructive→
+     * {@code DANGEROUS} escalation lives inside the variant ({@code rm -rf},
+     * {@code mkfs}, {@code git push --force}, fork bombs, etc.), so this
+     * method just hands off the raw command and {@code workingDir}; the
+     * audit log, dashboard label, and user prompt all see {@code DANGEROUS}
+     * for the same set of commands without each surface re-implementing the
+     * detection.
+     */
+    @Override
+    public Capability toCapability(JsonNode args) {
+        if (args == null || !args.has("command") || args.get("command").asText().isBlank()) {
+            throw new IllegalArgumentException("bash requires a non-blank command");
+        }
+        return new Capability.BashExec(args.get("command").asText(), workingDir);
     }
 }

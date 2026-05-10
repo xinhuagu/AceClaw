@@ -4,6 +4,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.Tool;
 import dev.aceclaw.memory.AutoMemoryStore;
+import dev.aceclaw.security.Capability;
+import dev.aceclaw.security.CapabilityAware;
+import dev.aceclaw.security.ids.MemoryKey;
 import dev.aceclaw.memory.MemoryEntry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,7 +24,7 @@ import java.util.stream.Collectors;
  * <p>Supports three actions: save (store a new memory), search (find relevant memories),
  * and list (browse memories by category).
  */
-public final class MemoryTool implements Tool {
+public final class MemoryTool implements Tool, CapabilityAware {
 
     private static final Logger log = LoggerFactory.getLogger(MemoryTool.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -279,5 +282,56 @@ public final class MemoryTool implements Tool {
             return input.get(field).asInt(defaultValue);
         }
         return defaultValue;
+    }
+
+    /**
+     * #480 PR 3: structured {@link Capability.MemoryRead} or
+     * {@link Capability.MemoryWrite} depending on the action. {@code save}
+     * and {@code delete} are both writes — delete drops a row, which is
+     * still a mutating operation even if the visible field changes from
+     * "stored content" to "absent" — so policies that gate memory mutation
+     * cover both. {@code search} and {@code list} are pure reads.
+     *
+     * <p>{@link MemoryKey} is packed with the most-specific identifier the
+     * action can supply (id for delete, query for search, category for
+     * list / save) so PolicyEngine can pattern-match without having to
+     * understand action semantics.
+     */
+    @Override
+    public Capability toCapability(JsonNode args) {
+        if (args == null || !args.has("action") || args.get("action").asText().isBlank()) {
+            throw new IllegalArgumentException("memory requires a non-blank action");
+        }
+        String action = args.get("action").asText().toLowerCase();
+        String tier = (args.has("global") && args.get("global").asBoolean(false)) ? "global" : "project";
+        return switch (action) {
+            case "save" -> {
+                if (!args.has("category") || args.get("category").asText().isBlank()) {
+                    throw new IllegalArgumentException("memory save requires a non-blank category");
+                }
+                yield new Capability.MemoryWrite(new MemoryKey(args.get("category").asText()), tier);
+            }
+            case "delete" -> {
+                if (!args.has("id") || args.get("id").asText().isBlank()) {
+                    throw new IllegalArgumentException("memory delete requires a non-blank id");
+                }
+                yield new Capability.MemoryWrite(new MemoryKey(args.get("id").asText()), tier);
+            }
+            case "search" -> {
+                if (!args.has("query") || args.get("query").asText().isBlank()) {
+                    throw new IllegalArgumentException("memory search requires a non-blank query");
+                }
+                yield new Capability.MemoryRead(new MemoryKey(args.get("query").asText()));
+            }
+            case "list" -> {
+                String key = (args.has("category") && !args.get("category").isNull()
+                        && !args.get("category").asText().isBlank())
+                        ? args.get("category").asText()
+                        : "*";
+                yield new Capability.MemoryRead(new MemoryKey(key));
+            }
+            default -> throw new IllegalArgumentException(
+                    "memory action must be save/search/list/delete; got " + action);
+        };
     }
 }

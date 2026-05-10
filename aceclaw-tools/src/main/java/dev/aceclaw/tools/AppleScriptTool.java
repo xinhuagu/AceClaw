@@ -3,6 +3,8 @@ package dev.aceclaw.tools;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.Tool;
+import dev.aceclaw.security.Capability;
+import dev.aceclaw.security.CapabilityAware;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -17,7 +19,7 @@ import java.util.concurrent.TimeUnit;
  * <p>macOS only. Passes each line of the script as a separate {@code -e} argument.
  * 30-second timeout, 30K character output cap.
  */
-public final class AppleScriptTool implements Tool {
+public final class AppleScriptTool implements Tool, CapabilityAware {
 
     private static final Logger log = LoggerFactory.getLogger(AppleScriptTool.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -128,5 +130,22 @@ public final class AppleScriptTool implements Tool {
         if (output.length() <= MAX_OUTPUT_CHARS) return output;
         return output.substring(0, MAX_OUTPUT_CHARS) +
                "\n... (output truncated, " + output.length() + " total characters)";
+    }
+
+    /**
+     * #480 PR 3: structured {@link Capability.OsScript} with language fixed
+     * to {@code "applescript"}. Modelled separately from
+     * {@link Capability.BashExec} so a privacy-conscious policy can ban
+     * AppleScript (which can drive arbitrary GUI apps, read clipboard, mail,
+     * notes, etc.) without also banning {@code bash}, and so the audit log
+     * records the actual interpreter rather than wrapping every script in a
+     * fake bash label.
+     */
+    @Override
+    public Capability toCapability(JsonNode args) {
+        if (args == null || !args.has("script") || args.get("script").asText().isBlank()) {
+            throw new IllegalArgumentException("applescript requires a non-blank script");
+        }
+        return new Capability.OsScript("applescript", args.get("script").asText());
     }
 }

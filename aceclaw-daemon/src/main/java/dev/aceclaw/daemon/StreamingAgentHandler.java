@@ -438,9 +438,16 @@ public final class StreamingAgentHandler {
         var requestTools = snapshotCurrentTools();
         var requestToolNames = toolNames(requestTools);
 
+        // #480 PR 3: stamp every capability check this turn with a single
+        // PromptId — the root of the Provenance chain. Generated once here
+        // so all tool invocations within this prompt share an identifier
+        // (audit replay can group by it; sub-agent spawns inherit it).
+        var promptId = new dev.aceclaw.security.ids.PromptId(
+                "prompt-" + UUID.randomUUID());
+
         // Wrap tools with permission checking and hooks for this request
         var permissionAwareRegistry = createPermissionAwareRegistry(
-                requestTools, cancelContext, sessionId, eventHandler);
+                requestTools, cancelContext, sessionId, eventHandler, promptId);
 
         // Get or create a session-scoped metrics collector so tool stats accumulate across turns
         var metricsCollector = sessionMetrics.computeIfAbsent(sessionId, _ -> new ToolMetricsCollector());
@@ -1650,11 +1657,21 @@ public final class StreamingAgentHandler {
             List<Tool> requestTools,
             CancelAwareStreamContext context,
             String sessionId,
-            StreamEventHandler eventHandler) {
+            StreamEventHandler eventHandler,
+            dev.aceclaw.security.ids.PromptId promptId) {
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(sessionId, "sessionId");
         Objects.requireNonNull(eventHandler, "eventHandler");
         Objects.requireNonNull(requestTools, "requestTools");
+        Objects.requireNonNull(promptId, "promptId");
+        // The current step id is held in StreamingNotificationHandler's
+        // AtomicReference; the supplier reads through it lazily so a tool
+        // call captures whichever step is active at the moment of the
+        // permission check (not the moment the registry was constructed).
+        java.util.function.Supplier<String> currentStepIdSupplier =
+                (eventHandler instanceof StreamingNotificationHandler snh)
+                        ? snh::getCurrentStepId
+                        : () -> null;
         var registry = new ToolRegistry();
         var antiPatternGate = AntiPatternPreExecutionGate.fromStores(
                 memoryStore,
@@ -1681,7 +1698,9 @@ public final class StreamingAgentHandler {
                     () -> getAntiPatternGateOverride(sessionId, effectiveTool.name()),
                     antiPatternGateFeedbackStore,
                     candidateStore,
-                    runtimeMetricsExporter));
+                    runtimeMetricsExporter,
+                    promptId,
+                    currentStepIdSupplier));
         }
         return registry;
     }
@@ -3399,6 +3418,16 @@ public final class StreamingAgentHandler {
             currentStepId.set(stepId);
         }
 
+        /**
+         * Returns the currently active plan step id, or {@code null} if no
+         * plan is in progress. Exposed so {@link PermissionAwareTool} can
+         * stamp the per-call {@link dev.aceclaw.security.Provenance} with
+         * the step that triggered each capability check (#480 PR 3).
+         */
+        String getCurrentStepId() {
+            return currentStepId.get();
+        }
+
         @Override
         public void onThinkingDelta(StreamEvent.ThinkingDelta event) {
             try {
@@ -3956,6 +3985,13 @@ public final class StreamingAgentHandler {
         private final AntiPatternGateFeedbackStore antiPatternGateFeedbackStore;
         private final CandidateStore candidateStore;
         private final RuntimeMetricsExporter metricsExporter;
+        // #480 PR 3: Provenance-chain inputs. {@code promptId} is per-request
+        // (constant across all tool calls in this prompt); the step-id
+        // supplier is read lazily on each tool call so it captures the plan
+        // step that's active at the moment of the permission check, not the
+        // step that was active when the registry was constructed.
+        private final dev.aceclaw.security.ids.PromptId promptId;
+        private final java.util.function.Supplier<String> currentStepIdSupplier;
 
         PermissionAwareTool(Tool delegate, PermissionManager permissionManager,
                             CancelAwareStreamContext context, ObjectMapper objectMapper,
@@ -3964,7 +4000,9 @@ public final class StreamingAgentHandler {
                             java.util.function.Supplier<AntiPatternGateOverrideStatus> antiPatternOverrideSupplier,
                             AntiPatternGateFeedbackStore antiPatternGateFeedbackStore,
                             CandidateStore candidateStore,
-                            RuntimeMetricsExporter metricsExporter) {
+                            RuntimeMetricsExporter metricsExporter,
+                            dev.aceclaw.security.ids.PromptId promptId,
+                            java.util.function.Supplier<String> currentStepIdSupplier) {
             this.delegate = delegate;
             this.permissionManager = permissionManager;
             this.context = context;
@@ -3977,6 +4015,8 @@ public final class StreamingAgentHandler {
             this.antiPatternGateFeedbackStore = antiPatternGateFeedbackStore;
             this.candidateStore = candidateStore;
             this.metricsExporter = metricsExporter;
+            this.promptId = Objects.requireNonNull(promptId, "promptId");
+            this.currentStepIdSupplier = Objects.requireNonNull(currentStepIdSupplier, "currentStepIdSupplier");
         }
 
         @Override
@@ -4049,8 +4089,25 @@ public final class StreamingAgentHandler {
             // CapabilityAware tools take the structured path; everything else
             // hits the legacy PermissionRequest entry point. Both ultimately
             // share PermissionManager's single decision/audit pipeline.
+            //
+            // #480 PR 3: build the full Provenance here so the structured
+            // path receives the actual rootPrompt and (when running inside a
+            // plan) the active planStepId. The supplier read lazily picks up
+            // whatever step is current at this exact moment — sequencing
+            // matters because a single agent.prompt can transition through
+            // multiple plan steps.
+            var stepIdRaw = currentStepIdSupplier.get();
+            var provenance = new dev.aceclaw.security.Provenance(
+                    java.util.Optional.of(promptId),
+                    java.util.Optional.of(new dev.aceclaw.security.ids.SessionId(sessionId)),
+                    stepIdRaw == null
+                            ? java.util.Optional.<dev.aceclaw.security.ids.PlanStepId>empty()
+                            : java.util.Optional.of(new dev.aceclaw.security.ids.PlanStepId(stepIdRaw)),
+                    0,                          // subAgentDepth — top-level main loop
+                    java.util.List.of()         // chain — populated piecemeal in follow-ups
+            );
             var decision = ToolPermissionRouter.check(
-                    delegate, finalInputJson, sessionId, toolDescription, level,
+                    delegate, finalInputJson, provenance, toolDescription, level,
                     permissionManager, objectMapper);
             var overrideStatus = antiPatternOverrideSupplier != null
                     ? antiPatternOverrideSupplier.get()

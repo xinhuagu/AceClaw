@@ -84,7 +84,7 @@ class SubAgentIntegrationTest {
         var agentTypeRegistry = AgentTypeRegistry.withBuiltins();
         var readOnlyTools = java.util.Set.of("read_file", "glob", "grep");
         var subAgentPermChecker = new SubAgentPermissionChecker(
-                readOnlyTools, permissionManager::hasAnySessionApproval);
+                readOnlyTools, permissionManager::hasSessionApproval);
         var subAgentRunner = new SubAgentRunner(
                 mockLlm, toolRegistry, "mock-model", workDir, 4096, 0,
                 subAgentPermChecker, null);

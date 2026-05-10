@@ -108,7 +108,7 @@ class ToolUseToolResultInvariantTest {
         registry.register(new StubTool("denied_b", "x"));
 
         var config = AgentLoopConfig.builder()
-                .permissionChecker((name, input) -> ToolPermissionResult.denied("nope"))
+                .permissionChecker((name, input, sid) -> ToolPermissionResult.denied("nope"))
                 .build();
 
         var loop = new AgentLoop(llm, registry, "model", null, config);

@@ -3,6 +3,9 @@ package dev.aceclaw.tools;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.Tool;
+import dev.aceclaw.security.Capability;
+import dev.aceclaw.security.CapabilityAware;
+import dev.aceclaw.security.WriteMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -17,7 +20,7 @@ import java.nio.file.Path;
  * <p>Replaces all occurrences of a search string with a replacement string
  * within the specified file. The search is exact (not regex).
  */
-public final class EditFileTool implements Tool {
+public final class EditFileTool implements Tool, CapabilityAware {
 
     private static final Logger log = LoggerFactory.getLogger(EditFileTool.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -129,5 +132,23 @@ public final class EditFileTool implements Tool {
             index += search.length();
         }
         return count;
+    }
+
+    /**
+     * #480 PR 3: structured {@link Capability.FileWrite}. Mode is always
+     * {@link WriteMode#OVERWRITE} because {@code edit_file} mutates an
+     * existing file's content in place — it does not create new files (the
+     * tool's {@link #execute(String)} returns an error if the file is missing).
+     * Distinguishing OVERWRITE from CREATE_NEW lets a "create-only" policy
+     * deny edits to existing files without inspecting filesystem state.
+     */
+    @Override
+    public Capability toCapability(JsonNode args) {
+        if (args == null || !args.has("file_path") || args.get("file_path").asText().isBlank()) {
+            throw new IllegalArgumentException("edit_file requires a non-blank file_path");
+        }
+        return new Capability.FileWrite(
+                PathResolver.resolve(args.get("file_path").asText(), workingDir),
+                WriteMode.OVERWRITE);
     }
 }

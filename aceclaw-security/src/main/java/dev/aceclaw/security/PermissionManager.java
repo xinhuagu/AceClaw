@@ -146,7 +146,7 @@ public final class PermissionManager {
                 log.debug("Permission auto-approved (session blanket): key={}, sessionId={}",
                         allowlistKey, sessionIdOrNull);
                 var decision = new PermissionDecision.Approved();
-                audit(allowlistKey, capability.risk(), sessionIdOrNull, decision, "session-blanket-approval");
+                audit(allowlistKey, capability, provenance, decision, "session-blanket-approval");
                 return decision;
             }
         }
@@ -158,27 +158,42 @@ public final class PermissionManager {
         log.debug("Permission check: key={}, level={}, sessionId={}, decision={}",
                 allowlistKey, capability.risk(), sessionIdOrNull,
                 decision.getClass().getSimpleName());
-        audit(allowlistKey, capability.risk(), sessionIdOrNull, decision, null);
+        audit(allowlistKey, capability, provenance, decision, null);
         return decision;
     }
 
     /**
-     * Writes one entry to the audit log if one is attached. Flattens
-     * the sealed {@link PermissionDecision} into the on-disk string
-     * form ({@code APPROVED} / {@code DENIED} / {@code NEEDS_APPROVAL})
-     * and chooses the {@code reason} field: caller-supplied note
-     * (for the session-blanket branch), the denial reason (for
-     * Denied), the prompt (for NeedsUserApproval), or null.
+     * Writes one v2 audit entry — structured {@link Capability} and full
+     * {@link Provenance} (#480 PR 3). Flattens the sealed
+     * {@link PermissionDecision} into the on-disk string form
+     * ({@code APPROVED} / {@code DENIED} / {@code NEEDS_APPROVAL}) and
+     * chooses the {@code reason} field: caller-supplied note (for the
+     * session-blanket branch), the denial reason (for Denied), the prompt
+     * (for NeedsUserApproval), or null.
      *
-     * <p>Audit shape is still v1 (flat fields) in PR 2 — PR 3 will swap
-     * in a structured form that carries the {@link Capability} and
-     * {@link Provenance} directly. For now we project them down to the
-     * v1 fields {@code (toolName, level)}.
+     * <p>The on-disk record carries:
+     *
+     * <ul>
+     *   <li>{@code allowlistKey} → {@code toolName} field — keeps v1 query
+     *       tooling that filters by tool name working unchanged across the
+     *       schema bump (e.g. "show me all bash decisions" still works).</li>
+     *   <li>{@code capability.risk()} → {@code level} field — same reason.
+     *       For migrated tools this matches the variant's structural risk
+     *       (and reflects {@code BashExec}'s self-escalation to
+     *       {@code DANGEROUS}); for legacy callers (the
+     *       {@link #check(PermissionRequest, String)} shim wraps as
+     *       {@link Capability.LegacyToolUse}) it carries the
+     *       declared level.</li>
+     *   <li>{@code capability} and {@code provenance} → typed JSON nested
+     *       objects, so PolicyEngine and the dashboard timeline see paths,
+     *       URLs, plan-step IDs, etc. directly without having to parse the
+     *       human prompt.</li>
+     * </ul>
      */
     private void audit(
             String allowlistKey,
-            PermissionLevel risk,
-            String sessionId,
+            Capability capability,
+            Provenance provenance,
             PermissionDecision decision,
             String approvalNote) {
         if (auditLog == null) return;
@@ -198,7 +213,7 @@ public final class PermissionManager {
                 reason = n.prompt();
             }
         }
-        auditLog.record(Instant.now(), sessionId, allowlistKey, risk, kind, reason);
+        auditLog.record(Instant.now(), allowlistKey, capability, provenance, kind, reason);
     }
 
     /**

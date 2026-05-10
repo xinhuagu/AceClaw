@@ -19,6 +19,8 @@ dependencies {
         api("com.fasterxml.jackson.core:jackson-databind:2.18.2")
         api("com.fasterxml.jackson.core:jackson-annotations:2.18.2")
         api("com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.18.2")
+        // jdk8 module: Optional<T> serde for Provenance fields (#480 PR 3)
+        api("com.fasterxml.jackson.datatype:jackson-datatype-jdk8:2.18.2")
 
         // Markdown
         api("org.commonmark:commonmark:0.23.0")

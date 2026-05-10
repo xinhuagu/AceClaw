@@ -3,6 +3,9 @@ package dev.aceclaw.tools;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.Tool;
+import dev.aceclaw.security.Capability;
+import dev.aceclaw.security.CapabilityAware;
+import dev.aceclaw.security.SearchKind;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -23,7 +26,7 @@ import java.util.List;
  * <p>Directories are listed first, then files, both sorted alphabetically.
  * Capped at 1000 entries to avoid overwhelming output.
  */
-public final class ListDirTool implements Tool {
+public final class ListDirTool implements Tool, CapabilityAware {
 
     private static final Logger log = LoggerFactory.getLogger(ListDirTool.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -152,4 +155,19 @@ public final class ListDirTool implements Tool {
     }
 
     private record Entry(boolean isDir, String name, long size, Instant modified) {}
+
+    /**
+     * #480 PR 3: structured {@link Capability.FileSearch} with
+     * {@link SearchKind#LIST}. Pattern is empty because {@code list_directory}
+     * has no filter — it returns every entry. Sharing {@link Capability.FileSearch}
+     * with {@code glob} and {@code grep} (rather than minting a third
+     * variant) keeps the policy surface compact while still letting a rule
+     * distinguish content reads ({@code GREP}) from name-only views
+     * ({@code GLOB}, {@code LIST}).
+     */
+    @Override
+    public Capability toCapability(JsonNode args) {
+        return new Capability.FileSearch(resolveDir(args == null ? MAPPER.createObjectNode() : args),
+                "", SearchKind.LIST);
+    }
 }

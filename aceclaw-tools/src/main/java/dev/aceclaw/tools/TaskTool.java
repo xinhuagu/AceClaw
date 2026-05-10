@@ -8,6 +8,8 @@ import dev.aceclaw.core.agent.CancellationToken;
 import dev.aceclaw.core.agent.SubAgentConfig;
 import dev.aceclaw.core.agent.SubAgentRunner;
 import dev.aceclaw.core.agent.Tool;
+import dev.aceclaw.security.Capability;
+import dev.aceclaw.security.CapabilityAware;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -24,7 +26,7 @@ import org.slf4j.LoggerFactory;
  * <p>Implements {@link CancellationAware} so the parent loop's cancellation
  * token propagates to the sub-agent loop.
  */
-public final class TaskTool implements Tool, CancellationAware {
+public final class TaskTool implements Tool, CapabilityAware, CancellationAware {
 
     private static final Logger log = LoggerFactory.getLogger(TaskTool.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -145,5 +147,25 @@ public final class TaskTool implements Tool, CancellationAware {
             log.error("Failed to launch background sub-agent '{}': {}", agentType, e.getMessage(), e);
             return new ToolResult("Failed to launch background task: " + e.getMessage(), true);
         }
+    }
+
+    /**
+     * #480 PR 3: structured {@link Capability.SubAgentSpawn}.
+     *
+     * <p>{@code parentDepth} is recorded as {@code 0} because at the
+     * permission-check moment the tool only sees its own JSON args — it has
+     * no handle to the calling agent's depth. The full provenance chain
+     * captures depth via {@link dev.aceclaw.security.Provenance#subAgentDepth()}
+     * threaded by the agent loop. Future work can stamp a more accurate
+     * depth into the variant if PolicyEngine grows a "deny spawn past depth N"
+     * rule that needs the parent-depth field specifically; until then the
+     * Provenance side carries the truth.
+     */
+    @Override
+    public Capability toCapability(JsonNode args) {
+        if (args == null || !args.has("agent_type") || args.get("agent_type").asText().isBlank()) {
+            throw new IllegalArgumentException("task requires a non-blank agent_type");
+        }
+        return new Capability.SubAgentSpawn(args.get("agent_type").asText(), 0);
     }
 }
