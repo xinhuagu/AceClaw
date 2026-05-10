@@ -34,10 +34,43 @@ public final class TaskTool implements Tool, CapabilityAware, CancellationAware 
     private final SubAgentRunner runner;
     private final AgentTypeRegistry typeRegistry;
     private volatile CancellationToken cancellationToken;
+    /**
+     * The calling agent's session id, threaded into
+     * {@link SubAgentRunner#run(SubAgentConfig, String,
+     * dev.aceclaw.core.llm.StreamEventHandler, CancellationToken, String)}
+     * so the per-session permission check (#457) can find the right
+     * allow-list when the sub-agent invokes a tool the user approved in
+     * the parent session. {@code null} on the unbound instance held by
+     * the daemon's tool registry; populated by {@link #forRequest(String)}
+     * just before the tool runs.
+     */
+    private volatile String currentSessionId;
 
     public TaskTool(SubAgentRunner runner, AgentTypeRegistry typeRegistry) {
+        this(runner, typeRegistry, null);
+    }
+
+    private TaskTool(SubAgentRunner runner, AgentTypeRegistry typeRegistry, String currentSessionId) {
         this.runner = runner;
         this.typeRegistry = typeRegistry;
+        this.currentSessionId = currentSessionId;
+    }
+
+    /**
+     * Returns a request-bound {@code TaskTool} so the parent session id
+     * threads into {@link SubAgentRunner}'s loop config. Mirrors
+     * {@code SkillTool.forRequest(...)}; concurrent sessions must not
+     * share a single mutable instance because {@code currentSessionId}
+     * would race between requests.
+     *
+     * <p>Without this, the registry-level instance has
+     * {@code currentSessionId == null}, every {@code runner.run(...)}
+     * call lands in the loop with {@code config.sessionId() == null},
+     * and {@link SubAgentPermissionChecker} fails-closed for every
+     * non-read-only tool — even ones the user already approved.
+     */
+    public TaskTool forRequest(String sessionId) {
+        return new TaskTool(runner, typeRegistry, sessionId);
     }
 
     @Override
@@ -118,10 +151,16 @@ public final class TaskTool implements Tool, CapabilityAware, CancellationAware 
     }
 
     private ToolResult executeSynchronous(SubAgentConfig config, String agentType, String prompt) {
-        log.info("Delegating task to sub-agent '{}': prompt length={}", agentType, prompt.length());
+        log.info("Delegating task to sub-agent '{}': prompt length={}, parentSessionId={}",
+                agentType, prompt.length(), currentSessionId);
 
         try {
-            var result = runner.run(config, prompt, null, cancellationToken);
+            // #457: pass currentSessionId so the sub-agent's permission
+            // check sees the parent session's allow-list. Null means
+            // unbound (registry-level instance) — the runner falls
+            // through to the legacy null-session path which deny-fails
+            // for non-read-only tools. forRequest(...) prevents that.
+            var result = runner.run(config, prompt, null, cancellationToken, currentSessionId);
             if (result.isEmpty()) {
                 return new ToolResult("Sub-agent completed but produced no text output.", false);
             }
@@ -133,10 +172,13 @@ public final class TaskTool implements Tool, CapabilityAware, CancellationAware 
     }
 
     private ToolResult executeBackground(SubAgentConfig config, String agentType, String prompt) {
-        log.info("Launching background sub-agent '{}': prompt length={}", agentType, prompt.length());
+        log.info("Launching background sub-agent '{}': prompt length={}, parentSessionId={}",
+                agentType, prompt.length(), currentSessionId);
 
         try {
-            var task = runner.runInBackground(config, prompt, cancellationToken);
+            // #457: same threading as the synchronous path — the
+            // background task inherits the parent's allow-list scope.
+            var task = runner.runInBackground(config, prompt, cancellationToken, currentSessionId);
             return new ToolResult(
                     "Background task launched successfully.\n" +
                     "Task ID: " + task.taskId() + "\n" +

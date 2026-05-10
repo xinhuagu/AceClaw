@@ -412,4 +412,111 @@ class SubAgentRunnerTest {
         @Override public String provider() { return "stub"; }
         @Override public String defaultModel() { return "stub-model"; }
     }
+
+    // ===== #457: parent sessionId reaches the sub-agent permission check =====
+
+    @Test
+    void parentSessionIdReachesSubAgentPermissionCheck() throws Exception {
+        // Regression test for #457 (#480 PR 3 follow-up): SubAgentRunner.run(..., parentSessionId)
+        // must populate AgentLoopConfig.sessionId so the per-session permission check
+        // reaches the checker with the parent's id. Pre-fix the loop config's sessionId
+        // was always null, the SubAgentPermissionChecker's null-fail-closed branch
+        // kicked in, and EVERY non-read-only tool got denied — even ones the user
+        // had already approved in the parent session.
+        //
+        // The spy here captures the sessionId argument the loop hands to the
+        // permission checker; we then assert it's the parent id, not null.
+        var capturedSessionIds = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        ToolPermissionChecker spy = (toolName, inputJson, sessionId) -> {
+            capturedSessionIds.add(sessionId == null ? "<null>" : sessionId);
+            // ALLOW so the tool actually executes and the loop progresses to
+            // end-of-turn instead of denying and short-circuiting.
+            return ToolPermissionResult.ALLOWED;
+        };
+
+        var parentRegistry = new ToolRegistry();
+        parentRegistry.register(stubTool("write_file"));
+
+        var runner = new SubAgentRunner(
+                new ToolUseOnceMockLlmClient(),
+                parentRegistry, "mock-model", tempDir, 4096, 0, spy, null);
+
+        var config = new SubAgentConfig("test", "", null, List.of(), List.of(), 25, "test");
+        runner.run(config, "do thing", null, null, "parent-session-A");
+
+        assertThat(capturedSessionIds)
+                .as("sub-agent's permission check must receive the parent's sessionId, not null")
+                .containsExactly("parent-session-A");
+    }
+
+    @Test
+    void nullParentSessionIdLeavesLoopConfigUnscoped() throws Exception {
+        // Daemon-internal callers (cron, boot scripts) pass null parentSessionId
+        // and have no session in scope. The legacy 4-arg run() overload also
+        // delegates with null. In both cases the loop config's sessionId stays
+        // null, which the permission checker treats as "no session" — fail-closed
+        // in SubAgentPermissionChecker, but here we use a permissive spy so the
+        // test only pins that null is what arrives.
+        var capturedSessionIds = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        ToolPermissionChecker spy = (toolName, inputJson, sessionId) -> {
+            capturedSessionIds.add(sessionId == null ? "<null>" : sessionId);
+            return ToolPermissionResult.ALLOWED;
+        };
+
+        var parentRegistry = new ToolRegistry();
+        parentRegistry.register(stubTool("write_file"));
+        var runner = new SubAgentRunner(
+                new ToolUseOnceMockLlmClient(),
+                parentRegistry, "mock-model", tempDir, 4096, 0, spy, null);
+
+        var config = new SubAgentConfig("test", "", null, List.of(), List.of(), 25, "test");
+        // Legacy 4-arg form — no parent session in scope.
+        runner.run(config, "do thing", null, (CancellationToken) null);
+
+        assertThat(capturedSessionIds)
+                .as("legacy null-parent path must surface null sessionId, not a stale daemon-wide value")
+                .containsExactly("<null>");
+    }
+
+    /**
+     * Mock LLM that emits one {@code write_file} tool_use, then on the
+     * follow-up call (after the tool result is appended) emits an
+     * end-of-turn text response. This is the minimum surface needed to
+     * drive the permission check exactly once per test run.
+     */
+    private static final class ToolUseOnceMockLlmClient implements LlmClient {
+        private boolean firstCall = true;
+
+        @Override public LlmResponse sendMessage(LlmRequest request) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override public StreamSession streamMessage(LlmRequest request) {
+            return new StreamSession() {
+                @Override public void onEvent(StreamEventHandler handler) {
+                    handler.onMessageStart(new StreamEvent.MessageStart("msg", "mock"));
+                    if (firstCall) {
+                        firstCall = false;
+                        var toolUse = new ContentBlock.ToolUse("tu_1", "write_file", "{}");
+                        handler.onContentBlockStart(new StreamEvent.ContentBlockStart(0, toolUse));
+                        handler.onContentBlockStop(new StreamEvent.ContentBlockStop(0));
+                        handler.onMessageDelta(new StreamEvent.MessageDelta(
+                                StopReason.TOOL_USE, new Usage(10, 5)));
+                    } else {
+                        handler.onContentBlockStart(new StreamEvent.ContentBlockStart(0,
+                                new ContentBlock.Text("")));
+                        handler.onTextDelta(new StreamEvent.TextDelta("done"));
+                        handler.onContentBlockStop(new StreamEvent.ContentBlockStop(0));
+                        handler.onMessageDelta(new StreamEvent.MessageDelta(
+                                StopReason.END_TURN, new Usage(5, 2)));
+                    }
+                    handler.onComplete(new StreamEvent.StreamComplete());
+                }
+                @Override public void cancel() {}
+            };
+        }
+
+        @Override public String provider() { return "mock"; }
+        @Override public String defaultModel() { return "mock-model"; }
+    }
 }

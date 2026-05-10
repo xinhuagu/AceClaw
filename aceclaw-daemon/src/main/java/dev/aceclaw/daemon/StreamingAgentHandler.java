@@ -63,6 +63,7 @@ import dev.aceclaw.tools.MemoryTool;
 import dev.aceclaw.tools.ReadFileTool;
 import dev.aceclaw.tools.ScreenCaptureTool;
 import dev.aceclaw.tools.SkillTool;
+import dev.aceclaw.tools.TaskTool;
 import dev.aceclaw.tools.WebFetchTool;
 import dev.aceclaw.tools.WriteFileTool;
 import org.slf4j.Logger;
@@ -1731,6 +1732,10 @@ public final class StreamingAgentHandler {
             case "applescript" -> new AppleScriptTool(sessionProject);
             case "screen_capture" -> new ScreenCaptureTool(sessionProject);
             case "skill" -> original instanceof SkillTool st ? st.forRequest(sessionId, eventHandler) : original;
+            // #457: bind sessionId so SubAgentRunner's loop config carries
+            // the parent's id; otherwise the sub-agent's permission check
+            // fails-closed for every tool the user approved.
+            case "task" -> original instanceof TaskTool tt ? tt.forRequest(sessionId) : original;
             case "defer_check" -> original instanceof dev.aceclaw.daemon.deferred.DeferCheckTool dct
                     ? dct.forSession(sessionId)
                     : original;

@@ -38,10 +38,21 @@ final class CapabilityAuditLogTest {
         // serialize the typed Capability + Provenance, verify on read, and
         // come back as the same variant with the same fields. If this
         // fails the on-disk format diverged from what the codecs expect.
+        //
+        // Path is built with {@code tmp.resolve(...)} (not a hardcoded
+        // {@code "/tmp/x"}) because Jackson's default {@link Path}
+        // (de)serializer round-trips through {@code Path.toUri() ->
+        // Paths.get(URI)}, which on Windows resolves a leading-slash path
+        // against the working drive (so {@code "/tmp/x"} becomes
+        // {@code D:\tmp\x} after the round trip and a string-shape
+        // assertion fails). Using a real {@code @TempDir} path keeps the
+        // identity stable on every host OS — {@link Path#equals} compares
+        // normalised platform-native form, which the round trip preserves.
         var auditLog = CapabilityAuditLog.create(tmp);
         var ts = Instant.parse("2026-05-08T09:30:00Z");
+        var targetPath = tmp.resolve("subdir").resolve("payload.txt");
         var cap = new dev.aceclaw.security.Capability.FileWrite(
-                java.nio.file.Path.of("/tmp/x"),
+                targetPath,
                 dev.aceclaw.security.WriteMode.OVERWRITE);
         var prov = dev.aceclaw.security.Provenance.forSession(
                 new dev.aceclaw.security.ids.SessionId("sess-A"));
@@ -66,7 +77,9 @@ final class CapabilityAuditLogTest {
         assertThat(e.capability())
                 .isInstanceOf(dev.aceclaw.security.Capability.FileWrite.class);
         var fw = (dev.aceclaw.security.Capability.FileWrite) e.capability();
-        assertThat(fw.path().toString().replace('\\', '/')).isEqualTo("/tmp/x");
+        assertThat(fw.path())
+                .as("Path round-trips identically (Path.equals, not toString)")
+                .isEqualTo(targetPath);
         assertThat(fw.mode()).isEqualTo(dev.aceclaw.security.WriteMode.OVERWRITE);
         assertThat(e.provenance().sessionId().get().value()).isEqualTo("sess-A");
     }
