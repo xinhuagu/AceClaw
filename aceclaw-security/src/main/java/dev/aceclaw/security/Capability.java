@@ -57,7 +57,17 @@ import java.util.regex.Pattern;
  * present so the legacy deserializer has a {@code Capability} variant to
  * land on.
  */
-@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "kind")
+// Type discriminator property MUST NOT collide with any variant's record
+// component name. Using "kind" (the obvious choice) collides with
+// FileSearch.kind (SearchKind enum) — Jackson then writes both keys with
+// the same JSON name, readTree() collapses duplicates last-wins, the
+// discriminator becomes "GLOB"/"GREP"/"LIST" instead of "FileSearch", and
+// every glob/grep/list_directory v2 audit entry fails to deserialize and
+// gets dropped from readVerified() — silent loss of an entire entry class.
+// "@type" is Jackson's idiomatic discriminator and unambiguous because
+// "@" is not a legal Java identifier prefix, so no future variant field
+// can collide.
+@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "@type")
 @JsonSubTypes({
         @JsonSubTypes.Type(value = Capability.FileRead.class, name = "FileRead"),
         @JsonSubTypes.Type(value = Capability.FileWrite.class, name = "FileWrite"),
@@ -272,7 +282,26 @@ public sealed interface Capability {
                         // rm: command name is case-sensitive (RM is not a real binary), but
                         // flag letters can be either case — BSD's recursive flag is -R, GNU's
                         // is -r. We must match both or rm -Rf bypasses the rule.
-                        "rm\\s+(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF][a-zA-Z]*|-[a-zA-Z]*[fF][a-zA-Z]*[rR][a-zA-Z]*|--recursive\\s+--force|--force\\s+--recursive)" +
+                        //
+                        // Matches the four common spellings of recursive-force rm:
+                        //   1) combined short flags     rm -rf  rm -fr  rm -Rf  etc.
+                        //   2) separated short flags    rm -r -f  rm -f -r  rm -R -f  etc.
+                        //   3) long flags (both orders) rm --recursive --force / --force --recursive
+                        //   4) mixed                    rm -r --force / rm --recursive -f
+                        // Without (2)/(4) the pattern misses "rm -r -f /tmp/x" which is the
+                        // most common interactive form (CodeRabbit review on #491).
+                        "rm\\s+(?:" +
+                                "-[a-zA-Z]*[rR][a-zA-Z]*[fF][a-zA-Z]*" +                       // -rf, -Rf, -rfv …
+                                "|-[a-zA-Z]*[fF][a-zA-Z]*[rR][a-zA-Z]*" +                      // -fr, -fR …
+                                "|-[a-zA-Z]*[rR][a-zA-Z]*\\s+(?:[^-\\s]\\S*\\s+)?-[a-zA-Z]*[fF][a-zA-Z]*" + // -r ... -f
+                                "|-[a-zA-Z]*[fF][a-zA-Z]*\\s+(?:[^-\\s]\\S*\\s+)?-[a-zA-Z]*[rR][a-zA-Z]*" + // -f ... -r
+                                "|--recursive\\s+(?:[^-\\s]\\S*\\s+)?--force" +
+                                "|--force\\s+(?:[^-\\s]\\S*\\s+)?--recursive" +
+                                "|--recursive\\s+(?:[^-\\s]\\S*\\s+)?-[a-zA-Z]*[fF][a-zA-Z]*" + // --recursive ... -f
+                                "|--force\\s+(?:[^-\\s]\\S*\\s+)?-[a-zA-Z]*[rR][a-zA-Z]*" +    // --force ... -r
+                                "|-[a-zA-Z]*[rR][a-zA-Z]*\\s+--force" +                         // -r --force
+                                "|-[a-zA-Z]*[fF][a-zA-Z]*\\s+--recursive" +                     // -f --recursive
+                        ")" +
                         "|sudo\\s+rm" +
                         "|dd\\s+[^|]*of=/dev/" +
                         "|mkfs(?:\\.[a-z0-9]+)?\\s" +
@@ -282,7 +311,12 @@ public sealed interface Capability {
                         "|chmod\\s+-R\\s+0?00\\s+/" +
                         "|chown\\s+-R\\s+[^/]+/(?:\\s|$)" +
                         "|:\\(\\)\\s*\\{\\s*:\\|:&\\s*\\}\\s*;:" +
-                        "|git\\s+push\\s+(?:-f\\b|--force\\b)" +
+                        // git push --force in any position of the push command line, so
+                        // "git push origin --force" / "git push origin master -f" both
+                        // match (the most common spellings in practice). Original regex
+                        // required the flag immediately after "push", which missed
+                        // every remote-named form (CodeRabbit review on #491).
+                        "|git\\s+push\\b[^|;&\\n]*?\\s(?:-f\\b|--force\\b)" +
                         "|git\\s+reset\\s+--hard" +
                         "|(?:curl|wget)\\s[^|]*\\|\\s*(?:sudo\\s+)?(?:bash|sh|zsh)\\b" +
                         ")");
@@ -504,22 +538,27 @@ public sealed interface Capability {
 
     /**
      * Spawning a sub-agent is itself a capability, so the audit chain
-     * captures the moment of delegation. {@code parentDepth} is the
-     * spawning agent's depth — the new sub-agent runs at
-     * {@code parentDepth + 1}. Policies can refuse spawns past a depth.
+     * captures the moment of delegation.
+     *
+     * <p><strong>Why no {@code parentDepth} field:</strong> the spawning
+     * agent's depth is already authoritatively recorded by
+     * {@link Provenance#subAgentDepth()} on the same audit entry. Carrying
+     * a redundant copy on the variant is fine in principle, but only when
+     * it can be populated correctly — and at {@code TaskTool.toCapability}
+     * time we don't have a handle to the calling agent's depth, so the
+     * field would always be {@code 0} and disagree with Provenance for
+     * every nested spawn (CodeRabbit review on #491). One source of truth
+     * (Provenance) is better than two that contradict.
      */
-    record SubAgentSpawn(String role, int parentDepth) implements Capability {
+    record SubAgentSpawn(String role) implements Capability {
         public SubAgentSpawn {
             Objects.requireNonNull(role, "role");
-            if (parentDepth < 0) {
-                throw new IllegalArgumentException("parentDepth must be non-negative; got " + parentDepth);
-            }
         }
 
         @Override public PermissionLevel risk() { return PermissionLevel.EXECUTE; }
         @Override public DataFlow dataFlow() { return DataFlow.BOTH; }
         @Override public String displayLabel() {
-            return "spawn sub-agent role=" + role + " depth=" + (parentDepth + 1);
+            return "spawn sub-agent role=" + role;
         }
     }
 

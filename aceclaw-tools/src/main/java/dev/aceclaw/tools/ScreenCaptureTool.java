@@ -255,14 +255,22 @@ public final class ScreenCaptureTool implements Tool, CapabilityAware {
      */
     @Override
     public Capability toCapability(JsonNode args) {
+        // Default to "full screen" so the audit/prompt always says
+        // something concrete — without this, a no-args invocation
+        // produced Capability.ScreenCapture("") which renders as
+        // bare "screen capture" with no detail. CodeRabbit review on #491.
+        boolean hasRegion = args != null && args.has("region") && !args.get("region").isNull()
+                && !args.get("region").asText().isBlank();
+        boolean wantsOcr = args != null && args.has("ocr") && args.get("ocr").asBoolean(false);
+
         var reason = new StringBuilder();
-        if (args != null && args.has("region") && !args.get("region").isNull()
-                && !args.get("region").asText().isBlank()) {
+        if (hasRegion) {
             reason.append("region ").append(args.get("region").asText());
+        } else {
+            reason.append("full screen");
         }
-        if (args != null && args.has("ocr") && args.get("ocr").asBoolean(false)) {
-            if (reason.length() > 0) reason.append(", ");
-            reason.append("ocr");
+        if (wantsOcr) {
+            reason.append(", ocr");
         }
         return new Capability.ScreenCapture(reason.toString());
     }

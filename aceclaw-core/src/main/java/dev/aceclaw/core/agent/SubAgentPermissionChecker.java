@@ -1,5 +1,6 @@
 package dev.aceclaw.core.agent;
 
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.BiPredicate;
 
@@ -39,8 +40,14 @@ public final class SubAgentPermissionChecker implements ToolPermissionChecker {
      */
     public SubAgentPermissionChecker(Set<String> readOnlyTools,
                                      BiPredicate<String, String> isSessionApproved) {
+        // Fail fast on miswiring: a null predicate would only surface on
+        // the first non-read-only tool execution, where the NPE would
+        // bubble up as a permission-check error well after construction.
+        // Construction-time null-guard makes the wiring bug obvious at
+        // daemon boot. (CodeRabbit review on #491.)
+        Objects.requireNonNull(readOnlyTools, "readOnlyTools");
         this.readOnlyTools = Set.copyOf(readOnlyTools);
-        this.isSessionApproved = isSessionApproved;
+        this.isSessionApproved = Objects.requireNonNull(isSessionApproved, "isSessionApproved");
     }
 
     @Override

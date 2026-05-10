@@ -197,23 +197,35 @@ public final class PermissionManager {
             PermissionDecision decision,
             String approvalNote) {
         if (auditLog == null) return;
-        String kind;
-        String reason;
-        switch (decision) {
-            case PermissionDecision.Approved _ -> {
-                kind = "APPROVED";
-                reason = approvalNote;
+        // Audit is best-effort by contract — a degraded log must not abort
+        // the agent. CapabilityAuditLog.appendEntry already swallows
+        // IOException internally, but the v2 path's signablePayload(...)
+        // can surface a serialisation IllegalStateException through here,
+        // and any other unchecked exception would propagate out of the
+        // permission check. Wrap the whole branch so audit failures
+        // produce a warning, not a turn-killing error.
+        try {
+            String kind;
+            String reason;
+            switch (decision) {
+                case PermissionDecision.Approved _ -> {
+                    kind = "APPROVED";
+                    reason = approvalNote;
+                }
+                case PermissionDecision.Denied d -> {
+                    kind = "DENIED";
+                    reason = d.reason();
+                }
+                case PermissionDecision.NeedsUserApproval n -> {
+                    kind = "NEEDS_APPROVAL";
+                    reason = n.prompt();
+                }
             }
-            case PermissionDecision.Denied d -> {
-                kind = "DENIED";
-                reason = d.reason();
-            }
-            case PermissionDecision.NeedsUserApproval n -> {
-                kind = "NEEDS_APPROVAL";
-                reason = n.prompt();
-            }
+            auditLog.record(Instant.now(), allowlistKey, capability, provenance, kind, reason);
+        } catch (RuntimeException auditFailure) {
+            log.warn("Audit log write failed for tool={}, level={}: {}",
+                    allowlistKey, capability.risk(), auditFailure.getMessage());
         }
-        auditLog.record(Instant.now(), allowlistKey, capability, provenance, kind, reason);
     }
 
     /**

@@ -192,22 +192,17 @@ public final class TaskTool implements Tool, CapabilityAware, CancellationAware 
     }
 
     /**
-     * #480 PR 3: structured {@link Capability.SubAgentSpawn}.
-     *
-     * <p>{@code parentDepth} is recorded as {@code 0} because at the
-     * permission-check moment the tool only sees its own JSON args — it has
-     * no handle to the calling agent's depth. The full provenance chain
-     * captures depth via {@link dev.aceclaw.security.Provenance#subAgentDepth()}
-     * threaded by the agent loop. Future work can stamp a more accurate
-     * depth into the variant if PolicyEngine grows a "deny spawn past depth N"
-     * rule that needs the parent-depth field specifically; until then the
-     * Provenance side carries the truth.
+     * #480 PR 3: structured {@link Capability.SubAgentSpawn}. Depth is
+     * carried by {@link dev.aceclaw.security.Provenance#subAgentDepth()}
+     * on the audit entry, not by the variant — at {@code toCapability}
+     * time we don't have the calling agent's depth in scope, so a
+     * variant-side field would always be wrong for nested spawns.
      */
     @Override
     public Capability toCapability(JsonNode args) {
         if (args == null || !args.has("agent_type") || args.get("agent_type").asText().isBlank()) {
             throw new IllegalArgumentException("task requires a non-blank agent_type");
         }
-        return new Capability.SubAgentSpawn(args.get("agent_type").asText(), 0);
+        return new Capability.SubAgentSpawn(args.get("agent_type").asText());
     }
 }

@@ -19,7 +19,10 @@ import java.util.Objects;
  * {@code switch} with no default — adding a new kind of link forces every
  * consumer to update.
  */
-@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "kind")
+// {@code "@type"} (not {@code "kind"}) for the same collision-avoidance
+// reason as {@link Capability} — the discriminator name must not match
+// any variant's record component.
+@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "@type")
 @JsonSubTypes({
         @JsonSubTypes.Type(value = ProvenanceLink.PlanStepEntered.class, name = "PlanStepEntered"),
         @JsonSubTypes.Type(value = ProvenanceLink.SubAgentSpawned.class, name = "SubAgentSpawned"),

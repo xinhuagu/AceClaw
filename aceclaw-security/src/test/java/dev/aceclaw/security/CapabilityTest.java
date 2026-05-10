@@ -101,6 +101,46 @@ final class CapabilityTest {
     }
 
     @Test
+    void bashExecEscalatesSpaceSeparatedRmFlags() {
+        // Regression for CodeRabbit review on #491: the original regex
+        // only caught combined short flags (rm -rf) and long flags
+        // (rm --recursive --force). Space-separated short flags
+        // ("rm -r -f", the most common interactive form) silently passed
+        // as plain EXECUTE, weakening the prompt and the audit class.
+        for (var cmd : java.util.List.of(
+                "rm -r -f /tmp/x",
+                "rm -f -r /tmp/x",
+                "rm -R -f /tmp/x",        // BSD recursive flag, separated
+                "rm -f -R /tmp/x",
+                "rm --recursive -f /tmp/x",
+                "rm -r --force /tmp/x",
+                "rm --force -r /tmp/x",
+                "rm -f --recursive /tmp/x")) {
+            assertThat(new Capability.BashExec(cmd, Path.of("/tmp")).risk())
+                    .as("space-separated rm flags must escalate: %s", cmd)
+                    .isEqualTo(PermissionLevel.DANGEROUS);
+        }
+    }
+
+    @Test
+    void bashExecEscalatesGitPushForceWithRemote() {
+        // Regression for CodeRabbit review on #491: original regex required
+        // -f / --force IMMEDIATELY after "push", missing every form that
+        // names a remote first — which is the most common spelling.
+        for (var cmd : java.util.List.of(
+                "git push origin --force",
+                "git push origin -f",
+                "git push origin master --force",
+                "git push origin master -f",
+                "git push --force origin master",  // already worked, sanity-check
+                "git push -f origin master")) {    // already worked, sanity-check
+            assertThat(new Capability.BashExec(cmd, Path.of("/tmp")).risk())
+                    .as("force-push variant must escalate: %s", cmd)
+                    .isEqualTo(PermissionLevel.DANGEROUS);
+        }
+    }
+
+    @Test
     void bashExecEscalatesOtherDestructivePatterns() {
         // Sample one command per destruction class to keep the test pinned
         // to the rule shape without enumerating every permutation.
@@ -286,22 +326,15 @@ final class CapabilityTest {
     }
 
     @Test
-    void subAgentSpawnRecordsParentDepth() {
-        var cap = new Capability.SubAgentSpawn("planner", 2);
+    void subAgentSpawnRecordsRole() {
+        // Depth is intentionally absent from the variant — see Capability.java
+        // doc on SubAgentSpawn. Provenance.subAgentDepth() is the source of
+        // truth for depth; carrying a redundant variant field guarantees
+        // contradictions on every nested spawn.
+        var cap = new Capability.SubAgentSpawn("planner");
 
         assertThat(cap.risk()).isEqualTo(PermissionLevel.EXECUTE);
-        assertThat(cap.displayLabel())
-                .contains("role=planner")
-                .contains("depth=3"); // parent depth + 1
-    }
-
-    @Test
-    void subAgentSpawnRejectsNegativeDepth() {
-        // Negative parentDepth is impossible in real code — guard catches
-        // bugs that would otherwise silently produce nonsense audit entries.
-        assertThatThrownBy(() -> new Capability.SubAgentSpawn("planner", -1))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("parentDepth");
+        assertThat(cap.displayLabel()).contains("role=planner");
     }
 
     @Test

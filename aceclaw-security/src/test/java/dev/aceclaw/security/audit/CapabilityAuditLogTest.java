@@ -85,6 +85,44 @@ final class CapabilityAuditLogTest {
     }
 
     @Test
+    void v2FileSearchRoundtripsWithoutKindCollision(@TempDir Path tmp) throws IOException {
+        // Regression for the Jackson type-discriminator collision (Codex
+        // P2 on #491). FileSearch.kind (the SearchKind enum) used to
+        // share JSON property name "kind" with the @JsonTypeInfo
+        // discriminator on Capability — duplicate keys collapsed
+        // last-wins on read, the discriminator became "GLOB"/"GREP"/"LIST"
+        // instead of "FileSearch", and every glob/grep/list_directory v2
+        // entry got dropped from readVerified() with no audit trail.
+        // The fix: discriminator is now property "@type", which cannot
+        // collide because "@" is not a legal Java identifier prefix.
+        var auditLog = CapabilityAuditLog.create(tmp);
+        for (var kind : dev.aceclaw.security.SearchKind.values()) {
+            var cap = new dev.aceclaw.security.Capability.FileSearch(
+                    tmp.resolve("project"), "**/*.java", kind);
+            var prov = dev.aceclaw.security.Provenance.forSession(
+                    new dev.aceclaw.security.ids.SessionId("sess-fs"));
+            auditLog.record(Instant.now(), kind == dev.aceclaw.security.SearchKind.GLOB
+                    ? "glob" : kind == dev.aceclaw.security.SearchKind.GREP ? "grep" : "list_directory",
+                    cap, prov, "APPROVED", null);
+        }
+
+        var entries = auditLog.readVerified();
+        assertThat(entries)
+                .as("all 3 FileSearch variants must verify after the @type discriminator rename — "
+                        + "regression guard for Codex P2 (kind/SearchKind collision)")
+                .hasSize(dev.aceclaw.security.SearchKind.values().length);
+
+        // Each entry must round-trip into the right SearchKind, not lose
+        // the field to the type-discriminator overwrite.
+        for (var entry : entries) {
+            assertThat(entry.capability())
+                    .isInstanceOf(dev.aceclaw.security.Capability.FileSearch.class);
+            var fs = (dev.aceclaw.security.Capability.FileSearch) entry.capability();
+            assertThat(fs.kind()).isNotNull();  // would be null pre-fix (collapsed key)
+        }
+    }
+
+    @Test
     void v1EntriesContinueToVerifyAfterSchemaBump(@TempDir Path tmp) throws IOException {
         // Migration safety: v1 entries written under PR 2 must continue to
         // verify after PR 3 bumps the schema. The v1 signablePayload format
