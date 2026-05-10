@@ -193,7 +193,16 @@ public final class SkillTool implements Tool, CapabilityAware, CancellationAware
             handler.onSubAgentStart("skill:" + skillName, prompt);
         }
         try {
-            var result = subAgentRunner.run(subConfig, prompt, handler, cancellationToken);
+            // #457: thread currentSessionId so the forked skill's sub-agent
+            // sees the parent session's allow-list. SkillTool already
+            // tracks currentSessionId via forRequest(...) — we just have to
+            // forward it through the new 5-arg run() overload here.
+            // Without this, every non-read-only tool the forked skill
+            // tries to use gets fail-closed denied, mirroring the original
+            // P1 that motivated #457 — just in a different code path.
+            // (Codex re-review on #491, commit 03472f43b0.)
+            var result = subAgentRunner.run(subConfig, prompt, handler,
+                    cancellationToken, currentSessionId);
             if (result.isEmpty()) {
                 return new ToolResult("Skill '" + skillName + "' completed but produced no output.", false);
             }
