@@ -2,6 +2,7 @@ package dev.aceclaw.daemon;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.llm.anthropic.KeychainCredentialReader;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -219,6 +220,19 @@ class AceClawConfigTest {
         // default (300s) was cancelling multi-step research plans the
         // moment step 1 finished, so a regression to a smaller value
         // here would be a user-visible reliability hit.
+        //
+        // AceClawConfig.load() reads ACECLAW_MAX_PLAN_STEP_WALL_TIME_SEC and
+        // ACECLAW_MAX_PLAN_TOTAL_WALL_TIME_SEC from the process environment
+        // and lets them override file defaults. Java offers no portable way
+        // to clear an env var from inside a JVM, so skip when either is set
+        // — the test asserts a default and an override would make that
+        // assertion meaningless. CI runners ship without these vars set, so
+        // the test runs in CI.
+        Assumptions.assumeTrue(
+                System.getenv("ACECLAW_MAX_PLAN_STEP_WALL_TIME_SEC") == null
+                        && System.getenv("ACECLAW_MAX_PLAN_TOTAL_WALL_TIME_SEC") == null,
+                "skipping default-budget assertion because env override is set");
+
         var projectConfig = tempDir.resolve(".aceclaw").resolve("config.json");
         Files.createDirectories(projectConfig.getParent());
         Files.writeString(projectConfig, "{}");
