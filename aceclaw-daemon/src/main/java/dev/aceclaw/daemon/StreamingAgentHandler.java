@@ -1787,7 +1787,7 @@ public final class StreamingAgentHandler {
     private int maxAgentWallTimeSec = 600;
     private int maxAgentHardTurns = 0;
     private int maxAgentHardWallTimeSec = 0;
-    private int maxPlanStepWallTimeSec = 300;
+    private int maxPlanStepWallTimeSec = 1800;
     private int maxPlanTotalWallTimeSec = 3600;
     private PlanCheckpointStore planCheckpointStore;
     private SkillMemoryFeedback skillMemoryFeedback;
