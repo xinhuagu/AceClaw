@@ -263,18 +263,25 @@ describe('snapshot replay (#432)', () => {
     // Each step has exactly one thinking child with exactly one tool nested
     // inside. The original symptom would manifest here as later steps having
     // a thinking child with no tool descendant (the tool got lost or
-    // attached to step 1 instead).
+    // attached to step 1 instead). Cardinality is asserted strictly so a
+    // future regression that duplicated nodes per step would also fail.
     for (let idx = 1; idx <= stepNames.length; idx++) {
       const step = plan.children.find((c) => c.id === stepIdOf(idx));
       expect(step, `step ${idx} should exist under plan`).toBeDefined();
-      const thinking = step!.children.find((c) => c.type === 'thinking');
-      expect(thinking, `step ${idx} should have a thinking child`).toBeDefined();
-      const tool = thinking!.children.find((c) => c.type === 'tool');
+      const thinkingChildren = step!.children.filter(
+        (c) => c.type === 'thinking',
+      );
       expect(
-        tool,
-        `step ${idx} thinking should have its tool_use nested inside`,
-      ).toBeDefined();
-      expect(tool!.id).toBe(`tu-${idx}`);
+        thinkingChildren,
+        `step ${idx} should have exactly one thinking child`,
+      ).toHaveLength(1);
+      const thinking = thinkingChildren[0]!;
+      const toolChildren = thinking.children.filter((c) => c.type === 'tool');
+      expect(
+        toolChildren,
+        `step ${idx} thinking should have exactly one tool_use nested inside`,
+      ).toHaveLength(1);
+      expect(toolChildren[0]!.id).toBe(`tu-${idx}`);
     }
 
     // Cross-check: step 1's subtree must NOT have absorbed steps 2-4's

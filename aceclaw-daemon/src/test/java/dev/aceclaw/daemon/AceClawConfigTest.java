@@ -208,4 +208,28 @@ class AceClawConfigTest {
         assertThat(config.apiKey()).isEqualTo("sk-ant-oat01-from-profile");
         assertThat(config.refreshToken()).isEqualTo("sk-ant-ort01-from-profile");
     }
+
+    // -- Plan watchdog budget defaults --
+
+    @Test
+    void planBudgetDefaultsAreThirtyMinutesPerStepAndOneHourTotal(@TempDir Path tempDir) throws Exception {
+        // Pins the per-step (1800s = 30 min) and plan-total (3600s = 1 h)
+        // watchdog defaults the SequentialPlanExecutor reads via
+        // setPlanBudgetConfig at daemon startup. The previous per-step
+        // default (300s) was cancelling multi-step research plans the
+        // moment step 1 finished, so a regression to a smaller value
+        // here would be a user-visible reliability hit.
+        var projectConfig = tempDir.resolve(".aceclaw").resolve("config.json");
+        Files.createDirectories(projectConfig.getParent());
+        Files.writeString(projectConfig, "{}");
+
+        var config = AceClawConfig.load(tempDir, null);
+
+        assertThat(config.maxPlanStepWallTimeSec())
+                .as("per-step plan budget default")
+                .isEqualTo(1800);
+        assertThat(config.maxPlanTotalWallTimeSec())
+                .as("total plan budget default")
+                .isEqualTo(3600);
+    }
 }

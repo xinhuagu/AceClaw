@@ -1344,7 +1344,7 @@ public final class AceClawConfig {
     /**
      * Returns the maximum wall-clock time in seconds per plan step.
      * The watchdog timer is reset before each step. 0 = disabled.
-     * Defaults to 300 (5 minutes).
+     * Defaults to 1800 (30 minutes).
      */
     public int maxPlanStepWallTimeSec() {
         return maxPlanStepWallTimeSec;
