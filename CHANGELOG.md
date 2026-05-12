@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.3] - 2026-05-12
+
+### Bug Fixes
+
+- Raise per-step plan budget to 30 min + pin snapshot replay test
+- Address CodeRabbit review on #492
 ## [0.4.2] - 2026-05-10
 
 ### Features
