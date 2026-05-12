@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseEnvelopeFromObject } from '../src/hooks/useExecutionTree';
-import { executionTreeReducer } from '../src/reducers/treeReducer';
-import { emptyTree } from '../src/types/tree';
+import { executionTreeReducer, stepNodeId } from '../src/reducers/treeReducer';
+import { emptyTree, type ExecutionNode } from '../src/types/tree';
 
 /**
  * Pins the snapshot replay path (issue #432). The hook's WebSocket plumbing
@@ -162,6 +162,132 @@ describe('snapshot replay (#432)', () => {
         event: { method: 'stream.tool_use', params: { id: 't1' /* missing name */ } },
       }),
     ).toBeNull();
+  });
+
+  it('replays a multi-step plan with parentStepId-tagged events and attributes each tool under its own step', () => {
+    // Regression pin for the user-visible symptom where late plan steps
+    // appeared to have only a thinking child (the 2026-05-11 GSCORD session).
+    // On snapshot reload, a multi-step plan where the daemon tags
+    // stream.thinking / stream.tool_use with the owning parentStepId must
+    // reconstruct one thinking + tool subtree per step, not collapse
+    // everything onto the first step.
+    //
+    // Exercises the full snapshot path: parseEnvelopeFromObject (envelope
+    // gate) -> executionTreeReducer (resolveExplicitStep + addToolNode
+    // override). A regression here would re-introduce the symptom because
+    // every late-arriving tool_use carrying parentStepId of an
+    // already-completed step would silently fall back to the heuristic and
+    // chain off step 1's anchor.
+    const planId = 'plan-gscord';
+    const stepIdOf = (idx: number) => stepNodeId(planId, idx);
+    const stepNames = [
+      'Locate & Retrieve',
+      'Analyse GSCORD',
+      'Create draw.io Diagram',
+      'Compose Documentation',
+    ];
+
+    const envelopes: Array<ReturnType<typeof buildEnvelope>> = [
+      buildEnvelope(1, 'sess-1', 'stream.session_started', {
+        sessionId: 'sess-1',
+        model: 'claude-opus-4-7',
+      }),
+      buildEnvelope(2, 'sess-1', 'stream.turn_started', {
+        requestId: 'r1',
+        turnNumber: 1,
+      }),
+      buildEnvelope(3, 'sess-1', 'stream.plan_created', {
+        planId,
+        goal: 'analyse GSCORD',
+        steps: stepNames.map((name, i) => ({ index: i + 1, name })),
+      }),
+    ];
+
+    // For each step: started -> thinking (with parentStepId) -> tool_use
+    // (with parentStepId) -> tool_completed -> step_completed.
+    let nextId = 4;
+    stepNames.forEach((name, i) => {
+      const idx = i + 1;
+      const stepId = stepIdOf(idx);
+      envelopes.push(
+        buildEnvelope(nextId++, 'sess-1', 'stream.plan_step_started', {
+          planId,
+          stepId,
+          stepIndex: idx,
+          totalSteps: stepNames.length,
+          stepName: name,
+        }),
+        buildEnvelope(nextId++, 'sess-1', 'stream.thinking', {
+          delta: `thinking for ${name}`,
+          parentStepId: stepId,
+        }),
+        buildEnvelope(nextId++, 'sess-1', 'stream.tool_use', {
+          id: `tu-${idx}`,
+          name: idx === 3 ? 'bash' : 'read_file',
+          parentStepId: stepId,
+        }),
+        buildEnvelope(nextId++, 'sess-1', 'stream.tool_completed', {
+          id: `tu-${idx}`,
+          name: idx === 3 ? 'bash' : 'read_file',
+          durationMs: 100,
+          isError: false,
+        }),
+        buildEnvelope(nextId++, 'sess-1', 'stream.plan_step_completed', {
+          planId,
+          stepId,
+          stepIndex: idx,
+          stepName: name,
+          success: true,
+          durationMs: 100,
+          tokensUsed: 100,
+        }),
+      );
+    });
+
+    let tree = emptyTree('sess-1');
+    for (const env of envelopes) {
+      const parsed = parseEnvelopeFromObject(env);
+      expect(parsed).not.toBeNull();
+      if (parsed?.kind === 'known') {
+        tree = executionTreeReducer(tree, parsed.envelope);
+      }
+    }
+
+    // Walk down to the plan node.
+    const session = tree.rootNodes.find((n) => n.type === 'session');
+    expect(session).toBeDefined();
+    const turn = session!.children[0]!;
+    const plan = turn.children.find((c) => c.type === 'plan')!;
+    expect(plan).toBeDefined();
+
+    // Each step has exactly one thinking child with exactly one tool nested
+    // inside. The original symptom would manifest here as later steps having
+    // a thinking child with no tool descendant (the tool got lost or
+    // attached to step 1 instead).
+    for (let idx = 1; idx <= stepNames.length; idx++) {
+      const step = plan.children.find((c) => c.id === stepIdOf(idx));
+      expect(step, `step ${idx} should exist under plan`).toBeDefined();
+      const thinking = step!.children.find((c) => c.type === 'thinking');
+      expect(thinking, `step ${idx} should have a thinking child`).toBeDefined();
+      const tool = thinking!.children.find((c) => c.type === 'tool');
+      expect(
+        tool,
+        `step ${idx} thinking should have its tool_use nested inside`,
+      ).toBeDefined();
+      expect(tool!.id).toBe(`tu-${idx}`);
+    }
+
+    // Cross-check: step 1's subtree must NOT have absorbed steps 2-4's
+    // tool calls. This is the explicit regression guard for the original
+    // "anchor walks up to step 1" bug.
+    const step1 = plan.children.find((c) => c.id === stepIdOf(1))!;
+    const allToolsUnderStep1: string[] = [];
+    function collect(node: ExecutionNode): void {
+      if (node.type === 'tool') allToolsUnderStep1.push(node.id);
+      for (const c of node.children) collect(c);
+    }
+    collect(step1);
+    expect(allToolsUnderStep1).toEqual(['tu-1']);
   });
 
   it('returns kind=unknown for forward-compat methods so callers can advance the watermark', () => {

@@ -130,7 +130,7 @@ public final class AceClawConfig {
     // 0 means "derive from soft limit (3x)" in StreamingAgentHandler
     private static final int DEFAULT_MAX_AGENT_HARD_TURNS = 0;
     private static final int DEFAULT_MAX_AGENT_HARD_WALL_TIME_SEC = 0;
-    private static final int DEFAULT_MAX_PLAN_STEP_WALL_TIME_SEC = 300;
+    private static final int DEFAULT_MAX_PLAN_STEP_WALL_TIME_SEC = 1800;
     private static final int DEFAULT_MAX_PLAN_TOTAL_WALL_TIME_SEC = 3600;
     private static final boolean DEFAULT_DEFERRED_ACTION_ENABLED = true;
     private static final int DEFAULT_DEFERRED_ACTION_TICK_SECONDS = 5;
