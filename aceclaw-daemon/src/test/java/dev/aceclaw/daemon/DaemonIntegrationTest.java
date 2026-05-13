@@ -930,116 +930,6 @@ class DaemonIntegrationTest {
     }
 
     @Test
-    @Order(16)
-    void testCancelWhilePermissionPendingUnblocksTurn() throws Exception {
-        // Reproduces the deadlock fixed in fix/cancel-resolves-pending-permissions:
-        // when agent.cancel arrives while the agent loop is blocked on a permission
-        // future, the daemon used to just flip cancellationToken (which only cancels
-        // the SSE stream) and the turn sat there until PERMISSION_RESPONSE_TIMEOUT_MS
-        // (120 s) fired. The fix is in CancelAwareStreamContext.monitorLoop:
-        // agent.cancel now also drains pendingPermissions, cancelling each future
-        // (so the agent loop unblocks with CancellationException → "denied" tool
-        // result) and emitting permission.cancelled so the CLI dismisses its modal.
-        try (var channel = connectToSocket()) {
-            String sessionId = createSession(channel, 1);
-
-            // write_file requires WRITE permission → daemon will send permission.request
-            mockLlm.enqueueResponse(MockLlmClient.toolUseResponse(
-                    "Writing file.",
-                    "toolu_cancel_perm_001", "write_file",
-                    "{\"file_path\":\"never-created.txt\",\"content\":\"unused\"}"
-            ));
-            // If the cancel path is broken, the loop will eventually consume this
-            // (after the permission denies on timeout). With the fix, the cancellation
-            // token short-circuits the loop before any follow-up call is made — but
-            // enqueue a placeholder so a regression doesn't NPE on missing response.
-            mockLlm.enqueueResponse(MockLlmClient.textResponse(
-                    "Would have continued, but turn was cancelled."));
-
-            var promptParams = objectMapper.createObjectNode();
-            promptParams.put("sessionId", sessionId);
-            promptParams.put("prompt", "Create never-created.txt");
-            sendRequest(channel, "agent.prompt", promptParams, 2);
-
-            String permRequestId = null;
-            boolean sawPermissionCancelled = false;
-            String cancelledVia = null;
-            boolean cancelledApproved = true;
-            JsonNode finalResponse = null;
-            // Generous wall-clock budget: the whole point is that with the fix this
-            // resolves in <1 s. Without the fix the test would hang for the daemon's
-            // 120 s permission timeout — capping at 15 s catches the regression while
-            // staying well under the CI per-test limit.
-            long deadline = System.currentTimeMillis() + 15_000;
-
-            // Read sequentially and BREAK on finalResponse — this is what asserts
-            // the ordering invariant. If the daemon ever flipped the order
-            // (future.cancel before sendNotification, Codex P1 on PR #493), the
-            // agent thread could race to the socket and emit the final response
-            // first; we'd break before seeing permission.cancelled, leaving
-            // sawPermissionCancelled false and failing the assertion below.
-            // Mirrors the CLI's TaskStreamReader, which also stops reading
-            // notifications once the JSON-RPC response lands.
-            while (System.currentTimeMillis() < deadline && finalResponse == null) {
-                var msg = readMessage(channel);
-                if (msg == null) {
-                    throw new IOException("Connection closed while waiting for response");
-                }
-
-                if (msg.has("id") && !msg.get("id").isNull()) {
-                    finalResponse = msg;
-                    break;
-                }
-
-                if (!msg.has("method")) continue;
-                String method = msg.get("method").asText();
-
-                if ("permission.request".equals(method) && permRequestId == null) {
-                    permRequestId = msg.path("params").path("requestId").asText();
-                    // Send agent.cancel WITHOUT ever sending permission.response.
-                    var cancelParams = objectMapper.createObjectNode();
-                    cancelParams.put("sessionId", sessionId);
-                    sendNotification(channel, "agent.cancel", cancelParams);
-                } else if ("permission.cancelled".equals(method)) {
-                    var params = msg.path("params");
-                    if (permRequestId != null
-                            && permRequestId.equals(params.path("requestId").asText())) {
-                        sawPermissionCancelled = true;
-                        cancelledVia = params.path("via").asText("");
-                        cancelledApproved = params.path("approved").asBoolean(true);
-                    }
-                }
-            }
-
-            assertThat(permRequestId)
-                    .as("daemon should send permission.request for write_file")
-                    .isNotNull();
-            assertThat(finalResponse)
-                    .as("turn should complete after cancel — without the fix this hangs "
-                            + "until the 120s permission timeout")
-                    .isNotNull();
-            // Ordering invariant: permission.cancelled must have arrived BEFORE the
-            // final response (we observed it while reading earlier in the same loop).
-            // If the daemon ever flipped the order (future.cancel before
-            // sendNotification), the agent loop could race to the socket and emit
-            // the final response first; the CLI would stop reading and never see
-            // permission.cancelled, leaving the modal stuck on stdin.
-            assertThat(sawPermissionCancelled)
-                    .as("daemon must emit permission.cancelled BEFORE the final response "
-                            + "(modal dismissal would otherwise be dropped by CLI)")
-                    .isTrue();
-            assertThat(cancelledApproved)
-                    .as("agent-cancel should resolve pending permission as denied")
-                    .isFalse();
-            assertThat(cancelledVia).isEqualTo("agent-cancel");
-            // Tool must not have run — permission was never approved.
-            assertThat(Files.exists(workDir.resolve("never-created.txt"))).isFalse();
-
-            destroySession(channel, sessionId, 3);
-        }
-    }
-
-    @Test
     @Order(14)
     void testPermissionStaleResponseIgnoredUntilMatchingRequestArrives() throws Exception {
         try (var channel = connectToSocket()) {
@@ -1194,6 +1084,116 @@ class DaemonIntegrationTest {
             assertThat(stats.falsePositiveCount()).isGreaterThanOrEqualTo(2);
 
             destroySession(channel, sessionId, 4);
+        }
+    }
+
+    @Test
+    @Order(16)
+    void testCancelWhilePermissionPendingUnblocksTurn() throws Exception {
+        // Reproduces the deadlock fixed in fix/cancel-resolves-pending-permissions:
+        // when agent.cancel arrives while the agent loop is blocked on a permission
+        // future, the daemon used to just flip cancellationToken (which only cancels
+        // the SSE stream) and the turn sat there until PERMISSION_RESPONSE_TIMEOUT_MS
+        // (120 s) fired. The fix is in CancelAwareStreamContext.monitorLoop:
+        // agent.cancel now also drains pendingPermissions, cancelling each future
+        // (so the agent loop unblocks with CancellationException → "denied" tool
+        // result) and emitting permission.cancelled so the CLI dismisses its modal.
+        try (var channel = connectToSocket()) {
+            String sessionId = createSession(channel, 1);
+
+            // write_file requires WRITE permission → daemon will send permission.request
+            mockLlm.enqueueResponse(MockLlmClient.toolUseResponse(
+                    "Writing file.",
+                    "toolu_cancel_perm_001", "write_file",
+                    "{\"file_path\":\"never-created.txt\",\"content\":\"unused\"}"
+            ));
+            // If the cancel path is broken, the loop will eventually consume this
+            // (after the permission denies on timeout). With the fix, the cancellation
+            // token short-circuits the loop before any follow-up call is made — but
+            // enqueue a placeholder so a regression doesn't NPE on missing response.
+            mockLlm.enqueueResponse(MockLlmClient.textResponse(
+                    "Would have continued, but turn was cancelled."));
+
+            var promptParams = objectMapper.createObjectNode();
+            promptParams.put("sessionId", sessionId);
+            promptParams.put("prompt", "Create never-created.txt");
+            sendRequest(channel, "agent.prompt", promptParams, 2);
+
+            String permRequestId = null;
+            boolean sawPermissionCancelled = false;
+            String cancelledVia = null;
+            boolean cancelledApproved = true;
+            JsonNode finalResponse = null;
+            // Generous wall-clock budget: the whole point is that with the fix this
+            // resolves in <1 s. Without the fix the test would hang for the daemon's
+            // 120 s permission timeout — capping at 15 s catches the regression while
+            // staying well under the CI per-test limit.
+            long deadline = System.currentTimeMillis() + 15_000;
+
+            // Read sequentially and BREAK on finalResponse — this is what asserts
+            // the ordering invariant. If the daemon ever flipped the order
+            // (future.cancel before sendNotification, Codex P1 on PR #493), the
+            // agent thread could race to the socket and emit the final response
+            // first; we'd break before seeing permission.cancelled, leaving
+            // sawPermissionCancelled false and failing the assertion below.
+            // Mirrors the CLI's TaskStreamReader, which also stops reading
+            // notifications once the JSON-RPC response lands.
+            while (System.currentTimeMillis() < deadline && finalResponse == null) {
+                var msg = readMessage(channel);
+                if (msg == null) {
+                    throw new IOException("Connection closed while waiting for response");
+                }
+
+                if (msg.has("id") && !msg.get("id").isNull()) {
+                    finalResponse = msg;
+                    break;
+                }
+
+                if (!msg.has("method")) continue;
+                String method = msg.get("method").asText();
+
+                if ("permission.request".equals(method) && permRequestId == null) {
+                    permRequestId = msg.path("params").path("requestId").asText();
+                    // Send agent.cancel WITHOUT ever sending permission.response.
+                    var cancelParams = objectMapper.createObjectNode();
+                    cancelParams.put("sessionId", sessionId);
+                    sendNotification(channel, "agent.cancel", cancelParams);
+                } else if ("permission.cancelled".equals(method)) {
+                    var params = msg.path("params");
+                    if (permRequestId != null
+                            && permRequestId.equals(params.path("requestId").asText())) {
+                        sawPermissionCancelled = true;
+                        cancelledVia = params.path("via").asText("");
+                        cancelledApproved = params.path("approved").asBoolean(true);
+                    }
+                }
+            }
+
+            assertThat(permRequestId)
+                    .as("daemon should send permission.request for write_file")
+                    .isNotNull();
+            assertThat(finalResponse)
+                    .as("turn should complete after cancel — without the fix this hangs "
+                            + "until the 120s permission timeout")
+                    .isNotNull();
+            // Ordering invariant: permission.cancelled must have arrived BEFORE the
+            // final response (we observed it while reading earlier in the same loop).
+            // If the daemon ever flipped the order (future.cancel before
+            // sendNotification), the agent loop could race to the socket and emit
+            // the final response first; the CLI would stop reading and never see
+            // permission.cancelled, leaving the modal stuck on stdin.
+            assertThat(sawPermissionCancelled)
+                    .as("daemon must emit permission.cancelled BEFORE the final response "
+                            + "(modal dismissal would otherwise be dropped by CLI)")
+                    .isTrue();
+            assertThat(cancelledApproved)
+                    .as("agent-cancel should resolve pending permission as denied")
+                    .isFalse();
+            assertThat(cancelledVia).isEqualTo("agent-cancel");
+            // Tool must not have run — permission was never approved.
+            assertThat(Files.exists(workDir.resolve("never-created.txt"))).isFalse();
+
+            destroySession(channel, sessionId, 3);
         }
     }
 

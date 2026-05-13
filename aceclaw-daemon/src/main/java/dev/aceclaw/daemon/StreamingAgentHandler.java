@@ -3832,6 +3832,25 @@ public final class StreamingAgentHandler {
             // Outside lock: send dismissal first, THEN cancel the future.
             // See class-level javadoc above for why this ordering is required.
             for (var entry : snapshot) {
+                // Skip futures already resolved by a concurrent path —
+                // typically a WS permission.response that completed the
+                // future via routePermissionResponse without taking
+                // permissionLifecycleLock (per-context pendingPermissions
+                // is only drained by the monitor's UDS-side handler and
+                // by agent-loop unregister, so we can snapshot an entry
+                // whose future was already approved). Emitting an
+                // approved=false cancellation here would advertise a
+                // denial for a request that actually won via approval —
+                // Codex P2 on PR #493. Tiny isDone-then-completed race
+                // remains (microseconds) but is bounded and the CLI's
+                // PermissionBridge.cancelExternal uses putIfAbsent so a
+                // late-stale dismissal is dropped on the receiving side.
+                var future = entry.getValue();
+                if (future.isDone()) {
+                    log.debug("Cancel monitor: skipping permission.cancelled for "
+                            + "already-resolved requestId={}", entry.getKey());
+                    continue;
+                }
                 try {
                     var cancelParams = objectMapper.createObjectNode();
                     cancelParams.put("requestId", entry.getKey());
@@ -3842,7 +3861,7 @@ public final class StreamingAgentHandler {
                     log.debug("Cancel monitor: failed to send permission.cancelled "
                             + "for requestId={}: {}", entry.getKey(), e.getMessage());
                 }
-                entry.getValue().cancel(false);
+                future.cancel(false);
             }
         }
 
