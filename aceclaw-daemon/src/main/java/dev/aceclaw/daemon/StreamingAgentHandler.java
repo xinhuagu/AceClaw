@@ -3794,21 +3794,31 @@ public final class StreamingAgentHandler {
          * back the future cancellation: the in-memory state must stay
          * consistent even if the wire send fails.
          *
-         * <p>Idempotent. The map snapshot + future cancellation runs
-         * under {@link #permissionLifecycleLock} so it's atomic against
-         * other writers (registerPermissionRequest / stopMonitor); the
-         * subsequent socket writes happen OUTSIDE the lock so a slow
-         * peer can't gate concurrent permission lifecycle operations.
+         * <p><b>Ordering:</b> the notification is sent <em>before</em>
+         * {@code future.cancel(false)}. Cancelling the future first
+         * would race the agent thread to the shared socket — once
+         * unblocked it returns a denied {@link ToolResult} and the
+         * turn's finally block emits the final JSON-RPC response. If
+         * that response wins the write, the CLI's
+         * {@code TaskStreamReader} stops reading further notifications
+         * and the trailing {@code permission.cancelled} is dropped on
+         * the floor, leaving the y/n modal stuck on stdin.
+         *
+         * <p>Idempotent. The snapshot + map drain runs under
+         * {@link #permissionLifecycleLock} so it's atomic against other
+         * writers (registerPermissionRequest / stopMonitor); the
+         * subsequent socket writes and future cancellations happen
+         * OUTSIDE the lock so a slow peer can't gate concurrent
+         * permission lifecycle operations.
          */
         private void cancelAllPendingPermissions(String via) {
-            // Snapshot + cancel + clear under the lock so we observe a
-            // consistent set and other writers see the cleared state
-            // before any new register attempts.
+            // Drain the maps under the lock — but DON'T cancel futures yet.
+            // The agent loop's future.get() stays blocked, so it can't race
+            // us to the socket while we're sending permission.cancelled below.
             var snapshot = new ArrayList<Map.Entry<String, CompletableFuture<JsonNode>>>();
             synchronized (permissionLifecycleLock) {
                 pendingPermissions.forEach((rid, future) -> {
                     snapshot.add(Map.entry(rid, future));
-                    future.cancel(false);
                     if (globalPermissionRegistry != null) {
                         // Match by future identity — same rationale as stopMonitor.
                         var pending = globalPermissionRegistry.get(rid);
@@ -3819,14 +3829,8 @@ public final class StreamingAgentHandler {
                 });
                 pendingPermissions.clear();
             }
-            // Socket writes outside the lock: sendNotification can block
-            // if the peer is slow/closed, and the existing routePermissionResponse
-            // path also sends permission.cancelled without holding any lock.
-            // The daemon-side future was already cancelled above so the
-            // agent loop is no longer blocked; this notification's job is
-            // purely to tell the CLI to dismiss its modal (it owns its
-            // own separate PermissionBridge future, which cancelExternal
-            // completes when the notification arrives).
+            // Outside lock: send dismissal first, THEN cancel the future.
+            // See class-level javadoc above for why this ordering is required.
             for (var entry : snapshot) {
                 try {
                     var cancelParams = objectMapper.createObjectNode();
@@ -3838,6 +3842,7 @@ public final class StreamingAgentHandler {
                     log.debug("Cancel monitor: failed to send permission.cancelled "
                             + "for requestId={}: {}", entry.getKey(), e.getMessage());
                 }
+                entry.getValue().cancel(false);
             }
         }
 

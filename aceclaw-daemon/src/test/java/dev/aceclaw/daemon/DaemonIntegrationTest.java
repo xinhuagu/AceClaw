@@ -972,6 +972,14 @@ class DaemonIntegrationTest {
             // staying well under the CI per-test limit.
             long deadline = System.currentTimeMillis() + 15_000;
 
+            // Read sequentially and BREAK on finalResponse — this is what asserts
+            // the ordering invariant. If the daemon ever flipped the order
+            // (future.cancel before sendNotification, Codex P1 on PR #493), the
+            // agent thread could race to the socket and emit the final response
+            // first; we'd break before seeing permission.cancelled, leaving
+            // sawPermissionCancelled false and failing the assertion below.
+            // Mirrors the CLI's TaskStreamReader, which also stops reading
+            // notifications once the JSON-RPC response lands.
             while (System.currentTimeMillis() < deadline && finalResponse == null) {
                 var msg = readMessage(channel);
                 if (msg == null) {
@@ -1010,9 +1018,15 @@ class DaemonIntegrationTest {
                     .as("turn should complete after cancel — without the fix this hangs "
                             + "until the 120s permission timeout")
                     .isNotNull();
+            // Ordering invariant: permission.cancelled must have arrived BEFORE the
+            // final response (we observed it while reading earlier in the same loop).
+            // If the daemon ever flipped the order (future.cancel before
+            // sendNotification), the agent loop could race to the socket and emit
+            // the final response first; the CLI would stop reading and never see
+            // permission.cancelled, leaving the modal stuck on stdin.
             assertThat(sawPermissionCancelled)
-                    .as("daemon should emit permission.cancelled so the CLI can dismiss "
-                            + "its modal instead of waiting on stdin")
+                    .as("daemon must emit permission.cancelled BEFORE the final response "
+                            + "(modal dismissal would otherwise be dropped by CLI)")
                     .isTrue();
             assertThat(cancelledApproved)
                     .as("agent-cancel should resolve pending permission as denied")
