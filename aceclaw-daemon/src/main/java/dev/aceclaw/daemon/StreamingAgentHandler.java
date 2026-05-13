@@ -3774,12 +3774,109 @@ public final class StreamingAgentHandler {
         }
 
         /**
+         * Resolves every pending permission request as cancelled. Used by
+         * the {@code agent.cancel} branch of the monitor so the agent
+         * loop's {@code future.get()} in {@code PermissionAwareTool.execute}
+         * unblocks immediately with {@code CancellationException}
+         * instead of waiting up to {@link #PERMISSION_RESPONSE_TIMEOUT_MS}
+         * (120 s) — without this, Ctrl-C sets the cancellation token
+         * but the turn stays blocked on the permission future, so
+         * {@code stopMonitor()} never runs and the CLI's modal sits
+         * there until the daemon-side timeout fires.
+         *
+         * <p>Per request emits a best-effort {@code permission.cancelled}
+         * notification so the originating CLI's
+         * {@code TaskStreamReader.handlePermissionCancelled} can route
+         * it into {@link PermissionBridge#cancelExternal} — that path
+         * both completes the task-thread future and pokes the modal's
+         * polling loop so it dismisses without waiting on stdin.
+         * Send failures (socket closed, peer disconnected) don't roll
+         * back the future cancellation: the in-memory state must stay
+         * consistent even if the wire send fails.
+         *
+         * <p><b>Ordering:</b> the notification is sent <em>before</em>
+         * {@code future.cancel(false)}. Cancelling the future first
+         * would race the agent thread to the shared socket — once
+         * unblocked it returns a denied {@link ToolResult} and the
+         * turn's finally block emits the final JSON-RPC response. If
+         * that response wins the write, the CLI's
+         * {@code TaskStreamReader} stops reading further notifications
+         * and the trailing {@code permission.cancelled} is dropped on
+         * the floor, leaving the y/n modal stuck on stdin.
+         *
+         * <p>Idempotent. The snapshot + map drain runs under
+         * {@link #permissionLifecycleLock} so it's atomic against other
+         * writers (registerPermissionRequest / stopMonitor); the
+         * subsequent socket writes and future cancellations happen
+         * OUTSIDE the lock so a slow peer can't gate concurrent
+         * permission lifecycle operations.
+         */
+        private void cancelAllPendingPermissions(String via) {
+            // Drain the maps under the lock — but DON'T cancel futures yet.
+            // The agent loop's future.get() stays blocked, so it can't race
+            // us to the socket while we're sending permission.cancelled below.
+            var snapshot = new ArrayList<Map.Entry<String, CompletableFuture<JsonNode>>>();
+            synchronized (permissionLifecycleLock) {
+                pendingPermissions.forEach((rid, future) -> {
+                    snapshot.add(Map.entry(rid, future));
+                    if (globalPermissionRegistry != null) {
+                        // Match by future identity — same rationale as stopMonitor.
+                        var pending = globalPermissionRegistry.get(rid);
+                        if (pending != null && pending.future() == future) {
+                            globalPermissionRegistry.remove(rid, pending);
+                        }
+                    }
+                });
+                pendingPermissions.clear();
+            }
+            // Outside lock: send dismissal first, THEN cancel the future.
+            // See class-level javadoc above for why this ordering is required.
+            for (var entry : snapshot) {
+                // Skip futures already resolved by a concurrent path —
+                // typically a WS permission.response that completed the
+                // future via routePermissionResponse without taking
+                // permissionLifecycleLock (per-context pendingPermissions
+                // is only drained by the monitor's UDS-side handler and
+                // by agent-loop unregister, so we can snapshot an entry
+                // whose future was already approved). Emitting an
+                // approved=false cancellation here would advertise a
+                // denial for a request that actually won via approval —
+                // Codex P2 on PR #493. Tiny isDone-then-completed race
+                // remains (microseconds) but is bounded and the CLI's
+                // PermissionBridge.cancelExternal uses putIfAbsent so a
+                // late-stale dismissal is dropped on the receiving side.
+                var future = entry.getValue();
+                if (future.isDone()) {
+                    log.debug("Cancel monitor: skipping permission.cancelled for "
+                            + "already-resolved requestId={}", entry.getKey());
+                    continue;
+                }
+                try {
+                    var cancelParams = objectMapper.createObjectNode();
+                    cancelParams.put("requestId", entry.getKey());
+                    cancelParams.put("approved", false);
+                    cancelParams.put("via", via);
+                    delegate.sendNotification("permission.cancelled", cancelParams);
+                } catch (IOException e) {
+                    log.debug("Cancel monitor: failed to send permission.cancelled "
+                            + "for requestId={}: {}", entry.getKey(), e.getMessage());
+                }
+                future.cancel(false);
+            }
+        }
+
+        /**
          * Stops the monitor thread cleanly without interrupting.
          * Sets the stopped flag and wakes the selector so the thread exits promptly.
          */
         void stopMonitor() {
             stopped = true;
-            // Cancel all pending permission futures so waiting threads unblock
+            // Cancel all pending permission futures so waiting threads unblock.
+            // No permission.cancelled fan-out here: stopMonitor runs at the
+            // request's finally block, by which point the turn is wrapping up
+            // and the CLI will see stream.cancelled / final response anyway.
+            // The agent.cancel branch (cancelAllPendingPermissions) is what
+            // handles the in-flight dismissal case.
             synchronized (permissionLifecycleLock) {
                 pendingPermissions.forEach((rid, future) -> {
                     future.cancel(false);
@@ -3864,6 +3961,13 @@ public final class StreamingAgentHandler {
                                 if ("agent.cancel".equals(method)) {
                                     log.info("Cancel monitor: received agent.cancel");
                                     cancellationToken.cancel();
+                                    // Unblock PermissionAwareTool.execute's future.get():
+                                    // setting the cancellation token alone doesn't propagate to
+                                    // CompletableFutures, so without this the turn sits blocked
+                                    // until PERMISSION_RESPONSE_TIMEOUT_MS (120 s) — and because
+                                    // the request never completes, stopMonitor() never runs and
+                                    // the CLI's y/n modal stays on screen waiting on stdin.
+                                    cancelAllPendingPermissions("agent-cancel");
                                     return;
                                 } else if ("permission.response".equals(method)) {
                                     log.debug("Cancel monitor: routing permission.response");
