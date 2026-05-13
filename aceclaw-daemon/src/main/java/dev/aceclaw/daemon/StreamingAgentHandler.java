@@ -3776,8 +3776,8 @@ public final class StreamingAgentHandler {
         /**
          * Resolves every pending permission request as cancelled. Used by
          * the {@code agent.cancel} branch of the monitor so the agent
-         * loop's {@code future.get()} on permission responses (line
-         * 4195) unblocks immediately with {@code CancellationException}
+         * loop's {@code future.get()} in {@code PermissionAwareTool.execute}
+         * unblocks immediately with {@code CancellationException}
          * instead of waiting up to {@link #PERMISSION_RESPONSE_TIMEOUT_MS}
          * (120 s) — without this, Ctrl-C sets the cancellation token
          * but the turn stays blocked on the permission future, so
@@ -3937,7 +3937,7 @@ public final class StreamingAgentHandler {
                                 if ("agent.cancel".equals(method)) {
                                     log.info("Cancel monitor: received agent.cancel");
                                     cancellationToken.cancel();
-                                    // Unblock the agent loop's permission future.get() (line 4195):
+                                    // Unblock PermissionAwareTool.execute's future.get():
                                     // setting the cancellation token alone doesn't propagate to
                                     // CompletableFutures, so without this the turn sits blocked
                                     // until PERMISSION_RESPONSE_TIMEOUT_MS (120 s) — and because
