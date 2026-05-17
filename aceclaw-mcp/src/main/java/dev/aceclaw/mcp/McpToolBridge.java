@@ -18,6 +18,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.regex.Pattern;
 
 /**
@@ -60,6 +61,9 @@ public final class McpToolBridge implements Tool, CapabilityAware {
      * @return a new tool bridge instance
      */
     public static McpToolBridge create(String serverName, McpSchema.Tool mcpTool, McpSyncClient client) {
+        Objects.requireNonNull(serverName, "serverName");
+        Objects.requireNonNull(mcpTool, "mcpTool");
+        Objects.requireNonNull(client, "client");
         var qualifiedName = "mcp__" + serverName + "__" + mcpTool.name();
 
         // Convert MCP input schema to Jackson JsonNode
@@ -196,22 +200,28 @@ public final class McpToolBridge implements Tool, CapabilityAware {
     private static final List<String> SOURCE_FIELDS = List.of(
             "source", "src", "from", "old_path", "input_path", "input");
 
-    /** Method names with clear file-write intent (matched against lowercased mcpToolName). */
+    /**
+     * Method names with clear file-write intent (matched against lowercased
+     * mcpToolName). Prefix and suffix alternations include the short
+     * {@code put} form on both sides so {@code foo_put} matches just like
+     * {@code put_foo} does.
+     */
     private static final Pattern WRITE_VERB = Pattern.compile(
-            "^(write|create|edit|append|put|save)(_.*)?$|.*_(write|create|edit|append|save)$");
+            "^(write|create|edit|append|put|save)(_.*)?$|.*_(write|create|edit|append|save|put)$");
 
-    /** Method names with clear file-delete intent (matched against lowercased mcpToolName). */
+    /**
+     * Method names with clear file-delete intent. Short {@code rm} included
+     * on both sides for the same reason as {@link #WRITE_VERB}.
+     */
     private static final Pattern DELETE_VERB = Pattern.compile(
-            "^(delete|remove|unlink|rm)(_.*)?$|.*_(delete|remove|unlink)$");
+            "^(delete|remove|unlink|rm)(_.*)?$|.*_(delete|remove|unlink|rm)$");
 
     /**
      * Method names for two-arg destination-receiving ops: move/rename/copy.
-     * Includes the short {@code mv} and {@code cp} forms as standalone names
-     * (so a method literally named {@code mv} matches, but a method named
-     * {@code recipe} does not — anchored full-word match).
+     * Short {@code mv}/{@code cp} forms included on both sides.
      */
     private static final Pattern MOVE_DEST_VERB = Pattern.compile(
-            "^(move|mv|rename|copy|cp)(_.*)?$|.*_(move|rename|copy)$");
+            "^(move|mv|rename|copy|cp)(_.*)?$|.*_(move|rename|copy|mv|cp)$");
 
     /**
      * Subset of {@link #MOVE_DEST_VERB} that does NOT remove the source —
@@ -219,7 +229,7 @@ public final class McpToolBridge implements Tool, CapabilityAware {
      * treated as a delete: copy doesn't delete the source, move does.
      */
     private static final Pattern COPY_VERB = Pattern.compile(
-            "^(copy|cp)(_.*)?$|.*_copy$");
+            "^(copy|cp)(_.*)?$|.*_(copy|cp)$");
 
     private Capability inferFileCapability(JsonNode args) {
         if (args == null || args.isNull() || !args.isObject()) return null;
@@ -241,17 +251,24 @@ public final class McpToolBridge implements Tool, CapabilityAware {
         if (MOVE_DEST_VERB.matcher(name).matches()) {
             // Two-arg op: destination is the "write" target; source is the
             // "delete" target (for moves only — copies leave the source).
-            // The structural denial layer only sees one Capability, so we
-            // disambiguate up front with DefaultPermissionPolicy.isSensitivePath:
-            //   1. If destination resolves AND is sensitive → FileWrite(dst).
-            //      Catches "move/copy to .env" — destination-write attack.
-            //   2. Else if the op is a move (not copy), source resolves, AND
-            //      is sensitive → FileDelete(src). Catches "move .env away"
-            //      — source-delete attack that the destination-first model
-            //      missed (Codex P1 second follow-up on #495).
-            //   3. Else fall back to destination if present, otherwise
-            //      source-as-delete for moves. Benign cases get the standard
-            //      MCP prompt via the tool-name allowlist key.
+            // Disambiguation order:
+            //   1. dst is sensitive → FileWrite(dst). Catches "move/copy to
+            //      .env" — destination-write attack.
+            //   2. Op is a move (not copy) and src resolves → FileDelete(src).
+            //      Two purposes:
+            //        a. Catches "move .env away" — source-delete attack the
+            //           destination-first model missed (Codex P1 follow-up #2
+            //           on #495).
+            //        b. Preserves DANGEROUS risk on the move semantics so even
+            //           benign moves don't auto-approve in accept-edits mode.
+            //           Pre-#495 MCP moves prompted via EXECUTE risk; FileWrite
+            //           is WRITE which IS auto-approved in accept-edits — that
+            //           would silently delete the source. FileDelete is
+            //           DANGEROUS, which is the closest match (Codex P2
+            //           on #495).
+            //   3. Pure copies (no source side-effect) → FileWrite(dst). Risk
+            //      is the genuine WRITE risk; auto-approval in accept-edits
+            //      is fine because the source is intact.
             Path dst = safePath(extractField(args, DESTINATION_FIELDS));
             Path src = safePath(extractField(args, SOURCE_FIELDS));
             boolean isMove = !COPY_VERB.matcher(name).matches();
@@ -259,11 +276,10 @@ public final class McpToolBridge implements Tool, CapabilityAware {
             if (dst != null && DefaultPermissionPolicy.isSensitivePath(dst)) {
                 return new Capability.FileWrite(dst, WriteMode.OVERWRITE);
             }
-            if (isMove && src != null && DefaultPermissionPolicy.isSensitivePath(src)) {
+            if (isMove && src != null) {
                 return new Capability.FileDelete(src);
             }
             if (dst != null) return new Capability.FileWrite(dst, WriteMode.OVERWRITE);
-            if (isMove && src != null) return new Capability.FileDelete(src);
         }
         return null;
     }

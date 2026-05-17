@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -29,6 +30,33 @@ class McpToolBridgeTest {
     private McpSchema.Tool mcpTool(String name, String description) {
         var schema = new McpSchema.JsonSchema("object", Map.of(), List.of(), null, null, null);
         return new McpSchema.Tool(name, null, description, schema, null, null, null);
+    }
+
+    @Test
+    void createNullServerNameThrows() {
+        // CodeRabbit on #495: null params used in string concatenation /
+        // method calls must fail fast at the factory boundary, not produce
+        // garbage like "mcp__null__do_thing".
+        assertThatThrownBy(() ->
+                McpToolBridge.create(null, mcpTool("do_thing", "desc"), client))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("serverName");
+    }
+
+    @Test
+    void createNullMcpToolThrows() {
+        assertThatThrownBy(() ->
+                McpToolBridge.create("server", null, client))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("mcpTool");
+    }
+
+    @Test
+    void createNullClientThrows() {
+        assertThatThrownBy(() ->
+                McpToolBridge.create("server", mcpTool("t", "desc"), null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("client");
     }
 
     @Test
@@ -328,11 +356,31 @@ class McpToolBridgeTest {
     }
 
     @Test
-    void benignMoveWithSafeBothSidesEmitsFileWrite() {
-        // No sensitivity on either side - falls through to "destination wins"
-        // FileWrite. Session-blanket approval for the MCP method (allowlist
-        // key) still auto-approves because the blanket is keyed by tool name.
+    void benignMoveWithSafeBothSidesEmitsFileDeleteToPreserveDangerousRisk() {
+        // Codex P2 on #495: a benign move emitted FileWrite(dst) (WRITE risk)
+        // which auto-approves in accept-edits mode, silently removing the
+        // source. Pre-#495 MCP moves prompted via EXECUTE risk. To match
+        // that floor — and since the move semantics ARE a delete of the
+        // source — emit FileDelete(src) instead. FileDelete is DANGEROUS,
+        // so it prompts in every mode except auto-accept.
         var tool = McpToolBridge.create("fs", mcpTool("move_file", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode()
+                .put("source", "/tmp/a.txt")
+                .put("destination", "/tmp/b.txt");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileDelete.class);
+        assertThat(((Capability.FileDelete) cap).path()).isEqualTo(Path.of("/tmp/a.txt"));
+        // Sanity: FileDelete is DANGEROUS, so accept-edits won't auto-approve.
+        assertThat(cap.risk()).isEqualTo(dev.aceclaw.security.PermissionLevel.DANGEROUS);
+    }
+
+    @Test
+    void benignCopyWithSafeBothSidesEmitsFileWrite() {
+        // Copies don't delete the source, so the WRITE risk on the
+        // destination is honest — accept-edits auto-approval is fine.
+        var tool = McpToolBridge.create("fs", mcpTool("copy_file", "desc"), client);
 
         var args = new ObjectMapper().createObjectNode()
                 .put("source", "/tmp/a.txt")
@@ -341,6 +389,54 @@ class McpToolBridgeTest {
 
         assertThat(cap).isInstanceOf(Capability.FileWrite.class);
         assertThat(((Capability.FileWrite) cap).path()).isEqualTo(Path.of("/tmp/b.txt"));
+    }
+
+    @Test
+    void writeVerbSuffixShortFormMatches() {
+        // CodeRabbit on #495: short-form suffixes (foo_put, foo_rm) were
+        // missing from the suffix alternation; foo_put is a clear write,
+        // it should be classified.
+        var tool = McpToolBridge.create("fs", mcpTool("blob_put", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode().put("path", "/tmp/x");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileWrite.class);
+    }
+
+    @Test
+    void deleteVerbSuffixShortFormMatches() {
+        var tool = McpToolBridge.create("fs", mcpTool("blob_rm", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode().put("path", "/tmp/x");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileDelete.class);
+    }
+
+    @Test
+    void moveVerbSuffixShortFormMatches() {
+        var tool = McpToolBridge.create("fs", mcpTool("blob_mv", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode()
+                .put("source", "/tmp/a")
+                .put("destination", "/tmp/b");
+        var cap = tool.toCapability(args);
+
+        // Move semantics → FileDelete(source) for the dangerous risk.
+        assertThat(cap).isInstanceOf(Capability.FileDelete.class);
+    }
+
+    @Test
+    void copyVerbSuffixShortFormMatches() {
+        var tool = McpToolBridge.create("fs", mcpTool("blob_cp", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode()
+                .put("source", "/tmp/a")
+                .put("destination", "/tmp/b");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileWrite.class);
     }
 
     @Test
