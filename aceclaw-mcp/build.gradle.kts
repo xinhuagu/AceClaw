@@ -2,7 +2,12 @@
 
 dependencies {
     implementation(project(":aceclaw-core"))
-    implementation(project(":aceclaw-security"))
+    // api(): McpToolBridge implements CapabilityAware and exposes
+    // Capability in toCapability()'s return type, so the dependency is
+    // part of this module's public Java API. (aceclaw-tools has the same
+    // shape on every built-in tool but still uses implementation(); flip
+    // it in a follow-up consistency PR.)
+    api(project(":aceclaw-security"))
 
     implementation("io.modelcontextprotocol.sdk:mcp")
     implementation("com.fasterxml.jackson.core:jackson-databind")

@@ -5,13 +5,18 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.Tool;
 import dev.aceclaw.security.Capability;
 import dev.aceclaw.security.CapabilityAware;
+import dev.aceclaw.security.WriteMode;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Adapts an MCP tool to the AceClaw {@link Tool} interface.
@@ -114,15 +119,81 @@ public final class McpToolBridge implements Tool, CapabilityAware {
     }
 
     /**
-     * Produces the structured {@link Capability.McpInvoke} variant for the
-     * governance pipeline (#480 / runtime-governance). The args payload is
-     * intentionally not included on the variant — it can be huge and may
-     * carry secrets; policies decide on {@code (server, method)} alone, and
-     * the audit log retains the full args separately when configured.
+     * Produces the structured {@link Capability} for the governance pipeline
+     * (#480 / runtime-governance).
+     *
+     * <p>Best-effort inference: when the MCP method name has clear file-write
+     * or file-delete intent <em>and</em> the args contain a path-shaped field,
+     * emit {@link Capability.FileWrite} / {@link Capability.FileDelete} so the
+     * structural hard-denial layer can refuse writes/deletes to {@code .env*},
+     * {@code .ssh/*}, {@code /etc/*}, etc. — exactly as it does for built-in
+     * file tools (Codex P1 follow-up on #495). Without this, an MCP filesystem
+     * server's {@code write_file(path=".env")} would land as opaque
+     * {@code McpInvoke} and the structural rules would never see the path.
+     *
+     * <p>Conservative on both sides: ambiguous method names (no obvious verb,
+     * no path arg) fall through to {@link Capability.McpInvoke} which still
+     * gets the standard policy + audit treatment. False positives just mean
+     * the user sees a slightly more aggressive prompt — they can still
+     * approve. False negatives mean the structural denial is missed, which is
+     * the pre-fix behaviour.
+     *
+     * <p>The args payload itself is intentionally not retained on either
+     * variant — args can be huge and may carry secrets; policies decide on
+     * (server, method) / path alone.
      */
     @Override
     public Capability toCapability(JsonNode args) {
-        return new Capability.McpInvoke(serverName, mcpToolName);
+        var inferred = inferFileCapability(args);
+        return inferred != null ? inferred : new Capability.McpInvoke(serverName, mcpToolName);
+    }
+
+    /**
+     * Common keys MCP filesystem-style servers use for the target path. Order
+     * matters only for readability — only the first non-null textual match is
+     * extracted.
+     */
+    private static final List<String> PATH_FIELDS = List.of(
+            "path", "file_path", "filepath", "filename", "file");
+
+    /** Method names with clear file-write intent (matched against lowercased mcpToolName). */
+    private static final Pattern WRITE_VERB = Pattern.compile(
+            "^(write|create|edit|append|put|save)(_.*)?$|.*_(write|create|edit|append|save)$");
+
+    /** Method names with clear file-delete intent (matched against lowercased mcpToolName). */
+    private static final Pattern DELETE_VERB = Pattern.compile(
+            "^(delete|remove|unlink|rm)(_.*)?$|.*_(delete|remove|unlink)$");
+
+    private Capability inferFileCapability(JsonNode args) {
+        if (args == null || args.isNull() || !args.isObject()) return null;
+        String path = extractPath(args);
+        if (path == null || path.isBlank()) return null;
+        Path parsed;
+        try {
+            parsed = Path.of(path);
+        } catch (InvalidPathException malformed) {
+            // Garbage path from a misconfigured MCP server — fall back to McpInvoke
+            // so the user still sees a prompt rather than a dispatcher crash.
+            return null;
+        }
+        String name = mcpToolName.toLowerCase();
+        if (WRITE_VERB.matcher(name).matches()) {
+            return new Capability.FileWrite(parsed, WriteMode.OVERWRITE);
+        }
+        if (DELETE_VERB.matcher(name).matches()) {
+            return new Capability.FileDelete(parsed);
+        }
+        return null;
+    }
+
+    private static String extractPath(JsonNode args) {
+        for (String key : PATH_FIELDS) {
+            var node = args.get(key);
+            if (node != null && node.isTextual()) {
+                return node.asText();
+            }
+        }
+        return null;
     }
 
     /**

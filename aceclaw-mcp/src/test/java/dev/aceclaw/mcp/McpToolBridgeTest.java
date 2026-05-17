@@ -2,6 +2,8 @@ package dev.aceclaw.mcp;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.security.Capability;
+import dev.aceclaw.security.DefaultPermissionPolicy;
+import dev.aceclaw.security.PermissionDecision;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.junit.jupiter.api.Test;
@@ -9,6 +11,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
@@ -121,15 +124,117 @@ class McpToolBridgeTest {
 
     @Test
     void toCapabilityIgnoresArgs() {
-        // Args payload is intentionally NOT carried on McpInvoke (size + secret
-        // risk). Different args produce the same capability variant — policies
-        // decide on (server, method) alone.
-        var tool = McpToolBridge.create("s", mcpTool("t", "desc"), client);
+        // For methods that don't pattern-match as file ops, args are NOT
+        // carried on McpInvoke (size + secret risk). Different args produce
+        // the same capability variant.
+        var tool = McpToolBridge.create("s", mcpTool("opaque_method", "desc"), client);
 
         var mapper = new ObjectMapper();
         var cap1 = tool.toCapability(mapper.createObjectNode().put("k", "v1"));
         var cap2 = tool.toCapability(mapper.createObjectNode().put("k", "v2"));
 
         assertThat(cap1).isEqualTo(cap2);
+        assertThat(cap1).isInstanceOf(Capability.McpInvoke.class);
+    }
+
+    // -- Best-effort file-capability inference (Codex P1 follow-up on #495) --
+
+    @Test
+    void writeFileMethodWithPathInfersFileWrite() {
+        var tool = McpToolBridge.create("fs", mcpTool("write_file", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode().put("path", "/repo/.env");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileWrite.class);
+        assertThat(((Capability.FileWrite) cap).path()).isEqualTo(Path.of("/repo/.env"));
+    }
+
+    @Test
+    void createFileMethodWithFilePathInfersFileWrite() {
+        var tool = McpToolBridge.create("fs", mcpTool("create_file", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode().put("file_path", "/tmp/x.txt");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileWrite.class);
+    }
+
+    @Test
+    void deleteFileMethodInfersFileDelete() {
+        var tool = McpToolBridge.create("fs", mcpTool("delete_file", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode().put("path", "/repo/.env");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileDelete.class);
+    }
+
+    @Test
+    void removeMethodInfersFileDelete() {
+        var tool = McpToolBridge.create("fs", mcpTool("remove", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode().put("path", "/tmp/x");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileDelete.class);
+    }
+
+    @Test
+    void writeMethodWithoutPathArgFallsBackToMcpInvoke() {
+        // A method with a write-shaped name but no recognized path field is
+        // genuinely opaque; produce McpInvoke and let the standard prompt
+        // handle it.
+        var tool = McpToolBridge.create("fs", mcpTool("write_file", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode().put("destination_uri", "x");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.McpInvoke.class);
+    }
+
+    @Test
+    void opaqueMethodNameWithPathArgFallsBackToMcpInvoke() {
+        // Conservative on the false-positive side: if the method name has no
+        // obvious write/delete verb, do NOT promote to FileWrite even when a
+        // path arg is present.
+        var tool = McpToolBridge.create("fs", mcpTool("get_metadata", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode().put("path", "/etc/hosts");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.McpInvoke.class);
+    }
+
+    @Test
+    void readFileMethodFallsBackToMcpInvoke() {
+        // Reads aren't promoted to FileRead - the structural rules don't cover
+        // reads, and McpInvoke keeps the prompt flow identical to a generic
+        // MCP call.
+        var tool = McpToolBridge.create("fs", mcpTool("read_file", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode().put("path", "/etc/hosts");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.McpInvoke.class);
+    }
+
+    @Test
+    void mcpFileWriteToSensitivePathIsStructurallyDenied() {
+        // End-to-end: an MCP server's write_file(path=".env") composes through
+        // McpToolBridge.toCapability() into a Capability.FileWrite that the
+        // structural-denial layer refuses. Pins that the wiring between the
+        // MCP boundary and DefaultPermissionPolicy works for the bypass Codex
+        // P1 flagged (#495).
+        var tool = McpToolBridge.create("fs", mcpTool("write_file", "desc"), client);
+        var args = new ObjectMapper().createObjectNode().put("path", "/repo/.env");
+
+        var cap = tool.toCapability(args);
+        var decision = new DefaultPermissionPolicy("auto-accept").evaluateStructural(cap);
+
+        assertThat(decision)
+                .as("MCP-driven write to .env must be structurally denied even in auto-accept")
+                .isNotNull();
+        assertThat(decision.reason()).contains("sensitive path");
     }
 }
