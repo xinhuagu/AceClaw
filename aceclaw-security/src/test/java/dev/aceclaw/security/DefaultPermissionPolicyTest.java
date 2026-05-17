@@ -1,30 +1,52 @@
 package dev.aceclaw.security;
 
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.EnumSource;
+
+import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Tests for {@link DefaultPermissionPolicy} covering all four permission modes.
+ * Tests for {@link DefaultPermissionPolicy} covering all four permission
+ * modes and the structural hard-denial layer that overrides every mode.
  */
 class DefaultPermissionPolicyTest {
+
+    private static final Provenance PROV = Provenance.daemonInternal();
+
+    private static Capability.FileRead read(String p) {
+        return new Capability.FileRead(Path.of(p));
+    }
+
+    private static Capability.FileWrite write(String p) {
+        return new Capability.FileWrite(Path.of(p), WriteMode.OVERWRITE);
+    }
+
+    private static Capability.FileDelete delete(String p) {
+        return new Capability.FileDelete(Path.of(p));
+    }
+
+    private static Capability.BashExec bash(String command) {
+        return new Capability.BashExec(command, Path.of("/tmp"));
+    }
+
+    private static PermissionDecision evaluate(DefaultPermissionPolicy policy, Capability cap, String desc) {
+        return policy.evaluate(cap, PROV, desc);
+    }
 
     // -- Mode: normal --------------------------------------------------------
 
     @Test
     void normalMode_readIsAutoApproved() {
         var policy = new DefaultPermissionPolicy("normal");
-        var request = new PermissionRequest("read_file", "Read test.txt", PermissionLevel.READ);
-        assertInstanceOf(PermissionDecision.Approved.class, policy.evaluate(request));
+        assertInstanceOf(PermissionDecision.Approved.class,
+                evaluate(policy, read("test.txt"), "Read test.txt"));
     }
 
     @Test
     void normalMode_writeNeedsApproval() {
         var policy = new DefaultPermissionPolicy("normal");
-        var request = new PermissionRequest("write_file", "Write test.txt", PermissionLevel.WRITE);
-        var decision = policy.evaluate(request);
+        var decision = evaluate(policy, write("/tmp/foo.txt"), "Write /tmp/foo.txt");
         assertInstanceOf(PermissionDecision.NeedsUserApproval.class, decision);
         assertTrue(((PermissionDecision.NeedsUserApproval) decision).prompt().contains("write to"));
     }
@@ -32,15 +54,15 @@ class DefaultPermissionPolicyTest {
     @Test
     void normalMode_executeNeedsApproval() {
         var policy = new DefaultPermissionPolicy("normal");
-        var request = new PermissionRequest("bash", "Run ls -la", PermissionLevel.EXECUTE);
-        assertInstanceOf(PermissionDecision.NeedsUserApproval.class, policy.evaluate(request));
+        assertInstanceOf(PermissionDecision.NeedsUserApproval.class,
+                evaluate(policy, bash("ls -la"), "Run ls -la"));
     }
 
     @Test
     void normalMode_dangerousNeedsApproval() {
+        // BashExec self-escalates "rm -rf" to DANGEROUS via Capability.risk().
         var policy = new DefaultPermissionPolicy("normal");
-        var request = new PermissionRequest("bash", "rm -rf /", PermissionLevel.DANGEROUS);
-        var decision = policy.evaluate(request);
+        var decision = evaluate(policy, bash("rm -rf /tmp/junk"), "Run rm -rf /tmp/junk");
         assertInstanceOf(PermissionDecision.NeedsUserApproval.class, decision);
         assertTrue(((PermissionDecision.NeedsUserApproval) decision).prompt().contains("destructive"));
     }
@@ -56,22 +78,22 @@ class DefaultPermissionPolicyTest {
     @Test
     void acceptEditsMode_writeIsAutoApproved() {
         var policy = new DefaultPermissionPolicy("accept-edits");
-        var request = new PermissionRequest("write_file", "Write test.txt", PermissionLevel.WRITE);
-        assertInstanceOf(PermissionDecision.Approved.class, policy.evaluate(request));
+        assertInstanceOf(PermissionDecision.Approved.class,
+                evaluate(policy, write("/tmp/foo.txt"), "Write /tmp/foo.txt"));
     }
 
     @Test
     void acceptEditsMode_executeStillNeedsApproval() {
         var policy = new DefaultPermissionPolicy("accept-edits");
-        var request = new PermissionRequest("bash", "Run ls", PermissionLevel.EXECUTE);
-        assertInstanceOf(PermissionDecision.NeedsUserApproval.class, policy.evaluate(request));
+        assertInstanceOf(PermissionDecision.NeedsUserApproval.class,
+                evaluate(policy, bash("ls"), "Run ls"));
     }
 
     @Test
     void acceptEditsMode_readIsAutoApproved() {
         var policy = new DefaultPermissionPolicy("accept-edits");
-        var request = new PermissionRequest("read_file", "Read file", PermissionLevel.READ);
-        assertInstanceOf(PermissionDecision.Approved.class, policy.evaluate(request));
+        assertInstanceOf(PermissionDecision.Approved.class,
+                evaluate(policy, read("file"), "Read file"));
     }
 
     // -- Mode: plan ----------------------------------------------------------
@@ -79,15 +101,14 @@ class DefaultPermissionPolicyTest {
     @Test
     void planMode_readIsAutoApproved() {
         var policy = new DefaultPermissionPolicy("plan");
-        var request = new PermissionRequest("read_file", "Read file", PermissionLevel.READ);
-        assertInstanceOf(PermissionDecision.Approved.class, policy.evaluate(request));
+        assertInstanceOf(PermissionDecision.Approved.class,
+                evaluate(policy, read("file"), "Read file"));
     }
 
     @Test
     void planMode_writeIsDenied() {
         var policy = new DefaultPermissionPolicy("plan");
-        var request = new PermissionRequest("write_file", "Write file", PermissionLevel.WRITE);
-        var decision = policy.evaluate(request);
+        var decision = evaluate(policy, write("/tmp/foo.txt"), "Write file");
         assertInstanceOf(PermissionDecision.Denied.class, decision);
         assertTrue(((PermissionDecision.Denied) decision).reason().contains("plan mode is read-only"));
     }
@@ -95,25 +116,159 @@ class DefaultPermissionPolicyTest {
     @Test
     void planMode_executeIsDenied() {
         var policy = new DefaultPermissionPolicy("plan");
-        var request = new PermissionRequest("bash", "Run command", PermissionLevel.EXECUTE);
-        assertInstanceOf(PermissionDecision.Denied.class, policy.evaluate(request));
+        assertInstanceOf(PermissionDecision.Denied.class,
+                evaluate(policy, bash("ls"), "Run command"));
     }
 
     @Test
     void planMode_dangerousIsDenied() {
         var policy = new DefaultPermissionPolicy("plan");
-        var request = new PermissionRequest("bash", "Dangerous op", PermissionLevel.DANGEROUS);
-        assertInstanceOf(PermissionDecision.Denied.class, policy.evaluate(request));
+        assertInstanceOf(PermissionDecision.Denied.class,
+                evaluate(policy, bash("rm -rf /"), "Dangerous op"));
     }
 
     // -- Mode: auto-accept ---------------------------------------------------
 
-    @ParameterizedTest
-    @EnumSource(PermissionLevel.class)
-    void autoAcceptMode_allLevelsApproved(PermissionLevel level) {
+    @Test
+    void autoAcceptMode_readApproved() {
         var policy = new DefaultPermissionPolicy("auto-accept");
-        var request = new PermissionRequest("any_tool", "Any operation", level);
-        assertInstanceOf(PermissionDecision.Approved.class, policy.evaluate(request));
+        assertInstanceOf(PermissionDecision.Approved.class,
+                evaluate(policy, read("any.txt"), "any"));
+    }
+
+    @Test
+    void autoAcceptMode_writeApproved() {
+        var policy = new DefaultPermissionPolicy("auto-accept");
+        assertInstanceOf(PermissionDecision.Approved.class,
+                evaluate(policy, write("/tmp/any.txt"), "any"));
+    }
+
+    @Test
+    void autoAcceptMode_executeApproved() {
+        var policy = new DefaultPermissionPolicy("auto-accept");
+        assertInstanceOf(PermissionDecision.Approved.class,
+                evaluate(policy, bash("any command"), "any"));
+    }
+
+    @Test
+    void autoAcceptMode_dangerousApproved() {
+        var policy = new DefaultPermissionPolicy("auto-accept");
+        assertInstanceOf(PermissionDecision.Approved.class,
+                evaluate(policy, bash("rm -rf /tmp/junk"), "destructive bash"));
+    }
+
+    // -- Structural hard-denial: sensitive paths -----------------------------
+
+    @Test
+    void writingDotEnvIsDeniedEvenInAutoAccept() {
+        var policy = new DefaultPermissionPolicy("auto-accept");
+        var decision = evaluate(policy, write("/repo/.env"), "write .env");
+        assertInstanceOf(PermissionDecision.Denied.class, decision);
+        assertTrue(((PermissionDecision.Denied) decision).reason().contains("sensitive path"));
+    }
+
+    @Test
+    void writingDotEnvLocalIsDenied() {
+        var policy = new DefaultPermissionPolicy("auto-accept");
+        assertInstanceOf(PermissionDecision.Denied.class,
+                evaluate(policy, write("/repo/.env.local"), "write .env.local"));
+    }
+
+    @Test
+    void writingDotEnvProductionIsDenied() {
+        var policy = new DefaultPermissionPolicy("normal");
+        assertInstanceOf(PermissionDecision.Denied.class,
+                evaluate(policy, write("/repo/.env.production"), "write .env.production"));
+    }
+
+    @Test
+    void writingDotenvNotesIsAllowed() {
+        // Defense against substring-style false positives — segment matching
+        // should NOT trip on files whose name merely contains "env".
+        var policy = new DefaultPermissionPolicy("normal");
+        var decision = evaluate(policy, write("/repo/dotenv-notes.md"), "write notes");
+        assertInstanceOf(PermissionDecision.NeedsUserApproval.class, decision);
+    }
+
+    @Test
+    void writingNotesAboutEnvIsAllowed() {
+        var policy = new DefaultPermissionPolicy("normal");
+        // Filename: "notes-on-env.md". Should NOT match (.env-prefix rule
+        // only catches basenames that literally start with .env).
+        var decision = evaluate(policy, write("/repo/notes-on-env.md"), "write notes");
+        assertInstanceOf(PermissionDecision.NeedsUserApproval.class, decision);
+    }
+
+    @Test
+    void writingInsideSshIsDenied() {
+        var policy = new DefaultPermissionPolicy("auto-accept");
+        assertInstanceOf(PermissionDecision.Denied.class,
+                evaluate(policy, write("/home/u/.ssh/config"), "write ssh config"));
+    }
+
+    @Test
+    void writingInsideAwsIsDenied() {
+        var policy = new DefaultPermissionPolicy("auto-accept");
+        assertInstanceOf(PermissionDecision.Denied.class,
+                evaluate(policy, write("/home/u/.aws/credentials"), "write aws creds"));
+    }
+
+    @Test
+    void writingCredentialsJsonIsDenied() {
+        var policy = new DefaultPermissionPolicy("auto-accept");
+        assertInstanceOf(PermissionDecision.Denied.class,
+                evaluate(policy, write("/tmp/credentials.json"), "write creds"));
+    }
+
+    @Test
+    void writingGitConfigIsDenied() {
+        var policy = new DefaultPermissionPolicy("auto-accept");
+        assertInstanceOf(PermissionDecision.Denied.class,
+                evaluate(policy, write("/repo/.git/config"), "write git config"));
+    }
+
+    @Test
+    void writingOtherGitInternalsIsAllowed() {
+        // Only .git/config is sensitive. .git/HEAD, .git/packed-refs, etc.
+        // are touched by legitimate git plugins during normal operation.
+        var policy = new DefaultPermissionPolicy("normal");
+        var decision = evaluate(policy, write("/repo/.git/HEAD"), "write HEAD");
+        assertInstanceOf(PermissionDecision.NeedsUserApproval.class, decision);
+    }
+
+    @Test
+    void writingUnderEtcIsDenied() {
+        var policy = new DefaultPermissionPolicy("auto-accept");
+        assertInstanceOf(PermissionDecision.Denied.class,
+                evaluate(policy, write("/etc/hosts"), "write /etc/hosts"));
+    }
+
+    @Test
+    void writingRelativeEtcLikePathIsAllowed() {
+        // Defense against root-level /etc rule false-tripping on relative
+        // paths that happen to contain "etc" as a segment but aren't system
+        // config (e.g. "docs/etc/notes.md").
+        var policy = new DefaultPermissionPolicy("normal");
+        var decision = evaluate(policy, write("docs/etc/notes.md"), "write notes");
+        assertInstanceOf(PermissionDecision.NeedsUserApproval.class, decision);
+    }
+
+    @Test
+    void pathTraversalBypassIsBlocked() {
+        // The /etc/ rule must not be bypassable by lexical traversal —
+        // /tmp/../etc/hosts effectively writes /etc/hosts. Path.normalize()
+        // collapses .. lexically (no filesystem I/O) so the prefix check
+        // still fires.
+        var policy = new DefaultPermissionPolicy("auto-accept");
+        assertInstanceOf(PermissionDecision.Denied.class,
+                evaluate(policy, write("/tmp/../etc/hosts"), "write via traversal"));
+    }
+
+    @Test
+    void deletingDotEnvIsDenied() {
+        var policy = new DefaultPermissionPolicy("auto-accept");
+        assertInstanceOf(PermissionDecision.Denied.class,
+                evaluate(policy, delete("/repo/.env"), "delete .env"));
     }
 
     // -- Legacy boolean constructor ------------------------------------------
@@ -155,5 +310,19 @@ class DefaultPermissionPolicyTest {
     @Test
     void isApproved_falseForNeedsUserApproval() {
         assertFalse(new PermissionDecision.NeedsUserApproval("prompt").isApproved());
+    }
+
+    // -- Description propagation to prompt -----------------------------------
+
+    @Test
+    void richDescriptionIsSurfacedInPrompt() {
+        // Pin that the dispatcher's rich description (not the variant's
+        // synthetic displayLabel) makes it into the user-facing prompt.
+        var policy = new DefaultPermissionPolicy("normal");
+        var decision = evaluate(policy, write("/tmp/foo.txt"),
+                "Write /tmp/foo.txt (123 chars of new content)");
+        var prompt = ((PermissionDecision.NeedsUserApproval) decision).prompt();
+        assertTrue(prompt.contains("123 chars of new content"),
+                "rich description should be surfaced verbatim in the prompt; got: " + prompt);
     }
 }

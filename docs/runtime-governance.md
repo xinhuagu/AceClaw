@@ -36,13 +36,13 @@ The runtime governance scaffolding is real and shipping. The capability-abstract
 | Live execution tree — every decision traceable end-to-end | ✅ shipped | `aceclaw-dashboard` (#430 epic, #459) |
 | Cron runs governed by the same path as user sessions | ✅ shipped | #459 cron-as-session |
 | HMAC-signed memory entries (signed audit chain on the memory tier) | ✅ shipped | `MemorySigner` |
-| Cross-adapter capability abstraction (one model spans MCP, bash, browser, skill, sub-agent) | 🚧 **not yet** | — |
-| Unified policy engine (one decision rule applies regardless of adapter origin) | 🚧 **not yet** | — |
+| Cross-adapter capability abstraction (one model spans MCP, bash, browser, skill, sub-agent) | ✅ shipped | `Capability` sealed type, `CapabilityAware` on every active adapter incl. `McpToolBridge` |
+| Unified policy engine (one decision rule applies regardless of adapter origin) | ✅ shipped | `PermissionPolicy.evaluate(Capability, Provenance, description)` — single decision pipeline |
 | OS-level enforcement (Seatbelt / bubblewrap / equivalent for bash + subprocess + MCP stdio) | 🚧 **not yet** | — |
 | Capability-level audit schema (every capability use is signed, queryable, replayable) | 🚧 **partial** | (only memory tier today) |
 | Eval / regression harness for governance behavior under adversarial prompts | 🚧 **not yet** | — |
 
-**Today AceClaw governs at the runtime layer for its built-in tools and primitive operations. It does not yet have a unified capability abstraction across every adapter.** That's the gap.
+**AceClaw now governs every adapter through one capability model and one policy decision.** Every built-in tool, MCP server, browser action, skill invocation, sub-agent spawn, and HTTP fetch enters the pipeline as a structured `Capability`, gets evaluated by a single `PermissionPolicy`, and produces one signed audit record. The remaining gap is moving from *approval* to *enforcement*: an OS-level sandbox that constrains the running process after the decision, plus the audit-schema and adversarial-eval work to make the pipeline observable and testable end-to-end.
 
 ## What "complete" runtime governance looks like
 

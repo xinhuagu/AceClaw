@@ -18,19 +18,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 final class PermissionManagerCapabilityTest {
 
     /** Always-deny policy so any Approved result must come from the session blanket. */
-    private static final PermissionPolicy DENY = req ->
+    private static final PermissionPolicy DENY = (cap, prov, desc) ->
             new PermissionDecision.Denied("test policy denies");
 
     @Test
-    void structuredCheckUsesCapabilityRiskInPolicyRequest() {
-        // PolicyEngine doesn't yet consume Capability directly (#465 Scope
-        // #2 lands later); for now the manager builds a PermissionRequest
-        // from the capability so DefaultPermissionPolicy etc. keep working
-        // unchanged. Confirm the level passed in is the variant's derived
-        // risk, not something a caller could lie about.
-        var captured = new java.util.concurrent.atomic.AtomicReference<PermissionRequest>();
-        PermissionPolicy capturing = req -> {
-            captured.set(req);
+    void policyReceivesStructuredCapabilityNotFlatRequest() {
+        // PolicyEngine now consumes the structured capability directly
+        // (#465 Scope #2 / #480 PR 4). Confirm the policy sees the full
+        // variant — fields like path, write mode are reachable — not just
+        // a 4-tier risk level.
+        var captured = new java.util.concurrent.atomic.AtomicReference<Capability>();
+        PermissionPolicy capturing = (cap, prov, desc) -> {
+            captured.set(cap);
             return new PermissionDecision.Approved();
         };
         var pm = new PermissionManager(capturing);
@@ -38,10 +37,10 @@ final class PermissionManagerCapabilityTest {
 
         pm.check(fileWrite, Provenance.forSession(new SessionId("s")));
 
-        assertThat(captured.get().level()).isEqualTo(PermissionLevel.WRITE);
-        assertThat(captured.get().toolName())
-                .as("toolName uses the capability's allowlistKey, not a stringly-typed name")
-                .isEqualTo("FileWrite");
+        assertThat(captured.get()).isInstanceOf(Capability.FileWrite.class);
+        assertThat(((Capability.FileWrite) captured.get()).path()).isEqualTo(Path.of("/tmp/x"));
+        assertThat(((Capability.FileWrite) captured.get()).mode()).isEqualTo(WriteMode.OVERWRITE);
+        assertThat(captured.get().risk()).isEqualTo(PermissionLevel.WRITE);
     }
 
     @Test
@@ -92,10 +91,10 @@ final class PermissionManagerCapabilityTest {
         // buildToolDescription(...) and passes it through. Pin that the
         // policy sees that string rather than the synthetic displayLabel
         // — losing it would regress the user's permission prompt UX.
-        var captured = new java.util.concurrent.atomic.AtomicReference<PermissionRequest>();
-        PermissionPolicy capturing = req -> {
-            captured.set(req);
-            return new PermissionDecision.NeedsUserApproval(req.description());
+        var capturedDesc = new java.util.concurrent.atomic.AtomicReference<String>();
+        PermissionPolicy capturing = (cap, prov, desc) -> {
+            capturedDesc.set(desc);
+            return new PermissionDecision.NeedsUserApproval(desc);
         };
         var pm = new PermissionManager(capturing);
 
@@ -105,11 +104,8 @@ final class PermissionManagerCapabilityTest {
                 "write_file",
                 "Write /tmp/x (123 chars of new content)");
 
-        assertThat(captured.get().description())
+        assertThat(capturedDesc.get())
                 .isEqualTo("Write /tmp/x (123 chars of new content)");
-        assertThat(captured.get().toolName())
-                .as("4-arg form uses the caller's allowlist key, not the variant class name")
-                .isEqualTo("write_file");
     }
 
     @Test

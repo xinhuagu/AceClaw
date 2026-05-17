@@ -33,11 +33,11 @@ final class PermissionManagerAuditTest {
     private static final PermissionRequest EXEC_REQ =
             PermissionRequest.execute("bash", "rm /tmp/foo");
 
-    private static final PermissionPolicy APPROVE_POLICY = req ->
+    private static final PermissionPolicy APPROVE_POLICY = (cap, prov, desc) ->
             new PermissionDecision.Approved();
-    private static final PermissionPolicy DENY_POLICY = req ->
+    private static final PermissionPolicy DENY_POLICY = (cap, prov, desc) ->
             new PermissionDecision.Denied("policy denies");
-    private static final PermissionPolicy NEEDS_APPROVAL_POLICY = req ->
+    private static final PermissionPolicy NEEDS_APPROVAL_POLICY = (cap, prov, desc) ->
             new PermissionDecision.NeedsUserApproval("approve write to /tmp/foo?");
 
     @Test

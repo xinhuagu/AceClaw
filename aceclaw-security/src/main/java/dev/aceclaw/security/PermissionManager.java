@@ -151,10 +151,15 @@ public final class PermissionManager {
             }
         }
 
-        // PolicyEngine is still PermissionRequest-shaped today (#465 Scope
-        // #2 will change that). Build a request from the capability.
-        var request = new PermissionRequest(allowlistKey, description, capability.risk());
-        var decision = policy.evaluate(request);
+        // PolicyEngine now consumes the structured capability + provenance
+        // directly (#465 Scope #2 / #480 PR 4). The flat PermissionRequest
+        // bridge is gone — policies pattern-match on the sealed variant and
+        // can reach fields like FileWrite.path, HttpFetch.url, etc.
+        // `description` is the dispatcher's rich human-readable phrasing,
+        // forwarded so the policy can produce a user-facing prompt that
+        // matches the tool side rather than the variant's synthetic
+        // displayLabel.
+        var decision = policy.evaluate(capability, provenance, description);
         log.debug("Permission check: key={}, level={}, sessionId={}, decision={}",
                 allowlistKey, capability.risk(), sessionIdOrNull,
                 decision.getClass().getSimpleName());
