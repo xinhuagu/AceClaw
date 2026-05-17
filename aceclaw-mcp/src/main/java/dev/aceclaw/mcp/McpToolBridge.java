@@ -15,6 +15,7 @@ import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Pattern;
 
@@ -149,12 +150,26 @@ public final class McpToolBridge implements Tool, CapabilityAware {
     }
 
     /**
-     * Common keys MCP filesystem-style servers use for the target path. Order
-     * matters only for readability — only the first non-null textual match is
-     * extracted.
+     * Common keys MCP filesystem-style servers use for the target path of
+     * a single-arg write/delete. Order matters only for readability — only
+     * the first non-null textual match is extracted.
      */
     private static final List<String> PATH_FIELDS = List.of(
             "path", "file_path", "filepath", "filename", "file");
+
+    /**
+     * Common keys for the destination of a two-arg op (move/rename/copy).
+     * The destination receives a new file, so it's effectively a write.
+     */
+    private static final List<String> DESTINATION_FIELDS = List.of(
+            "destination", "dest", "target", "to", "new_path", "output_path", "output");
+
+    /**
+     * Common keys for the source of a two-arg op. For moves (not copies)
+     * the source disappears, so it's effectively a delete.
+     */
+    private static final List<String> SOURCE_FIELDS = List.of(
+            "source", "src", "from", "old_path", "input_path", "input");
 
     /** Method names with clear file-write intent (matched against lowercased mcpToolName). */
     private static final Pattern WRITE_VERB = Pattern.compile(
@@ -164,36 +179,78 @@ public final class McpToolBridge implements Tool, CapabilityAware {
     private static final Pattern DELETE_VERB = Pattern.compile(
             "^(delete|remove|unlink|rm)(_.*)?$|.*_(delete|remove|unlink)$");
 
+    /**
+     * Method names for two-arg destination-receiving ops: move/rename/copy.
+     * Includes the short {@code mv} and {@code cp} forms as standalone names
+     * (so a method literally named {@code mv} matches, but a method named
+     * {@code recipe} does not — anchored full-word match).
+     */
+    private static final Pattern MOVE_DEST_VERB = Pattern.compile(
+            "^(move|mv|rename|copy|cp)(_.*)?$|.*_(move|rename|copy)$");
+
+    /**
+     * Subset of {@link #MOVE_DEST_VERB} that does NOT remove the source —
+     * copy/cp. Used to decide whether a sensitive source path should be
+     * treated as a delete: copy doesn't delete the source, move does.
+     */
+    private static final Pattern COPY_VERB = Pattern.compile(
+            "^(copy|cp)(_.*)?$|.*_copy$");
+
     private Capability inferFileCapability(JsonNode args) {
         if (args == null || args.isNull() || !args.isObject()) return null;
-        String path = extractPath(args);
-        if (path == null || path.isBlank()) return null;
-        Path parsed;
-        try {
-            parsed = Path.of(path);
-        } catch (InvalidPathException malformed) {
-            // Garbage path from a misconfigured MCP server — fall back to McpInvoke
-            // so the user still sees a prompt rather than a dispatcher crash.
-            return null;
-        }
-        String name = mcpToolName.toLowerCase();
+        String name = mcpToolName.toLowerCase(Locale.ROOT);
+
         if (WRITE_VERB.matcher(name).matches()) {
-            return new Capability.FileWrite(parsed, WriteMode.OVERWRITE);
+            Path p = safePath(extractField(args, PATH_FIELDS));
+            return p == null ? null : new Capability.FileWrite(p, WriteMode.OVERWRITE);
         }
         if (DELETE_VERB.matcher(name).matches()) {
-            return new Capability.FileDelete(parsed);
+            Path p = safePath(extractField(args, PATH_FIELDS));
+            return p == null ? null : new Capability.FileDelete(p);
+        }
+        if (MOVE_DEST_VERB.matcher(name).matches()) {
+            // Two-arg op: destination is the "write" target; source is the
+            // "delete" target (for moves only — copies leave the source).
+            // The structural denial layer only sees one Capability, so:
+            //   - If destination resolves, emit FileWrite(dest). This covers
+            //     "move/copy to .env" — the most common attack vector
+            //     (Codex P1 follow-up on #495).
+            //   - Else if the op is a move (not a copy) and source resolves,
+            //     emit FileDelete(source). Catches "move .env elsewhere"
+            //     which effectively deletes .env.
+            Path dst = safePath(extractField(args, DESTINATION_FIELDS));
+            if (dst != null) return new Capability.FileWrite(dst, WriteMode.OVERWRITE);
+            if (!COPY_VERB.matcher(name).matches()) {
+                Path src = safePath(extractField(args, SOURCE_FIELDS));
+                if (src != null) return new Capability.FileDelete(src);
+            }
         }
         return null;
     }
 
-    private static String extractPath(JsonNode args) {
-        for (String key : PATH_FIELDS) {
+    private static String extractField(JsonNode args, List<String> keys) {
+        for (String key : keys) {
             var node = args.get(key);
             if (node != null && node.isTextual()) {
                 return node.asText();
             }
         }
         return null;
+    }
+
+    /**
+     * Parses {@code raw} into a {@link Path} or returns {@code null} when the
+     * input is blank or malformed. Malformed paths (e.g. invalid characters
+     * for the host filesystem) fall back to {@code McpInvoke} rather than
+     * crash the dispatcher.
+     */
+    private static Path safePath(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        try {
+            return Path.of(raw);
+        } catch (InvalidPathException malformed) {
+            return null;
+        }
     }
 
     /**

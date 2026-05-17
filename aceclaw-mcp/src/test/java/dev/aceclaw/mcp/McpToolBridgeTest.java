@@ -220,6 +220,92 @@ class McpToolBridgeTest {
     }
 
     @Test
+    void moveFileToSensitiveDestinationInfersFileWrite() {
+        // Codex P1 follow-up #2 on #495: move/rename/copy with a destination
+        // field must be classified as FileWrite of the destination so the
+        // structural denial sees "writing to .env".
+        var tool = McpToolBridge.create("fs", mcpTool("move_file", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode()
+                .put("source", "/tmp/safe.txt")
+                .put("destination", "/repo/.env");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileWrite.class);
+        assertThat(((Capability.FileWrite) cap).path()).isEqualTo(Path.of("/repo/.env"));
+    }
+
+    @Test
+    void renameWithNewPathInfersFileWrite() {
+        var tool = McpToolBridge.create("fs", mcpTool("rename", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode()
+                .put("old_path", "/tmp/safe.txt")
+                .put("new_path", "/repo/.env");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileWrite.class);
+    }
+
+    @Test
+    void copyWithTargetInfersFileWrite() {
+        var tool = McpToolBridge.create("fs", mcpTool("copy_file", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode()
+                .put("source", "/tmp/x")
+                .put("target", "/etc/hosts");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileWrite.class);
+    }
+
+    @Test
+    void moveFromSensitiveSourceInfersFileDelete() {
+        // When destination is missing/non-resolvable but source resolves and
+        // the op is a move (not copy), the source is effectively being
+        // deleted — emit FileDelete so the structural layer can catch
+        // attempts to move .env away.
+        var tool = McpToolBridge.create("fs", mcpTool("move_file", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode()
+                .put("source", "/repo/.env");
+        // No destination field.
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileDelete.class);
+        assertThat(((Capability.FileDelete) cap).path()).isEqualTo(Path.of("/repo/.env"));
+    }
+
+    @Test
+    void copyFromSensitiveSourceDoesNotInferDelete() {
+        // Copies leave the source intact — no FileDelete inferred.
+        var tool = McpToolBridge.create("fs", mcpTool("copy_file", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode()
+                .put("source", "/repo/.env");
+        var cap = tool.toCapability(args);
+
+        // No destination resolved; not a delete (copy doesn't delete source).
+        // Falls through to McpInvoke.
+        assertThat(cap).isInstanceOf(Capability.McpInvoke.class);
+    }
+
+    @Test
+    void mcpMoveToSensitiveDestinationIsStructurallyDenied() {
+        // End-to-end: move to .env composes through to a structural denial.
+        var tool = McpToolBridge.create("fs", mcpTool("move_file", "desc"), client);
+        var args = new ObjectMapper().createObjectNode()
+                .put("source", "/tmp/safe.txt")
+                .put("destination", "/repo/.env");
+
+        var cap = tool.toCapability(args);
+        var decision = new DefaultPermissionPolicy("auto-accept").evaluateStructural(cap);
+
+        assertThat(decision).isNotNull();
+        assertThat(decision.reason()).contains("sensitive path");
+    }
+
+    @Test
     void mcpFileWriteToSensitivePathIsStructurallyDenied() {
         // End-to-end: an MCP server's write_file(path=".env") composes through
         // McpToolBridge.toCapability() into a Capability.FileWrite that the
