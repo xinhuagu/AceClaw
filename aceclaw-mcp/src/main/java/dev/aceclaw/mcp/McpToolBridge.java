@@ -14,6 +14,7 @@ import org.slf4j.LoggerFactory;
 
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -284,14 +285,43 @@ public final class McpToolBridge implements Tool, CapabilityAware {
         return null;
     }
 
+    /**
+     * Looks up a field in {@code args} matching any of {@code keys}, tolerant
+     * of casing and underscore differences. So {@code path}, {@code Path},
+     * {@code file_path}, {@code filePath}, {@code FILEPATH} all match the
+     * canonical entry {@code path} or {@code file_path} in the keys list.
+     * Necessary because MCP servers in the wild use mixed conventions
+     * (snake_case in the official filesystem server, camelCase in many
+     * third-party servers — Codex P2 on #495).
+     */
     private static String extractField(JsonNode args, List<String> keys) {
+        // Build a normalized → original lookup over args once. Cheap (args
+        // objects are small) and avoids O(keys × argFields) repeat scans.
+        Map<String, String> argKeysByNormalized = new HashMap<>();
+        var iter = args.fieldNames();
+        while (iter.hasNext()) {
+            String k = iter.next();
+            argKeysByNormalized.putIfAbsent(normalizeFieldName(k), k);
+        }
         for (String key : keys) {
-            var node = args.get(key);
-            if (node != null && node.isTextual()) {
-                return node.asText();
+            String original = argKeysByNormalized.get(normalizeFieldName(key));
+            if (original != null) {
+                var node = args.get(original);
+                if (node != null && node.isTextual()) {
+                    return node.asText();
+                }
             }
         }
         return null;
+    }
+
+    /**
+     * Folds casing + strips underscores so {@code filePath}, {@code file_path},
+     * {@code FilePath}, {@code FILEPATH} all normalize to {@code filepath}.
+     * Locale.ROOT for stable case-folding regardless of host locale.
+     */
+    private static String normalizeFieldName(String s) {
+        return s.toLowerCase(Locale.ROOT).replace("_", "");
     }
 
     /**

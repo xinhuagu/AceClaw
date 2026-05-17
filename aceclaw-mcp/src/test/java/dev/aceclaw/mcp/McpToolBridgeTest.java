@@ -440,6 +440,48 @@ class McpToolBridgeTest {
     }
 
     @Test
+    void camelCasePathFieldMatches() {
+        // Codex P2 on #495: many MCP servers use camelCase JSON keys
+        // (filePath rather than file_path). Field-name normalization
+        // (lowercase + strip underscores) makes both match the same
+        // canonical entry.
+        var tool = McpToolBridge.create("fs", mcpTool("write_file", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode().put("filePath", "/repo/.env");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileWrite.class);
+        assertThat(((Capability.FileWrite) cap).path()).isEqualTo(Path.of("/repo/.env"));
+    }
+
+    @Test
+    void camelCaseDestinationFieldMatches() {
+        var tool = McpToolBridge.create("fs", mcpTool("move_file", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode()
+                .put("sourcePath", "/tmp/a")
+                .put("newPath", "/repo/.env");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap)
+                .as("camelCase newPath should still trigger destination-sensitive denial")
+                .isInstanceOf(Capability.FileWrite.class);
+        assertThat(((Capability.FileWrite) cap).path()).isEqualTo(Path.of("/repo/.env"));
+    }
+
+    @Test
+    void uppercaseFieldNameMatches() {
+        // Defensive: a server using PASCALCASE or SCREAMING_SNAKE shouldn't
+        // bypass the inference either.
+        var tool = McpToolBridge.create("fs", mcpTool("write_file", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode().put("FILEPATH", "/repo/.env");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileWrite.class);
+    }
+
+    @Test
     void writeToDestinationFieldStillInfersFileWrite() {
         // Self-review preemptive fix: a write-verb method that uses a
         // destination-style field (`write_to_destination(destination=...)`)
