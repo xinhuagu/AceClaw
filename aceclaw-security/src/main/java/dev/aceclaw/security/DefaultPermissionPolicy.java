@@ -1,6 +1,7 @@
 package dev.aceclaw.security;
 
 import java.nio.file.Path;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -102,18 +103,20 @@ public final class DefaultPermissionPolicy implements PermissionPolicy {
 
     @Override
     public PermissionDecision evaluate(Capability capability, Provenance provenance, String description) {
-        // 1. Structural hard denial — overrides every mode, including auto-accept.
-        var denial = checkHardDenial(capability);
-        if (denial != null) return denial;
+        Objects.requireNonNull(capability, "capability");
+        Objects.requireNonNull(provenance, "provenance");
+        Objects.requireNonNull(description, "description");
 
-        // 2. READ is always auto-approved in all modes.
+        // READ is always auto-approved in all modes. (Structural hard-denials
+        // are run earlier by PermissionManager via evaluateStructural — they
+        // do not reach this method.)
         if (capability.risk() == PermissionLevel.READ) {
             return new PermissionDecision.Approved();
         }
 
-        // 3. Mode-based decision. `description` is the dispatcher's rich
-        //    human-readable phrasing — surface it in the prompt so the user
-        //    sees what the tool actually intends to do.
+        // Mode-based decision. `description` is the dispatcher's rich
+        // human-readable phrasing — surface it in the prompt so the user
+        // sees what the tool actually intends to do.
         return switch (mode) {
             case MODE_AUTO_ACCEPT -> new PermissionDecision.Approved();
 
@@ -133,13 +136,16 @@ public final class DefaultPermissionPolicy implements PermissionPolicy {
     }
 
     /**
-     * Returns a {@link PermissionDecision.Denied} when the capability targets
-     * a structurally sensitive resource, or {@code null} when no hard rule
-     * applies. Today only file writes and deletes have hard rules; other
-     * variants fall through to the mode-driven path. Adding a rule here is
-     * the way to encode "this resource is sensitive no matter the mode."
+     * Structural rules that fire before the session-blanket lookup so an
+     * "always allow X" approval cannot let the agent route a write to
+     * {@code .env} or {@code .ssh/id_rsa} past the policy. Returns
+     * {@code null} when no rule applies — see
+     * {@link PermissionPolicy#evaluateStructural(Capability)} for the
+     * contract.
      */
-    private static PermissionDecision checkHardDenial(Capability capability) {
+    @Override
+    public PermissionDecision.Denied evaluateStructural(Capability capability) {
+        Objects.requireNonNull(capability, "capability");
         return switch (capability) {
             case Capability.FileWrite fw -> denyIfSensitivePath(fw.path(), "write to");
             case Capability.FileDelete fd -> denyIfSensitivePath(fd.path(), "delete");
@@ -156,7 +162,7 @@ public final class DefaultPermissionPolicy implements PermissionPolicy {
      * lexical {@code ..} collapsing, no filesystem I/O — so attempts like
      * {@code /tmp/../etc/hosts} cannot route around the {@code /etc/} rule.
      */
-    private static PermissionDecision denyIfSensitivePath(Path rawPath, String verb) {
+    private static PermissionDecision.Denied denyIfSensitivePath(Path rawPath, String verb) {
         var path = rawPath.normalize();
         // Match the basename (e.g. ".env", "credentials.json")
         var fileName = path.getFileName();
@@ -205,7 +211,7 @@ public final class DefaultPermissionPolicy implements PermissionPolicy {
         return null;
     }
 
-    private static PermissionDecision deniedSensitive(String verb, Path path) {
+    private static PermissionDecision.Denied deniedSensitive(String verb, Path path) {
         return new PermissionDecision.Denied(
                 "Refusing to " + verb + " a sensitive path: " + path
                         + " (this rule overrides all permission modes)");
@@ -215,7 +221,10 @@ public final class DefaultPermissionPolicy implements PermissionPolicy {
         String action = switch (capability.risk()) {
             case WRITE -> "write to";
             case EXECUTE -> "execute";
-            case DANGEROUS -> "perform a potentially destructive action:";
+            // Pre-#480 this branch ended with a colon and the format string
+            // below contributed another, producing "...action:: description".
+            // Keep the descriptor and let the format string add the single colon.
+            case DANGEROUS -> "perform a potentially destructive action";
             default -> "access";
         };
         return String.format("The agent wants to %s: %s", action, description);

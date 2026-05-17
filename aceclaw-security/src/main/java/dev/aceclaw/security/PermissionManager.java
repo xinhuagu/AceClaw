@@ -139,6 +139,19 @@ public final class PermissionManager {
         Objects.requireNonNull(allowlistKey, "allowlistKey");
         Objects.requireNonNull(description, "description");
 
+        // Structural denials (sensitive paths like .env, .ssh/, /etc/*) MUST
+        // fire BEFORE the session-blanket lookup. Otherwise a user who clicked
+        // "always allow write_file" earlier could route a FileWrite(.env) past
+        // the rule — defeating the "overrides all modes" invariant of the
+        // hard-denial layer (Codex P1 on #495).
+        var structural = policy.evaluateStructural(capability);
+        if (structural != null) {
+            log.debug("Permission denied (structural): key={}, reason={}",
+                    allowlistKey, structural.reason());
+            audit(allowlistKey, capability, provenance, structural, null);
+            return structural;
+        }
+
         String sessionIdOrNull = provenance.sessionId().map(s -> s.value()).orElse(null);
         if (sessionIdOrNull != null) {
             var allow = sessionApprovals.get(sessionIdOrNull);

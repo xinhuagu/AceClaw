@@ -158,99 +158,81 @@ class DefaultPermissionPolicyTest {
     }
 
     // -- Structural hard-denial: sensitive paths -----------------------------
+    // These rules live on evaluateStructural(), which PermissionManager runs
+    // BEFORE the session-blanket lookup so an "always allow X" approval can't
+    // route past them.
+
+    private static final DefaultPermissionPolicy STRUCTURAL = new DefaultPermissionPolicy("normal");
 
     @Test
-    void writingDotEnvIsDeniedEvenInAutoAccept() {
-        var policy = new DefaultPermissionPolicy("auto-accept");
-        var decision = evaluate(policy, write("/repo/.env"), "write .env");
-        assertInstanceOf(PermissionDecision.Denied.class, decision);
-        assertTrue(((PermissionDecision.Denied) decision).reason().contains("sensitive path"));
+    void writingDotEnvIsStructurallyDenied() {
+        var decision = STRUCTURAL.evaluateStructural(write("/repo/.env"));
+        assertNotNull(decision);
+        assertTrue(decision.reason().contains("sensitive path"));
     }
 
     @Test
-    void writingDotEnvLocalIsDenied() {
-        var policy = new DefaultPermissionPolicy("auto-accept");
-        assertInstanceOf(PermissionDecision.Denied.class,
-                evaluate(policy, write("/repo/.env.local"), "write .env.local"));
+    void writingDotEnvLocalIsStructurallyDenied() {
+        assertNotNull(STRUCTURAL.evaluateStructural(write("/repo/.env.local")));
     }
 
     @Test
-    void writingDotEnvProductionIsDenied() {
-        var policy = new DefaultPermissionPolicy("normal");
-        assertInstanceOf(PermissionDecision.Denied.class,
-                evaluate(policy, write("/repo/.env.production"), "write .env.production"));
+    void writingDotEnvProductionIsStructurallyDenied() {
+        assertNotNull(STRUCTURAL.evaluateStructural(write("/repo/.env.production")));
     }
 
     @Test
-    void writingDotenvNotesIsAllowed() {
+    void writingDotenvNotesIsNotDenied() {
         // Defense against substring-style false positives — segment matching
         // should NOT trip on files whose name merely contains "env".
-        var policy = new DefaultPermissionPolicy("normal");
-        var decision = evaluate(policy, write("/repo/dotenv-notes.md"), "write notes");
-        assertInstanceOf(PermissionDecision.NeedsUserApproval.class, decision);
+        assertNull(STRUCTURAL.evaluateStructural(write("/repo/dotenv-notes.md")));
     }
 
     @Test
-    void writingNotesAboutEnvIsAllowed() {
-        var policy = new DefaultPermissionPolicy("normal");
+    void writingNotesAboutEnvIsNotDenied() {
         // Filename: "notes-on-env.md". Should NOT match (.env-prefix rule
         // only catches basenames that literally start with .env).
-        var decision = evaluate(policy, write("/repo/notes-on-env.md"), "write notes");
-        assertInstanceOf(PermissionDecision.NeedsUserApproval.class, decision);
+        assertNull(STRUCTURAL.evaluateStructural(write("/repo/notes-on-env.md")));
     }
 
     @Test
-    void writingInsideSshIsDenied() {
-        var policy = new DefaultPermissionPolicy("auto-accept");
-        assertInstanceOf(PermissionDecision.Denied.class,
-                evaluate(policy, write("/home/u/.ssh/config"), "write ssh config"));
+    void writingInsideSshIsStructurallyDenied() {
+        assertNotNull(STRUCTURAL.evaluateStructural(write("/home/u/.ssh/config")));
     }
 
     @Test
-    void writingInsideAwsIsDenied() {
-        var policy = new DefaultPermissionPolicy("auto-accept");
-        assertInstanceOf(PermissionDecision.Denied.class,
-                evaluate(policy, write("/home/u/.aws/credentials"), "write aws creds"));
+    void writingInsideAwsIsStructurallyDenied() {
+        assertNotNull(STRUCTURAL.evaluateStructural(write("/home/u/.aws/credentials")));
     }
 
     @Test
-    void writingCredentialsJsonIsDenied() {
-        var policy = new DefaultPermissionPolicy("auto-accept");
-        assertInstanceOf(PermissionDecision.Denied.class,
-                evaluate(policy, write("/tmp/credentials.json"), "write creds"));
+    void writingCredentialsJsonIsStructurallyDenied() {
+        assertNotNull(STRUCTURAL.evaluateStructural(write("/tmp/credentials.json")));
     }
 
     @Test
-    void writingGitConfigIsDenied() {
-        var policy = new DefaultPermissionPolicy("auto-accept");
-        assertInstanceOf(PermissionDecision.Denied.class,
-                evaluate(policy, write("/repo/.git/config"), "write git config"));
+    void writingGitConfigIsStructurallyDenied() {
+        assertNotNull(STRUCTURAL.evaluateStructural(write("/repo/.git/config")));
     }
 
     @Test
-    void writingOtherGitInternalsIsAllowed() {
+    void writingOtherGitInternalsIsNotDenied() {
         // Only .git/config is sensitive. .git/HEAD, .git/packed-refs, etc.
         // are touched by legitimate git plugins during normal operation.
-        var policy = new DefaultPermissionPolicy("normal");
-        var decision = evaluate(policy, write("/repo/.git/HEAD"), "write HEAD");
-        assertInstanceOf(PermissionDecision.NeedsUserApproval.class, decision);
+        assertNull(STRUCTURAL.evaluateStructural(write("/repo/.git/HEAD")));
     }
 
     @Test
-    void writingUnderEtcIsDenied() {
-        var policy = new DefaultPermissionPolicy("auto-accept");
-        assertInstanceOf(PermissionDecision.Denied.class,
-                evaluate(policy, write("/etc/hosts"), "write /etc/hosts"));
+    void writingUnderEtcIsStructurallyDenied() {
+        assertNotNull(STRUCTURAL.evaluateStructural(write("/etc/hosts")));
     }
 
     @Test
-    void writingRelativeEtcLikePathIsAllowed() {
+    void writingRelativeEtcLikePathIsNotDenied() {
         // Defense against root-level /etc rule false-tripping on relative
         // paths that happen to contain "etc" as a segment but aren't system
         // config (e.g. "docs/etc/notes.md").
-        var policy = new DefaultPermissionPolicy("normal");
-        var decision = evaluate(policy, write("docs/etc/notes.md"), "write notes");
-        assertInstanceOf(PermissionDecision.NeedsUserApproval.class, decision);
+        assertNull(STRUCTURAL.evaluateStructural(write("docs/etc/notes.md")));
     }
 
     @Test
@@ -259,16 +241,19 @@ class DefaultPermissionPolicyTest {
         // /tmp/../etc/hosts effectively writes /etc/hosts. Path.normalize()
         // collapses .. lexically (no filesystem I/O) so the prefix check
         // still fires.
-        var policy = new DefaultPermissionPolicy("auto-accept");
-        assertInstanceOf(PermissionDecision.Denied.class,
-                evaluate(policy, write("/tmp/../etc/hosts"), "write via traversal"));
+        assertNotNull(STRUCTURAL.evaluateStructural(write("/tmp/../etc/hosts")));
     }
 
     @Test
-    void deletingDotEnvIsDenied() {
-        var policy = new DefaultPermissionPolicy("auto-accept");
-        assertInstanceOf(PermissionDecision.Denied.class,
-                evaluate(policy, delete("/repo/.env"), "delete .env"));
+    void deletingDotEnvIsStructurallyDenied() {
+        assertNotNull(STRUCTURAL.evaluateStructural(delete("/repo/.env")));
+    }
+
+    @Test
+    void nonFileCapabilityIsNotStructurallyDenied() {
+        // BashExec, HttpFetch, etc. fall through structural checks today —
+        // the layer only covers FileWrite/FileDelete.
+        assertNull(STRUCTURAL.evaluateStructural(bash("rm -rf /tmp/junk")));
     }
 
     // -- Legacy boolean constructor ------------------------------------------

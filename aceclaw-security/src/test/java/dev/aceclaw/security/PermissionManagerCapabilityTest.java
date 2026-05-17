@@ -130,6 +130,41 @@ final class PermissionManagerCapabilityTest {
     }
 
     @Test
+    void structuralDenialFiresEvenWithSessionBlanketApproval() {
+        // Codex P1 regression on #495: a user-granted "always allow write_file"
+        // must NOT let the agent route a FileWrite(.env) past the structural
+        // hard-denial layer. The structural check runs in PermissionManager
+        // BEFORE the session-blanket lookup so the invariant
+        // "hard-denials override every mode and every prior approval" holds.
+        var pm = new PermissionManager(new DefaultPermissionPolicy(DefaultPermissionPolicy.MODE_NORMAL));
+        pm.approveForSession("sess-A", "write_file");
+
+        // Sanity: a non-sensitive write still gets the blanket approval.
+        var safeDecision = pm.check(
+                new Capability.FileWrite(Path.of("/tmp/safe.txt"), WriteMode.OVERWRITE),
+                Provenance.forSession(new SessionId("sess-A")),
+                "write_file",
+                "write /tmp/safe.txt");
+        assertThat(safeDecision)
+                .as("non-sensitive write follows the blanket approval")
+                .isInstanceOf(PermissionDecision.Approved.class);
+
+        // The bug: same allowlist key, but the path is sensitive. Pre-fix this
+        // would have returned Approved via the blanket; post-fix the
+        // structural denial fires first and the write is refused.
+        var sensitiveDecision = pm.check(
+                new Capability.FileWrite(Path.of("/repo/.env"), WriteMode.OVERWRITE),
+                Provenance.forSession(new SessionId("sess-A")),
+                "write_file",
+                "write .env");
+        assertThat(sensitiveDecision)
+                .as("session blanket must not bypass structural denial")
+                .isInstanceOf(PermissionDecision.Denied.class);
+        assertThat(((PermissionDecision.Denied) sensitiveDecision).reason())
+                .contains("sensitive path");
+    }
+
+    @Test
     void legacyShimDelegatesToStructuredPath() {
         // The old check(PermissionRequest, sessionId) is now a thin shim
         // — confirmed by the absence of a separate decision-and-audit

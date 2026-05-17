@@ -37,4 +37,22 @@ public interface PermissionPolicy {
      * @return the decision
      */
     PermissionDecision evaluate(Capability capability, Provenance provenance, String description);
+
+    /**
+     * Structural / system-invariant denials that fire <em>before</em> any
+     * session-level allow-list lookup or mode-based decision in
+     * {@link PermissionManager}. Use this for cross-cutting rules that must
+     * not be bypassable by "always allow X" approvals — e.g. "never write
+     * to {@code .env}", "never delete {@code .ssh/id_rsa}".
+     *
+     * <p>Returning {@code null} (the default) means "no structural rule
+     * applies; defer to the rest of the pipeline." Returning a
+     * {@link PermissionDecision.Denied} ends the check immediately with
+     * that denial; other decision variants are not accepted here (returning
+     * an Approved would meaningfully short-circuit the user-approval prompt,
+     * which is what {@link #evaluate} is for).
+     */
+    default PermissionDecision.Denied evaluateStructural(Capability capability) {
+        return null;
+    }
 }
