@@ -2,6 +2,7 @@
 
 dependencies {
     implementation(project(":aceclaw-core"))
+    implementation(project(":aceclaw-security"))
 
     implementation("io.modelcontextprotocol.sdk:mcp")
     implementation("com.fasterxml.jackson.core:jackson-databind")

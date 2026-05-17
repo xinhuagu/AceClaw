@@ -1,5 +1,7 @@
 package dev.aceclaw.mcp;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.aceclaw.security.Capability;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.junit.jupiter.api.Test;
@@ -99,5 +101,35 @@ class McpToolBridgeTest {
 
         assertThat(tool.inputSchema()).isNotNull();
         assertThat(tool.inputSchema().get("type").asText()).isEqualTo("object");
+    }
+
+    @Test
+    void toCapabilityProducesMcpInvokeWithServerAndMethod() {
+        // McpToolBridge is now CapabilityAware (#480 PR 4 / runtime-governance):
+        // it produces a structured Capability.McpInvoke so the policy and audit
+        // log see (server, method) directly instead of falling back to the
+        // LegacyToolUse bridge.
+        var tool = McpToolBridge.create("my-server", mcpTool("do_thing", "desc"), client);
+
+        var capability = tool.toCapability(new ObjectMapper().createObjectNode());
+
+        assertThat(capability).isInstanceOf(Capability.McpInvoke.class);
+        var invoke = (Capability.McpInvoke) capability;
+        assertThat(invoke.server()).isEqualTo("my-server");
+        assertThat(invoke.method()).isEqualTo("do_thing");
+    }
+
+    @Test
+    void toCapabilityIgnoresArgs() {
+        // Args payload is intentionally NOT carried on McpInvoke (size + secret
+        // risk). Different args produce the same capability variant — policies
+        // decide on (server, method) alone.
+        var tool = McpToolBridge.create("s", mcpTool("t", "desc"), client);
+
+        var mapper = new ObjectMapper();
+        var cap1 = tool.toCapability(mapper.createObjectNode().put("k", "v1"));
+        var cap2 = tool.toCapability(mapper.createObjectNode().put("k", "v2"));
+
+        assertThat(cap1).isEqualTo(cap2);
     }
 }

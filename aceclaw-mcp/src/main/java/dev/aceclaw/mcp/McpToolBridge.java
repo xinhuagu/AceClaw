@@ -3,6 +3,8 @@ package dev.aceclaw.mcp;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.Tool;
+import dev.aceclaw.security.Capability;
+import dev.aceclaw.security.CapabilityAware;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
@@ -20,20 +22,22 @@ import java.util.Map;
  * <p>Tool execution delegates to the {@link McpSyncClient#callTool} method and converts the
  * {@link McpSchema.CallToolResult} back to a {@link Tool.ToolResult}.
  */
-public final class McpToolBridge implements Tool {
+public final class McpToolBridge implements Tool, CapabilityAware {
 
     private static final Logger log = LoggerFactory.getLogger(McpToolBridge.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final String qualifiedName;
+    private final String serverName;
     private final String mcpToolName;
     private final String description;
     private final JsonNode inputSchema;
     private final McpSyncClient client;
 
-    private McpToolBridge(String qualifiedName, String mcpToolName, String description,
+    private McpToolBridge(String qualifiedName, String serverName, String mcpToolName, String description,
                           JsonNode inputSchema, McpSyncClient client) {
         this.qualifiedName = qualifiedName;
+        this.serverName = serverName;
         this.mcpToolName = mcpToolName;
         this.description = description;
         this.inputSchema = inputSchema;
@@ -62,7 +66,7 @@ public final class McpToolBridge implements Tool {
                     .put("type", "object");
         }
 
-        return new McpToolBridge(qualifiedName, mcpTool.name(),
+        return new McpToolBridge(qualifiedName, serverName, mcpTool.name(),
                 mcpTool.description(), inputSchema, client);
     }
 
@@ -107,6 +111,18 @@ public final class McpToolBridge implements Tool {
                 qualifiedName, isError, output.length());
 
         return new ToolResult(output, isError);
+    }
+
+    /**
+     * Produces the structured {@link Capability.McpInvoke} variant for the
+     * governance pipeline (#480 / runtime-governance). The args payload is
+     * intentionally not included on the variant — it can be huge and may
+     * carry secrets; policies decide on {@code (server, method)} alone, and
+     * the audit log retains the full args separately when configured.
+     */
+    @Override
+    public Capability toCapability(JsonNode args) {
+        return new Capability.McpInvoke(serverName, mcpToolName);
     }
 
     /**
