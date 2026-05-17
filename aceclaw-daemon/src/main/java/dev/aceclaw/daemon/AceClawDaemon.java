@@ -36,7 +36,12 @@ import dev.aceclaw.memory.TrendDetector;
 import dev.aceclaw.memory.WorkspacePaths;
 import dev.aceclaw.security.DefaultPermissionPolicy;
 import dev.aceclaw.security.PermissionManager;
+import dev.aceclaw.security.PolicyEngine;
+import dev.aceclaw.security.RuleBasedPolicyEngine;
 import dev.aceclaw.security.audit.CapabilityAuditLog;
+import dev.aceclaw.security.rules.DenyDangerousForDeepSubAgentRule;
+import dev.aceclaw.security.rules.DenyEnvFileAccessRule;
+import dev.aceclaw.security.rules.DenyNetworkInPlanModeRule;
 import dev.aceclaw.mcp.McpClientManager;
 import dev.aceclaw.mcp.McpServerConfig;
 import dev.aceclaw.tools.*;
@@ -382,8 +387,26 @@ public final class AceClawDaemon {
         //    test isolations write audit artifacts under the same root as
         //    every other persisted thing (pid, sock, transcripts,
         //    checkpoints, ...).
+        //
+        //    PolicyEngine wiring (#465 Scope #2): cross-cutting rules
+        //    evaluated first, then fall back to the mode-based
+        //    DefaultPermissionPolicy. Rule order matters — env-file deny
+        //    is listed first so it short-circuits before plan-mode or
+        //    sub-agent rules even consider the request.
+        //
+        //    Sub-agent depth limit is 1 (top-level + one delegation
+        //    level may use DANGEROUS; deeper chains require an explicit
+        //    user turn — see DenyDangerousForDeepSubAgentRule javadoc).
+        var legacyFallback = PolicyEngine.fromLegacyPolicy(
+                new DefaultPermissionPolicy(config.permissionMode()));
+        var policyEngine = new RuleBasedPolicyEngine(
+                java.util.List.of(
+                        new DenyEnvFileAccessRule(),
+                        new DenyNetworkInPlanModeRule(config::permissionMode),
+                        new DenyDangerousForDeepSubAgentRule(1)),
+                legacyFallback);
         var permissionManager = new PermissionManager(
-                new DefaultPermissionPolicy(config.permissionMode()),
+                policyEngine,
                 buildCapabilityAuditLog(homeDir.resolve("audit")));
 
         // 4. Sub-agent infrastructure (task delegation) and skills

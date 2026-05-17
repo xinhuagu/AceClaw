@@ -30,7 +30,7 @@ public final class PermissionManager {
 
     private static final Logger log = LoggerFactory.getLogger(PermissionManager.class);
 
-    private final PermissionPolicy policy;
+    private final PolicyEngine engine;
 
     /**
      * Per-session blanket approvals: {@code sessionId → toolName set}.
@@ -47,17 +47,40 @@ public final class PermissionManager {
      */
     private final CapabilityAuditLog auditLog;
 
+    /**
+     * Backward-compatible constructor: takes a legacy {@link PermissionPolicy}
+     * (request in, decision out) and adapts it to the new
+     * {@link PolicyEngine} contract via
+     * {@link PolicyEngine#fromLegacyPolicy(PermissionPolicy)}. Existing
+     * callers and tests that pass a {@code DefaultPermissionPolicy} or
+     * a lambda keep compiling and behaving identically — the structured
+     * {@link Capability} they were ignoring is still ignored, and the
+     * synthesised {@link PermissionRequest} carries exactly the same
+     * fields the manager used to build inline.
+     */
     public PermissionManager(PermissionPolicy policy) {
-        this(policy, null);
+        this(PolicyEngine.fromLegacyPolicy(policy), null);
     }
 
     /**
-     * Constructs a manager that signs and persists every decision to
-     * {@code auditLog}. Pass {@code null} to disable auditing (this is
-     * what the single-arg constructor does).
+     * Backward-compatible constructor with audit log. See
+     * {@link #PermissionManager(PermissionPolicy)}.
      */
     public PermissionManager(PermissionPolicy policy, CapabilityAuditLog auditLog) {
-        this.policy = policy;
+        this(PolicyEngine.fromLegacyPolicy(policy), auditLog);
+    }
+
+    /**
+     * Primary constructor (#465 Scope #2). Takes a {@link PolicyEngine}
+     * directly so daemon callers can wire a {@link RuleBasedPolicyEngine}
+     * with cross-cutting rules and a legacy-policy fallback.
+     *
+     * @param engine   the policy engine consulted for every structured check;
+     *                 must not be null
+     * @param auditLog optional signed audit log; {@code null} disables audit
+     */
+    public PermissionManager(PolicyEngine engine, CapabilityAuditLog auditLog) {
+        this.engine = Objects.requireNonNull(engine, "engine");
         this.auditLog = auditLog;
     }
 
@@ -151,12 +174,14 @@ public final class PermissionManager {
             }
         }
 
-        // PolicyEngine is still PermissionRequest-shaped today (#465 Scope
-        // #2 will change that). Build a request from the capability.
-        var request = new PermissionRequest(allowlistKey, description, capability.risk());
-        var decision = policy.evaluate(request);
-        log.debug("Permission check: key={}, level={}, sessionId={}, decision={}",
-                allowlistKey, capability.risk(), sessionIdOrNull,
+        // PolicyEngine takes the structured capability directly (#465
+        // Scope #2). The synthesised PermissionRequest used pre-Layer-2
+        // is rebuilt inside the legacy adapter fallback when needed —
+        // see PolicyEngine.fromLegacyPolicy.
+        var policyContext = new PolicyContext(allowlistKey, description);
+        var decision = engine.evaluate(capability, provenance, policyContext);
+        log.debug("Permission check: key={}, capability={}, sessionId={}, decision={}",
+                allowlistKey, capability.getClass().getSimpleName(), sessionIdOrNull,
                 decision.getClass().getSimpleName());
         audit(allowlistKey, capability, provenance, decision, null);
         return decision;
