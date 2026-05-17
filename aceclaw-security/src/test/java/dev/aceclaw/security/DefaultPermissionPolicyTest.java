@@ -256,6 +256,41 @@ class DefaultPermissionPolicyTest {
         assertNull(STRUCTURAL.evaluateStructural(bash("rm -rf /tmp/junk")));
     }
 
+    // -- Case-insensitive matching (Codex P2 on #495) -----------------------
+    // On case-insensitive filesystems (default macOS APFS, Windows NTFS),
+    // `.ENV` and `.env` resolve to the same underlying file, so the
+    // structural rule has to match case-insensitively.
+
+    @Test
+    void uppercaseDotEnvIsStructurallyDenied() {
+        assertNotNull(STRUCTURAL.evaluateStructural(write("/repo/.ENV")));
+    }
+
+    @Test
+    void mixedCaseDotEnvLocalIsStructurallyDenied() {
+        assertNotNull(STRUCTURAL.evaluateStructural(write("/repo/.Env.local")));
+    }
+
+    @Test
+    void capitalizedCredentialsJsonIsStructurallyDenied() {
+        assertNotNull(STRUCTURAL.evaluateStructural(write("/tmp/Credentials.json")));
+    }
+
+    @Test
+    void uppercaseSshSegmentIsStructurallyDenied() {
+        assertNotNull(STRUCTURAL.evaluateStructural(write("/home/u/.SSH/config")));
+    }
+
+    @Test
+    void uppercaseGitConfigIsStructurallyDenied() {
+        assertNotNull(STRUCTURAL.evaluateStructural(write("/repo/.GIT/config")));
+    }
+
+    @Test
+    void uppercaseEtcPrefixIsStructurallyDenied() {
+        assertNotNull(STRUCTURAL.evaluateStructural(write("/ETC/hosts")));
+    }
+
     // -- Legacy boolean constructor ------------------------------------------
 
     @SuppressWarnings("deprecation")

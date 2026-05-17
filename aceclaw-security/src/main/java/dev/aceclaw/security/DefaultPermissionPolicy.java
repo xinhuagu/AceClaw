@@ -1,6 +1,7 @@
 package dev.aceclaw.security;
 
 import java.nio.file.Path;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 
@@ -38,8 +39,11 @@ public final class DefaultPermissionPolicy implements PermissionPolicy {
 
     /**
      * File names whose <em>basename</em> is sensitive in every project layout.
-     * Matched against {@link Path#getFileName()} so siblings like
-     * {@code dotenv-notes.md} don't trigger.
+     * Matched against {@link Path#getFileName()} case-insensitively (under
+     * {@link Locale#ROOT}) so case-insensitive filesystems like the default
+     * macOS APFS or Windows NTFS can't be bypassed with {@code .ENV} or
+     * {@code Credentials.json} pointing at the same underlying file.
+     * Store these entries lowercased; the comparison lowercases the input.
      */
     private static final Set<String> SENSITIVE_FILENAMES = Set.of(
             ".env",
@@ -53,6 +57,8 @@ public final class DefaultPermissionPolicy implements PermissionPolicy {
      * as sensitive. {@code .ssh} catches both {@code ~/.ssh/id_rsa} and a
      * cloned {@code ./.ssh/config}; {@code .git/config} catches per-repo
      * git config writes (a common credential-store smuggling vector).
+     * Compared case-insensitively for the same reason as
+     * {@link #SENSITIVE_FILENAMES}.
      */
     private static final Set<String> SENSITIVE_PATH_SEGMENTS = Set.of(
             ".ssh",
@@ -164,23 +170,26 @@ public final class DefaultPermissionPolicy implements PermissionPolicy {
      */
     private static PermissionDecision.Denied denyIfSensitivePath(Path rawPath, String verb) {
         var path = rawPath.normalize();
-        // Match the basename (e.g. ".env", "credentials.json")
+        // Match the basename (e.g. ".env", "credentials.json"). Lowercase
+        // under Locale.ROOT for stable case-insensitive comparison — a
+        // case-insensitive filesystem treats `.ENV` and `.env` as the same
+        // file, so the structural rule has to too. (Codex P2 on #495.)
         var fileName = path.getFileName();
+        String nameLower = fileName == null ? "" : fileName.toString().toLowerCase(Locale.ROOT);
         if (fileName != null) {
-            String name = fileName.toString();
-            if (SENSITIVE_FILENAMES.contains(name)) {
+            if (SENSITIVE_FILENAMES.contains(nameLower)) {
                 return deniedSensitive(verb, path);
             }
             // .env, .env.local, .env.production all match — but NOT
             // dotenv-notes.md or env-template (basename must START with .env).
-            if (name.startsWith(".env")) {
+            if (nameLower.startsWith(".env")) {
                 return deniedSensitive(verb, path);
             }
         }
 
         // Match any path segment for things like .ssh/, .aws/credentials.
         for (Path segment : path) {
-            if (SENSITIVE_PATH_SEGMENTS.contains(segment.toString())) {
+            if (SENSITIVE_PATH_SEGMENTS.contains(segment.toString().toLowerCase(Locale.ROOT))) {
                 return deniedSensitive(verb, path);
             }
         }
@@ -189,10 +198,9 @@ public final class DefaultPermissionPolicy implements PermissionPolicy {
         // rest of .git/ is fine to write so we cannot deny on segment ".git"
         // alone — gradle/git plugins legitimately rewrite .git/HEAD,
         // packed-refs, etc. during normal operation.
-        var nameOnly = fileName == null ? "" : fileName.toString();
-        if ("config".equals(nameOnly)) {
+        if ("config".equals(nameLower)) {
             for (Path segment : path) {
-                if (".git".equals(segment.toString())) {
+                if (".git".equals(segment.toString().toLowerCase(Locale.ROOT))) {
                     return deniedSensitive(verb, path);
                 }
             }
@@ -203,7 +211,7 @@ public final class DefaultPermissionPolicy implements PermissionPolicy {
         if (path.isAbsolute()) {
             var root = path.getRoot();
             if (root != null && path.getNameCount() > 0
-                    && "etc".equals(path.getName(0).toString())) {
+                    && "etc".equals(path.getName(0).toString().toLowerCase(Locale.ROOT))) {
                 return deniedSensitive(verb, path);
             }
         }
