@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.Tool;
 import dev.aceclaw.security.Capability;
 import dev.aceclaw.security.CapabilityAware;
+import dev.aceclaw.security.DefaultPermissionPolicy;
 import dev.aceclaw.security.WriteMode;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -123,21 +124,45 @@ public final class McpToolBridge implements Tool, CapabilityAware {
      * Produces the structured {@link Capability} for the governance pipeline
      * (#480 / runtime-governance).
      *
-     * <p>Best-effort inference: when the MCP method name has clear file-write
-     * or file-delete intent <em>and</em> the args contain a path-shaped field,
-     * emit {@link Capability.FileWrite} / {@link Capability.FileDelete} so the
-     * structural hard-denial layer can refuse writes/deletes to {@code .env*},
+     * <p>Best-effort inference at this boundary so the policy's structural
+     * hard-denial layer can refuse writes/deletes to {@code .env*},
      * {@code .ssh/*}, {@code /etc/*}, etc. — exactly as it does for built-in
-     * file tools (Codex P1 follow-up on #495). Without this, an MCP filesystem
-     * server's {@code write_file(path=".env")} would land as opaque
-     * {@code McpInvoke} and the structural rules would never see the path.
+     * file tools. Without this, an MCP filesystem server's
+     * {@code write_file(path=".env")} would land as opaque {@code McpInvoke}
+     * and the structural rules would never see the path.
      *
-     * <p>Conservative on both sides: ambiguous method names (no obvious verb,
-     * no path arg) fall through to {@link Capability.McpInvoke} which still
-     * gets the standard policy + audit treatment. False positives just mean
-     * the user sees a slightly more aggressive prompt — they can still
-     * approve. False negatives mean the structural denial is missed, which is
+     * <h3>What gets classified as what</h3>
+     *
+     * <ul>
+     *   <li>Method name matches {@code write|create|edit|append|put|save}
+     *       (as prefix or suffix) with a {@code path}/{@code file_path}/etc.
+     *       arg → {@link Capability.FileWrite}.</li>
+     *   <li>Method name matches {@code delete|remove|unlink|rm} with a
+     *       similar arg → {@link Capability.FileDelete}.</li>
+     *   <li>Method name matches {@code move|rename|copy|mv|cp} with a
+     *       destination-style arg ({@code destination}, {@code dest},
+     *       {@code target}, {@code to}, {@code new_path}, …) →
+     *       {@link Capability.FileWrite} of the destination. For moves
+     *       (not copies) with only a source-style arg ({@code source},
+     *       {@code src}, {@code from}, {@code old_path}, …) →
+     *       {@link Capability.FileDelete} of the source.</li>
+     *   <li>Everything else → {@link Capability.McpInvoke} (server, method)
+     *       and gets the standard policy + audit treatment via the MCP
+     *       method's allowlist key.</li>
+     * </ul>
+     *
+     * <p>Conservative on both sides. False positives — a non-filesystem
+     * method named {@code write_log(path=...)} would be classified as
+     * {@code FileWrite} — only result in a more aggressive prompt; the user
+     * can still approve. False negatives — an obscurely named file op that
+     * misses the patterns — fall back to the standard MCP prompt, which is
      * the pre-fix behaviour.
+     *
+     * <p>Note that the audit log will record {@code @type=FileWrite} for
+     * benign moves, which can surprise operators searching by capability
+     * type. The {@code toolName} field on the audit entry still carries
+     * {@code mcp__<server>__<method>}, so the original MCP method remains
+     * traceable.
      *
      * <p>The args payload itself is intentionally not retained on either
      * variant — args can be huge and may carry secrets; policies decide on
@@ -201,29 +226,44 @@ public final class McpToolBridge implements Tool, CapabilityAware {
         String name = mcpToolName.toLowerCase(Locale.ROOT);
 
         if (WRITE_VERB.matcher(name).matches()) {
+            // Most single-write methods use a `path`-style field. Some
+            // weirder names (`write_to_destination(...)`) use a destination-
+            // style field; cascade so they're caught too.
             Path p = safePath(extractField(args, PATH_FIELDS));
+            if (p == null) p = safePath(extractField(args, DESTINATION_FIELDS));
             return p == null ? null : new Capability.FileWrite(p, WriteMode.OVERWRITE);
         }
         if (DELETE_VERB.matcher(name).matches()) {
             Path p = safePath(extractField(args, PATH_FIELDS));
+            if (p == null) p = safePath(extractField(args, SOURCE_FIELDS));
             return p == null ? null : new Capability.FileDelete(p);
         }
         if (MOVE_DEST_VERB.matcher(name).matches()) {
             // Two-arg op: destination is the "write" target; source is the
             // "delete" target (for moves only — copies leave the source).
-            // The structural denial layer only sees one Capability, so:
-            //   - If destination resolves, emit FileWrite(dest). This covers
-            //     "move/copy to .env" — the most common attack vector
-            //     (Codex P1 follow-up on #495).
-            //   - Else if the op is a move (not a copy) and source resolves,
-            //     emit FileDelete(source). Catches "move .env elsewhere"
-            //     which effectively deletes .env.
+            // The structural denial layer only sees one Capability, so we
+            // disambiguate up front with DefaultPermissionPolicy.isSensitivePath:
+            //   1. If destination resolves AND is sensitive → FileWrite(dst).
+            //      Catches "move/copy to .env" — destination-write attack.
+            //   2. Else if the op is a move (not copy), source resolves, AND
+            //      is sensitive → FileDelete(src). Catches "move .env away"
+            //      — source-delete attack that the destination-first model
+            //      missed (Codex P1 second follow-up on #495).
+            //   3. Else fall back to destination if present, otherwise
+            //      source-as-delete for moves. Benign cases get the standard
+            //      MCP prompt via the tool-name allowlist key.
             Path dst = safePath(extractField(args, DESTINATION_FIELDS));
-            if (dst != null) return new Capability.FileWrite(dst, WriteMode.OVERWRITE);
-            if (!COPY_VERB.matcher(name).matches()) {
-                Path src = safePath(extractField(args, SOURCE_FIELDS));
-                if (src != null) return new Capability.FileDelete(src);
+            Path src = safePath(extractField(args, SOURCE_FIELDS));
+            boolean isMove = !COPY_VERB.matcher(name).matches();
+
+            if (dst != null && DefaultPermissionPolicy.isSensitivePath(dst)) {
+                return new Capability.FileWrite(dst, WriteMode.OVERWRITE);
             }
+            if (isMove && src != null && DefaultPermissionPolicy.isSensitivePath(src)) {
+                return new Capability.FileDelete(src);
+            }
+            if (dst != null) return new Capability.FileWrite(dst, WriteMode.OVERWRITE);
+            if (isMove && src != null) return new Capability.FileDelete(src);
         }
         return null;
     }

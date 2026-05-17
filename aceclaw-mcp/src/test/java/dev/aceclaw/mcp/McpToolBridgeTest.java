@@ -291,6 +291,74 @@ class McpToolBridgeTest {
     }
 
     @Test
+    void moveFromSensitiveSourceWithSafeDestinationInfersFileDelete() {
+        // Codex P1 second follow-up on #495: when destination is safe but
+        // source is sensitive, the "destination wins" rule used to emit
+        // FileWrite(safe-dest) and the structural layer would never see the
+        // sensitive source being deleted. Source-sensitivity is now probed
+        // explicitly so the structural denial fires on the delete side.
+        var tool = McpToolBridge.create("fs", mcpTool("move_file", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode()
+                .put("source", "/repo/.env")
+                .put("destination", "/tmp/env-backup.txt");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap)
+                .as("safe-dst + sensitive-src move must produce FileDelete to trigger denial")
+                .isInstanceOf(Capability.FileDelete.class);
+        assertThat(((Capability.FileDelete) cap).path()).isEqualTo(Path.of("/repo/.env"));
+    }
+
+    @Test
+    void copyFromSensitiveSourceWithSafeDestinationStaysAsFileWrite() {
+        // Copies don't delete the source - the source-sensitivity probe only
+        // kicks in for moves. A copy from .env to safe-dest still emits
+        // FileWrite(safe-dest) (the destination side), gets the standard
+        // prompt - no source-side denial because the source is left intact.
+        var tool = McpToolBridge.create("fs", mcpTool("copy_file", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode()
+                .put("source", "/repo/.env")
+                .put("destination", "/tmp/env-copy.txt");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileWrite.class);
+        assertThat(((Capability.FileWrite) cap).path()).isEqualTo(Path.of("/tmp/env-copy.txt"));
+    }
+
+    @Test
+    void benignMoveWithSafeBothSidesEmitsFileWrite() {
+        // No sensitivity on either side - falls through to "destination wins"
+        // FileWrite. Session-blanket approval for the MCP method (allowlist
+        // key) still auto-approves because the blanket is keyed by tool name.
+        var tool = McpToolBridge.create("fs", mcpTool("move_file", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode()
+                .put("source", "/tmp/a.txt")
+                .put("destination", "/tmp/b.txt");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileWrite.class);
+        assertThat(((Capability.FileWrite) cap).path()).isEqualTo(Path.of("/tmp/b.txt"));
+    }
+
+    @Test
+    void writeToDestinationFieldStillInfersFileWrite() {
+        // Self-review preemptive fix: a write-verb method that uses a
+        // destination-style field (`write_to_destination(destination=...)`)
+        // instead of `path` should still emit FileWrite. The WRITE_VERB
+        // branch cascades to DESTINATION_FIELDS when PATH_FIELDS is empty.
+        var tool = McpToolBridge.create("fs", mcpTool("write_to", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode().put("destination", "/repo/.env");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileWrite.class);
+        assertThat(((Capability.FileWrite) cap).path()).isEqualTo(Path.of("/repo/.env"));
+    }
+
+    @Test
     void mcpMoveToSensitiveDestinationIsStructurallyDenied() {
         // End-to-end: move to .env composes through to a structural denial.
         var tool = McpToolBridge.create("fs", mcpTool("move_file", "desc"), client);

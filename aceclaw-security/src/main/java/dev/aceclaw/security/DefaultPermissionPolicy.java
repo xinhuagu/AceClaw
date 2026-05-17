@@ -169,28 +169,40 @@ public final class DefaultPermissionPolicy implements PermissionPolicy {
      * {@code /tmp/../etc/hosts} cannot route around the {@code /etc/} rule.
      */
     private static PermissionDecision.Denied denyIfSensitivePath(Path rawPath, String verb) {
+        return isSensitivePath(rawPath) ? deniedSensitive(verb, rawPath.normalize()) : null;
+    }
+
+    /**
+     * Returns {@code true} when {@code rawPath} resolves to a path the
+     * structural-denial layer refuses to write or delete. Exposed so
+     * adapter-side code (notably {@code McpToolBridge}) can disambiguate
+     * two-arg ops like {@code move(source, destination)} where either side
+     * could be sensitive but only one capability variant can be emitted
+     * (Codex P1 follow-up on #495 — "deny moves that remove sensitive
+     * sources").
+     *
+     * <p>The path is {@link Path#normalize() normalized} before matching so
+     * {@code /tmp/../etc/hosts} resolves to {@code /etc/hosts}. Basename and
+     * segment comparisons are case-insensitive under {@link Locale#ROOT} so
+     * case-insensitive filesystems (default macOS APFS, Windows NTFS) can't
+     * be bypassed with {@code .ENV}.
+     */
+    public static boolean isSensitivePath(Path rawPath) {
+        if (rawPath == null) return false;
         var path = rawPath.normalize();
-        // Match the basename (e.g. ".env", "credentials.json"). Lowercase
-        // under Locale.ROOT for stable case-insensitive comparison — a
-        // case-insensitive filesystem treats `.ENV` and `.env` as the same
-        // file, so the structural rule has to too. (Codex P2 on #495.)
         var fileName = path.getFileName();
         String nameLower = fileName == null ? "" : fileName.toString().toLowerCase(Locale.ROOT);
         if (fileName != null) {
-            if (SENSITIVE_FILENAMES.contains(nameLower)) {
-                return deniedSensitive(verb, path);
-            }
+            if (SENSITIVE_FILENAMES.contains(nameLower)) return true;
             // .env, .env.local, .env.production all match — but NOT
             // dotenv-notes.md or env-template (basename must START with .env).
-            if (nameLower.startsWith(".env")) {
-                return deniedSensitive(verb, path);
-            }
+            if (nameLower.startsWith(".env")) return true;
         }
 
         // Match any path segment for things like .ssh/, .aws/credentials.
         for (Path segment : path) {
             if (SENSITIVE_PATH_SEGMENTS.contains(segment.toString().toLowerCase(Locale.ROOT))) {
-                return deniedSensitive(verb, path);
+                return true;
             }
         }
 
@@ -201,7 +213,7 @@ public final class DefaultPermissionPolicy implements PermissionPolicy {
         if ("config".equals(nameLower)) {
             for (Path segment : path) {
                 if (".git".equals(segment.toString().toLowerCase(Locale.ROOT))) {
-                    return deniedSensitive(verb, path);
+                    return true;
                 }
             }
         }
@@ -212,11 +224,11 @@ public final class DefaultPermissionPolicy implements PermissionPolicy {
             var root = path.getRoot();
             if (root != null && path.getNameCount() > 0
                     && "etc".equals(path.getName(0).toString().toLowerCase(Locale.ROOT))) {
-                return deniedSensitive(verb, path);
+                return true;
             }
         }
 
-        return null;
+        return false;
     }
 
     private static PermissionDecision.Denied deniedSensitive(String verb, Path path) {
