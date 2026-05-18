@@ -108,14 +108,15 @@ public final class SensitivePaths {
         }
         if (sawDotGit && "config".equals(nameLower)) return true;
 
-        // Absolute /etc/* — system-wide config. Tools that legitimately
-        // need to touch /etc must be invoked outside the agent.
-        if (path.isAbsolute()) {
-            var root = path.getRoot();
-            if (root != null && path.getNameCount() > 0
-                    && "etc".equals(path.getName(0).toString().toLowerCase(Locale.ROOT))) {
-                return true;
-            }
+        // Absolute /etc/* — system-wide config. The agent's intent is what
+        // matters here ("write /etc/hosts" is a system-config write regardless
+        // of host OS), so use an OS-independent string check rather than
+        // Path.isAbsolute() which returns false on Windows for Unix-style
+        // paths (no drive letter). Render with forward slashes, lowercase,
+        // then prefix-check.
+        String normalized = path.toString().replace('\\', '/').toLowerCase(Locale.ROOT);
+        if (normalized.equals("/etc") || normalized.startsWith("/etc/")) {
+            return true;
         }
 
         return false;
