@@ -72,6 +72,7 @@ import java.util.regex.Pattern;
         @JsonSubTypes.Type(value = Capability.FileRead.class, name = "FileRead"),
         @JsonSubTypes.Type(value = Capability.FileWrite.class, name = "FileWrite"),
         @JsonSubTypes.Type(value = Capability.FileDelete.class, name = "FileDelete"),
+        @JsonSubTypes.Type(value = Capability.FileMove.class, name = "FileMove"),
         @JsonSubTypes.Type(value = Capability.FileSearch.class, name = "FileSearch"),
         @JsonSubTypes.Type(value = Capability.BashExec.class, name = "BashExec"),
         @JsonSubTypes.Type(value = Capability.OsScript.class, name = "OsScript"),
@@ -181,6 +182,40 @@ public sealed interface Capability {
         @Override public PermissionLevel risk() { return PermissionLevel.DANGEROUS; }
         @Override public DataFlow dataFlow() { return DataFlow.EGRESS; }
         @Override public String displayLabel() { return "delete " + renderPath(path); }
+    }
+
+    /**
+     * Two-arg file operation: {@code move}, {@code rename}, {@code copy}.
+     * Carries both endpoints so {@link DefaultPermissionPolicy#evaluateStructural}
+     * can check source AND destination sensitivity in one pass — without this
+     * variant, the MCP-side inference had to choose ONE of {@link FileWrite}
+     * or {@link FileDelete} and lost the other side's information, which
+     * showed up in the audit log as {@code @type=FileDelete} entries for
+     * what were actually copy operations.
+     *
+     * <p>{@code deletesSource} distinguishes moves (true — source is removed)
+     * from copies (false — source persists). The risk classification flows
+     * from this flag: moves are {@code DANGEROUS} (a delete happens), copies
+     * are {@code WRITE} (only the destination is created).
+     */
+    record FileMove(Path source, Path destination, boolean deletesSource) implements Capability {
+        public FileMove {
+            Objects.requireNonNull(source, "source");
+            Objects.requireNonNull(destination, "destination");
+        }
+
+        @Override public PermissionLevel risk() {
+            // Moves remove the source; the operation's risk class matches
+            // FileDelete (DANGEROUS) so accept-edits mode doesn't auto-
+            // approve them. Copies leave the source intact, so the destination
+            // write is the only effect — WRITE is honest.
+            return deletesSource ? PermissionLevel.DANGEROUS : PermissionLevel.WRITE;
+        }
+        @Override public DataFlow dataFlow() { return DataFlow.BOTH; }
+        @Override public String displayLabel() {
+            return (deletesSource ? "move " : "copy ")
+                    + renderPath(source) + " -> " + renderPath(destination);
+        }
     }
 
     // -- Filesystem search ----------------------------------------------

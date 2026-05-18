@@ -2,7 +2,6 @@ package dev.aceclaw.mcp;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import dev.aceclaw.security.Capability;
-import dev.aceclaw.security.DefaultPermissionPolicy;
 import dev.aceclaw.security.WriteMode;
 
 import java.nio.file.InvalidPathException;
@@ -54,14 +53,11 @@ import java.util.regex.Pattern;
  * variant — args can be huge and may carry secrets; policies decide on
  * {@code (server, method)} or the resolved path alone.
  *
- * <p><strong>Cross-module coupling note:</strong> this class calls
- * {@link DefaultPermissionPolicy#isSensitivePath(Path)} to disambiguate
- * move/copy operations where source vs destination sensitivity matters.
- * That bakes the default-policy's sensitive-path rules into MCP-side
- * classification; a deployment that swaps in a different policy with
- * different sensitivity rules would still see this class produce variants
- * based on the default rules. Tracked as a follow-up cleanup
- * ({@code SensitivePaths} utility to decouple).
+ * <p>Move/copy ops emit a {@link Capability.FileMove} carrying both source
+ * and destination — the policy's {@code evaluateStructural} checks both
+ * endpoints. No sensitivity probing at this layer (which previously coupled
+ * the inference to {@code DefaultPermissionPolicy}); the inference is now
+ * pure data classification.
  */
 final class McpCapabilityInference {
 
@@ -96,49 +92,36 @@ final class McpCapabilityInference {
     }
 
     /**
-     * Two-arg op (move/rename/copy) disambiguation. Returns:
+     * Two-arg op (move/rename/copy) classification. Emits a structured
+     * {@link Capability.FileMove} carrying both endpoints when both resolve,
+     * so the policy's {@code evaluateStructural} can check both sides for
+     * sensitivity in a single pass — and the audit log accurately records
+     * {@code @type=FileMove} for what is actually a move/copy.
      *
-     * <ol>
-     *   <li>{@link Capability.FileWrite}(dst) when {@code dst} is sensitive —
-     *       catches the destination-write attack ("move/copy to {@code .env}").</li>
-     *   <li>{@link Capability.FileDelete}(src) when {@code src} resolves and
-     *       either the op is a move (source really is removed) or {@code src}
-     *       is sensitive (copying credentials away is exfiltration). Two
-     *       distinct purposes folded together:
-     *     <ul>
-     *       <li>Moves get {@link Capability.FileDelete}'s DANGEROUS risk so
-     *           they prompt in {@code accept-edits} mode where
-     *           {@link Capability.FileWrite} would auto-approve. Preserves
-     *           pre-#495 MCP move behaviour (Codex P2 on #495).</li>
-     *       <li>Copies from sensitive source land on {@code FileDelete} so
-     *           the structural denial fires on the source path. Audit log
-     *           shows {@code @type=FileDelete} for a copy — slightly
-     *           misleading but safer than missing the denial; the
-     *           {@code toolName} field on the audit entry still carries
-     *           the original {@code mcp__<server>__copy_file} so operators
-     *           can correlate (Codex P1 on #495).</li>
-     *     </ul>
-     *   </li>
-     *   <li>{@link Capability.FileWrite}(dst) for the safe-both-sides copy
-     *       case. Genuine WRITE risk; auto-approval in {@code accept-edits}
-     *       is fine because the source is intact.</li>
-     * </ol>
-     *
-     * <p>{@code null} when neither side resolves (incomplete args) — caller
-     * falls back to {@link Capability.McpInvoke}.
+     * <p>When only one endpoint resolves (malformed args from the MCP
+     * server), degrades gracefully:
+     * <ul>
+     *   <li>dst-only → {@link Capability.FileWrite} (destination is being
+     *       written; nothing to say about source).</li>
+     *   <li>src-only on a move → {@link Capability.FileDelete} (source is
+     *       being removed; no destination to check). Copies with no
+     *       destination fall through to {@link Capability.McpInvoke} since
+     *       a copy with no target is meaningless and a {@code FileRead}
+     *       wouldn't trigger structural rules anyway.</li>
+     *   <li>Neither → {@code null}, caller falls back to
+     *       {@link Capability.McpInvoke}.</li>
+     * </ul>
      */
     private static Capability inferMoveCopy(String normalizedName, JsonNode args) {
         Path dst = safePath(extractField(args, DESTINATION_FIELDS));
         Path src = safePath(extractField(args, SOURCE_FIELDS));
-        boolean isMove = !COPY_VERB.matcher(normalizedName).matches();
+        boolean deletesSource = !COPY_VERB.matcher(normalizedName).matches();
 
-        if (dst != null && DefaultPermissionPolicy.isSensitivePath(dst)) {
-            return new Capability.FileWrite(dst, WriteMode.OVERWRITE);
-        }
-        if (src != null && (isMove || DefaultPermissionPolicy.isSensitivePath(src))) {
-            return new Capability.FileDelete(src);
+        if (src != null && dst != null) {
+            return new Capability.FileMove(src, dst, deletesSource);
         }
         if (dst != null) return new Capability.FileWrite(dst, WriteMode.OVERWRITE);
+        if (src != null && deletesSource) return new Capability.FileDelete(src);
         return null;
     }
 

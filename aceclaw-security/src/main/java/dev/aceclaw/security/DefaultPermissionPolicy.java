@@ -1,9 +1,7 @@
 package dev.aceclaw.security;
 
 import java.nio.file.Path;
-import java.util.Locale;
 import java.util.Objects;
-import java.util.Set;
 
 /**
  * The default permission policy for the AceClaw agent.
@@ -36,40 +34,6 @@ public final class DefaultPermissionPolicy implements PermissionPolicy {
     public static final String MODE_ACCEPT_EDITS = "accept-edits";
     public static final String MODE_PLAN = "plan";
     public static final String MODE_AUTO_ACCEPT = "auto-accept";
-
-    /**
-     * File names whose <em>basename</em> is sensitive in every project layout.
-     * Matched against {@link Path#getFileName()} case-insensitively (under
-     * {@link Locale#ROOT}) so case-insensitive filesystems like the default
-     * macOS APFS or Windows NTFS can't be bypassed with {@code .ENV} or
-     * {@code Credentials.json} pointing at the same underlying file.
-     * Store these entries lowercased; the comparison lowercases the input.
-     */
-    private static final Set<String> SENSITIVE_FILENAMES = Set.of(
-            ".env",
-            "credentials.json",
-            ".netrc",
-            "id_rsa",
-            "id_ed25519",
-            "id_ecdsa",
-            ".npmrc",
-            ".pypirc",
-            "service-account.json");
-
-    /**
-     * Path segments that, when present anywhere in the path, mark the file
-     * as sensitive. {@code .ssh} catches both {@code ~/.ssh/id_rsa} and a
-     * cloned {@code ./.ssh/config}; {@code .git/config} catches per-repo
-     * git config writes (a common credential-store smuggling vector).
-     * Compared case-insensitively for the same reason as
-     * {@link #SENSITIVE_FILENAMES}.
-     */
-    private static final Set<String> SENSITIVE_PATH_SEGMENTS = Set.of(
-            ".ssh",
-            ".aws",
-            ".gnupg",
-            ".kube",
-            ".docker");
 
     private final String mode;
 
@@ -161,80 +125,32 @@ public final class DefaultPermissionPolicy implements PermissionPolicy {
         return switch (capability) {
             case Capability.FileWrite fw -> denyIfSensitivePath(fw.path(), "write to");
             case Capability.FileDelete fd -> denyIfSensitivePath(fd.path(), "delete");
+            case Capability.FileMove fm -> {
+                // Both endpoints matter. Destination is the file being written
+                // ("move/copy TO .env"); source is the file being read or
+                // removed ("copy FROM .env" is exfiltration; "move FROM .env"
+                // is also a delete of the source). Check destination first
+                // because that's the more direct "write to sensitive" attack;
+                // fall back to the source side if destination is safe but
+                // source is sensitive.
+                var dstDenial = denyIfSensitivePath(fm.destination(), "write to");
+                if (dstDenial != null) yield dstDenial;
+                yield denyIfSensitivePath(fm.source(), fm.deletesSource() ? "remove" : "read from");
+            }
             default -> null;
         };
     }
 
     /**
-     * Walks {@code path}'s segments looking for sensitive markers. Uses
-     * segment-level matching (not {@code String.contains}) so legitimate
-     * siblings like {@code repo/notes-on-env.md} don't false-trip.
-     *
-     * <p>The path is {@link Path#normalize() normalized} first — purely
-     * lexical {@code ..} collapsing, no filesystem I/O — so attempts like
-     * {@code /tmp/../etc/hosts} cannot route around the {@code /etc/} rule.
+     * Delegates to {@link SensitivePaths#matches(Path)} for the sensitivity
+     * rule set, returning a {@link PermissionDecision.Denied} with a human
+     * reason when the path matches. Sensitivity rules live in
+     * {@code SensitivePaths} so adapter-side code (notably
+     * {@code McpCapabilityInference}) can call the same rules without
+     * depending on this policy class.
      */
     private static PermissionDecision.Denied denyIfSensitivePath(Path rawPath, String verb) {
-        return isSensitivePath(rawPath) ? deniedSensitive(verb, rawPath.normalize()) : null;
-    }
-
-    /**
-     * Returns {@code true} when {@code rawPath} resolves to a path the
-     * structural-denial layer refuses to write or delete. Exposed so
-     * adapter-side code (notably {@code McpToolBridge}) can disambiguate
-     * two-arg ops like {@code move(source, destination)} where either side
-     * could be sensitive but only one capability variant can be emitted
-     * (Codex P1 follow-up on #495 — "deny moves that remove sensitive
-     * sources").
-     *
-     * <p>The path is {@link Path#normalize() normalized} before matching so
-     * {@code /tmp/../etc/hosts} resolves to {@code /etc/hosts}. Basename and
-     * segment comparisons are case-insensitive under {@link Locale#ROOT} so
-     * case-insensitive filesystems (default macOS APFS, Windows NTFS) can't
-     * be bypassed with {@code .ENV}.
-     */
-    public static boolean isSensitivePath(Path rawPath) {
-        if (rawPath == null) return false;
-        var path = rawPath.normalize();
-        var fileName = path.getFileName();
-        String nameLower = fileName == null ? "" : fileName.toString().toLowerCase(Locale.ROOT);
-        if (fileName != null) {
-            if (SENSITIVE_FILENAMES.contains(nameLower)) return true;
-            // .env, .env.local, .env.production all match — but NOT
-            // dotenv-notes.md or env-template (basename must START with .env).
-            if (nameLower.startsWith(".env")) return true;
-        }
-
-        // Match any path segment for things like .ssh/, .aws/credentials.
-        for (Path segment : path) {
-            if (SENSITIVE_PATH_SEGMENTS.contains(segment.toString().toLowerCase(Locale.ROOT))) {
-                return true;
-            }
-        }
-
-        // .git/config is sensitive (credential-helper config sits here); the
-        // rest of .git/ is fine to write so we cannot deny on segment ".git"
-        // alone — gradle/git plugins legitimately rewrite .git/HEAD,
-        // packed-refs, etc. during normal operation.
-        if ("config".equals(nameLower)) {
-            for (Path segment : path) {
-                if (".git".equals(segment.toString().toLowerCase(Locale.ROOT))) {
-                    return true;
-                }
-            }
-        }
-
-        // Absolute /etc/* — system-wide config. Tools that legitimately
-        // need to touch /etc must be invoked outside the agent.
-        if (path.isAbsolute()) {
-            var root = path.getRoot();
-            if (root != null && path.getNameCount() > 0
-                    && "etc".equals(path.getName(0).toString().toLowerCase(Locale.ROOT))) {
-                return true;
-            }
-        }
-
-        return false;
+        return SensitivePaths.matches(rawPath) ? deniedSensitive(verb, rawPath.normalize()) : null;
     }
 
     private static PermissionDecision.Denied deniedSensitive(String verb, Path path) {

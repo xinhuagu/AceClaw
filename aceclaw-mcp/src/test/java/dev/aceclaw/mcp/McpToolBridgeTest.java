@@ -247,15 +247,96 @@ class McpToolBridgeTest {
         assertThat(cap).isInstanceOf(Capability.McpInvoke.class);
     }
 
+    // -- Move/rename/copy: now emit Capability.FileMove ---------------------
+    // Round-16 follow-up to #495: previously these emitted FileWrite or
+    // FileDelete to coerce the structural-denial layer into checking the
+    // right side. Now the structured FileMove(src, dst, deletesSource)
+    // carries both endpoints, the policy checks both, and the audit log
+    // accurately reflects "this was a move/copy" instead of pretending
+    // it was a delete.
+
     @Test
-    void moveFileToSensitiveDestinationInfersFileWrite() {
-        // Codex P1 follow-up #2 on #495: move/rename/copy with a destination
-        // field must be classified as FileWrite of the destination so the
-        // structural denial sees "writing to .env".
+    void moveFileBothEndpointsInferFileMove() {
         var tool = McpToolBridge.create("fs", mcpTool("move_file", "desc"), client);
 
         var args = new ObjectMapper().createObjectNode()
                 .put("source", "/tmp/safe.txt")
+                .put("destination", "/repo/.env");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileMove.class);
+        var fm = (Capability.FileMove) cap;
+        assertThat(fm.source()).isEqualTo(Path.of("/tmp/safe.txt"));
+        assertThat(fm.destination()).isEqualTo(Path.of("/repo/.env"));
+        assertThat(fm.deletesSource())
+                .as("move ops delete the source")
+                .isTrue();
+    }
+
+    @Test
+    void renameInfersFileMoveWithDeletesSource() {
+        var tool = McpToolBridge.create("fs", mcpTool("rename", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode()
+                .put("old_path", "/tmp/safe.txt")
+                .put("new_path", "/repo/.env");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileMove.class);
+        assertThat(((Capability.FileMove) cap).deletesSource()).isTrue();
+    }
+
+    @Test
+    void copyInfersFileMoveWithoutDeletesSource() {
+        var tool = McpToolBridge.create("fs", mcpTool("copy_file", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode()
+                .put("source", "/tmp/x")
+                .put("target", "/etc/hosts");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileMove.class);
+        assertThat(((Capability.FileMove) cap).deletesSource())
+                .as("copies do not delete the source")
+                .isFalse();
+    }
+
+    @Test
+    void moveSourceOnlyDegradesToFileDelete() {
+        // When destination is missing (malformed args), a move still tells
+        // us the source is being removed. Emit FileDelete so the structural
+        // layer can catch attempts to move .env away.
+        var tool = McpToolBridge.create("fs", mcpTool("move_file", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode()
+                .put("source", "/repo/.env");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileDelete.class);
+        assertThat(((Capability.FileDelete) cap).path()).isEqualTo(Path.of("/repo/.env"));
+    }
+
+    @Test
+    void copySourceOnlyFallsBackToMcpInvoke() {
+        // A copy with no destination is a malformed call (nothing is being
+        // created). FileRead wouldn't trigger structural rules anyway, so
+        // fall back to McpInvoke for the standard prompt.
+        var tool = McpToolBridge.create("fs", mcpTool("copy_file", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode()
+                .put("source", "/repo/.env");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.McpInvoke.class);
+    }
+
+    @Test
+    void moveDestinationOnlyDegradesToFileWrite() {
+        // Destination resolves but source doesn't — emit FileWrite of the
+        // destination since that's the visible side of the operation.
+        var tool = McpToolBridge.create("fs", mcpTool("move_file", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode()
                 .put("destination", "/repo/.env");
         var cap = tool.toCapability(args);
 
@@ -264,144 +345,98 @@ class McpToolBridgeTest {
     }
 
     @Test
-    void renameWithNewPathInfersFileWrite() {
-        var tool = McpToolBridge.create("fs", mcpTool("rename", "desc"), client);
-
-        var args = new ObjectMapper().createObjectNode()
-                .put("old_path", "/tmp/safe.txt")
-                .put("new_path", "/repo/.env");
-        var cap = tool.toCapability(args);
-
-        assertThat(cap).isInstanceOf(Capability.FileWrite.class);
-    }
-
-    @Test
-    void copyWithTargetInfersFileWrite() {
-        var tool = McpToolBridge.create("fs", mcpTool("copy_file", "desc"), client);
-
-        var args = new ObjectMapper().createObjectNode()
-                .put("source", "/tmp/x")
-                .put("target", "/etc/hosts");
-        var cap = tool.toCapability(args);
-
-        assertThat(cap).isInstanceOf(Capability.FileWrite.class);
-    }
-
-    @Test
-    void moveFromSensitiveSourceInfersFileDelete() {
-        // When destination is missing/non-resolvable but source resolves and
-        // the op is a move (not copy), the source is effectively being
-        // deleted — emit FileDelete so the structural layer can catch
-        // attempts to move .env away.
+    void fileMoveRiskReflectsDeletesSource() {
+        // Sanity: FileMove(deletesSource=true) is DANGEROUS so accept-edits
+        // mode prompts. FileMove(deletesSource=false) is WRITE — copies don't
+        // remove the source so the lower risk is honest.
         var tool = McpToolBridge.create("fs", mcpTool("move_file", "desc"), client);
+        var moveArgs = new ObjectMapper().createObjectNode()
+                .put("source", "/tmp/a")
+                .put("destination", "/tmp/b");
+        assertThat(tool.toCapability(moveArgs).risk())
+                .isEqualTo(dev.aceclaw.security.PermissionLevel.DANGEROUS);
 
-        var args = new ObjectMapper().createObjectNode()
-                .put("source", "/repo/.env");
-        // No destination field.
-        var cap = tool.toCapability(args);
-
-        assertThat(cap).isInstanceOf(Capability.FileDelete.class);
-        assertThat(((Capability.FileDelete) cap).path()).isEqualTo(Path.of("/repo/.env"));
+        var copyTool = McpToolBridge.create("fs", mcpTool("copy_file", "desc"), client);
+        var copyArgs = new ObjectMapper().createObjectNode()
+                .put("source", "/tmp/a")
+                .put("destination", "/tmp/b");
+        assertThat(copyTool.toCapability(copyArgs).risk())
+                .isEqualTo(dev.aceclaw.security.PermissionLevel.WRITE);
     }
 
     @Test
-    void copyFromSensitiveSourceWithoutDestinationInfersFileDelete() {
-        // Codex P1 follow-up on #495 (round-9): copies from sensitive sources
-        // re-classify as FileDelete(src) so the structural denial fires --
-        // duplicating credentials anywhere is exfiltration regardless of
-        // destination. The op doesn't actually delete the source; the
-        // classification is intentionally over-conservative (audit log shows
-        // FileDelete but toolName=mcp__<server>__copy_file keeps it
-        // traceable).
-        var tool = McpToolBridge.create("fs", mcpTool("copy_file", "desc"), client);
-
-        var args = new ObjectMapper().createObjectNode()
-                .put("source", "/repo/.env");
-        var cap = tool.toCapability(args);
-
-        assertThat(cap).isInstanceOf(Capability.FileDelete.class);
-        assertThat(((Capability.FileDelete) cap).path()).isEqualTo(Path.of("/repo/.env"));
-    }
-
-    @Test
-    void moveFromSensitiveSourceWithSafeDestinationInfersFileDelete() {
-        // Codex P1 second follow-up on #495: when destination is safe but
-        // source is sensitive, the "destination wins" rule used to emit
-        // FileWrite(safe-dest) and the structural layer would never see the
-        // sensitive source being deleted. Source-sensitivity is now probed
-        // explicitly so the structural denial fires on the delete side.
+    void moveToSensitiveDestinationIsStructurallyDenied() {
+        // End-to-end: FileMove with sensitive dst → structural denial fires
+        // on the destination side.
         var tool = McpToolBridge.create("fs", mcpTool("move_file", "desc"), client);
+        var args = new ObjectMapper().createObjectNode()
+                .put("source", "/tmp/safe.txt")
+                .put("destination", "/repo/.env");
 
+        var cap = tool.toCapability(args);
+        var decision = new DefaultPermissionPolicy("auto-accept").evaluateStructural(cap);
+
+        assertThat(decision).isNotNull();
+    }
+
+    @Test
+    void moveFromSensitiveSourceIsStructurallyDenied() {
+        // End-to-end: FileMove with sensitive src + safe dst → structural
+        // denial fires on the source side because the move removes the
+        // sensitive file.
+        var tool = McpToolBridge.create("fs", mcpTool("move_file", "desc"), client);
         var args = new ObjectMapper().createObjectNode()
                 .put("source", "/repo/.env")
                 .put("destination", "/tmp/env-backup.txt");
+
         var cap = tool.toCapability(args);
-
-        assertThat(cap)
-                .as("safe-dst + sensitive-src move must produce FileDelete to trigger denial")
-                .isInstanceOf(Capability.FileDelete.class);
-        assertThat(((Capability.FileDelete) cap).path()).isEqualTo(Path.of("/repo/.env"));
-    }
-
-    @Test
-    void copyFromSensitiveSourceToSafeDestinationIsStructurallyDeniedAsExfil() {
-        // Codex P1 on #495 (round-9): copy_file(.env, /tmp/env-copy) reads
-        // sensitive content and duplicates it to a non-sensitive location --
-        // a credential-exfiltration vector. Pre-fix this auto-approved in
-        // accept-edits because FileWrite(safe-dst) has WRITE risk. Re-classify
-        // copies-from-sensitive-src as FileDelete(src) so the structural
-        // denial layer refuses them regardless of destination, matching the
-        // pre-#495 EXECUTE-prompt behaviour for MCP tools.
-        var tool = McpToolBridge.create("fs", mcpTool("copy_file", "desc"), client);
-
-        var args = new ObjectMapper().createObjectNode()
-                .put("source", "/repo/.env")
-                .put("destination", "/tmp/env-copy.txt");
-        var cap = tool.toCapability(args);
-
-        assertThat(cap)
-                .as("copy from sensitive src must be classified as FileDelete to trigger denial")
-                .isInstanceOf(Capability.FileDelete.class);
         var decision = new DefaultPermissionPolicy("auto-accept").evaluateStructural(cap);
+
         assertThat(decision)
-                .as("structural denial fires even in auto-accept mode")
+                .as("removing sensitive source via move must be denied")
                 .isNotNull();
     }
 
     @Test
-    void benignMoveWithSafeBothSidesEmitsFileDeleteToPreserveDangerousRisk() {
-        // Codex P2 on #495: a benign move emitted FileWrite(dst) (WRITE risk)
-        // which auto-approves in accept-edits mode, silently removing the
-        // source. Pre-#495 MCP moves prompted via EXECUTE risk. To match
-        // that floor — and since the move semantics ARE a delete of the
-        // source — emit FileDelete(src) instead. FileDelete is DANGEROUS,
-        // so it prompts in every mode except auto-accept.
-        var tool = McpToolBridge.create("fs", mcpTool("move_file", "desc"), client);
-
+    void copyFromSensitiveSourceToSafeDestinationIsStructurallyDeniedAsExfil() {
+        // Credential exfiltration: copy_file(.env, /tmp/x) duplicates a
+        // sensitive file into a non-sensitive location. FileMove carries
+        // both endpoints so the policy can refuse the read side.
+        var tool = McpToolBridge.create("fs", mcpTool("copy_file", "desc"), client);
         var args = new ObjectMapper().createObjectNode()
-                .put("source", "/tmp/a.txt")
-                .put("destination", "/tmp/b.txt");
-        var cap = tool.toCapability(args);
+                .put("source", "/repo/.env")
+                .put("destination", "/tmp/env-copy.txt");
 
-        assertThat(cap).isInstanceOf(Capability.FileDelete.class);
-        assertThat(((Capability.FileDelete) cap).path()).isEqualTo(Path.of("/tmp/a.txt"));
-        // Sanity: FileDelete is DANGEROUS, so accept-edits won't auto-approve.
-        assertThat(cap.risk()).isEqualTo(dev.aceclaw.security.PermissionLevel.DANGEROUS);
+        var cap = tool.toCapability(args);
+        assertThat(cap).isInstanceOf(Capability.FileMove.class);
+        assertThat(((Capability.FileMove) cap).deletesSource())
+                .as("copy semantics preserved -- this is FileMove(deletesSource=false)")
+                .isFalse();
+
+        var decision = new DefaultPermissionPolicy("auto-accept").evaluateStructural(cap);
+        assertThat(decision)
+                .as("copy from sensitive source must be denied even in auto-accept")
+                .isNotNull();
     }
 
     @Test
-    void benignCopyWithSafeBothSidesEmitsFileWrite() {
-        // Copies don't delete the source, so the WRITE risk on the
-        // destination is honest — accept-edits auto-approval is fine.
-        var tool = McpToolBridge.create("fs", mcpTool("copy_file", "desc"), client);
-
+    void benignMoveBothSidesEmitsFileMoveNotDenied() {
+        // No sensitive paths on either side — structural denial returns null,
+        // FileMove(deletesSource=true) bubbles up to the mode-based check.
+        // Audit log accurately records @type=FileMove rather than the old
+        // FileDelete coercion.
+        var tool = McpToolBridge.create("fs", mcpTool("move_file", "desc"), client);
         var args = new ObjectMapper().createObjectNode()
                 .put("source", "/tmp/a.txt")
                 .put("destination", "/tmp/b.txt");
+
         var cap = tool.toCapability(args);
 
-        assertThat(cap).isInstanceOf(Capability.FileWrite.class);
-        assertThat(((Capability.FileWrite) cap).path()).isEqualTo(Path.of("/tmp/b.txt"));
+        assertThat(cap).isInstanceOf(Capability.FileMove.class);
+        var decision = new DefaultPermissionPolicy("normal").evaluateStructural(cap);
+        assertThat(decision)
+                .as("no sensitive paths -> structural denial returns null")
+                .isNull();
     }
 
     @Test
@@ -436,8 +471,8 @@ class McpToolBridgeTest {
                 .put("destination", "/tmp/b");
         var cap = tool.toCapability(args);
 
-        // Move semantics → FileDelete(source) for the dangerous risk.
-        assertThat(cap).isInstanceOf(Capability.FileDelete.class);
+        assertThat(cap).isInstanceOf(Capability.FileMove.class);
+        assertThat(((Capability.FileMove) cap).deletesSource()).isTrue();
     }
 
     @Test
@@ -449,7 +484,8 @@ class McpToolBridgeTest {
                 .put("destination", "/tmp/b");
         var cap = tool.toCapability(args);
 
-        assertThat(cap).isInstanceOf(Capability.FileWrite.class);
+        assertThat(cap).isInstanceOf(Capability.FileMove.class);
+        assertThat(((Capability.FileMove) cap).deletesSource()).isFalse();
     }
 
     @Test
@@ -495,7 +531,8 @@ class McpToolBridgeTest {
                 .put("destination", "/repo/.env");
         var cap = tool.toCapability(args);
 
-        assertThat(cap).isInstanceOf(Capability.FileWrite.class);
+        assertThat(cap).isInstanceOf(Capability.FileMove.class);
+        assertThat(((Capability.FileMove) cap).destination()).isEqualTo(Path.of("/repo/.env"));
     }
 
     @Test
@@ -564,21 +601,6 @@ class McpToolBridgeTest {
 
         assertThat(cap).isInstanceOf(Capability.FileWrite.class);
         assertThat(((Capability.FileWrite) cap).path()).isEqualTo(Path.of("/repo/.env"));
-    }
-
-    @Test
-    void mcpMoveToSensitiveDestinationIsStructurallyDenied() {
-        // End-to-end: move to .env composes through to a structural denial.
-        var tool = McpToolBridge.create("fs", mcpTool("move_file", "desc"), client);
-        var args = new ObjectMapper().createObjectNode()
-                .put("source", "/tmp/safe.txt")
-                .put("destination", "/repo/.env");
-
-        var cap = tool.toCapability(args);
-        var decision = new DefaultPermissionPolicy("auto-accept").evaluateStructural(cap);
-
-        assertThat(decision).isNotNull();
-        assertThat(decision.reason()).contains("sensitive path");
     }
 
     @Test
