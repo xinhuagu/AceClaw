@@ -254,22 +254,30 @@ public final class McpToolBridge implements Tool, CapabilityAware {
             // "delete" target (for moves only — copies leave the source).
             // Disambiguation order:
             //   1. dst is sensitive → FileWrite(dst). Catches "move/copy to
-            //      .env" — destination-write attack.
-            //   2. Op is a move (not copy) and src resolves → FileDelete(src).
-            //      Two purposes:
-            //        a. Catches "move .env away" — source-delete attack the
-            //           destination-first model missed (Codex P1 follow-up #2
+            //      .env" — the destination-write attack.
+            //   2. src resolves AND (op is a move OR src is sensitive) →
+            //      FileDelete(src). Two distinct purposes folded together:
+            //        a. For MOVES (regardless of src sensitivity): the
+            //           source really is removed, and FileDelete's DANGEROUS
+            //           risk prompts in accept-edits where FileWrite would
+            //           auto-approve. Pre-#495 MCP moves prompted via
+            //           EXECUTE risk; this preserves that floor (Codex P2
             //           on #495).
-            //        b. Preserves DANGEROUS risk on the move semantics so even
-            //           benign moves don't auto-approve in accept-edits mode.
-            //           Pre-#495 MCP moves prompted via EXECUTE risk; FileWrite
-            //           is WRITE which IS auto-approved in accept-edits — that
-            //           would silently delete the source. FileDelete is
-            //           DANGEROUS, which is the closest match (Codex P2
-            //           on #495).
-            //   3. Pure copies (no source side-effect) → FileWrite(dst). Risk
-            //      is the genuine WRITE risk; auto-approval in accept-edits
-            //      is fine because the source is intact.
+            //        b. For COPIES from a sensitive source: copies don't
+            //           actually delete the source, but duplicating a
+            //           credentials file to a non-sensitive location IS
+            //           exfiltration. Pre-#495 the same call prompted via
+            //           the EXECUTE fallback; emitting FileDelete here
+            //           triggers the structural denial via the sensitive
+            //           source path (Codex P1 on #495 — "preserve prompts
+            //           for copies from sensitive sources"). Audit log
+            //           shows @type=FileDelete for a copy — slightly
+            //           misleading but safer than missing the denial; the
+            //           toolName field still carries
+            //           mcp__<server>__copy_file so operators can correlate.
+            //   3. Pure copy with non-sensitive src (dst is safe per step 1)
+            //      → FileWrite(dst). Genuine WRITE risk; auto-approval in
+            //      accept-edits is fine.
             Path dst = safePath(extractField(args, DESTINATION_FIELDS));
             Path src = safePath(extractField(args, SOURCE_FIELDS));
             boolean isMove = !COPY_VERB.matcher(name).matches();
@@ -277,7 +285,7 @@ public final class McpToolBridge implements Tool, CapabilityAware {
             if (dst != null && DefaultPermissionPolicy.isSensitivePath(dst)) {
                 return new Capability.FileWrite(dst, WriteMode.OVERWRITE);
             }
-            if (isMove && src != null) {
+            if (src != null && (isMove || DefaultPermissionPolicy.isSensitivePath(src))) {
                 return new Capability.FileDelete(src);
             }
             if (dst != null) return new Capability.FileWrite(dst, WriteMode.OVERWRITE);

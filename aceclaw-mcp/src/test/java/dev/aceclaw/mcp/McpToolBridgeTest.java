@@ -305,17 +305,22 @@ class McpToolBridgeTest {
     }
 
     @Test
-    void copyFromSensitiveSourceDoesNotInferDelete() {
-        // Copies leave the source intact — no FileDelete inferred.
+    void copyFromSensitiveSourceWithoutDestinationInfersFileDelete() {
+        // Codex P1 follow-up on #495 (round-9): copies from sensitive sources
+        // re-classify as FileDelete(src) so the structural denial fires --
+        // duplicating credentials anywhere is exfiltration regardless of
+        // destination. The op doesn't actually delete the source; the
+        // classification is intentionally over-conservative (audit log shows
+        // FileDelete but toolName=mcp__<server>__copy_file keeps it
+        // traceable).
         var tool = McpToolBridge.create("fs", mcpTool("copy_file", "desc"), client);
 
         var args = new ObjectMapper().createObjectNode()
                 .put("source", "/repo/.env");
         var cap = tool.toCapability(args);
 
-        // No destination resolved; not a delete (copy doesn't delete source).
-        // Falls through to McpInvoke.
-        assertThat(cap).isInstanceOf(Capability.McpInvoke.class);
+        assertThat(cap).isInstanceOf(Capability.FileDelete.class);
+        assertThat(((Capability.FileDelete) cap).path()).isEqualTo(Path.of("/repo/.env"));
     }
 
     @Test
@@ -339,11 +344,14 @@ class McpToolBridgeTest {
     }
 
     @Test
-    void copyFromSensitiveSourceWithSafeDestinationStaysAsFileWrite() {
-        // Copies don't delete the source - the source-sensitivity probe only
-        // kicks in for moves. A copy from .env to safe-dest still emits
-        // FileWrite(safe-dest) (the destination side), gets the standard
-        // prompt - no source-side denial because the source is left intact.
+    void copyFromSensitiveSourceToSafeDestinationIsStructurallyDeniedAsExfil() {
+        // Codex P1 on #495 (round-9): copy_file(.env, /tmp/env-copy) reads
+        // sensitive content and duplicates it to a non-sensitive location --
+        // a credential-exfiltration vector. Pre-fix this auto-approved in
+        // accept-edits because FileWrite(safe-dst) has WRITE risk. Re-classify
+        // copies-from-sensitive-src as FileDelete(src) so the structural
+        // denial layer refuses them regardless of destination, matching the
+        // pre-#495 EXECUTE-prompt behaviour for MCP tools.
         var tool = McpToolBridge.create("fs", mcpTool("copy_file", "desc"), client);
 
         var args = new ObjectMapper().createObjectNode()
@@ -351,8 +359,13 @@ class McpToolBridgeTest {
                 .put("destination", "/tmp/env-copy.txt");
         var cap = tool.toCapability(args);
 
-        assertThat(cap).isInstanceOf(Capability.FileWrite.class);
-        assertThat(((Capability.FileWrite) cap).path()).isEqualTo(Path.of("/tmp/env-copy.txt"));
+        assertThat(cap)
+                .as("copy from sensitive src must be classified as FileDelete to trigger denial")
+                .isInstanceOf(Capability.FileDelete.class);
+        var decision = new DefaultPermissionPolicy("auto-accept").evaluateStructural(cap);
+        assertThat(decision)
+                .as("structural denial fires even in auto-accept mode")
+                .isNotNull();
     }
 
     @Test
