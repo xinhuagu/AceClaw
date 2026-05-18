@@ -34,6 +34,8 @@ import dev.aceclaw.memory.MemoryConsolidator;
 import dev.aceclaw.memory.StrategyRefiner;
 import dev.aceclaw.memory.TrendDetector;
 import dev.aceclaw.memory.WorkspacePaths;
+import dev.aceclaw.security.Capability;
+import dev.aceclaw.security.CapabilityAware;
 import dev.aceclaw.security.DefaultPermissionPolicy;
 import dev.aceclaw.security.PermissionManager;
 import dev.aceclaw.security.audit.CapabilityAuditLog;
@@ -406,6 +408,35 @@ public final class AceClawDaemon {
             readOnlyTools = java.util.Set.copyOf(readOnlyTools);
             log.info("Sub-agent auto-approve tools extended with: {}", extraTools);
         }
+        // Structural-denial probe: routes the sub-agent's intended tool call
+        // through the policy's evaluateStructural before any allow-list
+        // shortcut, so a prior "always allow write_file" approval cannot
+        // route a sub-agent past the .env / .ssh / /etc/ hard-denial layer
+        // (Codex P1 on #495).
+        var subAgentToolRegistry = toolRegistry;
+        var subAgentMapper = objectMapper;
+        SubAgentStructuralCheck structuralCheck = (toolName, inputJson) -> {
+            var toolOpt = subAgentToolRegistry.get(toolName);
+            if (toolOpt.isEmpty()) return null;
+            if (!(toolOpt.get() instanceof CapabilityAware aware)) return null;
+            Capability cap;
+            try {
+                var argsNode = (inputJson == null || inputJson.isBlank())
+                        ? subAgentMapper.createObjectNode()
+                        : subAgentMapper.readTree(inputJson);
+                cap = aware.toCapability(argsNode);
+            } catch (Exception malformed) {
+                // Unparseable args — fall through to the normal allow-list
+                // logic rather than crash the dispatcher. The standard
+                // sub-agent gate will still deny non-read-only tools that
+                // lack session approval.
+                return null;
+            }
+            if (cap == null) return null;
+            var denial = permissionManager.checkStructural(cap);
+            return denial == null ? null : denial.reason();
+        };
+
         // Sub-agent allow-list lookup is now per-session (#457): the
         // checker receives the calling agent's sessionId on every check
         // and looks up the allow-list keyed on that session. This closes
@@ -413,7 +444,7 @@ public final class AceClawDaemon {
         // approval the user granted in session A — a regression of #456
         // confined to the sub-agent path until threading was done.
         var subAgentPermChecker = new SubAgentPermissionChecker(
-                readOnlyTools, permissionManager::hasSessionApproval);
+                readOnlyTools, permissionManager::hasSessionApproval, structuralCheck);
 
         // Project rules for sub-agent system prompts
         String projectRules = SystemPromptLoader.extractProjectRules(workingDir);

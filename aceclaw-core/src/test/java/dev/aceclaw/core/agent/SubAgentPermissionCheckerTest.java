@@ -30,7 +30,7 @@ class SubAgentPermissionCheckerTest {
 
     /** Convenience: a checker with no session approvals at all. */
     private static SubAgentPermissionChecker denyAll() {
-        return new SubAgentPermissionChecker(READ_ONLY, (sid, tool) -> false);
+        return new SubAgentPermissionChecker(READ_ONLY, (sid, tool) -> false, SubAgentStructuralCheck.NONE);
     }
 
     @Test
@@ -50,7 +50,7 @@ class SubAgentPermissionCheckerTest {
         // Approval matrix: session "A" approved write_file; session "B" did not.
         BiPredicate<String, String> isApproved = (sid, tool) ->
                 "A".equals(sid) && "write_file".equals(tool);
-        var checker = new SubAgentPermissionChecker(READ_ONLY, isApproved);
+        var checker = new SubAgentPermissionChecker(READ_ONLY, isApproved, SubAgentStructuralCheck.NONE);
 
         assertThat(checker.check("write_file", "{}", "A").allowed())
                 .as("session A approved write_file → allowed under session A")
@@ -70,7 +70,7 @@ class SubAgentPermissionCheckerTest {
     void nullSessionIdFailsClosedForNonReadOnlyTools() {
         // A daemon-internal caller with no session in scope cannot match
         // any session-scoped approval — fail-closed by construction.
-        var alwaysApprove = new SubAgentPermissionChecker(READ_ONLY, (sid, tool) -> true);
+        var alwaysApprove = new SubAgentPermissionChecker(READ_ONLY, (sid, tool) -> true, SubAgentStructuralCheck.NONE);
 
         var result = alwaysApprove.check("write_file", "{}", null);
         assertThat(result.allowed())
@@ -106,10 +106,57 @@ class SubAgentPermissionCheckerTest {
         sessionApprovals.add("A:write_file");
         BiPredicate<String, String> isApproved =
                 (sid, tool) -> sessionApprovals.contains(sid + ":" + tool);
-        var checker = new SubAgentPermissionChecker(READ_ONLY, isApproved);
+        var checker = new SubAgentPermissionChecker(READ_ONLY, isApproved, SubAgentStructuralCheck.NONE);
 
         assertThat(checker.check("write_file", "{}", "A").allowed()).isTrue();
         assertThat(checker.check("write_file", "{}", "B").allowed()).isFalse();
         assertThat(checker.check("write_file", "{}", "C").allowed()).isFalse();
+    }
+
+    @Test
+    void structuralDenialOverridesSessionApproval() {
+        // Codex P1 on #495: a sub-agent could call write_file(".env") if
+        // the parent session blanket-approved write_file. The structural
+        // probe (wired to the policy's evaluateStructural in the daemon)
+        // must fire BEFORE the allow-list shortcut so the hard-denial
+        // invariant holds for sub-agent dispatch too.
+        BiPredicate<String, String> approveEverything = (sid, tool) -> true;
+        SubAgentStructuralCheck refuseEnvWrites = (toolName, inputJson) -> {
+            if ("write_file".equals(toolName) && inputJson != null && inputJson.contains(".env")) {
+                return "Refusing to write sensitive .env";
+            }
+            return null;
+        };
+        var checker = new SubAgentPermissionChecker(
+                READ_ONLY, approveEverything, refuseEnvWrites);
+
+        // A non-sensitive write still gets the blanket approval.
+        var safeResult = checker.check("write_file", "{\"path\":\"/tmp/safe\"}", "A");
+        assertThat(safeResult.allowed())
+                .as("safe write follows the blanket approval")
+                .isTrue();
+
+        // Sensitive write -- structural denial fires before the blanket check.
+        var sensitiveResult = checker.check("write_file", "{\"path\":\"/repo/.env\"}", "A");
+        assertThat(sensitiveResult.allowed())
+                .as("sensitive write must be denied even with blanket approval")
+                .isFalse();
+        assertThat(sensitiveResult.reason()).contains("sensitive");
+    }
+
+    @Test
+    void structuralDenialOverridesReadOnlyAllowlist() {
+        // Read-only allowlist normally short-circuits. If structural rules
+        // ever apply to a "read-only" tool (defensive -- they don't today
+        // since structural rules only cover writes/deletes), they must
+        // still take precedence.
+        BiPredicate<String, String> denyAll = (sid, tool) -> false;
+        SubAgentStructuralCheck refuseReadOnly = (toolName, inputJson) -> "blocked";
+        var checker = new SubAgentPermissionChecker(
+                READ_ONLY, denyAll, refuseReadOnly);
+
+        var result = checker.check("read_file", "{}", "A");
+        assertThat(result.allowed()).isFalse();
+        assertThat(result.reason()).isEqualTo("blocked");
     }
 }

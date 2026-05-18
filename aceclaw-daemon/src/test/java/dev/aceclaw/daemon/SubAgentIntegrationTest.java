@@ -84,7 +84,8 @@ class SubAgentIntegrationTest {
         var agentTypeRegistry = AgentTypeRegistry.withBuiltins();
         var readOnlyTools = java.util.Set.of("read_file", "glob", "grep");
         var subAgentPermChecker = new SubAgentPermissionChecker(
-                readOnlyTools, permissionManager::hasSessionApproval);
+                readOnlyTools, permissionManager::hasSessionApproval,
+                dev.aceclaw.core.agent.SubAgentStructuralCheck.NONE);
         var subAgentRunner = new SubAgentRunner(
                 mockLlm, toolRegistry, "mock-model", workDir, 4096, 0,
                 subAgentPermChecker, null);

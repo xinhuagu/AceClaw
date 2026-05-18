@@ -247,6 +247,25 @@ public final class PermissionManager {
     }
 
     /**
+     * Runs only the structural / system-invariant denial layer of the policy
+     * — no session-blanket lookup, no mode-based decision. Used by the
+     * sub-agent permission path (which previously consulted only the
+     * session-approval boolean, bypassing the structural rules entirely —
+     * Codex P1 on #495). Returns {@code null} when no structural rule
+     * applies; the caller then routes through whatever approval logic is
+     * appropriate for its context.
+     *
+     * <p>No audit record is written here — the caller is expected to either
+     * approve (and audit elsewhere) or deny (and audit the denial in its
+     * own surface). Audit duplication between this method and a follow-up
+     * {@link #check} call would inflate the on-disk log.
+     */
+    public PermissionDecision.Denied checkStructural(Capability capability) {
+        Objects.requireNonNull(capability, "capability");
+        return policy.evaluateStructural(capability);
+    }
+
+    /**
      * Records a blanket session-level approval for a tool. After this
      * call, future requests for this tool from THIS session are
      * auto-approved (other sessions are unaffected — see #456).

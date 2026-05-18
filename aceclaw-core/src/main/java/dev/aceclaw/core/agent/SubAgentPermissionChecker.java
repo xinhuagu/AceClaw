@@ -27,6 +27,7 @@ public final class SubAgentPermissionChecker implements ToolPermissionChecker {
 
     private final Set<String> readOnlyTools;
     private final BiPredicate<String, String> isSessionApproved;
+    private final SubAgentStructuralCheck structuralCheck;
 
     /**
      * Creates a sub-agent permission checker.
@@ -37,9 +38,20 @@ public final class SubAgentPermissionChecker implements ToolPermissionChecker {
      *                          allow-list lookup. Wire to
      *                          {@code permissionManager::hasSessionApproval}
      *                          on the daemon side.
+     * @param structuralCheck   probe that runs <em>before</em> the read-only
+     *                          and session-approval shortcuts. Returns the
+     *                          denial reason when the tool's intended
+     *                          (toolName, inputJson) violates a cross-cutting
+     *                          rule like "never write to {@code .env}", so
+     *                          that a prior "always allow {@code write_file}"
+     *                          approval cannot route a sub-agent past the
+     *                          structural hard-denial layer (Codex P1 on
+     *                          #495). Pass {@link SubAgentStructuralCheck#NONE}
+     *                          in tests that don't exercise structural rules.
      */
     public SubAgentPermissionChecker(Set<String> readOnlyTools,
-                                     BiPredicate<String, String> isSessionApproved) {
+                                     BiPredicate<String, String> isSessionApproved,
+                                     SubAgentStructuralCheck structuralCheck) {
         // Fail fast on miswiring: a null predicate would only surface on
         // the first non-read-only tool execution, where the NPE would
         // bubble up as a permission-check error well after construction.
@@ -48,11 +60,23 @@ public final class SubAgentPermissionChecker implements ToolPermissionChecker {
         Objects.requireNonNull(readOnlyTools, "readOnlyTools");
         this.readOnlyTools = Set.copyOf(readOnlyTools);
         this.isSessionApproved = Objects.requireNonNull(isSessionApproved, "isSessionApproved");
+        this.structuralCheck = Objects.requireNonNull(structuralCheck, "structuralCheck");
     }
 
     @Override
     public ToolPermissionResult check(String toolName, String inputJson, String sessionId) {
-        // Read-only tools are always allowed
+        // Structural denials fire BEFORE any allow-list lookup. A prior
+        // session-blanket approval for the tool name (e.g. "always allow
+        // write_file") MUST NOT let a sub-agent target .env / .ssh /
+        // /etc/ etc. — the "overrides every approval" invariant of the
+        // hard-denial layer (Codex P1 on #495).
+        String structuralReason = structuralCheck.denyReason(toolName, inputJson);
+        if (structuralReason != null) {
+            return ToolPermissionResult.denied(structuralReason);
+        }
+
+        // Read-only tools are always allowed (structural rules don't cover
+        // FileRead, so reaching here means no rule applied).
         if (readOnlyTools.contains(toolName)) {
             return ToolPermissionResult.ALLOWED;
         }
