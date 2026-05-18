@@ -234,7 +234,7 @@ public final class McpToolBridge implements Tool, CapabilityAware {
 
     private Capability inferFileCapability(JsonNode args) {
         if (args == null || args.isNull() || !args.isObject()) return null;
-        String name = mcpToolName.toLowerCase(Locale.ROOT);
+        String name = normalizeMethodName(mcpToolName);
 
         if (WRITE_VERB.matcher(name).matches()) {
             // Most single-write methods use a `path`-style field. Some
@@ -330,6 +330,38 @@ public final class McpToolBridge implements Tool, CapabilityAware {
      */
     private static String normalizeFieldName(String s) {
         return s.toLowerCase(Locale.ROOT).replace("_", "");
+    }
+
+    /**
+     * Normalizes a method name to snake_case so the verb regexes — which
+     * expect snake_case or bare verbs — can match across naming conventions.
+     * {@code writeFile} / {@code write-file} / {@code WriteFile} all
+     * normalize to {@code write_file}. Without this an MCP server using
+     * camelCase/kebab-case method names would slip past the inference and
+     * structural denial (Codex P1 on #495).
+     *
+     * <p>Algorithm (order matters):
+     * <ol>
+     *   <li>{@code -} and {@code .} → {@code _} (kebab and dotted forms).</li>
+     *   <li>Insert {@code _} before each uppercase that follows a lowercase
+     *       or digit (camelCase split).</li>
+     *   <li>Lowercase under {@link Locale#ROOT}.</li>
+     * </ol>
+     */
+    private static String normalizeMethodName(String s) {
+        String collapsed = s.replace('-', '_').replace('.', '_');
+        var sb = new StringBuilder(collapsed.length() + 4);
+        for (int i = 0; i < collapsed.length(); i++) {
+            char c = collapsed.charAt(i);
+            if (i > 0 && Character.isUpperCase(c)) {
+                char prev = collapsed.charAt(i - 1);
+                if (Character.isLowerCase(prev) || Character.isDigit(prev)) {
+                    sb.append('_');
+                }
+            }
+            sb.append(c);
+        }
+        return sb.toString().toLowerCase(Locale.ROOT);
     }
 
     /**

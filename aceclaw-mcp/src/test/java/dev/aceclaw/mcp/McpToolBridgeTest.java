@@ -453,6 +453,63 @@ class McpToolBridgeTest {
     }
 
     @Test
+    void camelCaseMethodNameMatchesWriteVerb() {
+        // Codex P1 on #495 (round-11): MCP servers using camelCase tool
+        // names (writeFile) or kebab-case (write-file) bypassed the
+        // snake_case-only verb regex. Method-name normalization now folds
+        // both forms to snake_case before matching.
+        var tool = McpToolBridge.create("fs", mcpTool("writeFile", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode().put("path", "/repo/.env");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileWrite.class);
+    }
+
+    @Test
+    void kebabCaseMethodNameMatchesWriteVerb() {
+        var tool = McpToolBridge.create("fs", mcpTool("write-file", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode().put("path", "/repo/.env");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileWrite.class);
+    }
+
+    @Test
+    void camelCaseDeleteMethodMatches() {
+        var tool = McpToolBridge.create("fs", mcpTool("deleteFile", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode().put("path", "/repo/.env");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileDelete.class);
+    }
+
+    @Test
+    void camelCaseMoveMethodMatches() {
+        var tool = McpToolBridge.create("fs", mcpTool("moveFile", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode()
+                .put("source", "/tmp/a")
+                .put("destination", "/repo/.env");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileWrite.class);
+    }
+
+    @Test
+    void pascalCaseMethodMatches() {
+        // PascalCase like "WriteFile" — also covered by the camelCase split.
+        var tool = McpToolBridge.create("fs", mcpTool("WriteFile", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode().put("path", "/repo/.env");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileWrite.class);
+    }
+
+    @Test
     void camelCasePathFieldMatches() {
         // Codex P2 on #495: many MCP servers use camelCase JSON keys
         // (filePath rather than file_path). Field-name normalization
