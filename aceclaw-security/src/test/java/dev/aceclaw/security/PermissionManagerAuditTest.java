@@ -163,6 +163,42 @@ final class PermissionManagerAuditTest {
     }
 
     @Test
+    void checkStructuralNullProvenanceFallsBackToDaemonInternal(@TempDir Path tmp) throws IOException {
+        // Defensive contract: null Provenance is documented as "allowed,
+        // falls back to daemonInternal()". Cover the null+denial branch so
+        // a future caller that drops Provenance still gets an attributable
+        // audit entry (sessionId=null) instead of an NPE.
+        dev.aceclaw.security.PermissionPolicy structuralDeny = new dev.aceclaw.security.PermissionPolicy() {
+            @Override public PermissionDecision evaluate(
+                    dev.aceclaw.security.Capability cap,
+                    dev.aceclaw.security.Provenance prov,
+                    String desc) {
+                return new PermissionDecision.Approved();
+            }
+            @Override public PermissionDecision.Denied evaluateStructural(
+                    dev.aceclaw.security.Capability cap) {
+                return new PermissionDecision.Denied("sensitive");
+            }
+        };
+        var auditLog = CapabilityAuditLog.create(tmp);
+        var pm = new PermissionManager(structuralDeny, auditLog);
+
+        var cap = new dev.aceclaw.security.Capability.FileWrite(
+                java.nio.file.Path.of("/repo/.env"),
+                dev.aceclaw.security.WriteMode.OVERWRITE);
+
+        var result = pm.checkStructural(cap, null, null);
+
+        assertThat(result).isNotNull();
+        var entry = auditLog.readVerified().getFirst();
+        assertThat(entry.decisionKind()).isEqualTo("DENIED");
+        // sessionId is null because daemonInternal() carries no session.
+        assertThat(entry.sessionId()).isNull();
+        // Fallback allowlist key is the capability variant's class name.
+        assertThat(entry.toolName()).isEqualTo("FileWrite");
+    }
+
+    @Test
     void checkStructuralWritesNoAuditWhenNoRuleApplies(@TempDir Path tmp) throws IOException {
         // No double-cost: when no structural rule matches the capability,
         // checkStructural returns null and writes no audit entry.

@@ -38,6 +38,7 @@ import dev.aceclaw.security.Capability;
 import dev.aceclaw.security.CapabilityAware;
 import dev.aceclaw.security.DefaultPermissionPolicy;
 import dev.aceclaw.security.PermissionManager;
+import dev.aceclaw.security.Provenance;
 import dev.aceclaw.security.audit.CapabilityAuditLog;
 import dev.aceclaw.mcp.McpClientManager;
 import dev.aceclaw.mcp.McpServerConfig;
@@ -440,7 +441,7 @@ public final class AceClawDaemon {
                 return null;
             }
             if (cap == null) return null;
-            var provenance = dev.aceclaw.security.Provenance.fromNullableSessionId(sessionId);
+            var provenance = Provenance.fromNullableSessionId(sessionId);
             var denial = permissionManager.checkStructural(cap, provenance, toolName);
             return denial == null ? null : denial.reason();
         };
