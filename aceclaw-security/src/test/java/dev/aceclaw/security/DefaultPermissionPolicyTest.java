@@ -250,6 +250,43 @@ class DefaultPermissionPolicyTest {
     }
 
     @Test
+    void writingKubeConfigIsStructurallyDenied() {
+        // .kube/config — Kubernetes auth tokens.
+        assertNotNull(STRUCTURAL.evaluateStructural(write("/home/u/.kube/config")));
+    }
+
+    @Test
+    void writingDockerConfigIsStructurallyDenied() {
+        // .docker/config.json — registry credentials.
+        assertNotNull(STRUCTURAL.evaluateStructural(write("/home/u/.docker/config.json")));
+    }
+
+    @Test
+    void writingNpmrcIsStructurallyDenied() {
+        // .npmrc — npm registry auth tokens.
+        assertNotNull(STRUCTURAL.evaluateStructural(write("/repo/.npmrc")));
+    }
+
+    @Test
+    void writingPypircIsStructurallyDenied() {
+        // .pypirc — PyPI upload credentials.
+        assertNotNull(STRUCTURAL.evaluateStructural(write("/home/u/.pypirc")));
+    }
+
+    @Test
+    void writingIdEcdsaIsStructurallyDenied() {
+        // SSH ECDSA private key (separate from RSA / ED25519).
+        assertNotNull(STRUCTURAL.evaluateStructural(write("/home/u/id_ecdsa")));
+    }
+
+    @Test
+    void writingServiceAccountJsonIsStructurallyDenied() {
+        // GCP service account keys are commonly named this; named here so
+        // the rule fires even outside the .ssh/.aws/.gnupg segments.
+        assertNotNull(STRUCTURAL.evaluateStructural(write("/tmp/service-account.json")));
+    }
+
+    @Test
     void nonFileCapabilityIsNotStructurallyDenied() {
         // BashExec, HttpFetch, etc. fall through structural checks today —
         // the layer only covers FileWrite/FileDelete.

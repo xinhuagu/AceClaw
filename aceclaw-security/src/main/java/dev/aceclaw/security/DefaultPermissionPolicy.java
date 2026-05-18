@@ -50,7 +50,11 @@ public final class DefaultPermissionPolicy implements PermissionPolicy {
             "credentials.json",
             ".netrc",
             "id_rsa",
-            "id_ed25519");
+            "id_ed25519",
+            "id_ecdsa",
+            ".npmrc",
+            ".pypirc",
+            "service-account.json");
 
     /**
      * Path segments that, when present anywhere in the path, mark the file
@@ -63,7 +67,9 @@ public final class DefaultPermissionPolicy implements PermissionPolicy {
     private static final Set<String> SENSITIVE_PATH_SEGMENTS = Set.of(
             ".ssh",
             ".aws",
-            ".gnupg");
+            ".gnupg",
+            ".kube",
+            ".docker");
 
     private final String mode;
 

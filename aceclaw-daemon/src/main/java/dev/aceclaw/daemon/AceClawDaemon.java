@@ -413,9 +413,16 @@ public final class AceClawDaemon {
         // shortcut, so a prior "always allow write_file" approval cannot
         // route a sub-agent past the .env / .ssh / /etc/ hard-denial layer
         // (Codex P1 on #495).
+        //
+        // Audit attribution: the denial is recorded via
+        // permissionManager.checkStructural which writes a v2 audit entry
+        // tagged with the originating session's Provenance and the tool
+        // name as the allowlistKey. Without that audit, a sub-agent's
+        // attempt to write .env would be invisible to forensics — the
+        // dispatcher main path's audit hook is bypassed here.
         var subAgentToolRegistry = toolRegistry;
         var subAgentMapper = objectMapper;
-        SubAgentStructuralCheck structuralCheck = (toolName, inputJson) -> {
+        SubAgentStructuralCheck structuralCheck = (toolName, inputJson, sessionId) -> {
             var toolOpt = subAgentToolRegistry.get(toolName);
             if (toolOpt.isEmpty()) return null;
             if (!(toolOpt.get() instanceof CapabilityAware aware)) return null;
@@ -433,7 +440,8 @@ public final class AceClawDaemon {
                 return null;
             }
             if (cap == null) return null;
-            var denial = permissionManager.checkStructural(cap);
+            var provenance = dev.aceclaw.security.Provenance.fromNullableSessionId(sessionId);
+            var denial = permissionManager.checkStructural(cap, provenance, toolName);
             return denial == null ? null : denial.reason();
         };
 

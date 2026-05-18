@@ -124,6 +124,68 @@ final class PermissionManagerAuditTest {
     }
 
     @Test
+    void checkStructuralWritesAuditOnDenial(@TempDir Path tmp) throws IOException {
+        // Round-12 follow-up review on #495: structural denials reached via
+        // the sub-agent path (PermissionManager.checkStructural) used to be
+        // invisible to the audit log — only the main dispatcher's check(...)
+        // path audited. Forensics on "what did sub-agents try and get
+        // refused?" was blind. Now checkStructural writes its own entry.
+        dev.aceclaw.security.PermissionPolicy structuralDeny = new dev.aceclaw.security.PermissionPolicy() {
+            @Override public PermissionDecision evaluate(
+                    dev.aceclaw.security.Capability cap,
+                    dev.aceclaw.security.Provenance prov,
+                    String desc) {
+                return new PermissionDecision.Approved();
+            }
+            @Override public PermissionDecision.Denied evaluateStructural(
+                    dev.aceclaw.security.Capability cap) {
+                return new PermissionDecision.Denied("sensitive path");
+            }
+        };
+        var auditLog = CapabilityAuditLog.create(tmp);
+        var pm = new PermissionManager(structuralDeny, auditLog);
+
+        var cap = new dev.aceclaw.security.Capability.FileWrite(
+                java.nio.file.Path.of("/repo/.env"),
+                dev.aceclaw.security.WriteMode.OVERWRITE);
+        var prov = dev.aceclaw.security.Provenance.fromNullableSessionId("sess-X");
+
+        var result = pm.checkStructural(cap, prov, "write_file");
+
+        assertThat(result).isNotNull();
+        var entries = auditLog.readVerified();
+        assertThat(entries).hasSize(1);
+        var entry = entries.getFirst();
+        assertThat(entry.decisionKind()).isEqualTo("DENIED");
+        assertThat(entry.toolName()).isEqualTo("write_file");
+        assertThat(entry.sessionId()).isEqualTo("sess-X");
+        assertThat(entry.reason()).isEqualTo("sensitive path");
+    }
+
+    @Test
+    void checkStructuralWritesNoAuditWhenNoRuleApplies(@TempDir Path tmp) throws IOException {
+        // No double-cost: when no structural rule matches the capability,
+        // checkStructural returns null and writes no audit entry.
+        dev.aceclaw.security.PermissionPolicy noStructural = new dev.aceclaw.security.PermissionPolicy() {
+            @Override public PermissionDecision evaluate(
+                    dev.aceclaw.security.Capability cap,
+                    dev.aceclaw.security.Provenance prov,
+                    String desc) {
+                return new PermissionDecision.Approved();
+            }
+        };
+        var auditLog = CapabilityAuditLog.create(tmp);
+        var pm = new PermissionManager(noStructural, auditLog);
+
+        var cap = new dev.aceclaw.security.Capability.FileWrite(
+                java.nio.file.Path.of("/tmp/safe.txt"),
+                dev.aceclaw.security.WriteMode.OVERWRITE);
+
+        assertThat(pm.checkStructural(cap, null, "write_file")).isNull();
+        assertThat(auditLog.readVerified()).isEmpty();
+    }
+
+    @Test
     void everyCheckCallProducesExactlyOneEntry(@TempDir Path tmp) throws IOException {
         var auditLog = CapabilityAuditLog.create(tmp);
         var pm = new PermissionManager(APPROVE_POLICY, auditLog);

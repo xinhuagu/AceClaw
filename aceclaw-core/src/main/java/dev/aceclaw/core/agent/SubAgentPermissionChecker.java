@@ -16,12 +16,11 @@ import java.util.function.BiPredicate;
  *
  * <h3>Per-session scope (#457)</h3>
  *
- * Pre-#457 this checker used a daemon-wide
- * {@code hasAnySessionApproval(toolName)} lookup that returned true if any
- * session had approved the tool — meaning a sub-agent in workspace B would
- * silently inherit a "remember" decision the user made in workspace A.
- * Now keyed on {@code (sessionId, toolName)} so each session's allow-list
- * stays in its own scope.
+ * Pre-#457 this checker used a daemon-wide allow-list lookup that returned
+ * true if any session had approved the tool — meaning a sub-agent in
+ * workspace B would silently inherit a "remember" decision the user made
+ * in workspace A. Now keyed on {@code (sessionId, toolName)} so each
+ * session's allow-list stays in its own scope.
  */
 public final class SubAgentPermissionChecker implements ToolPermissionChecker {
 
@@ -69,8 +68,10 @@ public final class SubAgentPermissionChecker implements ToolPermissionChecker {
         // session-blanket approval for the tool name (e.g. "always allow
         // write_file") MUST NOT let a sub-agent target .env / .ssh /
         // /etc/ etc. — the "overrides every approval" invariant of the
-        // hard-denial layer (Codex P1 on #495).
-        String structuralReason = structuralCheck.denyReason(toolName, inputJson);
+        // hard-denial layer (Codex P1 on #495). The sessionId is forwarded
+        // so the daemon-side probe can attribute the audit entry to the
+        // originating session, matching the main-dispatcher's audit shape.
+        String structuralReason = structuralCheck.denyReason(toolName, inputJson, sessionId);
         if (structuralReason != null) {
             return ToolPermissionResult.denied(structuralReason);
         }

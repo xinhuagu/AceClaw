@@ -121,7 +121,7 @@ class SubAgentPermissionCheckerTest {
         // must fire BEFORE the allow-list shortcut so the hard-denial
         // invariant holds for sub-agent dispatch too.
         BiPredicate<String, String> approveEverything = (sid, tool) -> true;
-        SubAgentStructuralCheck refuseEnvWrites = (toolName, inputJson) -> {
+        SubAgentStructuralCheck refuseEnvWrites = (toolName, inputJson, sid) -> {
             if ("write_file".equals(toolName) && inputJson != null && inputJson.contains(".env")) {
                 return "Refusing to write sensitive .env";
             }
@@ -151,7 +151,7 @@ class SubAgentPermissionCheckerTest {
         // since structural rules only cover writes/deletes), they must
         // still take precedence.
         BiPredicate<String, String> denyAll = (sid, tool) -> false;
-        SubAgentStructuralCheck refuseReadOnly = (toolName, inputJson) -> "blocked";
+        SubAgentStructuralCheck refuseReadOnly = (toolName, inputJson, sid) -> "blocked";
         var checker = new SubAgentPermissionChecker(
                 READ_ONLY, denyAll, refuseReadOnly);
 

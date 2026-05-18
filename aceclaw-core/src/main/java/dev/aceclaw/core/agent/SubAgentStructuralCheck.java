@@ -25,16 +25,23 @@ public interface SubAgentStructuralCheck {
 
     /**
      * Returns a non-null denial reason when {@code (toolName, inputJson)}
-     * matches a structural denial rule. Returns {@code null} when no
-     * structural rule applies — the caller then defers to the normal
-     * read-only / session-approval logic.
+     * matches a structural denial rule, given the calling sub-agent's
+     * {@code sessionId}. Returns {@code null} when no structural rule
+     * applies — the caller then defers to the normal read-only /
+     * session-approval logic.
+     *
+     * <p>{@code sessionId} is forwarded so the daemon-side implementation
+     * can build a {@code Provenance} and write an audit entry tagged with
+     * the originating session, matching the main-dispatcher's audit
+     * shape. {@code null} is allowed for daemon-internal callers that have
+     * no session in scope.
      *
      * <p>Implementations must not throw on malformed input — they should
      * return {@code null} for unparseable args so the standard fall-through
      * logic decides, rather than crash the dispatcher.
      */
-    String denyReason(String toolName, String inputJson);
+    String denyReason(String toolName, String inputJson, String sessionId);
 
     /** No-op probe — returns {@code null} for every input. */
-    SubAgentStructuralCheck NONE = (toolName, inputJson) -> null;
+    SubAgentStructuralCheck NONE = (toolName, inputJson, sessionId) -> null;
 }
