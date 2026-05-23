@@ -27,6 +27,54 @@ class AceClawConfigTest {
         assertThat(config.provider()).isEqualTo("openai-codex");
     }
 
+    // -- security.denySensitivePaths toggle --
+
+    @Test
+    void denySensitivePathsDefaultsOff(@TempDir Path tempDir) throws Exception {
+        // Empty config -- no security section -- the toggle must default to
+        // false so an upgrade past #480 doesn't break workflows that
+        // legitimately write .env templates, .git/config entries, etc.
+        var projectConfig = tempDir.resolve(".aceclaw").resolve("config.json");
+        Files.createDirectories(projectConfig.getParent());
+        Files.writeString(projectConfig, "{}");
+
+        var config = AceClawConfig.load(tempDir, null);
+
+        assertThat(config.denySensitivePaths())
+                .as("empty config must leave denySensitivePaths off (zero-config = no surprises on upgrade)")
+                .isFalse();
+    }
+
+    @Test
+    void denySensitivePathsEnabledViaProjectConfig(@TempDir Path tempDir) throws Exception {
+        // The opt-in path: a project config explicitly sets the toggle on.
+        // Verifies the JSON shape lives under `security.denySensitivePaths`
+        // (nested object so future security knobs cluster together rather
+        // than litter the top level).
+        var projectConfig = tempDir.resolve(".aceclaw").resolve("config.json");
+        Files.createDirectories(projectConfig.getParent());
+        Files.writeString(projectConfig,
+                "{\"security\":{\"denySensitivePaths\":true}}");
+
+        var config = AceClawConfig.load(tempDir, null);
+
+        assertThat(config.denySensitivePaths()).isTrue();
+    }
+
+    @Test
+    void denySensitivePathsExplicitFalseStaysOff(@TempDir Path tempDir) throws Exception {
+        // Defensive: explicit false in the file behaves like absent. Pins
+        // that there's no weird truthy-coercion in the JSON merge path.
+        var projectConfig = tempDir.resolve(".aceclaw").resolve("config.json");
+        Files.createDirectories(projectConfig.getParent());
+        Files.writeString(projectConfig,
+                "{\"security\":{\"denySensitivePaths\":false}}");
+
+        var config = AceClawConfig.load(tempDir, null);
+
+        assertThat(config.denySensitivePaths()).isFalse();
+    }
+
     // -- WebSocket loopback gating (#446) --
 
     @Test

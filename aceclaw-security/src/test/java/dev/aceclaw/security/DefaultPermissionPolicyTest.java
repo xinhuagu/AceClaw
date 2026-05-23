@@ -160,9 +160,12 @@ class DefaultPermissionPolicyTest {
     // -- Structural hard-denial: sensitive paths -----------------------------
     // These rules live on evaluateStructural(), which PermissionManager runs
     // BEFORE the session-blanket lookup so an "always allow X" approval can't
-    // route past them.
+    // route past them. Layer is opt-in (denySensitivePaths constructor flag);
+    // explicitly enable it here since the entire test block is about pinning
+    // that opt-in's behaviour.
 
-    private static final DefaultPermissionPolicy STRUCTURAL = new DefaultPermissionPolicy("normal");
+    private static final DefaultPermissionPolicy STRUCTURAL =
+            new DefaultPermissionPolicy("normal", /* denySensitivePaths */ true);
 
     @Test
     void writingDotEnvIsStructurallyDenied() {
@@ -342,6 +345,54 @@ class DefaultPermissionPolicyTest {
     void legacyFalse_isNormal() {
         var policy = new DefaultPermissionPolicy(false);
         assertEquals("normal", policy.mode());
+    }
+
+    // -- denySensitivePaths opt-in flag -------------------------------------
+    // The structural layer is opt-in (default off) so an upgrade doesn't
+    // suddenly break workflows that legitimately write .env templates or
+    // .git/config entries. These tests pin both sides of the toggle.
+
+    @Test
+    void defaultConstructorLeavesStructuralLayerOff() {
+        // The zero-arg constructor preserves the pre-flag contract: no
+        // structural denials at all. PermissionManager.checkStructural will
+        // see null and the request flows to the standard mode-based path.
+        var policy = new DefaultPermissionPolicy();
+        assertFalse(policy.denySensitivePaths(),
+                "default constructor must leave structural layer off");
+        assertNull(policy.evaluateStructural(write("/repo/.env")),
+                ".env write must NOT be structurally denied when flag is off");
+        assertNull(policy.evaluateStructural(write("/home/u/.ssh/config")));
+        assertNull(policy.evaluateStructural(write("/etc/hosts")));
+    }
+
+    @Test
+    void singleArgModeConstructorLeavesStructuralLayerOff() {
+        // Backwards compat: pre-flag callers passing only a mode keep the
+        // layer off. Opt-in must be explicit.
+        var policy = new DefaultPermissionPolicy("auto-accept");
+        assertFalse(policy.denySensitivePaths());
+        assertNull(policy.evaluateStructural(write("/repo/.env")),
+                "auto-accept + flag off must NOT structurally deny .env");
+    }
+
+    @Test
+    void explicitFalseFlagBehavesLikeDefault() {
+        var policy = new DefaultPermissionPolicy("normal", false);
+        assertFalse(policy.denySensitivePaths());
+        assertNull(policy.evaluateStructural(write("/repo/.env")));
+        assertNull(policy.evaluateStructural(write("/etc/hosts")));
+    }
+
+    @Test
+    void explicitTrueFlagEnablesStructuralLayer() {
+        // Counterpart to the off tests above — pin that flipping the flag
+        // does turn the rules on. (The full rule coverage lives in STRUCTURAL
+        // above; this is just the toggle wiring.)
+        var policy = new DefaultPermissionPolicy("normal", true);
+        assertTrue(policy.denySensitivePaths());
+        assertNotNull(policy.evaluateStructural(write("/repo/.env")));
+        assertNotNull(policy.evaluateStructural(write("/etc/hosts")));
     }
 
     // -- Invalid mode --------------------------------------------------------

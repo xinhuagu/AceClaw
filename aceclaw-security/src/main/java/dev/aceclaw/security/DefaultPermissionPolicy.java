@@ -18,14 +18,22 @@ import java.util.Objects;
  *
  * <h3>Structural hard-denial layer</h3>
  *
- * <p>Some capabilities are denied <em>regardless of mode</em> — including
- * {@code auto-accept}. Today that means writes and deletes targeting paths
+ * <p>Some capabilities can be denied <em>regardless of mode</em> — including
+ * {@code auto-accept}. Today that targets writes and deletes against paths
  * that hold credentials or other operator-critical material:
  * {@code .env*}, {@code .ssh/*}, {@code .git/config}, {@code credentials.json},
- * anything under {@code /etc/}. This is the "cross-cutting rule" surface the
- * runtime-governance doc names: a single check the agent cannot route around
- * by being in the wrong mode. Detection matches on path segments (not
+ * anything under {@code /etc/}. Detection matches on path segments (not
  * substrings) so {@code /repo/notes-on-dotenv.md} is unaffected.
+ *
+ * <p>The layer is <b>opt-in</b> via the {@code denySensitivePaths}
+ * constructor flag (default: {@code false}). With the flag off,
+ * {@link #evaluateStructural} returns {@code null} for every input and the
+ * policy behaves exactly like the pre-#480 mode-only policy — so an upgrade
+ * doesn't break workflows that legitimately write {@code .env} templates,
+ * {@code .git/config} entries, etc. Security-conscious operators enable it
+ * by setting {@code security.denySensitivePaths = true} in
+ * {@code ~/.aceclaw/config.json}; once on, the rule overrides every mode and
+ * every prior approval (session blanket, sub-agent dispatch).
  */
 public final class DefaultPermissionPolicy implements PermissionPolicy {
 
@@ -36,38 +44,61 @@ public final class DefaultPermissionPolicy implements PermissionPolicy {
     public static final String MODE_AUTO_ACCEPT = "auto-accept";
 
     private final String mode;
+    private final boolean denySensitivePaths;
 
     /**
-     * Creates a policy with the standard "normal" permission rules.
+     * Creates a policy with the standard "normal" permission rules and
+     * structural sensitive-path denials <b>off</b> (opt-in).
      */
     public DefaultPermissionPolicy() {
-        this(MODE_NORMAL);
+        this(MODE_NORMAL, false);
     }
 
     /**
-     * Creates a policy with the specified permission mode.
+     * Creates a policy with the specified permission mode and structural
+     * sensitive-path denials <b>off</b> (opt-in). Backwards-compatible with
+     * pre-flag callers — pass {@code denySensitivePaths=true} to enable the
+     * hard-denial layer.
      *
      * @param mode one of "normal", "accept-edits", "plan", "auto-accept"
      * @throws IllegalArgumentException if mode is not recognized
      */
     public DefaultPermissionPolicy(String mode) {
+        this(mode, false);
+    }
+
+    /**
+     * Creates a policy with the specified permission mode and an explicit
+     * choice on whether structural sensitive-path denials are active.
+     *
+     * @param mode               one of "normal", "accept-edits", "plan", "auto-accept"
+     * @param denySensitivePaths when {@code true}, writes/deletes targeting
+     *                           credential paths ({@code .env*}, {@code .ssh/*},
+     *                           {@code /etc/*}, etc.) are hard-denied via
+     *                           {@link #evaluateStructural}; when {@code false},
+     *                           {@code evaluateStructural} returns {@code null}
+     *                           and the policy behaves as mode-only.
+     * @throws IllegalArgumentException if mode is not recognized
+     */
+    public DefaultPermissionPolicy(String mode, boolean denySensitivePaths) {
         this.mode = switch (mode) {
             case MODE_NORMAL, MODE_ACCEPT_EDITS, MODE_PLAN, MODE_AUTO_ACCEPT -> mode;
             default -> throw new IllegalArgumentException(
                     "Unknown permission mode: '" + mode + "'. " +
                     "Valid modes: normal, accept-edits, plan, auto-accept");
         };
+        this.denySensitivePaths = denySensitivePaths;
     }
 
     /**
      * Creates a policy with the legacy auto-approve flag.
      *
      * @param autoApproveAll if true, equivalent to "auto-accept" mode
-     * @deprecated Use {@link #DefaultPermissionPolicy(String)} instead
+     * @deprecated Use {@link #DefaultPermissionPolicy(String, boolean)} instead
      */
     @Deprecated
     public DefaultPermissionPolicy(boolean autoApproveAll) {
-        this(autoApproveAll ? MODE_AUTO_ACCEPT : MODE_NORMAL);
+        this(autoApproveAll ? MODE_AUTO_ACCEPT : MODE_NORMAL, false);
     }
 
     /**
@@ -112,16 +143,33 @@ public final class DefaultPermissionPolicy implements PermissionPolicy {
     }
 
     /**
+     * Returns whether the structural sensitive-path layer is enabled on this
+     * policy instance — i.e. whether {@link #evaluateStructural} will ever
+     * return a non-{@code null} denial.
+     */
+    public boolean denySensitivePaths() {
+        return denySensitivePaths;
+    }
+
+    /**
      * Structural rules that fire before the session-blanket lookup so an
      * "always allow X" approval cannot let the agent route a write to
      * {@code .env} or {@code .ssh/id_rsa} past the policy. Returns
      * {@code null} when no rule applies — see
      * {@link PermissionPolicy#evaluateStructural(Capability)} for the
      * contract.
+     *
+     * <p>When {@code denySensitivePaths} was set to {@code false} on this
+     * instance (the default), this method short-circuits to {@code null} for
+     * every input — the policy is pure mode-based and never structurally
+     * denies. Operators opt in to the hard-denial layer via the constructor
+     * flag (typically wired from {@code security.denySensitivePaths} in
+     * {@code ~/.aceclaw/config.json}).
      */
     @Override
     public PermissionDecision.Denied evaluateStructural(Capability capability) {
         Objects.requireNonNull(capability, "capability");
+        if (!denySensitivePaths) return null;
         return switch (capability) {
             case Capability.FileWrite fw -> denyIfSensitivePath(fw.path(), "write to");
             case Capability.FileDelete fd -> denyIfSensitivePath(fd.path(), "delete");

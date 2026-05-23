@@ -415,7 +415,7 @@ class McpToolBridgeTest {
                 .put("destination", "/repo/.env");
 
         var cap = tool.toCapability(args);
-        var decision = new DefaultPermissionPolicy("auto-accept").evaluateStructural(cap);
+        var decision = new DefaultPermissionPolicy("auto-accept", /* denySensitivePaths */ true).evaluateStructural(cap);
 
         assertThat(decision).isNotNull();
     }
@@ -431,7 +431,7 @@ class McpToolBridgeTest {
                 .put("destination", "/tmp/env-backup.txt");
 
         var cap = tool.toCapability(args);
-        var decision = new DefaultPermissionPolicy("auto-accept").evaluateStructural(cap);
+        var decision = new DefaultPermissionPolicy("auto-accept", /* denySensitivePaths */ true).evaluateStructural(cap);
 
         assertThat(decision)
                 .as("removing sensitive source via move must be denied")
@@ -454,7 +454,7 @@ class McpToolBridgeTest {
                 .as("copy semantics preserved -- this is FileMove(deletesSource=false)")
                 .isFalse();
 
-        var decision = new DefaultPermissionPolicy("auto-accept").evaluateStructural(cap);
+        var decision = new DefaultPermissionPolicy("auto-accept", /* denySensitivePaths */ true).evaluateStructural(cap);
         assertThat(decision)
                 .as("copy from sensitive source must be denied even in auto-accept")
                 .isNotNull();
@@ -474,7 +474,10 @@ class McpToolBridgeTest {
         var cap = tool.toCapability(args);
 
         assertThat(cap).isInstanceOf(Capability.FileMove.class);
-        var decision = new DefaultPermissionPolicy("normal").evaluateStructural(cap);
+        // Layer enabled here so the "returns null on benign paths" assertion
+        // actually tests the rule, not the toggle's off-state.
+        var decision = new DefaultPermissionPolicy("normal", /* denySensitivePaths */ true)
+                .evaluateStructural(cap);
         assertThat(decision)
                 .as("no sensitive paths -> structural denial returns null")
                 .isNull();
@@ -655,7 +658,7 @@ class McpToolBridgeTest {
         var args = new ObjectMapper().createObjectNode().put("path", "/repo/.env");
 
         var cap = tool.toCapability(args);
-        var decision = new DefaultPermissionPolicy("auto-accept").evaluateStructural(cap);
+        var decision = new DefaultPermissionPolicy("auto-accept", /* denySensitivePaths */ true).evaluateStructural(cap);
 
         assertThat(decision)
                 .as("MCP-driven write to .env must be structurally denied even in auto-accept")

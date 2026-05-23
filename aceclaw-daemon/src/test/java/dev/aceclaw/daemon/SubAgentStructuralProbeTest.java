@@ -63,7 +63,10 @@ final class SubAgentStructuralProbeTest {
         // allow-list check.
         CapabilityAware writeToEnv = args ->
                 new Capability.FileWrite(Path.of("/repo/.env"), WriteMode.OVERWRITE);
-        var pm = new PermissionManager(new DefaultPermissionPolicy("normal"));
+        // Sensitive-path denials are opt-in on the policy — enable here so
+        // the structural rule actually fires and the probe sees a denial.
+        var pm = new PermissionManager(
+                new DefaultPermissionPolicy("normal", /* denySensitivePaths */ true));
 
         String result = AceClawDaemon.subAgentStructuralProbe(
                 "write_file", "{\"path\":\"/repo/.env\"}", "sess-1",

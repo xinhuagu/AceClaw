@@ -136,7 +136,12 @@ final class PermissionManagerCapabilityTest {
         // hard-denial layer. The structural check runs in PermissionManager
         // BEFORE the session-blanket lookup so the invariant
         // "hard-denials override every mode and every prior approval" holds.
-        var pm = new PermissionManager(new DefaultPermissionPolicy(DefaultPermissionPolicy.MODE_NORMAL));
+        // Sensitive-path denials are opt-in on the policy (default off so an
+        // upgrade doesn't break workflows that legitimately write .env
+        // templates). Enable explicitly here -- the entire test is about
+        // pinning that opt-in's override semantics.
+        var pm = new PermissionManager(new DefaultPermissionPolicy(
+                DefaultPermissionPolicy.MODE_NORMAL, /* denySensitivePaths */ true));
         pm.approveForSession("sess-A", "write_file");
 
         // Sanity: a non-sensitive write still gets the blanket approval.

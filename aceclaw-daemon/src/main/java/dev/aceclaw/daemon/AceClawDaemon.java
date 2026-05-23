@@ -387,8 +387,12 @@ public final class AceClawDaemon {
         //    every other persisted thing (pid, sock, transcripts,
         //    checkpoints, ...).
         var permissionManager = new PermissionManager(
-                new DefaultPermissionPolicy(config.permissionMode()),
+                new DefaultPermissionPolicy(config.permissionMode(), config.denySensitivePaths()),
                 buildCapabilityAuditLog(homeDir.resolve("audit")));
+        if (config.denySensitivePaths()) {
+            log.info("Security: structural sensitive-path denials enabled "
+                    + "(.env*, .ssh/, .aws/, .git/config, /etc/*, etc. are hard-denied).");
+        }
 
         // 4. Sub-agent infrastructure (task delegation) and skills
         var agentTypeRegistry = AgentTypeRegistry.load(workingDir);
