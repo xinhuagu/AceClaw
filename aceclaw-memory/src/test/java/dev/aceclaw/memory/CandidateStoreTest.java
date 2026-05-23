@@ -351,8 +351,15 @@ class CandidateStoreTest {
         var evidenceCount = 2;
         var successCount = 1;
         var failureCount = 0;
-        var firstSeenAt = Instant.parse("2026-02-20T00:00:00Z");
-        var lastSeenAt = Instant.parse("2026-02-22T00:00:00Z");
+        // Use clock-relative timestamps so this test doesn't time-bomb against
+        // CandidateStore.DEFAULT_RETENTION (90 days). Fixed dates from the
+        // original test (2026-02-20..22) silently expired on 2026-05-22 when
+        // the load-time maintenance pass started purging the legacy entry
+        // before the assertion ran — making this look like a migration
+        // regression even though it was just a calendar bomb.
+        var now = Instant.now();
+        var firstSeenAt = now.minus(Duration.ofDays(3));
+        var lastSeenAt = now.minus(Duration.ofDays(1));
         var sourceRefs = List.of("legacy:session");
 
         String legacyPayload = id + "|" + category + "|" + kind + "|" + state + "|" + content + "|" + toolTag + "|"
