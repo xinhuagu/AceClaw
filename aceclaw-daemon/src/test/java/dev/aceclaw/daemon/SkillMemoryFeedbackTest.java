@@ -2,6 +2,9 @@ package dev.aceclaw.daemon;
 
 import dev.aceclaw.core.agent.SkillMetrics;
 import dev.aceclaw.core.agent.SkillOutcome;
+import dev.aceclaw.learning.LearningExplanation;
+import dev.aceclaw.learning.LearningExplanationRecorder;
+import dev.aceclaw.learning.LearningExplanationStore;
 import dev.aceclaw.memory.AutoMemoryStore;
 import dev.aceclaw.memory.MemoryEntry;
 import org.junit.jupiter.api.BeforeEach;

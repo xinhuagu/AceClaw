@@ -1,4 +1,4 @@
-package dev.aceclaw.daemon;
+package dev.aceclaw.learning;
 
 import dev.aceclaw.memory.CandidateTransition;
 import dev.aceclaw.memory.LearningCandidate;

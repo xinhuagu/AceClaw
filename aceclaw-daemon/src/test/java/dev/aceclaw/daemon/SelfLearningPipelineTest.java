@@ -2,6 +2,7 @@ package dev.aceclaw.daemon;
 
 import dev.aceclaw.core.agent.Turn;
 import dev.aceclaw.core.llm.*;
+import dev.aceclaw.learning.ErrorDetector;
 import dev.aceclaw.memory.*;
 import dev.aceclaw.memory.Insight.ErrorInsight;
 import org.junit.jupiter.api.BeforeEach;
