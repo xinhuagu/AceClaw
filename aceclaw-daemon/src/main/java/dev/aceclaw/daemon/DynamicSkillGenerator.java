@@ -10,6 +10,8 @@ import dev.aceclaw.core.llm.LlmClient;
 import dev.aceclaw.core.llm.LlmException;
 import dev.aceclaw.core.llm.LlmRequest;
 import dev.aceclaw.core.llm.Message;
+import dev.aceclaw.learning.LearningExplanation;
+import dev.aceclaw.learning.LearningExplanationRecorder;
 import dev.aceclaw.memory.Insight;
 import dev.aceclaw.memory.PatternType;
 import org.slf4j.Logger;

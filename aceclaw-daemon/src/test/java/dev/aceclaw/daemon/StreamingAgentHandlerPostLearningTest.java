@@ -5,6 +5,8 @@ import dev.aceclaw.core.agent.Turn;
 import dev.aceclaw.core.llm.Message;
 import dev.aceclaw.core.llm.StopReason;
 import dev.aceclaw.core.llm.Usage;
+import dev.aceclaw.learning.ErrorDetector;
+import dev.aceclaw.learning.FailureSignalDetector;
 import dev.aceclaw.memory.AutoMemoryStore;
 import dev.aceclaw.memory.CandidateStateMachine;
 import dev.aceclaw.memory.CandidateStore;

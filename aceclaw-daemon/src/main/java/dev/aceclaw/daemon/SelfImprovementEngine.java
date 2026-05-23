@@ -2,6 +2,10 @@ package dev.aceclaw.daemon;
 
 import dev.aceclaw.core.agent.ToolMetrics;
 import dev.aceclaw.core.agent.Turn;
+import dev.aceclaw.learning.ErrorDetector;
+import dev.aceclaw.learning.FailureSignalDetector;
+import dev.aceclaw.learning.LearningExplanation;
+import dev.aceclaw.learning.LearningExplanationRecorder;
 import dev.aceclaw.memory.AutoMemoryStore;
 import dev.aceclaw.memory.CandidateKind;
 import dev.aceclaw.memory.CandidateStore;

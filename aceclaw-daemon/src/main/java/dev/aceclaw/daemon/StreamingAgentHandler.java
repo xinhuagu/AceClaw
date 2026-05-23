@@ -38,6 +38,8 @@ import dev.aceclaw.core.planner.PlanCheckpoint;
 import dev.aceclaw.core.planner.PlanCheckpointStore;
 import dev.aceclaw.core.planner.PlanExecutionResult;
 import dev.aceclaw.core.planner.PlanStatus;
+import dev.aceclaw.learning.LearningExplanation;
+import dev.aceclaw.learning.LearningExplanationRecorder;
 import dev.aceclaw.core.planner.PlannedStep;
 import dev.aceclaw.core.planner.SequentialPlanExecutor;
 import dev.aceclaw.core.planner.StepResult;

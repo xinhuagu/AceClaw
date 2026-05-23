@@ -1,4 +1,4 @@
-package dev.aceclaw.daemon;
+package dev.aceclaw.learning;
 
 import dev.aceclaw.core.agent.Turn;
 import dev.aceclaw.core.llm.ContentBlock;

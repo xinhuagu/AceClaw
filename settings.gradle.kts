@@ -10,6 +10,7 @@ include(
     "aceclaw-llm",
     "aceclaw-tools",
     "aceclaw-memory",
+    "aceclaw-learning",
     "aceclaw-security",
     "aceclaw-mcp",
     "aceclaw-cli",
