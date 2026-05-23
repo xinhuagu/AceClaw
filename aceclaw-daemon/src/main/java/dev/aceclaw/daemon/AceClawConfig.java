@@ -112,19 +112,10 @@ public final class AceClawConfig {
     private static final String DEFAULT_SKILL_DRAFT_VALIDATION_REPLAY_REPORT =
             ".aceclaw/metrics/continuous-learning/replay-latest.json";
     private static final double DEFAULT_SKILL_DRAFT_VALIDATION_MAX_TOKEN_ESTIMATION_ERROR_RATIO = 0.65;
-    private static final boolean DEFAULT_SKILL_AUTO_RELEASE_ENABLED = true;
-    private static final double DEFAULT_SKILL_AUTO_RELEASE_MIN_CANDIDATE_SCORE = 0.80;
-    private static final int DEFAULT_SKILL_AUTO_RELEASE_MIN_EVIDENCE = 3;
-    private static final int DEFAULT_SKILL_AUTO_RELEASE_CANARY_MIN_ATTEMPTS = 20;
-    private static final double DEFAULT_SKILL_AUTO_RELEASE_CANARY_MAX_FAILURE_RATE = 0.10;
-    private static final double DEFAULT_SKILL_AUTO_RELEASE_CANARY_MAX_TIMEOUT_RATE = 0.20;
-    private static final double DEFAULT_SKILL_AUTO_RELEASE_CANARY_MAX_PERMISSION_BLOCK_RATE = 0.20;
-    private static final int DEFAULT_SKILL_AUTO_RELEASE_CANARY_DWELL_HOURS = 24;
-    private static final double DEFAULT_SKILL_AUTO_RELEASE_ACTIVE_MAX_FAILURE_RATE = 0.20; // legacy alias
-    private static final double DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_FAILURE_RATE = 0.20;
-    private static final double DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_TIMEOUT_RATE = 0.20;
-    private static final double DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_PERMISSION_BLOCK_RATE = 0.20;
-    private static final int DEFAULT_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS = 168;
+    // Skill auto-release defaults live on SkillAutoReleaseSettings.defaults().
+    // 13 individual DEFAULT_SKILL_AUTO_RELEASE_* constants used to live here —
+    // grouped into the SkillAutoReleaseSettings record as part of the
+    // AceClawConfig decomposition (batch 1).
     private static final int DEFAULT_MAX_AGENT_TURNS = 200;
     private static final int DEFAULT_MAX_AGENT_WALL_TIME_SEC = 1800;
     // 0 means "derive from soft limit (3x)" in StreamingAgentHandler
@@ -231,19 +222,15 @@ public final class AceClawConfig {
     private boolean skillDraftValidationReplayRequired;
     private String skillDraftValidationReplayReport;
     private double skillDraftValidationMaxTokenEstimationErrorRatio;
-    private boolean skillAutoReleaseEnabled;
-    private double skillAutoReleaseMinCandidateScore;
-    private int skillAutoReleaseMinEvidence;
-    private int skillAutoReleaseCanaryMinAttempts;
-    private double skillAutoReleaseCanaryMaxFailureRate;
-    private double skillAutoReleaseCanaryMaxTimeoutRate;
-    private double skillAutoReleaseCanaryMaxPermissionBlockRate;
-    private double skillAutoReleaseActiveMaxFailureRate;
-    private double skillAutoReleaseRollbackMaxFailureRate;
-    private double skillAutoReleaseRollbackMaxTimeoutRate;
-    private double skillAutoReleaseRollbackMaxPermissionBlockRate;
-    private int skillAutoReleaseHealthLookbackHours;
-    private int skillAutoReleaseCanaryDwellHours;
+    /**
+     * Skill auto-release config — was 12 individual scalar fields, now
+     * grouped under one {@link SkillAutoReleaseSettings} record (batch 1 of
+     * the AceClawConfig decomposition). Held as a mutable builder during
+     * load() so env vars and file merges can update incrementally without
+     * re-allocating; {@link #skillAutoRelease()} freezes it on demand.
+     */
+    private final SkillAutoReleaseSettings.Builder skillAutoReleaseBuilder =
+            SkillAutoReleaseSettings.builder();
     private int maxAgentTurns;
     private int maxAgentWallTimeSec;
     private int maxAgentHardTurns;
@@ -328,20 +315,8 @@ public final class AceClawConfig {
         this.skillDraftValidationReplayReport = DEFAULT_SKILL_DRAFT_VALIDATION_REPLAY_REPORT;
         this.skillDraftValidationMaxTokenEstimationErrorRatio =
                 DEFAULT_SKILL_DRAFT_VALIDATION_MAX_TOKEN_ESTIMATION_ERROR_RATIO;
-        this.skillAutoReleaseEnabled = DEFAULT_SKILL_AUTO_RELEASE_ENABLED;
-        this.skillAutoReleaseMinCandidateScore = DEFAULT_SKILL_AUTO_RELEASE_MIN_CANDIDATE_SCORE;
-        this.skillAutoReleaseMinEvidence = DEFAULT_SKILL_AUTO_RELEASE_MIN_EVIDENCE;
-        this.skillAutoReleaseCanaryMinAttempts = DEFAULT_SKILL_AUTO_RELEASE_CANARY_MIN_ATTEMPTS;
-        this.skillAutoReleaseCanaryMaxFailureRate = DEFAULT_SKILL_AUTO_RELEASE_CANARY_MAX_FAILURE_RATE;
-        this.skillAutoReleaseCanaryMaxTimeoutRate = DEFAULT_SKILL_AUTO_RELEASE_CANARY_MAX_TIMEOUT_RATE;
-        this.skillAutoReleaseCanaryMaxPermissionBlockRate = DEFAULT_SKILL_AUTO_RELEASE_CANARY_MAX_PERMISSION_BLOCK_RATE;
-        this.skillAutoReleaseActiveMaxFailureRate = DEFAULT_SKILL_AUTO_RELEASE_ACTIVE_MAX_FAILURE_RATE;
-        this.skillAutoReleaseRollbackMaxFailureRate = DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_FAILURE_RATE;
-        this.skillAutoReleaseRollbackMaxTimeoutRate = DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_TIMEOUT_RATE;
-        this.skillAutoReleaseRollbackMaxPermissionBlockRate =
-                DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_PERMISSION_BLOCK_RATE;
-        this.skillAutoReleaseHealthLookbackHours = DEFAULT_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS;
-        this.skillAutoReleaseCanaryDwellHours = DEFAULT_SKILL_AUTO_RELEASE_CANARY_DWELL_HOURS;
+        // skillAutoRelease defaults are seeded by SkillAutoReleaseSettings.builder()
+        // at field-initialization time. 14 individual setter calls removed here.
         this.maxAgentTurns = DEFAULT_MAX_AGENT_TURNS;
         this.maxAgentWallTimeSec = DEFAULT_MAX_AGENT_WALL_TIME_SEC;
         this.maxAgentHardTurns = DEFAULT_MAX_AGENT_HARD_TURNS;
@@ -601,134 +576,42 @@ public final class AceClawConfig {
                         envSkillDraftValidationMaxTokenError);
             }
         }
-        var envSkillAutoReleaseEnabled = System.getenv("ACECLAW_SKILL_AUTO_RELEASE");
-        if (envSkillAutoReleaseEnabled != null && !envSkillAutoReleaseEnabled.isBlank()) {
-            config.skillAutoReleaseEnabled = Boolean.parseBoolean(envSkillAutoReleaseEnabled);
-        }
-        var envSkillAutoReleaseMinScore = System.getenv("ACECLAW_SKILL_AUTO_RELEASE_MIN_SCORE");
-        if (envSkillAutoReleaseMinScore != null && !envSkillAutoReleaseMinScore.isBlank()) {
-            try {
-                config.skillAutoReleaseMinCandidateScore =
-                        clampRate(Double.parseDouble(envSkillAutoReleaseMinScore));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_MIN_SCORE: {}", envSkillAutoReleaseMinScore);
-            }
-        }
-        var envSkillAutoReleaseMinEvidence = System.getenv("ACECLAW_SKILL_AUTO_RELEASE_MIN_EVIDENCE");
-        if (envSkillAutoReleaseMinEvidence != null && !envSkillAutoReleaseMinEvidence.isBlank()) {
-            try {
-                config.skillAutoReleaseMinEvidence = Math.max(0, Integer.parseInt(envSkillAutoReleaseMinEvidence));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_MIN_EVIDENCE: {}", envSkillAutoReleaseMinEvidence);
-            }
-        }
-        var envSkillAutoReleaseCanaryMinAttempts =
-                System.getenv("ACECLAW_SKILL_AUTO_RELEASE_CANARY_MIN_ATTEMPTS");
-        if (envSkillAutoReleaseCanaryMinAttempts != null && !envSkillAutoReleaseCanaryMinAttempts.isBlank()) {
-            try {
-                config.skillAutoReleaseCanaryMinAttempts =
-                        Math.max(0, Integer.parseInt(envSkillAutoReleaseCanaryMinAttempts));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_CANARY_MIN_ATTEMPTS: {}",
-                        envSkillAutoReleaseCanaryMinAttempts);
-            }
-        }
-        var envSkillAutoReleaseCanaryMaxFailureRate =
-                System.getenv("ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_FAILURE_RATE");
-        if (envSkillAutoReleaseCanaryMaxFailureRate != null && !envSkillAutoReleaseCanaryMaxFailureRate.isBlank()) {
-            try {
-                config.skillAutoReleaseCanaryMaxFailureRate =
-                        clampRate(Double.parseDouble(envSkillAutoReleaseCanaryMaxFailureRate));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_FAILURE_RATE: {}",
-                        envSkillAutoReleaseCanaryMaxFailureRate);
-            }
-        }
-        var envSkillAutoReleaseCanaryMaxTimeoutRate =
-                System.getenv("ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_TIMEOUT_RATE");
-        if (envSkillAutoReleaseCanaryMaxTimeoutRate != null && !envSkillAutoReleaseCanaryMaxTimeoutRate.isBlank()) {
-            try {
-                config.skillAutoReleaseCanaryMaxTimeoutRate =
-                        clampRate(Double.parseDouble(envSkillAutoReleaseCanaryMaxTimeoutRate));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_TIMEOUT_RATE: {}",
-                        envSkillAutoReleaseCanaryMaxTimeoutRate);
-            }
-        }
-        var envSkillAutoReleaseCanaryMaxPermissionRate =
-                System.getenv("ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_PERMISSION_BLOCK_RATE");
-        if (envSkillAutoReleaseCanaryMaxPermissionRate != null
-                && !envSkillAutoReleaseCanaryMaxPermissionRate.isBlank()) {
-            try {
-                config.skillAutoReleaseCanaryMaxPermissionBlockRate =
-                        clampRate(Double.parseDouble(envSkillAutoReleaseCanaryMaxPermissionRate));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_PERMISSION_BLOCK_RATE: {}",
-                        envSkillAutoReleaseCanaryMaxPermissionRate);
-            }
-        }
-        var envSkillAutoReleaseActiveMaxFailureRate =
-                System.getenv("ACECLAW_SKILL_AUTO_RELEASE_ACTIVE_MAX_FAILURE_RATE");
-        if (envSkillAutoReleaseActiveMaxFailureRate != null && !envSkillAutoReleaseActiveMaxFailureRate.isBlank()) {
-            try {
-                config.skillAutoReleaseActiveMaxFailureRate =
-                        clampRate(Double.parseDouble(envSkillAutoReleaseActiveMaxFailureRate));
-                // Legacy env alias maps to rollback failure threshold.
-                config.skillAutoReleaseRollbackMaxFailureRate = config.skillAutoReleaseActiveMaxFailureRate;
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_ACTIVE_MAX_FAILURE_RATE: {}",
-                        envSkillAutoReleaseActiveMaxFailureRate);
-            }
-        }
-        var envSkillAutoReleaseRollbackMaxFailureRate =
-                System.getenv("ACECLAW_SKILL_AUTO_RELEASE_ROLLBACK_MAX_FAILURE_RATE");
-        if (envSkillAutoReleaseRollbackMaxFailureRate != null && !envSkillAutoReleaseRollbackMaxFailureRate.isBlank()) {
-            try {
-                config.skillAutoReleaseRollbackMaxFailureRate =
-                        clampRate(Double.parseDouble(envSkillAutoReleaseRollbackMaxFailureRate));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_ROLLBACK_MAX_FAILURE_RATE: {}",
-                        envSkillAutoReleaseRollbackMaxFailureRate);
-            }
-        }
-        var envSkillAutoReleaseRollbackMaxTimeoutRate =
-                System.getenv("ACECLAW_SKILL_AUTO_RELEASE_ROLLBACK_MAX_TIMEOUT_RATE");
-        if (envSkillAutoReleaseRollbackMaxTimeoutRate != null && !envSkillAutoReleaseRollbackMaxTimeoutRate.isBlank()) {
-            try {
-                config.skillAutoReleaseRollbackMaxTimeoutRate =
-                        clampRate(Double.parseDouble(envSkillAutoReleaseRollbackMaxTimeoutRate));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_ROLLBACK_MAX_TIMEOUT_RATE: {}",
-                        envSkillAutoReleaseRollbackMaxTimeoutRate);
-            }
-        }
-        var envSkillAutoReleaseRollbackMaxPermissionRate =
-                System.getenv("ACECLAW_SKILL_AUTO_RELEASE_ROLLBACK_MAX_PERMISSION_BLOCK_RATE");
-        if (envSkillAutoReleaseRollbackMaxPermissionRate != null
-                && !envSkillAutoReleaseRollbackMaxPermissionRate.isBlank()) {
-            try {
-                config.skillAutoReleaseRollbackMaxPermissionBlockRate =
-                        clampRate(Double.parseDouble(envSkillAutoReleaseRollbackMaxPermissionRate));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_ROLLBACK_MAX_PERMISSION_BLOCK_RATE: {}",
-                        envSkillAutoReleaseRollbackMaxPermissionRate);
-            }
-        }
-        var envSkillAutoReleaseLookbackHours = System.getenv("ACECLAW_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS");
-        if (envSkillAutoReleaseLookbackHours != null && !envSkillAutoReleaseLookbackHours.isBlank()) {
-            try {
-                config.skillAutoReleaseHealthLookbackHours =
-                        Math.max(1, Integer.parseInt(envSkillAutoReleaseLookbackHours));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS: {}",
-                        envSkillAutoReleaseLookbackHours);
-            }
-        }
+        // -- Skill auto-release env vars -------------------------------------
+        // Was 12 nearly-identical try/catch blocks (130 LoC) updating 12
+        // individual scalar fields on `config`. Each one now folds into a
+        // single builder.xxx(parsed) call — the builder handles null/range
+        // validation centrally.
+        applyEnvBoolean("ACECLAW_SKILL_AUTO_RELEASE",
+                v -> config.skillAutoReleaseBuilder.enabled(v));
+        applyEnvDouble("ACECLAW_SKILL_AUTO_RELEASE_MIN_SCORE",
+                v -> config.skillAutoReleaseBuilder.minCandidateScore(v));
+        applyEnvInt("ACECLAW_SKILL_AUTO_RELEASE_MIN_EVIDENCE",
+                v -> config.skillAutoReleaseBuilder.minEvidenceCount(Math.max(1, v)));
+        applyEnvInt("ACECLAW_SKILL_AUTO_RELEASE_CANARY_MIN_ATTEMPTS",
+                v -> config.skillAutoReleaseBuilder.canaryMinAttempts(Math.max(0, v)));
+        applyEnvDouble("ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_FAILURE_RATE",
+                v -> config.skillAutoReleaseBuilder.canaryMaxFailureRate(v));
+        applyEnvDouble("ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_TIMEOUT_RATE",
+                v -> config.skillAutoReleaseBuilder.canaryMaxTimeoutRate(v));
+        applyEnvDouble("ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_PERMISSION_BLOCK_RATE",
+                v -> config.skillAutoReleaseBuilder.canaryMaxPermissionRate(v));
+        // Legacy env alias: ACTIVE_MAX_FAILURE_RATE → rollbackFailure.
+        // Preserved for backward compat with pre-#467 docs.
+        applyEnvDouble("ACECLAW_SKILL_AUTO_RELEASE_ACTIVE_MAX_FAILURE_RATE",
+                v -> config.skillAutoReleaseBuilder.applyLegacyActiveMaxFailureRate(v));
+        applyEnvDouble("ACECLAW_SKILL_AUTO_RELEASE_ROLLBACK_MAX_FAILURE_RATE",
+                v -> config.skillAutoReleaseBuilder.rollbackMaxFailureRate(v));
+        applyEnvDouble("ACECLAW_SKILL_AUTO_RELEASE_ROLLBACK_MAX_TIMEOUT_RATE",
+                v -> config.skillAutoReleaseBuilder.rollbackMaxTimeoutRate(v));
+        applyEnvDouble("ACECLAW_SKILL_AUTO_RELEASE_ROLLBACK_MAX_PERMISSION_BLOCK_RATE",
+                v -> config.skillAutoReleaseBuilder.rollbackMaxPermissionRate(v));
+        applyEnvInt("ACECLAW_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS",
+                v -> config.skillAutoReleaseBuilder.healthLookbackHours(Math.max(1, v)));
         var envSkillAutoReleaseCanaryDwellHours = System.getenv("ACECLAW_SKILL_AUTO_RELEASE_CANARY_DWELL_HOURS");
         if (envSkillAutoReleaseCanaryDwellHours != null && !envSkillAutoReleaseCanaryDwellHours.isBlank()) {
             try {
-                config.skillAutoReleaseCanaryDwellHours =
-                        Math.max(0, Integer.parseInt(envSkillAutoReleaseCanaryDwellHours));
+                config.skillAutoReleaseBuilder.canaryDwellHours(
+                        Math.max(0, Integer.parseInt(envSkillAutoReleaseCanaryDwellHours)));
             } catch (NumberFormatException e) {
                 log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_CANARY_DWELL_HOURS: {}",
                         envSkillAutoReleaseCanaryDwellHours);
@@ -1219,60 +1102,16 @@ public final class AceClawConfig {
         return skillDraftValidationMaxTokenEstimationErrorRatio;
     }
 
-    public boolean skillAutoReleaseEnabled() {
-        return skillAutoReleaseEnabled;
-    }
-
-    public double skillAutoReleaseMinCandidateScore() {
-        return skillAutoReleaseMinCandidateScore;
-    }
-
-    public int skillAutoReleaseMinEvidence() {
-        return skillAutoReleaseMinEvidence;
-    }
-
-    public int skillAutoReleaseCanaryMinAttempts() {
-        return skillAutoReleaseCanaryMinAttempts;
-    }
-
-    public double skillAutoReleaseCanaryMaxFailureRate() {
-        return skillAutoReleaseCanaryMaxFailureRate;
-    }
-
-    public double skillAutoReleaseCanaryMaxTimeoutRate() {
-        return skillAutoReleaseCanaryMaxTimeoutRate;
-    }
-
-    public double skillAutoReleaseCanaryMaxPermissionBlockRate() {
-        return skillAutoReleaseCanaryMaxPermissionBlockRate;
-    }
-
-    public double skillAutoReleaseActiveMaxFailureRate() {
-        return skillAutoReleaseActiveMaxFailureRate;
-    }
-
-    public double skillAutoReleaseRollbackMaxFailureRate() {
-        return skillAutoReleaseRollbackMaxFailureRate;
-    }
-
-    public double skillAutoReleaseRollbackMaxTimeoutRate() {
-        return skillAutoReleaseRollbackMaxTimeoutRate;
-    }
-
-    public double skillAutoReleaseRollbackMaxPermissionBlockRate() {
-        return skillAutoReleaseRollbackMaxPermissionBlockRate;
-    }
-
-    public int skillAutoReleaseHealthLookbackHours() {
-        return skillAutoReleaseHealthLookbackHours;
-    }
-
     /**
-     * Returns the minimum dwell time in hours at CANARY stage before promotion to ACTIVE.
-     * Defaults to 24.
+     * Returns the skill auto-release config — the feature gate plus the 11
+     * canary / rollback tuning scalars the {@code AutoReleaseController}
+     * consumes. Replaces 13 individual getters as the first pilot of the
+     * AceClawConfig decomposition: callers that needed all the values
+     * (single call site in {@code AceClawDaemon}) now receive one record
+     * argument instead of passing 11 scalars by hand.
      */
-    public int skillAutoReleaseCanaryDwellHours() {
-        return skillAutoReleaseCanaryDwellHours;
+    public SkillAutoReleaseSettings skillAutoRelease() {
+        return skillAutoReleaseBuilder.build();
     }
 
     /**
@@ -1752,60 +1591,26 @@ public final class AceClawConfig {
             this.skillDraftValidationMaxTokenEstimationErrorRatio =
                     fileConfig.skillDraftValidationMaxTokenEstimationErrorRatio;
         }
-        if (fileConfig.skillAutoReleaseEnabled != null) {
-            this.skillAutoReleaseEnabled = fileConfig.skillAutoReleaseEnabled;
-        }
-        if (fileConfig.skillAutoReleaseMinCandidateScore != null
-                && fileConfig.skillAutoReleaseMinCandidateScore >= 0) {
-            this.skillAutoReleaseMinCandidateScore = clampRate(fileConfig.skillAutoReleaseMinCandidateScore);
-        }
-        if (fileConfig.skillAutoReleaseMinEvidence != null && fileConfig.skillAutoReleaseMinEvidence > 0) {
-            this.skillAutoReleaseMinEvidence = fileConfig.skillAutoReleaseMinEvidence;
-        }
-        if (fileConfig.skillAutoReleaseCanaryMinAttempts != null
-                && fileConfig.skillAutoReleaseCanaryMinAttempts >= 0) {
-            this.skillAutoReleaseCanaryMinAttempts = fileConfig.skillAutoReleaseCanaryMinAttempts;
-        }
-        if (fileConfig.skillAutoReleaseCanaryMaxFailureRate != null
-                && fileConfig.skillAutoReleaseCanaryMaxFailureRate >= 0) {
-            this.skillAutoReleaseCanaryMaxFailureRate = clampRate(fileConfig.skillAutoReleaseCanaryMaxFailureRate);
-        }
-        if (fileConfig.skillAutoReleaseCanaryMaxTimeoutRate != null
-                && fileConfig.skillAutoReleaseCanaryMaxTimeoutRate >= 0) {
-            this.skillAutoReleaseCanaryMaxTimeoutRate = clampRate(fileConfig.skillAutoReleaseCanaryMaxTimeoutRate);
-        }
-        if (fileConfig.skillAutoReleaseCanaryMaxPermissionBlockRate != null
-                && fileConfig.skillAutoReleaseCanaryMaxPermissionBlockRate >= 0) {
-            this.skillAutoReleaseCanaryMaxPermissionBlockRate =
-                    clampRate(fileConfig.skillAutoReleaseCanaryMaxPermissionBlockRate);
-        }
-        if (fileConfig.skillAutoReleaseActiveMaxFailureRate != null
-                && fileConfig.skillAutoReleaseActiveMaxFailureRate >= 0) {
-            this.skillAutoReleaseActiveMaxFailureRate = clampRate(fileConfig.skillAutoReleaseActiveMaxFailureRate);
-            // Legacy config key maps to rollback failure threshold.
-            this.skillAutoReleaseRollbackMaxFailureRate = this.skillAutoReleaseActiveMaxFailureRate;
-        }
-        if (fileConfig.skillAutoReleaseRollbackMaxFailureRate != null
-                && fileConfig.skillAutoReleaseRollbackMaxFailureRate >= 0) {
-            this.skillAutoReleaseRollbackMaxFailureRate = clampRate(fileConfig.skillAutoReleaseRollbackMaxFailureRate);
-        }
-        if (fileConfig.skillAutoReleaseRollbackMaxTimeoutRate != null
-                && fileConfig.skillAutoReleaseRollbackMaxTimeoutRate >= 0) {
-            this.skillAutoReleaseRollbackMaxTimeoutRate = clampRate(fileConfig.skillAutoReleaseRollbackMaxTimeoutRate);
-        }
-        if (fileConfig.skillAutoReleaseRollbackMaxPermissionBlockRate != null
-                && fileConfig.skillAutoReleaseRollbackMaxPermissionBlockRate >= 0) {
-            this.skillAutoReleaseRollbackMaxPermissionBlockRate =
-                    clampRate(fileConfig.skillAutoReleaseRollbackMaxPermissionBlockRate);
-        }
-        if (fileConfig.skillAutoReleaseHealthLookbackHours != null
-                && fileConfig.skillAutoReleaseHealthLookbackHours > 0) {
-            this.skillAutoReleaseHealthLookbackHours = fileConfig.skillAutoReleaseHealthLookbackHours;
-        }
-        if (fileConfig.skillAutoReleaseCanaryDwellHours != null
-                && fileConfig.skillAutoReleaseCanaryDwellHours >= 0) {
-            this.skillAutoReleaseCanaryDwellHours = fileConfig.skillAutoReleaseCanaryDwellHours;
-        }
+        // -- Skill auto-release file overrides -------------------------------
+        // Was 13 individual nullable-then-set blocks (~55 LoC) updating 13
+        // scalar fields. Now folds into builder setters that each validate
+        // null + range centrally. The legacy `activeMaxFailureRate` key is
+        // handled by applyLegacyActiveMaxFailureRate (aliases onto
+        // rollbackMaxFailureRate, matching the previous behaviour).
+        skillAutoReleaseBuilder
+                .enabled(fileConfig.skillAutoReleaseEnabled)
+                .minCandidateScore(fileConfig.skillAutoReleaseMinCandidateScore)
+                .minEvidenceCount(fileConfig.skillAutoReleaseMinEvidence)
+                .canaryMinAttempts(fileConfig.skillAutoReleaseCanaryMinAttempts)
+                .canaryMaxFailureRate(fileConfig.skillAutoReleaseCanaryMaxFailureRate)
+                .canaryMaxTimeoutRate(fileConfig.skillAutoReleaseCanaryMaxTimeoutRate)
+                .canaryMaxPermissionRate(fileConfig.skillAutoReleaseCanaryMaxPermissionBlockRate)
+                .applyLegacyActiveMaxFailureRate(fileConfig.skillAutoReleaseActiveMaxFailureRate)
+                .rollbackMaxFailureRate(fileConfig.skillAutoReleaseRollbackMaxFailureRate)
+                .rollbackMaxTimeoutRate(fileConfig.skillAutoReleaseRollbackMaxTimeoutRate)
+                .rollbackMaxPermissionRate(fileConfig.skillAutoReleaseRollbackMaxPermissionBlockRate)
+                .healthLookbackHours(fileConfig.skillAutoReleaseHealthLookbackHours)
+                .canaryDwellHours(fileConfig.skillAutoReleaseCanaryDwellHours);
         if (fileConfig.maxAgentTurns != null && fileConfig.maxAgentTurns >= 0) {
             this.maxAgentTurns = fileConfig.maxAgentTurns;
         }
@@ -2034,5 +1839,41 @@ public final class AceClawConfig {
 
     private static double clampRate(double value) {
         return Math.min(1.0, Math.max(0.0, value));
+    }
+
+    // -- Env-var loading helpers --------------------------------------------
+    //
+    // Added during the AceClawConfig decomposition (batch 1, skillAutoRelease)
+    // to collapse the previously-inlined "var x = getenv; if (x != null && !
+    // blank) { try { parse → set } catch { warn }" pattern that appeared 50+
+    // times in load(). Each helper takes the env var name + a consumer of
+    // the parsed value; on parse failure the helper logs a warning and
+    // leaves the receiver field untouched. Keeps the call site to a single
+    // expression and centralizes the empty/blank + parse-error handling.
+
+    private static void applyEnvBoolean(String name, java.util.function.Consumer<Boolean> sink) {
+        var raw = System.getenv(name);
+        if (raw == null || raw.isBlank()) return;
+        sink.accept(Boolean.parseBoolean(raw));
+    }
+
+    private static void applyEnvInt(String name, java.util.function.IntConsumer sink) {
+        var raw = System.getenv(name);
+        if (raw == null || raw.isBlank()) return;
+        try {
+            sink.accept(Integer.parseInt(raw));
+        } catch (NumberFormatException e) {
+            log.warn("Invalid {}: {}", name, raw);
+        }
+    }
+
+    private static void applyEnvDouble(String name, java.util.function.DoubleConsumer sink) {
+        var raw = System.getenv(name);
+        if (raw == null || raw.isBlank()) return;
+        try {
+            sink.accept(Double.parseDouble(raw));
+        } catch (NumberFormatException e) {
+            log.warn("Invalid {}: {}", name, raw);
+        }
     }
 }
