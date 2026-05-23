@@ -75,23 +75,21 @@ class PermissionResponseRoutingTest {
         f.setAccessible(true);
         registry = (ConcurrentHashMap<String, Object>) f.get(handler);
 
-        // Locate the private PendingPermission record's constructor for
-        // populating test entries. Canonical record ctor:
+        // Locate the package-private PendingPermission record's constructor
+        // for populating test entries. Canonical record ctor:
         //   (String sessionId, CompletableFuture future, StreamContext context)
         // The third arg was added when routePermissionResponse needed to
         // emit permission.cancelled back to the originating CLI (#437) —
         // the test scaffold mirrors the same shape so reflection stays
         // honest about the production record.
-        Class<?> pendingPermissionClass = null;
-        Class<?> streamContextClass = null;
-        for (Class<?> inner : StreamingAgentHandler.class.getDeclaredClasses()) {
-            if (inner.getSimpleName().equals("PendingPermission")) {
-                pendingPermissionClass = inner;
-            }
-        }
+        //
+        // Was an inner class of StreamingAgentHandler; promoted to
+        // top-level alongside the inner-class extraction. Load by name so
+        // a future rename or package move surfaces here cleanly.
+        Class<?> pendingPermissionClass = Class.forName("dev.aceclaw.daemon.PendingPermission");
         // StreamContext is a top-level interface in the same package; load
         // by name so we don't import an unstable internal type.
-        streamContextClass = Class.forName("dev.aceclaw.daemon.StreamContext");
+        Class<?> streamContextClass = Class.forName("dev.aceclaw.daemon.StreamContext");
         assertThat(pendingPermissionClass).isNotNull();
         pendingPermissionCtor = pendingPermissionClass.getDeclaredConstructor(
                 String.class, CompletableFuture.class, streamContextClass);
