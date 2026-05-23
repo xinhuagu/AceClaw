@@ -3,7 +3,9 @@ package dev.aceclaw.learning.validation;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
+import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -27,13 +29,17 @@ public final class LearningValidationStore {
         Objects.requireNonNull(validation, "validation");
         Path file = validationsFile(projectRoot);
         Files.createDirectories(file.getParent());
+        // Write through the locked FileChannel directly. The previous version
+        // opened a second handle via Files.writeString while the channel held
+        // an exclusive lock — fine on Unix (advisory locks, multiple handles
+        // OK) but the second open fails on Windows where locks are mandatory.
+        // Doing the write through the lock-holding channel keeps the
+        // append-safety contract on every platform.
+        byte[] bytes = (mapper.writeValueAsString(validation) + "\n").getBytes(StandardCharsets.UTF_8);
         try (var channel = FileChannel.open(file,
                 StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND);
              var ignored = channel.lock()) {
-            Files.writeString(file,
-                    mapper.writeValueAsString(validation) + "\n",
-                    StandardOpenOption.CREATE,
-                    StandardOpenOption.APPEND);
+            channel.write(ByteBuffer.wrap(bytes));
         }
     }
 
