@@ -705,21 +705,10 @@ public final class AceClawDaemon {
 
             final var validationGateForAuto = validationGateEngine;
             final var candidateStoreForAuto = cs;
-            if (validationGateForAuto != null && cs != null && config.skillAutoReleaseEnabled()) {
+            var skillAutoRelease = config.skillAutoRelease();
+            if (validationGateForAuto != null && cs != null && skillAutoRelease.enabled()) {
                 autoReleaseController = new AutoReleaseController(
-                        new AutoReleaseController.Config(
-                                config.skillAutoReleaseMinCandidateScore(),
-                                config.skillAutoReleaseMinEvidence(),
-                                config.skillAutoReleaseCanaryMinAttempts(),
-                                config.skillAutoReleaseCanaryMaxFailureRate(),
-                                config.skillAutoReleaseCanaryMaxTimeoutRate(),
-                                config.skillAutoReleaseCanaryMaxPermissionBlockRate(),
-                                config.skillAutoReleaseRollbackMaxFailureRate(),
-                                config.skillAutoReleaseRollbackMaxTimeoutRate(),
-                                config.skillAutoReleaseRollbackMaxPermissionBlockRate(),
-                                Duration.ofHours(Math.max(1, config.skillAutoReleaseHealthLookbackHours())),
-                                config.skillAutoReleaseCanaryDwellHours()
-                        ),
+                        skillAutoRelease.tuning(),
                         validationGateForAuto
                 );
             }
