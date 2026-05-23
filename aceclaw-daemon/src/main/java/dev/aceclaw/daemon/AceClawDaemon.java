@@ -622,12 +622,13 @@ public final class AceClawDaemon {
                 skillRegistry::formatDescriptions);
         agentHandler.setMcpInitFuture(mcpInitFuture);
         agentHandler.setRetryConfig(config.retryConfig());
+        var adaptiveContinuation = config.adaptiveContinuation();
         agentHandler.setAdaptiveContinuationConfig(
-                config.adaptiveContinuationEnabled(),
-                config.adaptiveContinuationMaxSegments(),
-                config.adaptiveContinuationNoProgressThreshold(),
-                config.adaptiveContinuationMaxTotalTokens(),
-                config.adaptiveContinuationMaxWallClockSeconds());
+                adaptiveContinuation.enabled(),
+                adaptiveContinuation.maxSegments(),
+                adaptiveContinuation.noProgressThreshold(),
+                adaptiveContinuation.maxTotalTokens(),
+                adaptiveContinuation.maxWallClockSeconds());
         agentHandler.setPlannerConfig(config.plannerEnabled(), config.plannerThreshold());
         agentHandler.setAdaptiveReplanEnabled(config.adaptiveReplanEnabled());
         agentHandler.setWatchdogConfig(
@@ -677,12 +678,13 @@ public final class AceClawDaemon {
             var patternDetector = new PatternDetector(memoryStore);
             var failureSignalDetector = new FailureSignalDetector();
             var strategyRefiner = new StrategyRefiner(memoryStore);
-            if (config.skillDraftValidationEnabled()) {
+            var skillDraftValidation = config.skillDraftValidation();
+            if (skillDraftValidation.enabled()) {
                 validationGateEngine = new ValidationGateEngine(
-                        config.skillDraftValidationStrictMode(),
-                        config.skillDraftValidationReplayRequired(),
-                        Path.of(config.skillDraftValidationReplayReport()),
-                        config.skillDraftValidationMaxTokenEstimationErrorRatio());
+                        skillDraftValidation.strictMode(),
+                        skillDraftValidation.replayRequired(),
+                        Path.of(skillDraftValidation.replayReportPath()),
+                        skillDraftValidation.maxTokenEstimationErrorRatio());
             }
 
             // Candidate store for learning pipeline (promotion/demotion state machine)
