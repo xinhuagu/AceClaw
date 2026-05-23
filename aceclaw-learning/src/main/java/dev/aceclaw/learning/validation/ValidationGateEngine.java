@@ -1,4 +1,4 @@
-package dev.aceclaw.daemon;
+package dev.aceclaw.learning.validation;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -60,7 +60,7 @@ public final class ValidationGateEngine {
         this(Clock.systemUTC(), strictMode, replayRequired, replayReportPath, maxTokenEstimationErrorRatio);
     }
 
-    ValidationGateEngine(Clock clock,
+    public ValidationGateEngine(Clock clock,
                          boolean strictMode,
                          boolean replayRequired,
                          Path replayReportPath,

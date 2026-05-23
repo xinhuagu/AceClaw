@@ -1,6 +1,7 @@
-package dev.aceclaw.daemon;
+package dev.aceclaw.learning.validation;
 
 import dev.aceclaw.learning.LearningSignalReview;
+import dev.aceclaw.learning.skill.SkillRefinementEngine;
 
 import java.nio.file.Path;
 import java.util.List;

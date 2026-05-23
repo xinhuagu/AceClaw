@@ -12,6 +12,8 @@ import dev.aceclaw.core.llm.LlmRequest;
 import dev.aceclaw.core.llm.Message;
 import dev.aceclaw.learning.LearningExplanation;
 import dev.aceclaw.learning.LearningExplanationRecorder;
+import dev.aceclaw.learning.validation.LearningValidation;
+import dev.aceclaw.learning.validation.LearningValidationRecorder;
 import dev.aceclaw.memory.Insight;
 import dev.aceclaw.memory.PatternType;
 import org.slf4j.Logger;

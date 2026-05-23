@@ -1,5 +1,7 @@
 package dev.aceclaw.daemon;
 
+import dev.aceclaw.learning.skill.SkillDraftGenerator;
+import dev.aceclaw.learning.validation.ValidationGateEngine;
 import dev.aceclaw.memory.CandidateState;
 import dev.aceclaw.memory.CandidateStateMachine;
 import dev.aceclaw.memory.CandidateStore;

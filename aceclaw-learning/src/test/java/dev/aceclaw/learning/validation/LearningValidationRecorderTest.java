@@ -1,5 +1,6 @@
-package dev.aceclaw.daemon;
+package dev.aceclaw.learning.validation;
 
+import dev.aceclaw.learning.skill.SkillRefinementEngine;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 

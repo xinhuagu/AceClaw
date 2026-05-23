@@ -1,4 +1,4 @@
-package dev.aceclaw.daemon;
+package dev.aceclaw.learning.maintenance;
 
 import dev.aceclaw.memory.CandidateStore;
 import dev.aceclaw.memory.CrossSessionPatternMiner;
