@@ -29,7 +29,7 @@ class PermissionManagerTest {
             "write_file", "Write to /tmp/foo");
 
     /** Always-deny policy so the only Approved path is via session-blanket. */
-    private static final PermissionPolicy DENY_POLICY = req ->
+    private static final PermissionPolicy DENY_POLICY = (cap, prov, desc) ->
             new PermissionDecision.Denied("test policy denies");
 
     @Test

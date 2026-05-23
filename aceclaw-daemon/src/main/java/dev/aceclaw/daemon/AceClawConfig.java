@@ -186,6 +186,16 @@ public final class AceClawConfig {
     private String logLevel;
     private String braveSearchApiKey;
     private String permissionMode;
+    /**
+     * Whether the policy's structural sensitive-path denials are active.
+     * Default {@code false} so an upgrade past #480 doesn't break workflows
+     * that legitimately write {@code .env} templates, {@code .git/config}
+     * entries, etc. Set to {@code true} via {@code security.denySensitivePaths}
+     * in {@code ~/.aceclaw/config.json} to enable the hard-denial layer
+     * (overrides every mode and prior approval — see
+     * {@link dev.aceclaw.security.DefaultPermissionPolicy} for the rule set).
+     */
+    private boolean denySensitivePaths;
     private boolean bootEnabled;
     private int bootTimeoutSeconds;
     private boolean schedulerEnabled;
@@ -294,6 +304,7 @@ public final class AceClawConfig {
         this.contextWindowTokens = DEFAULT_CONTEXT_WINDOW;
         this.logLevel = DEFAULT_LOG_LEVEL;
         this.permissionMode = "normal";
+        this.denySensitivePaths = false;
         this.bootEnabled = DEFAULT_BOOT_ENABLED;
         this.bootTimeoutSeconds = DEFAULT_BOOT_TIMEOUT_SECONDS;
         this.schedulerEnabled = DEFAULT_SCHEDULER_ENABLED;
@@ -972,6 +983,23 @@ public final class AceClawConfig {
     }
 
     /**
+     * Returns whether the policy's structural sensitive-path denials are
+     * enabled. Default {@code false} (opt-in).
+     *
+     * <p>Wired from {@code security.denySensitivePaths} in
+     * {@code ~/.aceclaw/config.json} or {@code {project}/.aceclaw/config.json}.
+     * When {@code true}, writes/deletes targeting {@code .env*}, {@code .ssh/*},
+     * {@code .git/config}, {@code credentials.json}, anything under
+     * {@code /etc/}, etc. are hard-denied regardless of permission mode or
+     * prior session approval. See
+     * {@link dev.aceclaw.security.DefaultPermissionPolicy} for the full rule
+     * set and rationale.
+     */
+    public boolean denySensitivePaths() {
+        return denySensitivePaths;
+    }
+
+    /**
      * Persists candidate injection settings to config.json.
      *
      * @param projectPath project root for project-scoped persistence (required when scope=project)
@@ -1639,6 +1667,9 @@ public final class AceClawConfig {
         if (fileConfig.braveSearchApiKey != null && !fileConfig.braveSearchApiKey.isBlank()) {
             this.braveSearchApiKey = fileConfig.braveSearchApiKey;
         }
+        if (fileConfig.security != null && fileConfig.security.denySensitivePaths != null) {
+            this.denySensitivePaths = fileConfig.security.denySensitivePaths;
+        }
         if (fileConfig.permissionMode != null && !fileConfig.permissionMode.isBlank()) {
             this.permissionMode = fileConfig.permissionMode.toLowerCase();
         }
@@ -1942,6 +1973,22 @@ public final class AceClawConfig {
         public Boolean context1m;
         public List<String> extraAnthropicBetas;
         public RetryConfigFormat retry;
+        public SecurityConfigFormat security;
+    }
+
+    /**
+     * JSON structure for the security section.
+     * <pre>{
+     *   "denySensitivePaths": true
+     * }</pre>
+     *
+     * <p>Nested for forward compatibility — future security knobs (custom
+     * sensitive-path patterns per follow-up, sandbox toggles, etc.) live
+     * under the same {@code security} object rather than littering the top
+     * level.
+     */
+    public static class SecurityConfigFormat {
+        public Boolean denySensitivePaths;
     }
 
     /**

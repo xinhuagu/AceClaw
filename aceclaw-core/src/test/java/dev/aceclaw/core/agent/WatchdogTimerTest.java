@@ -95,8 +95,16 @@ class WatchdogTimerTest {
             watchdog.checkBudget(1000);
             assertFalse(watchdog.isExhausted());
 
-            Thread.sleep(200);
-            assertTrue(watchdog.isExhausted());
+            // Poll for the scheduled timer to fire. A fixed Thread.sleep(200)
+            // is flaky on CI under load — the SCHEDULER thread can take >100ms
+            // beyond the timer's deadline to actually run. Polling with a
+            // generous deadline avoids the race without changing test intent.
+            long deadlineMs = System.currentTimeMillis() + 2000;
+            while (!watchdog.isExhausted() && System.currentTimeMillis() < deadlineMs) {
+                Thread.sleep(20);
+            }
+            assertTrue(watchdog.isExhausted(),
+                    "time-budget timer should have fired within 2s of the 100ms deadline");
             assertEquals("time_budget", watchdog.exhaustionReason());
         }
     }
