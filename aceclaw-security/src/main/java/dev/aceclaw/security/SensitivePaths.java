@@ -1,5 +1,6 @@
 package dev.aceclaw.security;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Locale;
 import java.util.Set;
@@ -43,6 +44,26 @@ import java.util.Set;
  * {@code .ENV} or {@code Credentials.json}. The path is
  * {@link Path#normalize() normalized} before matching so {@code /tmp/../etc/hosts}
  * resolves to {@code /etc/hosts}.
+ *
+ * <h3>Symlink resolution</h3>
+ *
+ * The matcher is run on the lexical path first; if that says "not sensitive",
+ * the path is canonicalized via {@link Path#toRealPath} and the rules run
+ * again on the resolved form. So writing through {@code /tmp/safe-link}
+ * (a symlink to {@code ~/.ssh/config}) is denied just like writing
+ * {@code ~/.ssh/config} directly. For paths that don't yet exist (the common
+ * case for new file writes), the deepest existing prefix is resolved and the
+ * missing tail re-appended — that's enough to catch the "symlinked
+ * directory" trick (e.g. {@code /tmp/safe-dir/id_rsa} where
+ * {@code safe-dir → ~/.ssh}).
+ *
+ * <p>This is still best-effort, not airtight: a TOCTOU window between the
+ * permission check and the actual write can swap the symlink underneath.
+ * True enforcement needs the OS-level sandbox (Seatbelt / bubblewrap) that
+ * {@code runtime-governance.md} still marks as 🚧. Symlink resolution here
+ * closes the easy bypasses — a malicious or buggy MCP server putting a
+ * safe-looking name in front of a sensitive target — while keeping the rule
+ * set agnostic to which adversary model is in play.
  */
 public final class SensitivePaths {
 
@@ -82,8 +103,33 @@ public final class SensitivePaths {
      * should not be written or deleted by the agent. Case-insensitive,
      * normalize-before-match, segment-level (not substring) comparisons —
      * see class-level javadoc for the full rule set.
+     *
+     * <p>Runs the lexical rules on the input path first; if they don't fire,
+     * canonicalizes through symlinks and re-runs. Both checks must pass for
+     * a path to be considered safe. Lexical-first means a lexically-sensitive
+     * path (e.g. {@code /etc/hosts}) is still denied even if filesystem
+     * resolution would move it away from the rule (e.g. macOS resolves
+     * {@code /etc} to {@code /private/etc}).
      */
     public static boolean matches(Path rawPath) {
+        if (rawPath == null) return false;
+        if (matchesLexical(rawPath)) return true;
+        // Lexical rules cleared — but a symlink-fronted alias could still
+        // route through to a sensitive target. Resolve and try again.
+        Path resolved = resolveSymlinksBestEffort(rawPath);
+        if (resolved != null && !resolved.equals(rawPath.normalize())) {
+            return matchesLexical(resolved);
+        }
+        return false;
+    }
+
+    /**
+     * Lexical-only sensitivity check. Pure function over the normalized path
+     * string — no filesystem IO, no symlink resolution. Public for callers
+     * that need the rule set without the side effects (audit dry-runs,
+     * symbolic analysis, etc.).
+     */
+    public static boolean matchesLexical(Path rawPath) {
         if (rawPath == null) return false;
         var path = rawPath.normalize();
         var fileName = path.getFileName();
@@ -120,5 +166,48 @@ public final class SensitivePaths {
         }
 
         return false;
+    }
+
+    /**
+     * Canonicalizes {@code raw} through symlinks, tolerating non-existent
+     * tail segments. Used by {@link #matches} to catch writes routed through
+     * a safe-looking name that aliases to a sensitive target.
+     *
+     * <p>Algorithm: try {@link Path#toRealPath} on the full path first. If
+     * that throws (commonly because the file doesn't exist yet — a new-file
+     * write), walk parents up until one resolves, then re-append the
+     * skipped trailing segments. Returns {@code null} when nothing along the
+     * path resolves or any unrecoverable IO error occurs — the caller treats
+     * that as "no further information" and the lexical check alone is taken
+     * as authoritative.
+     *
+     * <p>Package-private for testing the corner cases (symlink to sensitive
+     * target, symlink in the middle of the path, fully non-existent path).
+     */
+    static Path resolveSymlinksBestEffort(Path raw) {
+        if (raw == null) return null;
+        Path probe = raw;
+        Path appended = null;
+        // Walk up until a parent resolves on disk. The accumulated `appended`
+        // captures the segments we popped off, in original order, to be
+        // re-attached to the real path of the deepest existing ancestor.
+        while (probe != null) {
+            try {
+                Path real = probe.toRealPath();
+                return appended == null ? real : real.resolve(appended);
+            } catch (IOException missingOrUnreadable) {
+                Path name = probe.getFileName();
+                if (name != null) {
+                    appended = appended == null ? name : name.resolve(appended);
+                }
+                probe = probe.getParent();
+            } catch (SecurityException sandboxRefusedRead) {
+                // A SecurityManager (or platform sandbox) blocked our probe.
+                // Don't crash the permission check — fall back to lexical
+                // and let the caller's other defenses kick in.
+                return null;
+            }
+        }
+        return null;
     }
 }
