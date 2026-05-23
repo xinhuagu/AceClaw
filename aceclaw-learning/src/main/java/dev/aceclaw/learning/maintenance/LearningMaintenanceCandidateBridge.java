@@ -1,4 +1,4 @@
-package dev.aceclaw.daemon;
+package dev.aceclaw.learning.maintenance;
 
 import dev.aceclaw.memory.CandidateKind;
 import dev.aceclaw.memory.CandidateState;

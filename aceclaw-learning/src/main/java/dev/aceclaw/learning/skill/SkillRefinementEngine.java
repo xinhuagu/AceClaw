@@ -1,4 +1,4 @@
-package dev.aceclaw.daemon;
+package dev.aceclaw.learning.skill;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -62,7 +62,7 @@ public final class SkillRefinementEngine {
         this.objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
     }
 
-    RefinementDecision analyze(List<SkillOutcome> outcomes) {
+    public RefinementDecision analyze(List<SkillOutcome> outcomes) {
         Objects.requireNonNull(outcomes, "outcomes");
         var window = lastInvocationWindow(outcomes);
         if (window.consecutiveFailures() >= CONSECUTIVE_FAILURE_DISABLE_THRESHOLD) {
@@ -82,7 +82,7 @@ public final class SkillRefinementEngine {
         return new RefinementDecision.NoActionNeeded();
     }
 
-    PreparedPlan prepare(Path projectPath, String skillName, List<SkillOutcome> outcomes) {
+    public PreparedPlan prepare(Path projectPath, String skillName, List<SkillOutcome> outcomes) {
         Objects.requireNonNull(projectPath, "projectPath");
         Objects.requireNonNull(skillName, "skillName");
         Objects.requireNonNull(outcomes, "outcomes");
@@ -122,7 +122,7 @@ public final class SkillRefinementEngine {
         };
     }
 
-    SkillRefinement proposeRefinement(PreparedPlan plan, List<SkillOutcome> outcomes) throws LlmException {
+    public SkillRefinement proposeRefinement(PreparedPlan plan, List<SkillOutcome> outcomes) throws LlmException {
         Objects.requireNonNull(plan, "plan");
         Objects.requireNonNull(outcomes, "outcomes");
         if (plan.action() != RefinementAction.REFINED) {
@@ -152,7 +152,7 @@ public final class SkillRefinementEngine {
         return parseRefinement(text);
     }
 
-    RefinementOutcome apply(Path projectPath,
+    public RefinementOutcome apply(Path projectPath,
                             SkillOutcomeTracker tracker,
                             PreparedPlan plan,
                             SkillRefinement proposal) throws IOException {
@@ -499,7 +499,7 @@ public final class SkillRefinementEngine {
         record DisableRecommended(String reason) implements RefinementDecision {}
     }
 
-    record SkillRefinement(String reason, String updatedBody) {}
+    public record SkillRefinement(String reason, String updatedBody) {}
 
     public enum RefinementAction {
         NONE,
@@ -510,24 +510,24 @@ public final class SkillRefinementEngine {
     }
 
     public record RefinementOutcome(RefinementAction action, String skillName, String reason) {
-        static RefinementOutcome none() {
+        public static RefinementOutcome none() {
             return new RefinementOutcome(RefinementAction.NONE, "", "");
         }
     }
 
-    record PreparedPlan(
+    public record PreparedPlan(
             SkillConfig skill,
             RefinementState state,
             WindowStats window,
             RefinementAction action,
             String reason
     ) {
-        static PreparedPlan none() {
+        public static PreparedPlan none() {
             return new PreparedPlan(null, null, WindowStats.EMPTY, RefinementAction.NONE, "");
         }
     }
 
-    record WindowStats(
+    public record WindowStats(
             int invocationCount,
             int successCount,
             int correctionCount,
@@ -538,7 +538,7 @@ public final class SkillRefinementEngine {
         static final WindowStats EMPTY = new WindowStats(0, 0, 0, 0, 0.0, 0.0);
     }
 
-    record RefinementState(
+    public record RefinementState(
             int currentVersion,
             int latestVersion,
             boolean deprecated,
@@ -550,7 +550,7 @@ public final class SkillRefinementEngine {
     ) {
         static final RefinementState EMPTY = new RefinementState(0, 0, false, null, null, null, null, null);
 
-        RefinementState {
+        public RefinementState {
             currentVersion = Math.max(0, currentVersion);
             latestVersion = Math.max(0, latestVersion);
         }

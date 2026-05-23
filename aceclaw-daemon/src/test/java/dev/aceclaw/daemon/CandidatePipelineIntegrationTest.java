@@ -6,6 +6,7 @@ import dev.aceclaw.core.agent.ContextEstimator;
 import dev.aceclaw.core.llm.*;
 import dev.aceclaw.learning.ErrorDetector;
 import dev.aceclaw.learning.FailureSignalDetector;
+import dev.aceclaw.learning.skill.SkillDraftGenerator;
 import dev.aceclaw.memory.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

@@ -1,4 +1,4 @@
-package dev.aceclaw.daemon;
+package dev.aceclaw.learning.skill;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;

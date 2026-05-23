@@ -1,4 +1,4 @@
-package dev.aceclaw.daemon;
+package dev.aceclaw.learning.skill;
 
 import dev.aceclaw.core.agent.SkillMetrics;
 import dev.aceclaw.core.agent.SkillOutcome;

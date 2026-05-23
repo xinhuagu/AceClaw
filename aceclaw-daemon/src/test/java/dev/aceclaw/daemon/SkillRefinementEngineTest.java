@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import dev.aceclaw.core.agent.SkillOutcome;
 import dev.aceclaw.core.agent.SkillOutcomeTracker;
+import dev.aceclaw.learning.skill.SkillMetricsStore;
+import dev.aceclaw.learning.skill.SkillRefinementEngine;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
