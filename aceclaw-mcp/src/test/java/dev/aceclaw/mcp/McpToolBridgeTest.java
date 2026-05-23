@@ -302,6 +302,47 @@ class McpToolBridgeTest {
     }
 
     @Test
+    void renameWithPathAsSourceInfersFileMove() {
+        // Codex P1 follow-up to #495: some MCP filesystem schemas use the
+        // single `path` field for the existing file on a rename/move (with
+        // the new name in `new_path`/`destination`). Without falling back to
+        // PATH_FIELDS as a source alias on moves, `src` resolves to null and
+        // the call degrades to FileWrite(dst) — bypassing the sensitive-
+        // source structural check.
+        var tool = McpToolBridge.create("fs", mcpTool("rename", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode()
+                .put("path", "/repo/.env")
+                .put("new_path", "/tmp/env.bak");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileMove.class);
+        var fm = (Capability.FileMove) cap;
+        assertThat(fm.source()).isEqualTo(Path.of("/repo/.env"));
+        assertThat(fm.destination()).isEqualTo(Path.of("/tmp/env.bak"));
+        assertThat(fm.deletesSource()).isTrue();
+    }
+
+    @Test
+    void explicitSourceWinsOverPathOnMove() {
+        // PATH_FIELDS is only a fallback. If both `source` and `path` are
+        // present (unusual but possible with a permissive MCP schema), the
+        // explicit `source` should be honored — otherwise a server could
+        // hide the real source under `path` and mask it from the audit log.
+        var tool = McpToolBridge.create("fs", mcpTool("move_file", "desc"), client);
+
+        var args = new ObjectMapper().createObjectNode()
+                .put("source", "/tmp/explicit-src")
+                .put("path", "/repo/.env")
+                .put("destination", "/tmp/dst");
+        var cap = tool.toCapability(args);
+
+        assertThat(cap).isInstanceOf(Capability.FileMove.class);
+        assertThat(((Capability.FileMove) cap).source())
+                .isEqualTo(Path.of("/tmp/explicit-src"));
+    }
+
+    @Test
     void moveSourceOnlyDegradesToFileDelete() {
         // When destination is missing (malformed args), a move still tells
         // us the source is being removed. Emit FileDelete so the structural

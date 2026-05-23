@@ -1,5 +1,6 @@
 package dev.aceclaw.daemon;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -427,23 +428,9 @@ public final class AceClawDaemon {
             var toolOpt = subAgentToolRegistry.get(toolName);
             if (toolOpt.isEmpty()) return null;
             if (!(toolOpt.get() instanceof CapabilityAware aware)) return null;
-            Capability cap;
-            try {
-                var argsNode = (inputJson == null || inputJson.isBlank())
-                        ? subAgentMapper.createObjectNode()
-                        : subAgentMapper.readTree(inputJson);
-                cap = aware.toCapability(argsNode);
-            } catch (Exception malformed) {
-                // Unparseable args — fall through to the normal allow-list
-                // logic rather than crash the dispatcher. The standard
-                // sub-agent gate will still deny non-read-only tools that
-                // lack session approval.
-                return null;
-            }
-            if (cap == null) return null;
-            var provenance = Provenance.fromNullableSessionId(sessionId);
-            var denial = permissionManager.checkStructural(cap, provenance, toolName);
-            return denial == null ? null : denial.reason();
+            return subAgentStructuralProbe(
+                    toolName, inputJson, sessionId,
+                    aware, subAgentMapper, permissionManager);
         };
 
         // Sub-agent allow-list lookup is now per-session (#457): the
@@ -1843,6 +1830,62 @@ public final class AceClawDaemon {
 
         log.info("Agent handler wired: provider={}, model={}, tools={}",
                 config.provider(), model, toolRegistry.size());
+    }
+
+    /**
+     * Sub-agent structural-denial probe — extracted from the lambda in
+     * {@link #wireAgentHandler} so the exception-handling contract can be
+     * exercised in isolation.
+     *
+     * <p>Returns the denial reason when the policy structurally rejects the
+     * call, or {@code null} when the request should fall through to the
+     * standard sub-agent allow-list logic. The choice between fallthrough
+     * and fail-closed depends on the failure mode (CodeRabbit major on
+     * #495):
+     *
+     * <ul>
+     *   <li>{@link JsonProcessingException} from {@code readTree} is
+     *       expected input — LLMs occasionally emit malformed JSON. Return
+     *       {@code null} so the downstream gate denies on the standard
+     *       "not in allow-list" path rather than on a parse error.</li>
+     *   <li>Any other {@link RuntimeException} from
+     *       {@link CapabilityAware#toCapability} is a bug in inference
+     *       code, not expected input. The PR's invariant — "hard-denial
+     *       overrides every approval" — would be broken if we silently
+     *       returned {@code null}: a prior session-blanket approval for
+     *       {@code write_file} would then route a sub-agent past the
+     *       structural layer the bug just disabled. Log + deny so the
+     *       failure is observable in forensics and the bypass cannot
+     *       occur.</li>
+     * </ul>
+     *
+     * <p>Package-private for testing.
+     */
+    static String subAgentStructuralProbe(
+            String toolName,
+            String inputJson,
+            String sessionId,
+            CapabilityAware aware,
+            ObjectMapper mapper,
+            PermissionManager permissionManager) {
+        Capability cap;
+        try {
+            var argsNode = (inputJson == null || inputJson.isBlank())
+                    ? mapper.createObjectNode()
+                    : mapper.readTree(inputJson);
+            cap = aware.toCapability(argsNode);
+        } catch (JsonProcessingException malformed) {
+            return null;
+        } catch (RuntimeException unexpected) {
+            log.warn("Structural capability probe failed for tool '{}': {}",
+                    toolName, unexpected.toString(), unexpected);
+            return "Blocked: structural policy evaluation failed for '"
+                    + toolName + "' (see daemon log).";
+        }
+        if (cap == null) return null;
+        var provenance = Provenance.fromNullableSessionId(sessionId);
+        var denial = permissionManager.checkStructural(cap, provenance, toolName);
+        return denial == null ? null : denial.reason();
     }
 
     /**

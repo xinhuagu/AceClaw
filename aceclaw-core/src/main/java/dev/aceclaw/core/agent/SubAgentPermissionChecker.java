@@ -64,6 +64,8 @@ public final class SubAgentPermissionChecker implements ToolPermissionChecker {
 
     @Override
     public ToolPermissionResult check(String toolName, String inputJson, String sessionId) {
+        Objects.requireNonNull(toolName, "toolName");
+
         // Structural denials fire BEFORE any allow-list lookup. A prior
         // session-blanket approval for the tool name (e.g. "always allow
         // write_file") MUST NOT let a sub-agent target .env / .ssh /

@@ -115,6 +115,16 @@ final class McpCapabilityInference {
     private static Capability inferMoveCopy(String normalizedName, JsonNode args) {
         Path dst = safePath(extractField(args, DESTINATION_FIELDS));
         Path src = safePath(extractField(args, SOURCE_FIELDS));
+        // Some MCP schemas use `path` for the existing file on a move/rename:
+        // e.g. rename({"path": "/repo/.env", "new_path": "/tmp/env.bak"}). The
+        // SOURCE_FIELDS lookup misses `path`, so without this fallback `src`
+        // is null, the call degrades to FileWrite(dst), and the sensitive
+        // source is never checked — structural denial bypassed. Only fall
+        // back when SOURCE_FIELDS produced nothing, so explicit source/src/
+        // from still wins if both are present.
+        if (src == null) {
+            src = safePath(extractField(args, PATH_FIELDS));
+        }
         boolean deletesSource = !COPY_VERB.matcher(normalizedName).matches();
 
         if (src != null && dst != null) {
