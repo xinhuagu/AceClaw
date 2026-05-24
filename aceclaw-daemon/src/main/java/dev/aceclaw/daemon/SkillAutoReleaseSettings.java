@@ -74,6 +74,7 @@ public record SkillAutoReleaseSettings(boolean enabled, AutoReleaseController.Co
         private int canaryDwellHours;
 
         Builder(SkillAutoReleaseSettings seed) {
+            java.util.Objects.requireNonNull(seed, "seed");
             this.enabled = seed.enabled();
             var t = seed.tuning();
             this.minCandidateScore = t.minCandidateScore();
@@ -90,15 +91,15 @@ public record SkillAutoReleaseSettings(boolean enabled, AutoReleaseController.Co
         }
 
         Builder enabled(Boolean v) { if (v != null) this.enabled = v; return this; }
-        Builder minCandidateScore(Double v) { if (v != null && v >= 0) this.minCandidateScore = clampRate(v); return this; }
+        Builder minCandidateScore(Double v) { if (v != null) this.minCandidateScore = clampRate(v); return this; }
         Builder minEvidenceCount(Integer v) { if (v != null && v > 0) this.minEvidenceCount = v; return this; }
         Builder canaryMinAttempts(Integer v) { if (v != null && v >= 0) this.canaryMinAttempts = v; return this; }
-        Builder canaryMaxFailureRate(Double v) { if (v != null && v >= 0) this.canaryMaxFailureRate = clampRate(v); return this; }
-        Builder canaryMaxTimeoutRate(Double v) { if (v != null && v >= 0) this.canaryMaxTimeoutRate = clampRate(v); return this; }
-        Builder canaryMaxPermissionRate(Double v) { if (v != null && v >= 0) this.canaryMaxPermissionRate = clampRate(v); return this; }
-        Builder rollbackMaxFailureRate(Double v) { if (v != null && v >= 0) this.rollbackMaxFailureRate = clampRate(v); return this; }
-        Builder rollbackMaxTimeoutRate(Double v) { if (v != null && v >= 0) this.rollbackMaxTimeoutRate = clampRate(v); return this; }
-        Builder rollbackMaxPermissionRate(Double v) { if (v != null && v >= 0) this.rollbackMaxPermissionRate = clampRate(v); return this; }
+        Builder canaryMaxFailureRate(Double v) { if (v != null) this.canaryMaxFailureRate = clampRate(v); return this; }
+        Builder canaryMaxTimeoutRate(Double v) { if (v != null) this.canaryMaxTimeoutRate = clampRate(v); return this; }
+        Builder canaryMaxPermissionRate(Double v) { if (v != null) this.canaryMaxPermissionRate = clampRate(v); return this; }
+        Builder rollbackMaxFailureRate(Double v) { if (v != null) this.rollbackMaxFailureRate = clampRate(v); return this; }
+        Builder rollbackMaxTimeoutRate(Double v) { if (v != null) this.rollbackMaxTimeoutRate = clampRate(v); return this; }
+        Builder rollbackMaxPermissionRate(Double v) { if (v != null) this.rollbackMaxPermissionRate = clampRate(v); return this; }
         Builder healthLookbackHours(Integer v) { if (v != null && v > 0) this.healthLookbackHours = v; return this; }
         Builder canaryDwellHours(Integer v) { if (v != null && v >= 0) this.canaryDwellHours = v; return this; }
 
@@ -109,7 +110,7 @@ public record SkillAutoReleaseSettings(boolean enabled, AutoReleaseController.Co
          * call site (vs hiding the alias inside a generic setter).
          */
         Builder applyLegacyActiveMaxFailureRate(Double v) {
-            if (v != null && v >= 0) this.rollbackMaxFailureRate = clampRate(v);
+            if (v != null) this.rollbackMaxFailureRate = clampRate(v);
             return this;
         }
 
