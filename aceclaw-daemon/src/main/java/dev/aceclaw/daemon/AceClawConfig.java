@@ -249,10 +249,14 @@ public final class AceClawConfig {
     private Map<String, List<HookMatcherFormat>> hooks;
     private boolean context1m;
     private List<String> extraAnthropicBetas;
-    private int retryMaxRetries;
-    private long retryInitialBackoffMs;
-    private long retryMaxBackoffMs;
-    private double retryJitterFactor;
+    /**
+     * Retry config — was 4 individual scalar fields, now held in a single
+     * builder that produces the consumer-side {@link dev.aceclaw.core.agent.RetryConfig}
+     * record on demand (batch 6 of the AceClawConfig decomposition). No new
+     * "Settings" wrapper because {@code RetryConfig} already covers the
+     * shape — consumers calling {@link #retryConfig()} see no API change.
+     */
+    private final RetryConfigBuilder retryBuilder = new RetryConfigBuilder();
 
     /**
      * Returns a default-valued config without touching {@code ~/.aceclaw/config.json}
@@ -293,10 +297,7 @@ public final class AceClawConfig {
         this.providerModels = new java.util.HashMap<>();
         this.context1m = DEFAULT_CONTEXT_1M;
         this.extraAnthropicBetas = List.of();
-        this.retryMaxRetries = (int) dev.aceclaw.core.agent.RetryConfig.DEFAULT.maxRetries();
-        this.retryInitialBackoffMs = dev.aceclaw.core.agent.RetryConfig.DEFAULT.initialBackoffMs();
-        this.retryMaxBackoffMs = dev.aceclaw.core.agent.RetryConfig.DEFAULT.maxBackoffMs();
-        this.retryJitterFactor = dev.aceclaw.core.agent.RetryConfig.DEFAULT.jitterFactor();
+        // retry defaults seeded by RetryConfigBuilder (batch 6)
     }
 
     /**
@@ -985,8 +986,7 @@ public final class AceClawConfig {
      * Returns the retry configuration assembled from config fields.
      */
     public dev.aceclaw.core.agent.RetryConfig retryConfig() {
-        return new dev.aceclaw.core.agent.RetryConfig(
-                retryMaxRetries, retryInitialBackoffMs, retryMaxBackoffMs, retryJitterFactor);
+        return retryBuilder.build();
     }
 
     /**
@@ -1323,20 +1323,15 @@ public final class AceClawConfig {
                     .filter(b -> b != null && !b.isBlank())
                     .toList();
         }
+        // -- Retry file overrides (batch 6) ----------------------------------
+        // Was 13 lines of nested null-and-range-check ifs. Builder setters
+        // bake in the same gates (null skipped + out-of-range silently kept).
         if (fileConfig.retry != null) {
-            if (fileConfig.retry.maxRetries != null && fileConfig.retry.maxRetries >= 0) {
-                this.retryMaxRetries = fileConfig.retry.maxRetries;
-            }
-            if (fileConfig.retry.initialBackoffMs != null && fileConfig.retry.initialBackoffMs >= 0) {
-                this.retryInitialBackoffMs = fileConfig.retry.initialBackoffMs;
-            }
-            if (fileConfig.retry.maxBackoffMs != null && fileConfig.retry.maxBackoffMs >= 0) {
-                this.retryMaxBackoffMs = fileConfig.retry.maxBackoffMs;
-            }
-            if (fileConfig.retry.jitterFactor != null
-                    && fileConfig.retry.jitterFactor >= 0.0 && fileConfig.retry.jitterFactor <= 1.0) {
-                this.retryJitterFactor = fileConfig.retry.jitterFactor;
-            }
+            retryBuilder
+                    .maxRetries(fileConfig.retry.maxRetries)
+                    .initialBackoffMs(fileConfig.retry.initialBackoffMs)
+                    .maxBackoffMs(fileConfig.retry.maxBackoffMs)
+                    .jitterFactor(fileConfig.retry.jitterFactor);
         }
         if (fileConfig.subAgentAutoApproveTools != null && !fileConfig.subAgentAutoApproveTools.isEmpty()) {
             // Project config appends to global config (not replaces)
