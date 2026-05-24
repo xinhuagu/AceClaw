@@ -737,13 +737,18 @@ public final class AceClawDaemon {
                                             summary.createdDrafts(), summary.skippedDrafts());
                                 }
                             }
-                            // Validate drafts and evaluate for auto-release
+                            // Validate drafts and evaluate for auto-release.
+                            // Use projectPath (the candidate's own workspace) for the publish calls,
+                            // not the daemon-startup workingDir. They can differ when a candidate
+                            // promotion fires for a workspace other than the one the daemon was
+                            // launched in; attributing audit/feed records to workingDir there
+                            // would write them under the wrong workspace.
                             if (validationGateForAuto != null) {
                                 var validation = validationGateForAuto.validateAll(projectPath, "auto-promotion");
-                                skillDraftEventPublisher.publishValidationChanged(validation, workingDir, "auto-promotion");
+                                skillDraftEventPublisher.publishValidationChanged(validation, projectPath, "auto-promotion");
                                 if (autoReleaseForAuto != null && candidateStoreForAuto != null) {
                                     var release = autoReleaseForAuto.evaluateAll(projectPath, candidateStoreForAuto, "auto-promotion");
-                                    skillDraftEventPublisher.publishReleaseChanged(release, workingDir, "auto-promotion");
+                                    skillDraftEventPublisher.publishReleaseChanged(release, projectPath, "auto-promotion");
                                 }
                             }
                         } catch (Exception e) {
