@@ -65,11 +65,8 @@ public final class AceClawConfig {
     // (batch 2 of the AceClawConfig decomposition).
     private static final int DEFAULT_CONTEXT_WINDOW = 0;
     private static final String DEFAULT_LOG_LEVEL = "INFO";
-    private static final boolean DEFAULT_BOOT_ENABLED = true;
-    private static final int DEFAULT_BOOT_TIMEOUT_SECONDS = 120;
-    private static final boolean DEFAULT_SCHEDULER_ENABLED = true;
-    private static final int DEFAULT_SCHEDULER_TICK_SECONDS = 60;
-    private static final boolean DEFAULT_HEARTBEAT_ENABLED = true;
+    // boot/scheduler/heartbeat defaults moved to DaemonLifecycleSettings.defaults()
+    // (batch 5 of the AceClawConfig decomposition).
     private static final boolean DEFAULT_PLANNER_ENABLED = true;
     /**
      * Default complexity score for triggering the planner. Restored
@@ -106,8 +103,7 @@ public final class AceClawConfig {
     // Watchdog defaults moved to WatchdogSettings.defaults() (batch 4).
     // The "0 = derive from soft limit (3x)" convention on hard turns /
     // wall-time is preserved at the StreamingAgentHandler consumer.
-    private static final boolean DEFAULT_DEFERRED_ACTION_ENABLED = true;
-    private static final int DEFAULT_DEFERRED_ACTION_TICK_SECONDS = 5;
+    // deferredAction defaults moved to DaemonLifecycleSettings.defaults() (batch 5).
     /**
      * WebSocket bridge for browser dashboard (issue #431). Enabled by default since #446
      * <em>but only when the bind host is loopback</em> — the daemon now serves the
@@ -172,12 +168,6 @@ public final class AceClawConfig {
      * {@link dev.aceclaw.security.DefaultPermissionPolicy} for the rule set).
      */
     private boolean denySensitivePaths;
-    private boolean bootEnabled;
-    private int bootTimeoutSeconds;
-    private boolean schedulerEnabled;
-    private int schedulerTickSeconds;
-    private boolean heartbeatEnabled;
-    private String heartbeatActiveHours;
     private String defaultProfile;
     private Map<String, ConfigFileFormat> profiles;
     /**
@@ -228,8 +218,14 @@ public final class AceClawConfig {
      * (batch 4 of the AceClawConfig decomposition).
      */
     private final WatchdogSettings.Builder watchdogBuilder = WatchdogSettings.builder();
-    private boolean deferredActionEnabled;
-    private int deferredActionTickSeconds;
+    /**
+     * Daemon lifecycle config — was 8 individual scalar fields (boot/scheduler/
+     * heartbeat/deferred-action gates + tick cadences), now grouped under one
+     * {@link DaemonLifecycleSettings} record (batch 5 of the AceClawConfig
+     * decomposition). Builder-based so file-merge overrides accumulate
+     * incrementally; the public {@link #lifecycle()} getter freezes it on demand.
+     */
+    private final DaemonLifecycleSettings.Builder lifecycleBuilder = DaemonLifecycleSettings.builder();
     private boolean webSocketEnabled;
     /**
      * Tracks whether any config file explicitly set {@code webSocket.enabled}.
@@ -279,11 +275,7 @@ public final class AceClawConfig {
         this.logLevel = DEFAULT_LOG_LEVEL;
         this.permissionMode = "normal";
         this.denySensitivePaths = false;
-        this.bootEnabled = DEFAULT_BOOT_ENABLED;
-        this.bootTimeoutSeconds = DEFAULT_BOOT_TIMEOUT_SECONDS;
-        this.schedulerEnabled = DEFAULT_SCHEDULER_ENABLED;
-        this.schedulerTickSeconds = DEFAULT_SCHEDULER_TICK_SECONDS;
-        this.heartbeatEnabled = DEFAULT_HEARTBEAT_ENABLED;
+        // boot/scheduler/heartbeat defaults seeded by DaemonLifecycleSettings.builder() (batch 5)
         this.plannerEnabled = DEFAULT_PLANNER_ENABLED;
         this.plannerThreshold = DEFAULT_PLANNER_THRESHOLD;
         this.adaptiveReplanEnabled = DEFAULT_ADAPTIVE_REPLAN_ENABLED;
@@ -292,8 +284,7 @@ public final class AceClawConfig {
         // skillAutoRelease defaults are seeded by SkillAutoReleaseSettings.builder()
         // at field-initialization time. 14 individual setter calls removed here.
         // Watchdog defaults seeded by WatchdogSettings.builder()
-        this.deferredActionEnabled = DEFAULT_DEFERRED_ACTION_ENABLED;
-        this.deferredActionTickSeconds = DEFAULT_DEFERRED_ACTION_TICK_SECONDS;
+        // deferredAction defaults seeded by DaemonLifecycleSettings.builder() (batch 5)
         this.webSocketEnabled = DEFAULT_WEBSOCKET_ENABLED;
         this.webSocketPort = DEFAULT_WEBSOCKET_PORT;
         this.webSocketHost = DEFAULT_WEBSOCKET_HOST;
@@ -795,51 +786,13 @@ public final class AceClawConfig {
     }
 
     /**
-     * Returns whether BOOT.md execution is enabled at daemon startup.
-     * Defaults to true.
+     * Returns the daemon lifecycle config — boot script, cron scheduler,
+     * heartbeat, and deferred-action scheduler gates + tick cadences (8
+     * scalars total). Batch 5 of the AceClawConfig decomposition; replaces
+     * 8 individual getters.
      */
-    public boolean bootEnabled() {
-        return bootEnabled;
-    }
-
-    /**
-     * Returns the maximum time in seconds for BOOT.md execution.
-     * Defaults to 120.
-     */
-    public int bootTimeoutSeconds() {
-        return bootTimeoutSeconds;
-    }
-
-    /**
-     * Returns whether the cron scheduler is enabled at daemon startup.
-     * Defaults to true.
-     */
-    public boolean schedulerEnabled() {
-        return schedulerEnabled;
-    }
-
-    /**
-     * Returns the cron scheduler tick interval in seconds.
-     * Defaults to 60.
-     */
-    public int schedulerTickSeconds() {
-        return schedulerTickSeconds;
-    }
-
-    /**
-     * Returns whether heartbeat tasks from HEARTBEAT.md are enabled.
-     * Defaults to true.
-     */
-    public boolean heartbeatEnabled() {
-        return heartbeatEnabled;
-    }
-
-    /**
-     * Returns the active hours window for heartbeat tasks in "HH:mm-HH:mm" format.
-     * Returns null if heartbeat tasks should always be active.
-     */
-    public String heartbeatActiveHours() {
-        return heartbeatActiveHours;
+    public DaemonLifecycleSettings lifecycle() {
+        return lifecycleBuilder.build();
     }
 
     /**
@@ -916,22 +869,6 @@ public final class AceClawConfig {
      */
     public SkillAutoReleaseSettings skillAutoRelease() {
         return skillAutoReleaseBuilder.build();
-    }
-
-    /**
-     * Returns whether the deferred action scheduler is enabled.
-     * Defaults to true.
-     */
-    public boolean deferredActionEnabled() {
-        return deferredActionEnabled;
-    }
-
-    /**
-     * Returns the deferred action scheduler tick interval in seconds.
-     * Defaults to 5.
-     */
-    public int deferredActionTickSeconds() {
-        return deferredActionTickSeconds;
     }
 
     /**
@@ -1263,26 +1200,18 @@ public final class AceClawConfig {
         if (fileConfig.permissionMode != null && !fileConfig.permissionMode.isBlank()) {
             this.permissionMode = fileConfig.permissionMode.toLowerCase();
         }
-        if (fileConfig.bootEnabled != null) {
-            this.bootEnabled = fileConfig.bootEnabled;
-        }
-        if (fileConfig.bootTimeoutSeconds > 0) {
-            this.bootTimeoutSeconds = fileConfig.bootTimeoutSeconds;
-        }
-        if (fileConfig.schedulerEnabled != null) {
-            this.schedulerEnabled = fileConfig.schedulerEnabled;
-        }
-        if (fileConfig.schedulerTickSeconds > 0) {
-            this.schedulerTickSeconds = fileConfig.schedulerTickSeconds;
-        }
-        if (fileConfig.heartbeatEnabled != null) {
-            this.heartbeatEnabled = fileConfig.heartbeatEnabled;
-        }
-        if (fileConfig.heartbeatActiveHours != null) {
-            // Blank value explicitly clears inherited activeHours (= always active)
-            this.heartbeatActiveHours = fileConfig.heartbeatActiveHours.isBlank()
-                    ? null : fileConfig.heartbeatActiveHours;
-        }
+        // -- Daemon lifecycle file overrides (batch 5) -----------------------
+        // Was 6 individual nullable/positive blocks (boot + scheduler +
+        // heartbeat halves of the lifecycle cluster). Setter contracts mirror
+        // the prior gates: bools skip null, int ticks require > 0, activeHours
+        // accepts null + treats blank as "clear" (always active).
+        lifecycleBuilder
+                .bootEnabled(fileConfig.bootEnabled)
+                .bootTimeoutSeconds(fileConfig.bootTimeoutSeconds)
+                .schedulerEnabled(fileConfig.schedulerEnabled)
+                .schedulerTickSeconds(fileConfig.schedulerTickSeconds)
+                .heartbeatEnabled(fileConfig.heartbeatEnabled)
+                .heartbeatActiveHours(fileConfig.heartbeatActiveHours);
         if (fileConfig.plannerEnabled != null) {
             this.plannerEnabled = fileConfig.plannerEnabled;
         }
@@ -1351,12 +1280,9 @@ public final class AceClawConfig {
                 .agentHardWallTimeSec(fileConfig.maxAgentHardWallTimeSec)
                 .planStepWallTimeSec(fileConfig.maxPlanStepWallTimeSec)
                 .planTotalWallTimeSec(fileConfig.maxPlanTotalWallTimeSec);
-        if (fileConfig.deferredActionEnabled != null) {
-            this.deferredActionEnabled = fileConfig.deferredActionEnabled;
-        }
-        if (fileConfig.deferredActionTickSeconds > 0) {
-            this.deferredActionTickSeconds = fileConfig.deferredActionTickSeconds;
-        }
+        lifecycleBuilder
+                .deferredActionEnabled(fileConfig.deferredActionEnabled)
+                .deferredActionTickSeconds(fileConfig.deferredActionTickSeconds);
         if (fileConfig.webSocket != null) {
             if (fileConfig.webSocket.enabled != null) {
                 this.webSocketEnabled = fileConfig.webSocket.enabled;
