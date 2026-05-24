@@ -646,10 +646,11 @@ public final class AceClawDaemon {
 
         agentHandler.setCompactor(compactor);
         agentHandler.setMemoryStore(memoryStore, workingDir);
+        var antiPatternGate = config.antiPatternGate();
         agentHandler.setAntiPatternGateFeedbackStore(new AntiPatternGateFeedbackStore(
                 workingDir,
-                config.antiPatternGateMinBlockedBeforeRollback(),
-                config.antiPatternGateMaxFalsePositiveRate()));
+                antiPatternGate.minBlockedBeforeRollback(),
+                antiPatternGate.maxFalsePositiveRate()));
         if (journal != null) {
             agentHandler.setDailyJournal(journal);
         }
@@ -688,13 +689,15 @@ public final class AceClawDaemon {
             }
 
             // Candidate store for learning pipeline (promotion/demotion state machine)
+            var candidatePromotion = config.candidatePromotion();
+            var candidateInjection = config.candidateInjection();
             CandidateStore cs = null;
-            if (config.candidatePromotionEnabled() || config.candidateInjectionEnabled()) {
+            if (candidatePromotion.enabled() || candidateInjection.enabled()) {
                 try {
                     var smConfig = new CandidateStateMachine.Config(
-                            config.candidatePromotionMinEvidence(),
-                            config.candidatePromotionMinScore(),
-                            config.candidatePromotionMaxFailureRate(),
+                            candidatePromotion.minEvidence(),
+                            candidatePromotion.minScore(),
+                            candidatePromotion.maxFailureRate(),
                             3, java.util.Set.of());
                     cs = new CandidateStore(homeDir, smConfig);
                     cs.load();
@@ -717,7 +720,7 @@ public final class AceClawDaemon {
             final var autoReleaseForAuto = autoReleaseController;
             var selfImprovementEngine = new SelfImprovementEngine(
                     errorDetector, patternDetector, failureSignalDetector, memoryStore, strategyRefiner, cs,
-                    config.candidatePromotionEnabled(),
+                    candidatePromotion.enabled(),
                     (validationGateForAuto != null || candidateStoreForAuto != null) ? projectPath -> {
                         draftPipelineLock.lock();
                         try {
@@ -751,11 +754,11 @@ public final class AceClawDaemon {
             candidateStoreRef = cs;
 
             // Pass candidate store to agent handler for prompt injection
-            if (cs != null && config.candidateInjectionEnabled()) {
+            if (cs != null && candidateInjection.enabled()) {
                 agentHandler.setCandidateStore(cs);
                 agentHandler.setCandidateInjectionEnabled(true);
                 agentHandler.setCandidateInjectionConfig(
-                        config.candidateInjectionMaxCount(), config.candidateInjectionMaxTokens());
+                        candidateInjection.maxCount(), candidateInjection.maxTokens());
             } else {
                 agentHandler.setCandidateInjectionEnabled(false);
             }
@@ -844,7 +847,7 @@ public final class AceClawDaemon {
                 : null;
         final var crossSessionPatternMiner = historicalLogIndex != null ? new CrossSessionPatternMiner() : null;
         final var trendDetector = historicalLogIndex != null ? new TrendDetector() : null;
-        final var maintenanceCandidateBridge = config.candidatePromotionEnabled() && candidateStoreRef != null
+        final var maintenanceCandidateBridge = config.candidatePromotion().enabled() && candidateStoreRef != null
                 ? new LearningMaintenanceCandidateBridge(candidateStoreRef)
                 : null;
         final var maintenanceCandidateStore = candidateStoreRef;
@@ -1090,7 +1093,8 @@ public final class AceClawDaemon {
             Integer maxTokens = params != null && params.has("maxTokens")
                     ? Math.max(0, params.get("maxTokens").asInt()) : null;
             if (maxTokens != null) {
-                agentHandlerRef.setCandidateInjectionConfig(config.candidateInjectionMaxCount(), maxTokens);
+                agentHandlerRef.setCandidateInjectionConfig(
+                        config.candidateInjection().maxCount(), maxTokens);
             }
             boolean persist = params != null && params.has("persist") && params.get("persist").asBoolean(false);
             String scope = params != null && params.has("scope") ? params.get("scope").asText() : "project";
