@@ -63,13 +63,19 @@ public final class SkillDraftEventPublisher {
             SkillDraftGenerator.GenerationSummary summary,
             Path workingDir,
             String trigger) {
+        Objects.requireNonNull(workingDir, "workingDir");
+        Objects.requireNonNull(trigger, "trigger");
         if (summary == null || summary.draftPaths().isEmpty()) {
             return;
         }
         for (String draftPath : summary.draftPaths()) {
             Path draftFile = workingDir.resolve(draftPath).normalize();
-            String skillName = draftFile.getParent() != null
-                    ? draftFile.getParent().getFileName().toString() : "";
+            // getFileName() returns null when getParent() is a filesystem root
+            // ("/" on Unix, "C:\" on Windows). Treat that as "no parent dir to
+            // name the skill after" rather than NPE.
+            Path parent = draftFile.getParent();
+            Path parentName = parent != null ? parent.getFileName() : null;
+            String skillName = parentName != null ? parentName.toString() : "";
             String candidateId = "";
             try {
                 candidateId = parseDraftFrontmatter(draftFile).getOrDefault("source-candidate-id", "");
@@ -105,6 +111,8 @@ public final class SkillDraftEventPublisher {
             ValidationGateEngine.ValidationSummary summary,
             Path projectRoot,
             String trigger) {
+        Objects.requireNonNull(projectRoot, "projectRoot");
+        Objects.requireNonNull(trigger, "trigger");
         if (summary == null || summary.changedDecisions().isEmpty()) {
             return;
         }
@@ -139,6 +147,8 @@ public final class SkillDraftEventPublisher {
             AutoReleaseController.EvaluationSummary summary,
             Path projectRoot,
             String trigger) {
+        Objects.requireNonNull(projectRoot, "projectRoot");
+        Objects.requireNonNull(trigger, "trigger");
         if (summary == null || summary.events().isEmpty()) {
             return;
         }
@@ -166,6 +176,8 @@ public final class SkillDraftEventPublisher {
     /** Serialises a validation summary into the JSON RPC reply shape. */
     public ObjectNode toValidationJson(
             ValidationGateEngine.ValidationSummary summary, Path workingDir) {
+        Objects.requireNonNull(summary, "summary");
+        Objects.requireNonNull(workingDir, "workingDir");
         var node = objectMapper.createObjectNode();
         node.put("totalDrafts", summary.totalDrafts());
         node.put("passCount", summary.passCount());
@@ -197,6 +209,7 @@ public final class SkillDraftEventPublisher {
 
     /** Serialises a release-evaluation summary into the JSON RPC reply shape. */
     public ObjectNode toReleaseJson(AutoReleaseController.EvaluationSummary summary) {
+        Objects.requireNonNull(summary, "summary");
         var node = objectMapper.createObjectNode();
         var releases = objectMapper.createArrayNode();
         for (var release : summary.releases()) {
@@ -251,6 +264,7 @@ public final class SkillDraftEventPublisher {
      * Returns empty map if frontmatter is missing or malformed.
      */
     static Map<String, String> parseDraftFrontmatter(Path draftFile) throws IOException {
+        Objects.requireNonNull(draftFile, "draftFile");
         String raw = Files.readString(draftFile);
         String[] lines = raw.split("\n");
         int first = -1;

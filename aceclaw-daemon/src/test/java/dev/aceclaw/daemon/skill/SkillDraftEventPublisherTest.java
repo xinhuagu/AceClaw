@@ -140,6 +140,22 @@ class SkillDraftEventPublisherTest {
     }
 
     @Test
+    void parseDraftFrontmatter_emptyBetweenMarkersYieldsEmptyMap(@TempDir Path tempDir) throws Exception {
+        // Edge case: well-formed but empty frontmatter ("---\n---\n").
+        // Must yield empty map (no spurious entries), not throw.
+        Path draft = tempDir.resolve("draft.md");
+        Files.writeString(draft, """
+                ---
+                ---
+                # Body
+                """);
+
+        var fm = SkillDraftEventPublisher.parseDraftFrontmatter(draft);
+
+        assertThat(fm).isEmpty();
+    }
+
+    @Test
     void parseDraftFrontmatter_skipsLinesWithoutColon(@TempDir Path tempDir) throws Exception {
         Path draft = tempDir.resolve("draft.md");
         Files.writeString(draft, """
