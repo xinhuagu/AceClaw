@@ -61,11 +61,8 @@ public final class AceClawConfig {
     private static final int DEFAULT_MAX_TOKENS = 16384;
     private static final int DEFAULT_THINKING_BUDGET = 10240;
     private static final int DEFAULT_MAX_TURNS = AgentLoopConfig.DEFAULT_MAX_ITERATIONS;
-    private static final boolean DEFAULT_ADAPTIVE_CONTINUATION_ENABLED = true;
-    private static final int DEFAULT_ADAPTIVE_CONTINUATION_MAX_SEGMENTS = 3;
-    private static final int DEFAULT_ADAPTIVE_CONTINUATION_NO_PROGRESS_THRESHOLD = 2;
-    private static final int DEFAULT_ADAPTIVE_CONTINUATION_MAX_TOTAL_TOKENS = 0;
-    private static final int DEFAULT_ADAPTIVE_CONTINUATION_MAX_WALL_CLOCK_SECONDS = 0;
+    // AdaptiveContinuation defaults moved to AdaptiveContinuationSettings.defaults()
+    // (batch 2 of the AceClawConfig decomposition).
     private static final int DEFAULT_CONTEXT_WINDOW = 0;
     private static final String DEFAULT_LOG_LEVEL = "INFO";
     private static final boolean DEFAULT_BOOT_ENABLED = true;
@@ -106,12 +103,8 @@ public final class AceClawConfig {
     private static final int DEFAULT_CANDIDATE_INJECTION_MAX_TOKENS = 1200;
     private static final int DEFAULT_ANTI_PATTERN_GATE_MIN_BLOCKED_BEFORE_ROLLBACK = 2;
     private static final double DEFAULT_ANTI_PATTERN_GATE_MAX_FALSE_POSITIVE_RATE = 0.50;
-    private static final boolean DEFAULT_SKILL_DRAFT_VALIDATION_ENABLED = true;
-    private static final boolean DEFAULT_SKILL_DRAFT_VALIDATION_STRICT_MODE = false;
-    private static final boolean DEFAULT_SKILL_DRAFT_VALIDATION_REPLAY_REQUIRED = true;
-    private static final String DEFAULT_SKILL_DRAFT_VALIDATION_REPLAY_REPORT =
-            ".aceclaw/metrics/continuous-learning/replay-latest.json";
-    private static final double DEFAULT_SKILL_DRAFT_VALIDATION_MAX_TOKEN_ESTIMATION_ERROR_RATIO = 0.65;
+    // SkillDraftValidation defaults moved to SkillDraftValidationSettings.defaults()
+    // (batch 2 of the AceClawConfig decomposition).
     // Skill auto-release defaults live on SkillAutoReleaseSettings.defaults().
     // 13 individual DEFAULT_SKILL_AUTO_RELEASE_* constants used to live here —
     // grouped into the SkillAutoReleaseSettings record as part of the
@@ -168,11 +161,13 @@ public final class AceClawConfig {
     private int maxTokens;
     private int thinkingBudget;
     private int maxTurns;
-    private boolean adaptiveContinuationEnabled;
-    private int adaptiveContinuationMaxSegments;
-    private int adaptiveContinuationNoProgressThreshold;
-    private int adaptiveContinuationMaxTotalTokens;
-    private int adaptiveContinuationMaxWallClockSeconds;
+    /**
+     * Adaptive continuation config — was 5 individual scalar fields, now
+     * grouped under one {@link AdaptiveContinuationSettings} record
+     * (batch 2 of the AceClawConfig decomposition).
+     */
+    private final AdaptiveContinuationSettings.Builder adaptiveContinuationBuilder =
+            AdaptiveContinuationSettings.builder();
     private int contextWindowTokens;
     private String logLevel;
     private String braveSearchApiKey;
@@ -217,11 +212,13 @@ public final class AceClawConfig {
     private int candidateInjectionMaxTokens;
     private int antiPatternGateMinBlockedBeforeRollback;
     private double antiPatternGateMaxFalsePositiveRate;
-    private boolean skillDraftValidationEnabled;
-    private boolean skillDraftValidationStrictMode;
-    private boolean skillDraftValidationReplayRequired;
-    private String skillDraftValidationReplayReport;
-    private double skillDraftValidationMaxTokenEstimationErrorRatio;
+    /**
+     * Skill draft validation config — was 5 individual scalar fields, now
+     * grouped under one {@link SkillDraftValidationSettings} record
+     * (batch 2 of the AceClawConfig decomposition).
+     */
+    private final SkillDraftValidationSettings.Builder skillDraftValidationBuilder =
+            SkillDraftValidationSettings.builder();
     /**
      * Skill auto-release config — was 12 individual scalar fields, now
      * grouped under one {@link SkillAutoReleaseSettings} record (batch 1 of
@@ -283,11 +280,7 @@ public final class AceClawConfig {
         this.maxTokens = DEFAULT_MAX_TOKENS;
         this.thinkingBudget = DEFAULT_THINKING_BUDGET;
         this.maxTurns = DEFAULT_MAX_TURNS;
-        this.adaptiveContinuationEnabled = DEFAULT_ADAPTIVE_CONTINUATION_ENABLED;
-        this.adaptiveContinuationMaxSegments = DEFAULT_ADAPTIVE_CONTINUATION_MAX_SEGMENTS;
-        this.adaptiveContinuationNoProgressThreshold = DEFAULT_ADAPTIVE_CONTINUATION_NO_PROGRESS_THRESHOLD;
-        this.adaptiveContinuationMaxTotalTokens = DEFAULT_ADAPTIVE_CONTINUATION_MAX_TOTAL_TOKENS;
-        this.adaptiveContinuationMaxWallClockSeconds = DEFAULT_ADAPTIVE_CONTINUATION_MAX_WALL_CLOCK_SECONDS;
+        // adaptiveContinuation defaults seeded by AdaptiveContinuationSettings.builder()
         this.contextWindowTokens = DEFAULT_CONTEXT_WINDOW;
         this.logLevel = DEFAULT_LOG_LEVEL;
         this.permissionMode = "normal";
@@ -309,12 +302,7 @@ public final class AceClawConfig {
         this.candidateInjectionMaxTokens = DEFAULT_CANDIDATE_INJECTION_MAX_TOKENS;
         this.antiPatternGateMinBlockedBeforeRollback = DEFAULT_ANTI_PATTERN_GATE_MIN_BLOCKED_BEFORE_ROLLBACK;
         this.antiPatternGateMaxFalsePositiveRate = DEFAULT_ANTI_PATTERN_GATE_MAX_FALSE_POSITIVE_RATE;
-        this.skillDraftValidationEnabled = DEFAULT_SKILL_DRAFT_VALIDATION_ENABLED;
-        this.skillDraftValidationStrictMode = DEFAULT_SKILL_DRAFT_VALIDATION_STRICT_MODE;
-        this.skillDraftValidationReplayRequired = DEFAULT_SKILL_DRAFT_VALIDATION_REPLAY_REQUIRED;
-        this.skillDraftValidationReplayReport = DEFAULT_SKILL_DRAFT_VALIDATION_REPLAY_REPORT;
-        this.skillDraftValidationMaxTokenEstimationErrorRatio =
-                DEFAULT_SKILL_DRAFT_VALIDATION_MAX_TOKEN_ESTIMATION_ERROR_RATIO;
+        // skillDraftValidation defaults seeded by SkillDraftValidationSettings.builder()
         // skillAutoRelease defaults are seeded by SkillAutoReleaseSettings.builder()
         // at field-initialization time. 14 individual setter calls removed here.
         this.maxAgentTurns = DEFAULT_MAX_AGENT_TURNS;
@@ -468,42 +456,17 @@ public final class AceClawConfig {
                 log.warn("Invalid ACECLAW_MAX_PLAN_TOTAL_WALL_TIME_SEC: {}", envMaxPlanTotalWallTime);
             }
         }
-        var envAdaptiveContinuation = System.getenv("ACECLAW_ADAPTIVE_CONTINUATION");
-        if (envAdaptiveContinuation != null && !envAdaptiveContinuation.isBlank()) {
-            config.adaptiveContinuationEnabled = Boolean.parseBoolean(envAdaptiveContinuation);
-        }
-        var envAdaptiveSegments = System.getenv("ACECLAW_ADAPTIVE_CONTINUATION_MAX_SEGMENTS");
-        if (envAdaptiveSegments != null && !envAdaptiveSegments.isBlank()) {
-            try {
-                config.adaptiveContinuationMaxSegments = Math.max(1, Integer.parseInt(envAdaptiveSegments));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_ADAPTIVE_CONTINUATION_MAX_SEGMENTS: {}", envAdaptiveSegments);
-            }
-        }
-        var envAdaptiveNoProgress = System.getenv("ACECLAW_ADAPTIVE_CONTINUATION_NO_PROGRESS_THRESHOLD");
-        if (envAdaptiveNoProgress != null && !envAdaptiveNoProgress.isBlank()) {
-            try {
-                config.adaptiveContinuationNoProgressThreshold = Math.max(1, Integer.parseInt(envAdaptiveNoProgress));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_ADAPTIVE_CONTINUATION_NO_PROGRESS_THRESHOLD: {}", envAdaptiveNoProgress);
-            }
-        }
-        var envAdaptiveMaxTokens = System.getenv("ACECLAW_ADAPTIVE_CONTINUATION_MAX_TOTAL_TOKENS");
-        if (envAdaptiveMaxTokens != null && !envAdaptiveMaxTokens.isBlank()) {
-            try {
-                config.adaptiveContinuationMaxTotalTokens = Math.max(0, Integer.parseInt(envAdaptiveMaxTokens));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_ADAPTIVE_CONTINUATION_MAX_TOTAL_TOKENS: {}", envAdaptiveMaxTokens);
-            }
-        }
-        var envAdaptiveMaxWallClock = System.getenv("ACECLAW_ADAPTIVE_CONTINUATION_MAX_WALL_CLOCK_SECONDS");
-        if (envAdaptiveMaxWallClock != null && !envAdaptiveMaxWallClock.isBlank()) {
-            try {
-                config.adaptiveContinuationMaxWallClockSeconds = Math.max(0, Integer.parseInt(envAdaptiveMaxWallClock));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_ADAPTIVE_CONTINUATION_MAX_WALL_CLOCK_SECONDS: {}", envAdaptiveMaxWallClock);
-            }
-        }
+        // -- Adaptive continuation env vars (batch 2) ------------------------
+        applyEnvBoolean("ACECLAW_ADAPTIVE_CONTINUATION",
+                v -> config.adaptiveContinuationBuilder.enabled(v));
+        applyEnvInt("ACECLAW_ADAPTIVE_CONTINUATION_MAX_SEGMENTS",
+                v -> config.adaptiveContinuationBuilder.maxSegments(Math.max(1, v)));
+        applyEnvInt("ACECLAW_ADAPTIVE_CONTINUATION_NO_PROGRESS_THRESHOLD",
+                v -> config.adaptiveContinuationBuilder.noProgressThreshold(Math.max(1, v)));
+        applyEnvInt("ACECLAW_ADAPTIVE_CONTINUATION_MAX_TOTAL_TOKENS",
+                v -> config.adaptiveContinuationBuilder.maxTotalTokens(Math.max(0, v)));
+        applyEnvInt("ACECLAW_ADAPTIVE_CONTINUATION_MAX_WALL_CLOCK_SECONDS",
+                v -> config.adaptiveContinuationBuilder.maxWallClockSeconds(Math.max(0, v)));
         var envLogLevel = System.getenv("ACECLAW_LOG_LEVEL");
         if (envLogLevel != null && !envLogLevel.isBlank()) {
             config.logLevel = envLogLevel;
@@ -548,34 +511,20 @@ public final class AceClawConfig {
                 log.warn("Invalid ACECLAW_ANTI_PATTERN_GATE_MAX_FALSE_POSITIVE_RATE: {}", envAntiPatternMaxFpRate);
             }
         }
-        var envSkillDraftValidation = System.getenv("ACECLAW_SKILL_DRAFT_VALIDATION");
-        if (envSkillDraftValidation != null && !envSkillDraftValidation.isBlank()) {
-            config.skillDraftValidationEnabled = Boolean.parseBoolean(envSkillDraftValidation);
-        }
-        var envSkillDraftValidationStrict = System.getenv("ACECLAW_SKILL_DRAFT_VALIDATION_STRICT_MODE");
-        if (envSkillDraftValidationStrict != null && !envSkillDraftValidationStrict.isBlank()) {
-            config.skillDraftValidationStrictMode = Boolean.parseBoolean(envSkillDraftValidationStrict);
-        }
-        var envSkillDraftValidationReplayRequired =
-                System.getenv("ACECLAW_SKILL_DRAFT_VALIDATION_REPLAY_REQUIRED");
-        if (envSkillDraftValidationReplayRequired != null && !envSkillDraftValidationReplayRequired.isBlank()) {
-            config.skillDraftValidationReplayRequired = Boolean.parseBoolean(envSkillDraftValidationReplayRequired);
-        }
+        // -- Skill draft validation env vars (batch 2) -----------------------
+        applyEnvBoolean("ACECLAW_SKILL_DRAFT_VALIDATION",
+                v -> config.skillDraftValidationBuilder.enabled(v));
+        applyEnvBoolean("ACECLAW_SKILL_DRAFT_VALIDATION_STRICT_MODE",
+                v -> config.skillDraftValidationBuilder.strictMode(v));
+        applyEnvBoolean("ACECLAW_SKILL_DRAFT_VALIDATION_REPLAY_REQUIRED",
+                v -> config.skillDraftValidationBuilder.replayRequired(v));
+        // ACECLAW_REPLAY_REPORT_PATH is a String — no parse step.
         var envReplayReportPath = System.getenv("ACECLAW_REPLAY_REPORT_PATH");
         if (envReplayReportPath != null && !envReplayReportPath.isBlank()) {
-            config.skillDraftValidationReplayReport = envReplayReportPath;
+            config.skillDraftValidationBuilder.replayReportPath(envReplayReportPath);
         }
-        var envSkillDraftValidationMaxTokenError =
-                System.getenv("ACECLAW_SKILL_DRAFT_VALIDATION_MAX_TOKEN_ESTIMATION_ERROR_RATIO");
-        if (envSkillDraftValidationMaxTokenError != null && !envSkillDraftValidationMaxTokenError.isBlank()) {
-            try {
-                config.skillDraftValidationMaxTokenEstimationErrorRatio =
-                        Double.parseDouble(envSkillDraftValidationMaxTokenError);
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_SKILL_DRAFT_VALIDATION_MAX_TOKEN_ESTIMATION_ERROR_RATIO: {}",
-                        envSkillDraftValidationMaxTokenError);
-            }
-        }
+        applyEnvDouble("ACECLAW_SKILL_DRAFT_VALIDATION_MAX_TOKEN_ESTIMATION_ERROR_RATIO",
+                v -> config.skillDraftValidationBuilder.maxTokenEstimationErrorRatio(v));
         // -- Skill auto-release env vars -------------------------------------
         // Was 12 nearly-identical try/catch blocks (130 LoC) updating 12
         // individual scalar fields on `config`. Each one now folds into a
@@ -660,9 +609,10 @@ public final class AceClawConfig {
             config.webSocketEnabled = false;
         }
 
+        var ac = config.adaptiveContinuation();
         log.info("Config loaded: provider={}, model={}, maxTokens={}, thinkingBudget={}, maxTurns={}, adaptiveContinuationEnabled={}, adaptiveMaxSegments={}, contextWindow={}, logLevel={}, baseUrl={}, apiKey={}, refreshToken={}",
                 config.provider, config.model, config.maxTokens, config.thinkingBudget, config.maxTurns,
-                config.adaptiveContinuationEnabled, config.adaptiveContinuationMaxSegments,
+                ac.enabled(), ac.maxSegments(),
                 config.contextWindowTokens, config.logLevel,
                 config.baseUrl != null ? config.baseUrl : "(default)",
                 config.apiKey != null ? "(set)" : "(not set)",
@@ -739,24 +689,13 @@ public final class AceClawConfig {
         return maxTurns;
     }
 
-    public boolean adaptiveContinuationEnabled() {
-        return adaptiveContinuationEnabled;
-    }
-
-    public int adaptiveContinuationMaxSegments() {
-        return adaptiveContinuationMaxSegments;
-    }
-
-    public int adaptiveContinuationNoProgressThreshold() {
-        return adaptiveContinuationNoProgressThreshold;
-    }
-
-    public int adaptiveContinuationMaxTotalTokens() {
-        return adaptiveContinuationMaxTotalTokens;
-    }
-
-    public int adaptiveContinuationMaxWallClockSeconds() {
-        return adaptiveContinuationMaxWallClockSeconds;
+    /**
+     * Returns the adaptive-continuation config — the feature gate plus the
+     * 4 budget scalars the agent loop reads. Replaces 5 individual getters
+     * as part of batch 2 of the AceClawConfig decomposition.
+     */
+    public AdaptiveContinuationSettings adaptiveContinuation() {
+        return adaptiveContinuationBuilder.build();
     }
 
     /**
@@ -1068,38 +1007,13 @@ public final class AceClawConfig {
     }
 
     /**
-     * Returns whether autonomous skill draft validation is enabled.
+     * Returns the skill-draft-validation config — the feature gate plus the
+     * 4 scalars the {@code ValidationGateEngine} consumes. Replaces 5
+     * individual getters as part of batch 2 of the AceClawConfig
+     * decomposition.
      */
-    public boolean skillDraftValidationEnabled() {
-        return skillDraftValidationEnabled;
-    }
-
-    /**
-     * Returns whether validation gate strict mode is enabled.
-     */
-    public boolean skillDraftValidationStrictMode() {
-        return skillDraftValidationStrictMode;
-    }
-
-    /**
-     * Returns whether replay checks are required for draft validation.
-     */
-    public boolean skillDraftValidationReplayRequired() {
-        return skillDraftValidationReplayRequired;
-    }
-
-    /**
-     * Returns replay report path for draft validation.
-     */
-    public String skillDraftValidationReplayReport() {
-        return skillDraftValidationReplayReport;
-    }
-
-    /**
-     * Returns max token-estimation error ratio accepted by draft validation replay gate.
-     */
-    public double skillDraftValidationMaxTokenEstimationErrorRatio() {
-        return skillDraftValidationMaxTokenEstimationErrorRatio;
+    public SkillDraftValidationSettings skillDraftValidation() {
+        return skillDraftValidationBuilder.build();
     }
 
     /**
@@ -1479,24 +1393,13 @@ public final class AceClawConfig {
         if (fileConfig.maxTurns > 0) {
             this.maxTurns = fileConfig.maxTurns;
         }
-        if (fileConfig.adaptiveContinuationEnabled != null) {
-            this.adaptiveContinuationEnabled = fileConfig.adaptiveContinuationEnabled;
-        }
-        if (fileConfig.adaptiveContinuationMaxSegments != null && fileConfig.adaptiveContinuationMaxSegments > 0) {
-            this.adaptiveContinuationMaxSegments = fileConfig.adaptiveContinuationMaxSegments;
-        }
-        if (fileConfig.adaptiveContinuationNoProgressThreshold != null
-                && fileConfig.adaptiveContinuationNoProgressThreshold > 0) {
-            this.adaptiveContinuationNoProgressThreshold = fileConfig.adaptiveContinuationNoProgressThreshold;
-        }
-        if (fileConfig.adaptiveContinuationMaxTotalTokens != null
-                && fileConfig.adaptiveContinuationMaxTotalTokens >= 0) {
-            this.adaptiveContinuationMaxTotalTokens = fileConfig.adaptiveContinuationMaxTotalTokens;
-        }
-        if (fileConfig.adaptiveContinuationMaxWallClockSeconds != null
-                && fileConfig.adaptiveContinuationMaxWallClockSeconds >= 0) {
-            this.adaptiveContinuationMaxWallClockSeconds = fileConfig.adaptiveContinuationMaxWallClockSeconds;
-        }
+        // -- Adaptive continuation file overrides (batch 2) -----------------
+        adaptiveContinuationBuilder
+                .enabled(fileConfig.adaptiveContinuationEnabled)
+                .maxSegments(fileConfig.adaptiveContinuationMaxSegments)
+                .noProgressThreshold(fileConfig.adaptiveContinuationNoProgressThreshold)
+                .maxTotalTokens(fileConfig.adaptiveContinuationMaxTotalTokens)
+                .maxWallClockSeconds(fileConfig.adaptiveContinuationMaxWallClockSeconds);
         if (fileConfig.contextWindowTokens > 0) {
             this.contextWindowTokens = fileConfig.contextWindowTokens;
         }
@@ -1573,24 +1476,13 @@ public final class AceClawConfig {
                 && fileConfig.antiPatternGateMaxFalsePositiveRate >= 0) {
             this.antiPatternGateMaxFalsePositiveRate = clampRate(fileConfig.antiPatternGateMaxFalsePositiveRate);
         }
-        if (fileConfig.skillDraftValidationEnabled != null) {
-            this.skillDraftValidationEnabled = fileConfig.skillDraftValidationEnabled;
-        }
-        if (fileConfig.skillDraftValidationStrictMode != null) {
-            this.skillDraftValidationStrictMode = fileConfig.skillDraftValidationStrictMode;
-        }
-        if (fileConfig.skillDraftValidationReplayRequired != null) {
-            this.skillDraftValidationReplayRequired = fileConfig.skillDraftValidationReplayRequired;
-        }
-        if (fileConfig.skillDraftValidationReplayReport != null
-                && !fileConfig.skillDraftValidationReplayReport.isBlank()) {
-            this.skillDraftValidationReplayReport = fileConfig.skillDraftValidationReplayReport;
-        }
-        if (fileConfig.skillDraftValidationMaxTokenEstimationErrorRatio != null
-                && fileConfig.skillDraftValidationMaxTokenEstimationErrorRatio >= 0) {
-            this.skillDraftValidationMaxTokenEstimationErrorRatio =
-                    fileConfig.skillDraftValidationMaxTokenEstimationErrorRatio;
-        }
+        // -- Skill draft validation file overrides (batch 2) -----------------
+        skillDraftValidationBuilder
+                .enabled(fileConfig.skillDraftValidationEnabled)
+                .strictMode(fileConfig.skillDraftValidationStrictMode)
+                .replayRequired(fileConfig.skillDraftValidationReplayRequired)
+                .replayReportPath(fileConfig.skillDraftValidationReplayReport)
+                .maxTokenEstimationErrorRatio(fileConfig.skillDraftValidationMaxTokenEstimationErrorRatio);
         // -- Skill auto-release file overrides -------------------------------
         // Was 13 individual nullable-then-set blocks (~55 LoC) updating 13
         // scalar fields. Now folds into builder setters that each validate
