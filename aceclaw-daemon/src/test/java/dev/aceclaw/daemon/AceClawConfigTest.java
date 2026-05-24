@@ -287,10 +287,11 @@ class AceClawConfigTest {
 
         var config = AceClawConfig.load(tempDir, null);
 
-        assertThat(config.maxPlanStepWallTimeSec())
+        var watchdog = config.watchdog();
+        assertThat(watchdog.planStepWallTimeSec())
                 .as("per-step plan budget default")
                 .isEqualTo(1800);
-        assertThat(config.maxPlanTotalWallTimeSec())
+        assertThat(watchdog.planTotalWallTimeSec())
                 .as("total plan budget default")
                 .isEqualTo(3600);
     }

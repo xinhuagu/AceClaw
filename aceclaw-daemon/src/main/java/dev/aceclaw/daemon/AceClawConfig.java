@@ -103,13 +103,9 @@ public final class AceClawConfig {
     // 13 individual DEFAULT_SKILL_AUTO_RELEASE_* constants used to live here —
     // grouped into the SkillAutoReleaseSettings record as part of the
     // AceClawConfig decomposition (batch 1).
-    private static final int DEFAULT_MAX_AGENT_TURNS = 200;
-    private static final int DEFAULT_MAX_AGENT_WALL_TIME_SEC = 1800;
-    // 0 means "derive from soft limit (3x)" in StreamingAgentHandler
-    private static final int DEFAULT_MAX_AGENT_HARD_TURNS = 0;
-    private static final int DEFAULT_MAX_AGENT_HARD_WALL_TIME_SEC = 0;
-    private static final int DEFAULT_MAX_PLAN_STEP_WALL_TIME_SEC = 1800;
-    private static final int DEFAULT_MAX_PLAN_TOTAL_WALL_TIME_SEC = 3600;
+    // Watchdog defaults moved to WatchdogSettings.defaults() (batch 4).
+    // The "0 = derive from soft limit (3x)" convention on hard turns /
+    // wall-time is preserved at the StreamingAgentHandler consumer.
     private static final boolean DEFAULT_DEFERRED_ACTION_ENABLED = true;
     private static final int DEFAULT_DEFERRED_ACTION_TICK_SECONDS = 5;
     /**
@@ -226,12 +222,12 @@ public final class AceClawConfig {
      */
     private final SkillAutoReleaseSettings.Builder skillAutoReleaseBuilder =
             SkillAutoReleaseSettings.builder();
-    private int maxAgentTurns;
-    private int maxAgentWallTimeSec;
-    private int maxAgentHardTurns;
-    private int maxAgentHardWallTimeSec;
-    private int maxPlanStepWallTimeSec;
-    private int maxPlanTotalWallTimeSec;
+    /**
+     * Watchdog config — was 6 individual scalar fields (4 agent budgets + 2
+     * plan budgets), now grouped under one {@link WatchdogSettings} record
+     * (batch 4 of the AceClawConfig decomposition).
+     */
+    private final WatchdogSettings.Builder watchdogBuilder = WatchdogSettings.builder();
     private boolean deferredActionEnabled;
     private int deferredActionTickSeconds;
     private boolean webSocketEnabled;
@@ -295,12 +291,7 @@ public final class AceClawConfig {
         // skillDraftValidation defaults seeded by SkillDraftValidationSettings.builder()
         // skillAutoRelease defaults are seeded by SkillAutoReleaseSettings.builder()
         // at field-initialization time. 14 individual setter calls removed here.
-        this.maxAgentTurns = DEFAULT_MAX_AGENT_TURNS;
-        this.maxAgentWallTimeSec = DEFAULT_MAX_AGENT_WALL_TIME_SEC;
-        this.maxAgentHardTurns = DEFAULT_MAX_AGENT_HARD_TURNS;
-        this.maxAgentHardWallTimeSec = DEFAULT_MAX_AGENT_HARD_WALL_TIME_SEC;
-        this.maxPlanStepWallTimeSec = DEFAULT_MAX_PLAN_STEP_WALL_TIME_SEC;
-        this.maxPlanTotalWallTimeSec = DEFAULT_MAX_PLAN_TOTAL_WALL_TIME_SEC;
+        // Watchdog defaults seeded by WatchdogSettings.builder()
         this.deferredActionEnabled = DEFAULT_DEFERRED_ACTION_ENABLED;
         this.deferredActionTickSeconds = DEFAULT_DEFERRED_ACTION_TICK_SECONDS;
         this.webSocketEnabled = DEFAULT_WEBSOCKET_ENABLED;
@@ -398,54 +389,19 @@ public final class AceClawConfig {
                 log.warn("Invalid ACECLAW_MAX_TURNS: {}", envMaxTurns);
             }
         }
-        var envMaxAgentTurns = System.getenv("ACECLAW_MAX_AGENT_TURNS");
-        if (envMaxAgentTurns != null && !envMaxAgentTurns.isBlank()) {
-            try {
-                config.maxAgentTurns = Math.max(0, Integer.parseInt(envMaxAgentTurns));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_MAX_AGENT_TURNS: {}", envMaxAgentTurns);
-            }
-        }
-        var envMaxAgentWallTime = System.getenv("ACECLAW_MAX_AGENT_WALL_TIME_SEC");
-        if (envMaxAgentWallTime != null && !envMaxAgentWallTime.isBlank()) {
-            try {
-                config.maxAgentWallTimeSec = Math.max(0, Integer.parseInt(envMaxAgentWallTime));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_MAX_AGENT_WALL_TIME_SEC: {}", envMaxAgentWallTime);
-            }
-        }
-        var envMaxAgentHardTurns = System.getenv("ACECLAW_MAX_AGENT_HARD_TURNS");
-        if (envMaxAgentHardTurns != null && !envMaxAgentHardTurns.isBlank()) {
-            try {
-                config.maxAgentHardTurns = Math.max(0, Integer.parseInt(envMaxAgentHardTurns));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_MAX_AGENT_HARD_TURNS: {}", envMaxAgentHardTurns);
-            }
-        }
-        var envMaxAgentHardWallTime = System.getenv("ACECLAW_MAX_AGENT_HARD_WALL_TIME_SEC");
-        if (envMaxAgentHardWallTime != null && !envMaxAgentHardWallTime.isBlank()) {
-            try {
-                config.maxAgentHardWallTimeSec = Math.max(0, Integer.parseInt(envMaxAgentHardWallTime));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_MAX_AGENT_HARD_WALL_TIME_SEC: {}", envMaxAgentHardWallTime);
-            }
-        }
-        var envMaxPlanStepWallTime = System.getenv("ACECLAW_MAX_PLAN_STEP_WALL_TIME_SEC");
-        if (envMaxPlanStepWallTime != null && !envMaxPlanStepWallTime.isBlank()) {
-            try {
-                config.maxPlanStepWallTimeSec = Math.max(0, Integer.parseInt(envMaxPlanStepWallTime));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_MAX_PLAN_STEP_WALL_TIME_SEC: {}", envMaxPlanStepWallTime);
-            }
-        }
-        var envMaxPlanTotalWallTime = System.getenv("ACECLAW_MAX_PLAN_TOTAL_WALL_TIME_SEC");
-        if (envMaxPlanTotalWallTime != null && !envMaxPlanTotalWallTime.isBlank()) {
-            try {
-                config.maxPlanTotalWallTimeSec = Math.max(0, Integer.parseInt(envMaxPlanTotalWallTime));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_MAX_PLAN_TOTAL_WALL_TIME_SEC: {}", envMaxPlanTotalWallTime);
-            }
-        }
+        // -- Watchdog env vars (batch 4) -------------------------------------
+        applyEnvInt("ACECLAW_MAX_AGENT_TURNS",
+                v -> config.watchdogBuilder.agentTurns(Math.max(0, v)));
+        applyEnvInt("ACECLAW_MAX_AGENT_WALL_TIME_SEC",
+                v -> config.watchdogBuilder.agentWallTimeSec(Math.max(0, v)));
+        applyEnvInt("ACECLAW_MAX_AGENT_HARD_TURNS",
+                v -> config.watchdogBuilder.agentHardTurns(Math.max(0, v)));
+        applyEnvInt("ACECLAW_MAX_AGENT_HARD_WALL_TIME_SEC",
+                v -> config.watchdogBuilder.agentHardWallTimeSec(Math.max(0, v)));
+        applyEnvInt("ACECLAW_MAX_PLAN_STEP_WALL_TIME_SEC",
+                v -> config.watchdogBuilder.planStepWallTimeSec(Math.max(0, v)));
+        applyEnvInt("ACECLAW_MAX_PLAN_TOTAL_WALL_TIME_SEC",
+                v -> config.watchdogBuilder.planTotalWallTimeSec(Math.max(0, v)));
         // -- Adaptive continuation env vars (batch 2) ------------------------
         applyEnvBoolean("ACECLAW_ADAPTIVE_CONTINUATION",
                 v -> config.adaptiveContinuationBuilder.enabled(v));
@@ -1023,54 +979,12 @@ public final class AceClawConfig {
     }
 
     /**
-     * Returns the maximum number of agent ReAct iterations per request.
-     * Enforced by the watchdog timer. 0 = disabled (uses existing maxTurns only).
-     * Defaults to 200.
+     * Returns the watchdog config — agent + plan turn/wall-time budgets
+     * (6 scalars, see {@link WatchdogSettings}). Replaces 6 individual
+     * getters as part of batch 4 of the AceClawConfig decomposition.
      */
-    public int maxAgentTurns() {
-        return maxAgentTurns;
-    }
-
-    /**
-     * Returns the maximum wall-clock time in seconds per agent request.
-     * Enforced by the watchdog timer. 0 = disabled.
-     * Defaults to 3600 (60 minutes).
-     */
-    public int maxAgentWallTimeSec() {
-        return maxAgentWallTimeSec;
-    }
-
-    /**
-     * Returns the hard ceiling for agent ReAct iterations per request.
-     * 0 = use 3x soft limit. Unconditional stop, absolute safety net.
-     */
-    public int maxAgentHardTurns() {
-        return maxAgentHardTurns;
-    }
-
-    /**
-     * Returns the hard ceiling for wall-clock time in seconds per agent request.
-     * 0 = use 3x soft limit. Unconditional stop, absolute safety net.
-     */
-    public int maxAgentHardWallTimeSec() {
-        return maxAgentHardWallTimeSec;
-    }
-
-    /**
-     * Returns the maximum wall-clock time in seconds per plan step.
-     * The watchdog timer is reset before each step. 0 = disabled.
-     * Defaults to 1800 (30 minutes).
-     */
-    public int maxPlanStepWallTimeSec() {
-        return maxPlanStepWallTimeSec;
-    }
-
-    /**
-     * Returns the maximum total wall-clock time in seconds for an entire plan execution.
-     * 0 = disabled. Defaults to 3600 (1 hour).
-     */
-    public int maxPlanTotalWallTimeSec() {
-        return maxPlanTotalWallTimeSec;
+    public WatchdogSettings watchdog() {
+        return watchdogBuilder.build();
     }
 
     /**
@@ -1429,24 +1343,14 @@ public final class AceClawConfig {
                 .rollbackMaxPermissionRate(fileConfig.skillAutoReleaseRollbackMaxPermissionBlockRate)
                 .healthLookbackHours(fileConfig.skillAutoReleaseHealthLookbackHours)
                 .canaryDwellHours(fileConfig.skillAutoReleaseCanaryDwellHours);
-        if (fileConfig.maxAgentTurns != null && fileConfig.maxAgentTurns >= 0) {
-            this.maxAgentTurns = fileConfig.maxAgentTurns;
-        }
-        if (fileConfig.maxAgentWallTimeSec != null && fileConfig.maxAgentWallTimeSec >= 0) {
-            this.maxAgentWallTimeSec = fileConfig.maxAgentWallTimeSec;
-        }
-        if (fileConfig.maxAgentHardTurns != null && fileConfig.maxAgentHardTurns >= 0) {
-            this.maxAgentHardTurns = fileConfig.maxAgentHardTurns;
-        }
-        if (fileConfig.maxAgentHardWallTimeSec != null && fileConfig.maxAgentHardWallTimeSec >= 0) {
-            this.maxAgentHardWallTimeSec = fileConfig.maxAgentHardWallTimeSec;
-        }
-        if (fileConfig.maxPlanStepWallTimeSec != null && fileConfig.maxPlanStepWallTimeSec >= 0) {
-            this.maxPlanStepWallTimeSec = fileConfig.maxPlanStepWallTimeSec;
-        }
-        if (fileConfig.maxPlanTotalWallTimeSec != null && fileConfig.maxPlanTotalWallTimeSec >= 0) {
-            this.maxPlanTotalWallTimeSec = fileConfig.maxPlanTotalWallTimeSec;
-        }
+        // -- Watchdog file overrides (batch 4) -------------------------------
+        watchdogBuilder
+                .agentTurns(fileConfig.maxAgentTurns)
+                .agentWallTimeSec(fileConfig.maxAgentWallTimeSec)
+                .agentHardTurns(fileConfig.maxAgentHardTurns)
+                .agentHardWallTimeSec(fileConfig.maxAgentHardWallTimeSec)
+                .planStepWallTimeSec(fileConfig.maxPlanStepWallTimeSec)
+                .planTotalWallTimeSec(fileConfig.maxPlanTotalWallTimeSec);
         if (fileConfig.deferredActionEnabled != null) {
             this.deferredActionEnabled = fileConfig.deferredActionEnabled;
         }

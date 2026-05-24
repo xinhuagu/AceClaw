@@ -63,6 +63,7 @@ public record SkillDraftValidationSettings(
         private double maxTokenEstimationErrorRatio;
 
         Builder(SkillDraftValidationSettings seed) {
+            java.util.Objects.requireNonNull(seed, "seed");
             this.enabled = seed.enabled();
             this.strictMode = seed.strictMode();
             this.replayRequired = seed.replayRequired();

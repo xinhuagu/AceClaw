@@ -56,6 +56,7 @@ public record AdaptiveContinuationSettings(
         private int maxWallClockSeconds;
 
         Builder(AdaptiveContinuationSettings seed) {
+            java.util.Objects.requireNonNull(seed, "seed");
             this.enabled = seed.enabled();
             this.maxSegments = seed.maxSegments();
             this.noProgressThreshold = seed.noProgressThreshold();

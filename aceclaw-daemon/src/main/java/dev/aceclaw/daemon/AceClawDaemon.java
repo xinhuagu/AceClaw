@@ -631,12 +631,13 @@ public final class AceClawDaemon {
                 adaptiveContinuation.maxWallClockSeconds());
         agentHandler.setPlannerConfig(config.plannerEnabled(), config.plannerThreshold());
         agentHandler.setAdaptiveReplanEnabled(config.adaptiveReplanEnabled());
+        var watchdog = config.watchdog();
         agentHandler.setWatchdogConfig(
-                config.maxAgentTurns(), config.maxAgentWallTimeSec(),
-                config.maxAgentHardTurns(), config.maxAgentHardWallTimeSec());
+                watchdog.agentTurns(), watchdog.agentWallTimeSec(),
+                watchdog.agentHardTurns(), watchdog.agentHardWallTimeSec());
         agentHandler.setPlanBudgetConfig(
-                config.maxPlanStepWallTimeSec(),
-                config.maxPlanTotalWallTimeSec());
+                watchdog.planStepWallTimeSec(),
+                watchdog.planTotalWallTimeSec());
 
         // Plan checkpoint store for crash-safe plan progress persistence and resume
         var planCheckpointStore = new FilePlanCheckpointStore(
