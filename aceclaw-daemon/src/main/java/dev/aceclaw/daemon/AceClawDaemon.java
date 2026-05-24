@@ -822,15 +822,16 @@ public final class AceClawDaemon {
         agentHandler.setDynamicSkillGenerator(dynamicSkillGenerator);
 
         // Wire deferred action scheduler (no turn lock dependency — uses isolated context)
-        if (config.deferredActionEnabled()) {
+        var lifecycle = config.lifecycle();
+        if (lifecycle.deferredActionEnabled()) {
             this.deferredActionScheduler = new DeferredActionScheduler(
                     deferredActionStore, sessionManager,
                     llmClient, toolRegistry, model, systemPrompt,
                     config.maxTokens(), config.thinkingBudget(),
-                    eventBus, config.deferredActionTickSeconds());
+                    eventBus, lifecycle.deferredActionTickSeconds());
             deferCheckTool.setScheduler(deferredActionScheduler);
             log.info("Deferred action scheduler wired (tick every {}s)",
-                    config.deferredActionTickSeconds());
+                    lifecycle.deferredActionTickSeconds());
         }
 
         agentHandler.register(router);
@@ -856,7 +857,7 @@ public final class AceClawDaemon {
         final var maintenanceAutoRelease = autoReleaseController;
         if (memoryStore != null) {
             learningMaintenanceScheduler = new LearningMaintenanceScheduler(
-                    LearningMaintenanceScheduler.Config.defaults(Duration.ofSeconds(config.schedulerTickSeconds())),
+                    LearningMaintenanceScheduler.Config.defaults(Duration.ofSeconds(lifecycle.schedulerTickSeconds())),
                     java.time.Clock.systemUTC(),
                     sessionManager::sessionCount,
                     scopes -> scopes.stream()
@@ -2438,7 +2439,8 @@ public final class AceClawDaemon {
         healthMonitor.start();
 
         // 3.5 Execute BOOT.md (best-effort, runs before accepting connections)
-        if (config.bootEnabled()) {
+        var lifecycle = config.lifecycle();
+        if (lifecycle.bootEnabled()) {
             try {
                 Path workingDir = Path.of(System.getProperty("user.dir"));
                 var bootResult = BootExecutor.execute(
@@ -2447,7 +2449,7 @@ public final class AceClawDaemon {
                         bootModel, bootSystemPrompt,
                         config.maxTokens(), config.thinkingBudget(),
                         config.maxTurns(),
-                        config.bootTimeoutSeconds());
+                        lifecycle.bootTimeoutSeconds());
                 if (bootResult.executed()) {
                     log.info("Boot completed: {}", bootResult.summary());
                 }
@@ -2527,13 +2529,13 @@ public final class AceClawDaemon {
         }
 
         // 5. Start cron scheduler (after listener is ready, jobs run in background)
-        if (config.schedulerEnabled()) {
+        if (lifecycle.schedulerEnabled()) {
             try {
                 cronScheduler = new CronScheduler(
                         cronJobStore, bootLlmClient, bootToolRegistry,
                         bootModel, bootSystemPrompt,
                         config.maxTokens(), config.thinkingBudget(),
-                        eventBus, config.schedulerTickSeconds());
+                        eventBus, lifecycle.schedulerTickSeconds());
                 // #459: dashboard sees a cron run as a session ("cron-{jobId}")
                 // with one turn per fire. The bridge ref is null when WS is
                 // disabled, in which case the scheduler falls back to the
@@ -2572,7 +2574,7 @@ public final class AceClawDaemon {
         }
 
         // 5.5. Start deferred action scheduler
-        if (config.deferredActionEnabled() && deferredActionScheduler != null) {
+        if (lifecycle.deferredActionEnabled() && deferredActionScheduler != null) {
             try {
                 deferredActionScheduler.start();
 
@@ -2584,17 +2586,17 @@ public final class AceClawDaemon {
             } catch (Exception e) {
                 log.error("Deferred action scheduler startup failed (daemon will continue): {}", e.getMessage(), e);
             }
-        } else if (!config.deferredActionEnabled()) {
+        } else if (!lifecycle.deferredActionEnabled()) {
             log.debug("Deferred action scheduler disabled via config");
         }
 
         // 6. Start heartbeat runner (after cron scheduler, syncs HEARTBEAT.md into cron jobs)
-        if (config.heartbeatEnabled() && cronScheduler != null) {
+        if (lifecycle.heartbeatEnabled() && cronScheduler != null) {
             try {
                 Path hbWorkingDir = Path.of(System.getProperty("user.dir"));
                 var heartbeatRunner = new HeartbeatRunner(
                         cronScheduler, homeDir, hbWorkingDir,
-                        config.heartbeatActiveHours(), config.schedulerTickSeconds());
+                        lifecycle.heartbeatActiveHours(), lifecycle.schedulerTickSeconds());
                 heartbeatRunner.start();
 
                 shutdownManager.register(new ShutdownManager.ShutdownParticipant() {
@@ -2605,7 +2607,7 @@ public final class AceClawDaemon {
             } catch (Exception e) {
                 log.error("Heartbeat runner startup failed (daemon will continue): {}", e.getMessage(), e);
             }
-        } else if (!config.heartbeatEnabled()) {
+        } else if (!lifecycle.heartbeatEnabled()) {
             log.debug("Heartbeat runner disabled via config");
         } else {
             log.debug("Heartbeat runner enabled but cron scheduler is disabled; skipping startup");
