@@ -73,7 +73,6 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -111,6 +110,7 @@ public final class AceClawDaemon {
     private final HistoricalLogIndex historicalLogIndex;
     private final LearningExplanationStore learningExplanationStore;
     private final LearningExplanationRecorder learningExplanationRecorder;
+    private final dev.aceclaw.daemon.skill.SkillDraftEventPublisher skillDraftEventPublisher;
     private final LearningValidationStore learningValidationStore;
     private final LearningValidationRecorder learningValidationRecorder;
     private final LearningSignalReviewStore learningSignalReviewStore;
@@ -212,6 +212,8 @@ public final class AceClawDaemon {
         this.learningExplanationRecorder = new LearningExplanationRecorder(learningExplanationStore);
         this.learningValidationStore = new LearningValidationStore();
         this.learningValidationRecorder = new LearningValidationRecorder(learningValidationStore);
+        this.skillDraftEventPublisher = new dev.aceclaw.daemon.skill.SkillDraftEventPublisher(
+                objectMapper, learningExplanationRecorder, learningValidationRecorder, skillDraftEventFeed);
         this.learningSignalReviewStore = new LearningSignalReviewStore();
         this.learningMaintenanceRunStore = new LearningMaintenanceRunStore();
         this.learningMaintenanceRecoveryStore = new LearningMaintenanceRecoveryStore();
@@ -729,7 +731,7 @@ public final class AceClawDaemon {
                             if (candidateStoreForAuto != null) {
                                 var generator = new SkillDraftGenerator();
                                 var summary = generator.generateFromPromoted(candidateStoreForAuto, projectPath);
-                                publishSkillDraftCreatedEvents(summary, projectPath, "auto-promotion");
+                                skillDraftEventPublisher.publishCreated(summary, projectPath, "auto-promotion");
                                 if (summary.createdDrafts() > 0) {
                                     log.info("Auto skill draft generation: {} created, {} skipped",
                                             summary.createdDrafts(), summary.skippedDrafts());
@@ -738,10 +740,10 @@ public final class AceClawDaemon {
                             // Validate drafts and evaluate for auto-release
                             if (validationGateForAuto != null) {
                                 var validation = validationGateForAuto.validateAll(projectPath, "auto-promotion");
-                                publishSkillDraftValidationEvents(validation, workingDir, "auto-promotion");
+                                skillDraftEventPublisher.publishValidationChanged(validation, workingDir, "auto-promotion");
                                 if (autoReleaseForAuto != null && candidateStoreForAuto != null) {
                                     var release = autoReleaseForAuto.evaluateAll(projectPath, candidateStoreForAuto, "auto-promotion");
-                                    publishSkillDraftReleaseEvents(release, workingDir, "auto-promotion");
+                                    skillDraftEventPublisher.publishReleaseChanged(release, workingDir, "auto-promotion");
                                 }
                             }
                         } catch (Exception e) {
@@ -789,17 +791,17 @@ public final class AceClawDaemon {
                     try {
                         var generator = new SkillDraftGenerator();
                         var summary = generator.generateFromPromoted(catchupCs, workingDir);
-                        publishSkillDraftCreatedEvents(summary, workingDir, "startup-catchup");
+                        skillDraftEventPublisher.publishCreated(summary, workingDir, "startup-catchup");
                         if (summary.createdDrafts() > 0) {
                             log.info("Draft catch-up: {} new drafts generated for existing promoted candidates",
                                     summary.createdDrafts());
                         }
                         if (catchupValidation != null && summary.createdDrafts() > 0) {
                             var validation = catchupValidation.validateAll(workingDir, "startup-catchup");
-                            publishSkillDraftValidationEvents(validation, workingDir, "startup-catchup");
+                            skillDraftEventPublisher.publishValidationChanged(validation, workingDir, "startup-catchup");
                             if (catchupAutoRelease != null) {
                                 var release = catchupAutoRelease.evaluateAll(workingDir, catchupCs, "startup-catchup");
-                                publishSkillDraftReleaseEvents(release, workingDir, "startup-catchup");
+                                skillDraftEventPublisher.publishReleaseChanged(release, workingDir, "startup-catchup");
                             }
                         }
                     } catch (Exception e) {
@@ -1208,7 +1210,7 @@ public final class AceClawDaemon {
             try {
                 var generator = new SkillDraftGenerator();
                 var summary = generator.generateFromPromoted(candidateStoreForRpc, workingDir);
-                publishSkillDraftCreatedEvents(summary, workingDir, "draft-generated");
+                skillDraftEventPublisher.publishCreated(summary, workingDir, "draft-generated");
                 var result = objectMapper.createObjectNode();
                 result.put("processedPromotedCandidates", summary.processedPromotedCandidates());
                 result.put("createdDrafts", summary.createdDrafts());
@@ -1219,12 +1221,12 @@ public final class AceClawDaemon {
                 result.put("auditFile", workingDir.relativize(summary.auditFile()).toString().replace('\\', '/'));
                 if (validationGateForRpc != null) {
                     var validation = validationGateForRpc.validateAll(workingDir, "draft-generated");
-                    publishSkillDraftValidationEvents(validation, workingDir, "draft-generated");
-                    result.set("validation", toValidationJson(validation, workingDir));
+                    skillDraftEventPublisher.publishValidationChanged(validation, workingDir, "draft-generated");
+                    result.set("validation", skillDraftEventPublisher.toValidationJson(validation, workingDir));
                     if (autoReleaseForRpc != null && candidateStoreForRpc != null) {
                         var release = autoReleaseForRpc.evaluateAll(workingDir, candidateStoreForRpc, "draft-generated");
-                        publishSkillDraftReleaseEvents(release, workingDir, "draft-generated");
-                        result.set("release", toReleaseJson(release));
+                        skillDraftEventPublisher.publishReleaseChanged(release, workingDir, "draft-generated");
+                        result.set("release", skillDraftEventPublisher.toReleaseJson(release));
                     }
                 }
                 return result;
@@ -1243,12 +1245,12 @@ public final class AceClawDaemon {
                 if (params != null && params.has("draftPath")) {
                     Path draftPath = workingDir.resolve(params.get("draftPath").asText()).normalize();
                     var summary = validationGateForRpc.validateSingleDraft(workingDir, draftPath, trigger);
-                    publishSkillDraftValidationEvents(summary, workingDir, trigger);
-                    return toValidationJson(summary, workingDir);
+                    skillDraftEventPublisher.publishValidationChanged(summary, workingDir, trigger);
+                    return skillDraftEventPublisher.toValidationJson(summary, workingDir);
                 }
                 var summary = validationGateForRpc.validateAll(workingDir, trigger);
-                publishSkillDraftValidationEvents(summary, workingDir, trigger);
-                return toValidationJson(summary, workingDir);
+                skillDraftEventPublisher.publishValidationChanged(summary, workingDir, trigger);
+                return skillDraftEventPublisher.toValidationJson(summary, workingDir);
             } finally {
                 draftPipelineLock.unlock();
             }
@@ -1262,8 +1264,8 @@ public final class AceClawDaemon {
                 String trigger = params != null && params.has("trigger")
                         ? params.get("trigger").asText() : "manual";
                 var summary = autoReleaseForRpc.evaluateAll(workingDir, candidateStoreForRpc, trigger);
-                publishSkillDraftReleaseEvents(summary, workingDir, trigger);
-                return toReleaseJson(summary);
+                skillDraftEventPublisher.publishReleaseChanged(summary, workingDir, trigger);
+                return skillDraftEventPublisher.toReleaseJson(summary);
             } finally {
                 draftPipelineLock.unlock();
             }
@@ -1279,8 +1281,8 @@ public final class AceClawDaemon {
             String reason = params.has("reason") ? params.get("reason").asText() : "manual pause";
             String trigger = params.has("trigger") ? params.get("trigger").asText() : "manual";
             var summary = autoReleaseForRpc.pause(workingDir, skillName, reason, trigger);
-            publishSkillDraftReleaseEvents(summary, workingDir, trigger);
-            return toReleaseJson(summary);
+            skillDraftEventPublisher.publishReleaseChanged(summary, workingDir, trigger);
+            return skillDraftEventPublisher.toReleaseJson(summary);
         });
         router.register("skill.release.forceRollback", params -> {
             if (autoReleaseForRpc == null) {
@@ -1293,8 +1295,8 @@ public final class AceClawDaemon {
             String reason = params.has("reason") ? params.get("reason").asText() : "manual force rollback";
             String trigger = params.has("trigger") ? params.get("trigger").asText() : "manual";
             var summary = autoReleaseForRpc.forceRollback(workingDir, skillName, reason, trigger);
-            publishSkillDraftReleaseEvents(summary, workingDir, trigger);
-            return toReleaseJson(summary);
+            skillDraftEventPublisher.publishReleaseChanged(summary, workingDir, trigger);
+            return skillDraftEventPublisher.toReleaseJson(summary);
         });
         router.register("skill.release.forcePromote", params -> {
             if (autoReleaseForRpc == null) {
@@ -1315,8 +1317,8 @@ public final class AceClawDaemon {
             String reason = params.has("reason") ? params.get("reason").asText() : "manual force promote";
             String trigger = params.has("trigger") ? params.get("trigger").asText() : "manual";
             var summary = autoReleaseForRpc.forcePromote(workingDir, skillName, stage, reason, trigger);
-            publishSkillDraftReleaseEvents(summary, workingDir, trigger);
-            return toReleaseJson(summary);
+            skillDraftEventPublisher.publishReleaseChanged(summary, workingDir, trigger);
+            return skillDraftEventPublisher.toReleaseJson(summary);
         });
 
         // Session skill packer (extract successful workflow from session into skill draft)
@@ -2124,212 +2126,6 @@ public final class AceClawDaemon {
         return oneShotHint ? "one-shot" : "scheduled";
     }
 
-    private com.fasterxml.jackson.databind.node.ObjectNode toValidationJson(
-            ValidationGateEngine.ValidationSummary summary, Path workingDir) {
-        var node = objectMapper.createObjectNode();
-        node.put("totalDrafts", summary.totalDrafts());
-        node.put("passCount", summary.passCount());
-        node.put("holdCount", summary.holdCount());
-        node.put("blockCount", summary.blockCount());
-        node.put("auditFile", workingDir.relativize(summary.auditFile()).toString().replace('\\', '/'));
-        var decisions = objectMapper.createArrayNode();
-        for (var decision : summary.decisions()) {
-            var dn = objectMapper.createObjectNode();
-            dn.put("draftPath", decision.draftPath());
-            dn.put("verdict", decision.verdict().name().toLowerCase());
-            dn.put("evaluatedAt", decision.evaluatedAt().toString());
-            dn.put("trigger", decision.trigger());
-            var reasons = objectMapper.createArrayNode();
-            for (var reason : decision.reasons()) {
-                var rn = objectMapper.createObjectNode();
-                rn.put("gate", reason.gate());
-                rn.put("code", reason.code());
-                rn.put("outcome", reason.outcome().name().toLowerCase());
-                rn.put("message", reason.message());
-                reasons.add(rn);
-            }
-            dn.set("reasons", reasons);
-            decisions.add(dn);
-        }
-        node.set("decisions", decisions);
-        return node;
-    }
-
-    private com.fasterxml.jackson.databind.node.ObjectNode toReleaseJson(
-            AutoReleaseController.EvaluationSummary summary) {
-        var node = objectMapper.createObjectNode();
-        var releases = objectMapper.createArrayNode();
-        for (var release : summary.releases()) {
-            var rn = objectMapper.createObjectNode();
-            rn.put("skillName", release.skillName());
-            rn.put("draftPath", release.draftPath());
-            rn.put("candidateId", release.candidateId());
-            rn.put("stage", release.stage().name().toLowerCase());
-            rn.put("paused", release.paused());
-            rn.put("updatedAt", release.updatedAt().toString());
-            rn.put("lastReasonCode", release.lastReasonCode());
-            rn.put("lastReason", release.lastReason());
-            releases.add(rn);
-        }
-        var events = objectMapper.createArrayNode();
-        for (var event : summary.events()) {
-            var en = objectMapper.createObjectNode();
-            en.put("timestamp", event.timestamp().toString());
-            en.put("trigger", event.trigger());
-            en.put("skillName", event.skillName());
-            en.put("fromStage", event.fromStage() == null ? "none" : event.fromStage().name().toLowerCase());
-            en.put("toStage", event.toStage().name().toLowerCase());
-            en.put("reasonCode", event.reasonCode());
-            en.put("reason", event.reason());
-            events.add(en);
-        }
-        node.put("totalReleases", summary.releases().size());
-        node.put("eventsCount", summary.events().size());
-        node.set("releases", releases);
-        node.set("events", events);
-        return node;
-    }
-
-    private void publishSkillDraftCreatedEvents(
-            SkillDraftGenerator.GenerationSummary summary,
-            Path workingDir,
-            String trigger
-    ) {
-        if (summary == null || summary.draftPaths().isEmpty()) {
-            return;
-        }
-        for (String draftPath : summary.draftPaths()) {
-            Path draftFile = workingDir.resolve(draftPath).normalize();
-            String skillName = draftFile.getParent() != null ? draftFile.getParent().getFileName().toString() : "";
-            String candidateId = "";
-            try {
-                candidateId = parseDraftFrontmatter(draftFile).getOrDefault("source-candidate-id", "");
-            } catch (Exception ignored) {
-            }
-            learningExplanationRecorder.recordSkillDraft(
-                    workingDir,
-                    trigger,
-                    skillName,
-                    draftPath.replace('\\', '/'),
-                    candidateId);
-            skillDraftEventFeed.append(new SkillDraftEvent(
-                    Instant.now(),
-                    "draft_created",
-                    trigger,
-                    skillName,
-                    draftPath.replace('\\', '/'),
-                    candidateId,
-                    "",
-                    "",
-                    false,
-                    List.of()
-            ));
-        }
-    }
-
-    private void publishSkillDraftValidationEvents(
-            ValidationGateEngine.ValidationSummary summary,
-            Path projectRoot,
-            String trigger
-    ) {
-        if (summary == null || summary.changedDecisions().isEmpty()) {
-            return;
-        }
-        for (var decision : summary.changedDecisions()) {
-            learningValidationRecorder.recordDraftValidation(projectRoot, trigger, decision);
-            String skillName = skillNameFromDraftPath(decision.draftPath());
-            var reasons = decision.reasons().stream()
-                    .map(reason -> reason.code() + ": " + reason.message())
-                    .toList();
-            skillDraftEventFeed.append(new SkillDraftEvent(
-                    decision.evaluatedAt(),
-                    "validation_changed",
-                    trigger,
-                    skillName,
-                    decision.draftPath(),
-                    "",
-                    decision.verdict().name().toLowerCase(),
-                    "",
-                    false,
-                    reasons
-            ));
-        }
-    }
-
-    private void publishSkillDraftReleaseEvents(
-            AutoReleaseController.EvaluationSummary summary,
-            Path projectRoot,
-            String trigger
-    ) {
-        if (summary == null || summary.events().isEmpty()) {
-            return;
-        }
-        for (var event : summary.events()) {
-            learningValidationRecorder.recordReleaseValidation(projectRoot, trigger, event);
-            var release = summary.releases().stream()
-                    .filter(candidate -> candidate.skillName().equals(event.skillName()))
-                    .findFirst()
-                    .orElse(null);
-            skillDraftEventFeed.append(new SkillDraftEvent(
-                    event.timestamp(),
-                    "release_changed",
-                    trigger,
-                    event.skillName(),
-                    release == null ? "" : release.draftPath(),
-                    release == null ? "" : release.candidateId(),
-                    "",
-                    event.toStage().name().toLowerCase(),
-                    release != null && release.paused(),
-                    List.of(event.reasonCode() + ": " + event.reason())
-            ));
-        }
-    }
-
-    private static String skillNameFromDraftPath(String draftPath) {
-        Path p = Path.of(draftPath.replace('\\', '/'));
-        if (p.getNameCount() < 2) {
-            return "";
-        }
-        return p.getName(p.getNameCount() - 2).toString();
-    }
-
-    private static Map<String, String> parseDraftFrontmatter(Path draftFile) throws IOException {
-        String raw = Files.readString(draftFile);
-        String[] lines = raw.split("\n");
-        int first = -1;
-        int second = -1;
-        for (int i = 0; i < lines.length; i++) {
-            if ("---".equals(lines[i].trim())) {
-                if (first < 0) {
-                    first = i;
-                } else {
-                    second = i;
-                    break;
-                }
-            }
-        }
-        var map = new LinkedHashMap<String, String>();
-        if (first < 0 || second <= first) {
-            return map;
-        }
-        for (int i = first + 1; i < second; i++) {
-            String line = lines[i];
-            int idx = line.indexOf(':');
-            if (idx <= 0) continue;
-            String key = line.substring(0, idx).trim().toLowerCase(Locale.ROOT);
-            String value = line.substring(idx + 1).trim();
-            map.put(key, stripQuotes(value));
-        }
-        return map;
-    }
-
-    private static String stripQuotes(String value) {
-        if (value == null || value.length() < 2) return value == null ? "" : value;
-        if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) {
-            return value.substring(1, value.length() - 1);
-        }
-        return value;
-    }
 
     /**
      * Creates a daemon with the default home directory (~/.aceclaw).
@@ -3011,13 +2807,13 @@ public final class AceClawDaemon {
             try {
                 var generator = new SkillDraftGenerator();
                 var summary = generator.generateFromPromoted(candidateStore, workingDir);
-                publishSkillDraftCreatedEvents(summary, workingDir, trigger);
+                skillDraftEventPublisher.publishCreated(summary, workingDir, trigger);
                 if (validationGateEngine != null && summary.createdDrafts() > 0) {
                     var validation = validationGateEngine.validateAll(workingDir, trigger);
-                    publishSkillDraftValidationEvents(validation, workingDir, trigger);
+                    skillDraftEventPublisher.publishValidationChanged(validation, workingDir, trigger);
                     if (autoReleaseController != null) {
                         var release = autoReleaseController.evaluateAll(workingDir, candidateStore, trigger);
-                        publishSkillDraftReleaseEvents(release, workingDir, trigger);
+                        skillDraftEventPublisher.publishReleaseChanged(release, workingDir, trigger);
                     }
                 }
             } catch (Exception e) {
