@@ -94,15 +94,9 @@ public final class AceClawConfig {
      */
     private static final int DEFAULT_PLANNER_THRESHOLD = 5;
     private static final boolean DEFAULT_ADAPTIVE_REPLAN_ENABLED = true;
-    private static final boolean DEFAULT_CANDIDATE_INJECTION_ENABLED = true;
-    private static final boolean DEFAULT_CANDIDATE_PROMOTION_ENABLED = true;
-    private static final int DEFAULT_CANDIDATE_PROMOTION_MIN_EVIDENCE = 2;
-    private static final double DEFAULT_CANDIDATE_PROMOTION_MIN_SCORE = 0.75;
-    private static final double DEFAULT_CANDIDATE_PROMOTION_MAX_FAILURE_RATE = 0.2;
-    private static final int DEFAULT_CANDIDATE_INJECTION_MAX_COUNT = 10;
-    private static final int DEFAULT_CANDIDATE_INJECTION_MAX_TOKENS = 1200;
-    private static final int DEFAULT_ANTI_PATTERN_GATE_MIN_BLOCKED_BEFORE_ROLLBACK = 2;
-    private static final double DEFAULT_ANTI_PATTERN_GATE_MAX_FALSE_POSITIVE_RATE = 0.50;
+    // Candidate / anti-pattern-gate defaults moved to their respective
+    // *Settings.defaults() factories (batch 3 of the AceClawConfig
+    // decomposition).
     // SkillDraftValidation defaults moved to SkillDraftValidationSettings.defaults()
     // (batch 2 of the AceClawConfig decomposition).
     // Skill auto-release defaults live on SkillAutoReleaseSettings.defaults().
@@ -203,15 +197,19 @@ public final class AceClawConfig {
     private boolean plannerEnabled;
     private int plannerThreshold;
     private boolean adaptiveReplanEnabled;
-    private boolean candidateInjectionEnabled;
-    private boolean candidatePromotionEnabled;
-    private int candidatePromotionMinEvidence;
-    private double candidatePromotionMinScore;
-    private double candidatePromotionMaxFailureRate;
-    private int candidateInjectionMaxCount;
-    private int candidateInjectionMaxTokens;
-    private int antiPatternGateMinBlockedBeforeRollback;
-    private double antiPatternGateMaxFalsePositiveRate;
+    /**
+     * Candidate / anti-pattern-gate config — was 9 individual scalar fields,
+     * now grouped under three records (batch 3 of the AceClawConfig
+     * decomposition). Held as mutable builders during {@link #load} so the
+     * env-var + file-merge passes can update incrementally; the public
+     * getters call {@code build()} on demand.
+     */
+    private final CandidatePromotionSettings.Builder candidatePromotionBuilder =
+            CandidatePromotionSettings.builder();
+    private final CandidateInjectionSettings.Builder candidateInjectionBuilder =
+            CandidateInjectionSettings.builder();
+    private final AntiPatternGateSettings.Builder antiPatternGateBuilder =
+            AntiPatternGateSettings.builder();
     /**
      * Skill draft validation config — was 5 individual scalar fields, now
      * grouped under one {@link SkillDraftValidationSettings} record
@@ -293,15 +291,7 @@ public final class AceClawConfig {
         this.plannerEnabled = DEFAULT_PLANNER_ENABLED;
         this.plannerThreshold = DEFAULT_PLANNER_THRESHOLD;
         this.adaptiveReplanEnabled = DEFAULT_ADAPTIVE_REPLAN_ENABLED;
-        this.candidateInjectionEnabled = DEFAULT_CANDIDATE_INJECTION_ENABLED;
-        this.candidatePromotionEnabled = DEFAULT_CANDIDATE_PROMOTION_ENABLED;
-        this.candidatePromotionMinEvidence = DEFAULT_CANDIDATE_PROMOTION_MIN_EVIDENCE;
-        this.candidatePromotionMinScore = DEFAULT_CANDIDATE_PROMOTION_MIN_SCORE;
-        this.candidatePromotionMaxFailureRate = DEFAULT_CANDIDATE_PROMOTION_MAX_FAILURE_RATE;
-        this.candidateInjectionMaxCount = DEFAULT_CANDIDATE_INJECTION_MAX_COUNT;
-        this.candidateInjectionMaxTokens = DEFAULT_CANDIDATE_INJECTION_MAX_TOKENS;
-        this.antiPatternGateMinBlockedBeforeRollback = DEFAULT_ANTI_PATTERN_GATE_MIN_BLOCKED_BEFORE_ROLLBACK;
-        this.antiPatternGateMaxFalsePositiveRate = DEFAULT_ANTI_PATTERN_GATE_MAX_FALSE_POSITIVE_RATE;
+        // Candidate / anti-pattern-gate defaults seeded by *Settings.builder()
         // skillDraftValidation defaults seeded by SkillDraftValidationSettings.builder()
         // skillAutoRelease defaults are seeded by SkillAutoReleaseSettings.builder()
         // at field-initialization time. 14 individual setter calls removed here.
@@ -479,38 +469,17 @@ public final class AceClawConfig {
         if (envPermMode != null && !envPermMode.isBlank()) {
             config.permissionMode = envPermMode.toLowerCase();
         }
-        var envCandidateInjection = System.getenv("ACECLAW_CANDIDATE_INJECTION");
-        if (envCandidateInjection != null && !envCandidateInjection.isBlank()) {
-            config.candidateInjectionEnabled = Boolean.parseBoolean(envCandidateInjection);
-        }
-        var envCandidatePromotion = System.getenv("ACECLAW_CANDIDATE_PROMOTION");
-        if (envCandidatePromotion != null && !envCandidatePromotion.isBlank()) {
-            config.candidatePromotionEnabled = Boolean.parseBoolean(envCandidatePromotion);
-        }
-        var envCandidateInjectionMaxTokens = System.getenv("ACECLAW_CANDIDATE_INJECTION_MAX_TOKENS");
-        if (envCandidateInjectionMaxTokens != null && !envCandidateInjectionMaxTokens.isBlank()) {
-            try {
-                config.candidateInjectionMaxTokens = Math.max(0, Integer.parseInt(envCandidateInjectionMaxTokens));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_CANDIDATE_INJECTION_MAX_TOKENS: {}", envCandidateInjectionMaxTokens);
-            }
-        }
-        var envAntiPatternMinBlocked = System.getenv("ACECLAW_ANTI_PATTERN_GATE_MIN_BLOCKED_BEFORE_ROLLBACK");
-        if (envAntiPatternMinBlocked != null && !envAntiPatternMinBlocked.isBlank()) {
-            try {
-                config.antiPatternGateMinBlockedBeforeRollback = Math.max(1, Integer.parseInt(envAntiPatternMinBlocked));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_ANTI_PATTERN_GATE_MIN_BLOCKED_BEFORE_ROLLBACK: {}", envAntiPatternMinBlocked);
-            }
-        }
-        var envAntiPatternMaxFpRate = System.getenv("ACECLAW_ANTI_PATTERN_GATE_MAX_FALSE_POSITIVE_RATE");
-        if (envAntiPatternMaxFpRate != null && !envAntiPatternMaxFpRate.isBlank()) {
-            try {
-                config.antiPatternGateMaxFalsePositiveRate = clampRate(Double.parseDouble(envAntiPatternMaxFpRate));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_ANTI_PATTERN_GATE_MAX_FALSE_POSITIVE_RATE: {}", envAntiPatternMaxFpRate);
-            }
-        }
+        // -- Candidate + anti-pattern-gate env vars (batch 3) ----------------
+        applyEnvBoolean("ACECLAW_CANDIDATE_INJECTION",
+                v -> config.candidateInjectionBuilder.enabled(v));
+        applyEnvBoolean("ACECLAW_CANDIDATE_PROMOTION",
+                v -> config.candidatePromotionBuilder.enabled(v));
+        applyEnvInt("ACECLAW_CANDIDATE_INJECTION_MAX_TOKENS",
+                v -> config.candidateInjectionBuilder.maxTokens(Math.max(0, v)));
+        applyEnvInt("ACECLAW_ANTI_PATTERN_GATE_MIN_BLOCKED_BEFORE_ROLLBACK",
+                v -> config.antiPatternGateBuilder.minBlockedBeforeRollback(Math.max(1, v)));
+        applyEnvDouble("ACECLAW_ANTI_PATTERN_GATE_MAX_FALSE_POSITIVE_RATE",
+                v -> config.antiPatternGateBuilder.maxFalsePositiveRate(v));
         // -- Skill draft validation env vars (batch 2) -----------------------
         applyEnvBoolean("ACECLAW_SKILL_DRAFT_VALIDATION",
                 v -> config.skillDraftValidationBuilder.enabled(v));
@@ -943,67 +912,32 @@ public final class AceClawConfig {
     }
 
     /**
-     * Returns whether candidate injection into the system prompt is enabled.
-     * Defaults to true.
+     * Returns the candidate-promotion config — the feature gate plus the
+     * 3 promotion-threshold scalars (minEvidence, minScore, maxFailureRate)
+     * that feed the {@code CandidateStateMachine.Config} constructor.
+     * Batch 3 of the AceClawConfig decomposition.
      */
-    public boolean candidateInjectionEnabled() {
-        return candidateInjectionEnabled;
+    public CandidatePromotionSettings candidatePromotion() {
+        return candidatePromotionBuilder.build();
     }
 
     /**
-     * Returns whether automatic candidate state transitions (promotion/demotion) are enabled.
-     * Defaults to true.
+     * Returns the candidate-injection config — the feature gate plus the
+     * 2 per-prompt budget scalars (maxCount, maxTokens). Batch 3 of the
+     * AceClawConfig decomposition.
      */
-    public boolean candidatePromotionEnabled() {
-        return candidatePromotionEnabled;
+    public CandidateInjectionSettings candidateInjection() {
+        return candidateInjectionBuilder.build();
     }
 
     /**
-     * Returns the minimum evidence count for candidate promotion.
-     * Defaults to 3.
+     * Returns the anti-pattern-gate config — the 2 rollback-threshold
+     * scalars (minBlockedBeforeRollback, maxFalsePositiveRate). No
+     * {@code enabled} flag; the gate is always on. Batch 3 of the
+     * AceClawConfig decomposition.
      */
-    public int candidatePromotionMinEvidence() {
-        return candidatePromotionMinEvidence;
-    }
-
-    /**
-     * Returns the minimum score for candidate promotion.
-     * Defaults to 0.75.
-     */
-    public double candidatePromotionMinScore() {
-        return candidatePromotionMinScore;
-    }
-
-    /**
-     * Returns the maximum failure rate for candidate promotion.
-     * Defaults to 0.2.
-     */
-    public double candidatePromotionMaxFailureRate() {
-        return candidatePromotionMaxFailureRate;
-    }
-
-    /**
-     * Returns the maximum number of candidates to inject into the system prompt.
-     * Defaults to 10.
-     */
-    public int candidateInjectionMaxCount() {
-        return candidateInjectionMaxCount;
-    }
-
-    /**
-     * Returns the maximum token budget for candidate injection.
-     * Defaults to 1200.
-     */
-    public int candidateInjectionMaxTokens() {
-        return candidateInjectionMaxTokens;
-    }
-
-    public int antiPatternGateMinBlockedBeforeRollback() {
-        return antiPatternGateMinBlockedBeforeRollback;
-    }
-
-    public double antiPatternGateMaxFalsePositiveRate() {
-        return antiPatternGateMaxFalsePositiveRate;
+    public AntiPatternGateSettings antiPatternGate() {
+        return antiPatternGateBuilder.build();
     }
 
     /**
@@ -1444,38 +1378,30 @@ public final class AceClawConfig {
         if (fileConfig.adaptiveReplanEnabled != null) {
             this.adaptiveReplanEnabled = fileConfig.adaptiveReplanEnabled;
         }
-        if (fileConfig.candidateInjectionEnabled != null) {
-            this.candidateInjectionEnabled = fileConfig.candidateInjectionEnabled;
-        }
-        if (fileConfig.candidatePromotionEnabled != null) {
-            this.candidatePromotionEnabled = fileConfig.candidatePromotionEnabled;
-        }
-        if (fileConfig.candidatePromotionMinEvidence != null && fileConfig.candidatePromotionMinEvidence > 0) {
-            this.candidatePromotionMinEvidence = fileConfig.candidatePromotionMinEvidence;
-        }
-        if (fileConfig.candidatePromotionMinScore != null && fileConfig.candidatePromotionMinScore >= 0) {
-            this.candidatePromotionMinScore = fileConfig.candidatePromotionMinScore;
-        }
-        if (fileConfig.candidatePromotionMaxFailureRate != null && fileConfig.candidatePromotionMaxFailureRate >= 0) {
-            this.candidatePromotionMaxFailureRate = fileConfig.candidatePromotionMaxFailureRate;
-        }
-        if (fileConfig.candidateInjectionMaxCount != null && fileConfig.candidateInjectionMaxCount >= 0) {
-            this.candidateInjectionMaxCount = fileConfig.candidateInjectionMaxCount;
-        }
+        // -- Candidate file overrides (batch 3) ------------------------------
+        candidatePromotionBuilder
+                .enabled(fileConfig.candidatePromotionEnabled)
+                .minEvidence(fileConfig.candidatePromotionMinEvidence)
+                .minScore(fileConfig.candidatePromotionMinScore)
+                .maxFailureRate(fileConfig.candidatePromotionMaxFailureRate);
+        candidateInjectionBuilder
+                .enabled(fileConfig.candidateInjectionEnabled)
+                .maxCount(fileConfig.candidateInjectionMaxCount);
+        // Token budget priority: explicit maxTokens wins; otherwise fall back
+        // to the legacy maxChars (char-to-token approximation 4:1). Preserves
+        // the pre-decomp behaviour where setting maxTokens to a valid value
+        // takes precedence over a stale maxChars, but a config that ONLY has
+        // the older maxChars key still works.
         if (fileConfig.candidateInjectionMaxTokens != null && fileConfig.candidateInjectionMaxTokens >= 0) {
-            this.candidateInjectionMaxTokens = fileConfig.candidateInjectionMaxTokens;
+            candidateInjectionBuilder.maxTokens(fileConfig.candidateInjectionMaxTokens);
         } else if (fileConfig.candidateInjectionMaxChars != null && fileConfig.candidateInjectionMaxChars >= 0) {
-            // Backward compatibility: old char-based setting converts to approximate token budget.
-            this.candidateInjectionMaxTokens = Math.max(0, fileConfig.candidateInjectionMaxChars / 4);
+            candidateInjectionBuilder.maxTokens(Math.max(0, fileConfig.candidateInjectionMaxChars / 4));
         }
-        if (fileConfig.antiPatternGateMinBlockedBeforeRollback != null
-                && fileConfig.antiPatternGateMinBlockedBeforeRollback > 0) {
-            this.antiPatternGateMinBlockedBeforeRollback = fileConfig.antiPatternGateMinBlockedBeforeRollback;
-        }
-        if (fileConfig.antiPatternGateMaxFalsePositiveRate != null
-                && fileConfig.antiPatternGateMaxFalsePositiveRate >= 0) {
-            this.antiPatternGateMaxFalsePositiveRate = clampRate(fileConfig.antiPatternGateMaxFalsePositiveRate);
-        }
+
+        // -- Anti-pattern gate file overrides (batch 3) ----------------------
+        antiPatternGateBuilder
+                .minBlockedBeforeRollback(fileConfig.antiPatternGateMinBlockedBeforeRollback)
+                .maxFalsePositiveRate(fileConfig.antiPatternGateMaxFalsePositiveRate);
         // -- Skill draft validation file overrides (batch 2) -----------------
         skillDraftValidationBuilder
                 .enabled(fileConfig.skillDraftValidationEnabled)
