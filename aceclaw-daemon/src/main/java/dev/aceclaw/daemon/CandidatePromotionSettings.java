@@ -55,6 +55,7 @@ public record CandidatePromotionSettings(
         private double maxFailureRate;
 
         Builder(CandidatePromotionSettings seed) {
+            java.util.Objects.requireNonNull(seed, "seed");
             this.enabled = seed.enabled();
             this.minEvidence = seed.minEvidence();
             this.minScore = seed.minScore();

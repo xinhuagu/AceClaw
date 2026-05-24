@@ -46,6 +46,7 @@ public record CandidateInjectionSettings(
         private int maxTokens;
 
         Builder(CandidateInjectionSettings seed) {
+            java.util.Objects.requireNonNull(seed, "seed");
             this.enabled = seed.enabled();
             this.maxCount = seed.maxCount();
             this.maxTokens = seed.maxTokens();

@@ -40,6 +40,7 @@ public record AntiPatternGateSettings(
         private double maxFalsePositiveRate;
 
         Builder(AntiPatternGateSettings seed) {
+            java.util.Objects.requireNonNull(seed, "seed");
             this.minBlockedBeforeRollback = seed.minBlockedBeforeRollback();
             this.maxFalsePositiveRate = seed.maxFalsePositiveRate();
         }
@@ -49,8 +50,13 @@ public record AntiPatternGateSettings(
             return this;
         }
         Builder maxFalsePositiveRate(Double v) {
-            // The pre-decomp code clamped this one (clampRate); preserve.
-            if (v != null && v >= 0) this.maxFalsePositiveRate = clampRate(v);
+            // Pre-decomp env-var path called clampRate(parsed) unconditionally,
+            // so a negative env value (e.g. "-0.1") became 0.0 rather than
+            // being silently ignored. The original `v >= 0` guard here
+            // diverged from that — a Codex P2 + CodeRabbit minor on #508.
+            // Now: any non-null input is clamped to [0, 1] before being
+            // stored, matching the pre-decomp env-var behaviour.
+            if (v != null) this.maxFalsePositiveRate = clampRate(v);
             return this;
         }
 
