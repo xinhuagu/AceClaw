@@ -295,4 +295,90 @@ class AceClawConfigTest {
                 .as("total plan budget default")
                 .isEqualTo(3600);
     }
+
+    // -- Retry config (batch 6) -----------------------------------------------
+
+    @Test
+    void retryDefaultsMatchRetryConfigDEFAULT(@TempDir Path tempDir) throws Exception {
+        var projectConfig = tempDir.resolve(".aceclaw").resolve("config.json");
+        Files.createDirectories(projectConfig.getParent());
+        Files.writeString(projectConfig, "{}");
+
+        var config = AceClawConfig.load(tempDir, null);
+
+        assertThat(config.retryConfig())
+                .as("empty config must yield RetryConfig.DEFAULT verbatim")
+                .isEqualTo(dev.aceclaw.core.agent.RetryConfig.DEFAULT);
+    }
+
+    @Test
+    void retryFileOverrideAppliesAllFourFields(@TempDir Path tempDir) throws Exception {
+        var projectConfig = tempDir.resolve(".aceclaw").resolve("config.json");
+        Files.createDirectories(projectConfig.getParent());
+        Files.writeString(projectConfig, """
+                {
+                  "retry": {
+                    "maxRetries": 7,
+                    "initialBackoffMs": 250,
+                    "maxBackoffMs": 30000,
+                    "jitterFactor": 0.5
+                  }
+                }
+                """);
+
+        var config = AceClawConfig.load(tempDir, null);
+
+        var retry = config.retryConfig();
+        assertThat(retry.maxRetries()).isEqualTo(7);
+        assertThat(retry.initialBackoffMs()).isEqualTo(250L);
+        assertThat(retry.maxBackoffMs()).isEqualTo(30_000L);
+        assertThat(retry.jitterFactor()).isEqualTo(0.5);
+    }
+
+    @Test
+    void retryInvalidValuesSilentlyKeepDefaults(@TempDir Path tempDir) throws Exception {
+        // Pre-decomp contract preserved: out-of-range values are silently
+        // skipped (not thrown/clamped). A typo in config.json must not crash
+        // daemon startup; valid sibling fields still apply.
+        var projectConfig = tempDir.resolve(".aceclaw").resolve("config.json");
+        Files.createDirectories(projectConfig.getParent());
+        Files.writeString(projectConfig, """
+                {
+                  "retry": {
+                    "maxRetries": -1,
+                    "initialBackoffMs": -100,
+                    "maxBackoffMs": -1,
+                    "jitterFactor": 1.5
+                  }
+                }
+                """);
+
+        var config = AceClawConfig.load(tempDir, null);
+
+        assertThat(config.retryConfig())
+                .as("all-invalid retry block must leave RetryConfig.DEFAULT unmodified")
+                .isEqualTo(dev.aceclaw.core.agent.RetryConfig.DEFAULT);
+    }
+
+    @Test
+    void retryPartialOverrideKeepsUnsetFieldsAtDefault(@TempDir Path tempDir) throws Exception {
+        var projectConfig = tempDir.resolve(".aceclaw").resolve("config.json");
+        Files.createDirectories(projectConfig.getParent());
+        Files.writeString(projectConfig, """
+                {
+                  "retry": {
+                    "jitterFactor": 0.0
+                  }
+                }
+                """);
+
+        var config = AceClawConfig.load(tempDir, null);
+
+        var retry = config.retryConfig();
+        var def = dev.aceclaw.core.agent.RetryConfig.DEFAULT;
+        assertThat(retry.maxRetries()).isEqualTo(def.maxRetries());
+        assertThat(retry.initialBackoffMs()).isEqualTo(def.initialBackoffMs());
+        assertThat(retry.maxBackoffMs()).isEqualTo(def.maxBackoffMs());
+        assertThat(retry.jitterFactor()).isEqualTo(0.0);
+    }
 }
