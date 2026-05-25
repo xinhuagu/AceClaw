@@ -30,7 +30,6 @@ import dev.aceclaw.learning.LearningSignalReview;
 import dev.aceclaw.learning.LearningSignalReviewStore;
 import dev.aceclaw.learning.maintenance.LearningMaintenanceCandidateBridge;
 import dev.aceclaw.learning.maintenance.LearningMaintenanceRecoveryStore;
-import dev.aceclaw.learning.maintenance.LearningMaintenanceRun;
 import dev.aceclaw.learning.maintenance.LearningMaintenanceRunStore;
 import dev.aceclaw.learning.maintenance.LearningMaintenanceScheduler;
 import dev.aceclaw.learning.skill.SkillDraftEvent;
@@ -50,8 +49,6 @@ import dev.aceclaw.memory.DailyJournal;
 import dev.aceclaw.memory.HistoricalLogIndex;
 import dev.aceclaw.memory.HistoricalSessionSnapshot;
 import dev.aceclaw.memory.MarkdownMemoryStore;
-import dev.aceclaw.memory.CorrectionRulePromoter;
-import dev.aceclaw.memory.MemoryConsolidator;
 import dev.aceclaw.memory.StrategyRefiner;
 import dev.aceclaw.memory.TrendDetector;
 import dev.aceclaw.memory.WorkspacePaths;
@@ -863,16 +860,8 @@ public final class AceClawDaemon {
         final var maintenanceValidationGate = validationGateEngine;
         final var maintenanceAutoRelease = autoReleaseController;
         if (memoryStore != null) {
-            learningMaintenanceScheduler = new LearningMaintenanceScheduler(
-                    LearningMaintenanceScheduler.Config.defaults(Duration.ofSeconds(lifecycle.schedulerTickSeconds())),
-                    java.time.Clock.systemUTC(),
-                    sessionManager::sessionCount,
-                    scopes -> scopes.stream()
-                            .mapToLong(scope -> memoryStore.largestBackingFileBytes(scope.workingDir()))
-                            .max()
-                            .orElse(0L),
-                    (trigger, scope) -> runLearningMaintenancePipeline(
-                            trigger,
+            var maintenanceRunner = new dev.aceclaw.daemon.scheduler.MaintenancePipelineRunner(
+                    new dev.aceclaw.daemon.scheduler.MaintenancePipelineRunner.Deps(
                             memoryStore,
                             archiveDir,
                             extractionJournal,
@@ -884,8 +873,19 @@ public final class AceClawDaemon {
                             maintenanceValidationGate,
                             maintenanceAutoRelease,
                             draftPipelineLock,
-                            scope.workspaceHash(),
-                            scope.workingDir()),
+                            learningExplanationRecorder,
+                            learningMaintenanceRunStore,
+                            historicalLogIndex,
+                            skillDraftEventPublisher));
+            learningMaintenanceScheduler = new LearningMaintenanceScheduler(
+                    LearningMaintenanceScheduler.Config.defaults(Duration.ofSeconds(lifecycle.schedulerTickSeconds())),
+                    java.time.Clock.systemUTC(),
+                    sessionManager::sessionCount,
+                    scopes -> scopes.stream()
+                            .mapToLong(scope -> memoryStore.largestBackingFileBytes(scope.workingDir()))
+                            .max()
+                            .orElse(0L),
+                    (trigger, scope) -> maintenanceRunner.run(trigger, scope.workspaceHash(), scope.workingDir()),
                     learningMaintenanceRecoveryStore
             );
         }
@@ -2611,13 +2611,6 @@ public final class AceClawDaemon {
         public DaemonException(String message, Throwable cause) { super(message, cause); }
     }
 
-    private static String summarizeTrends(List<TrendDetector.Trend> trends) {
-        return trends.stream()
-                .limit(3)
-                .map(TrendDetector.Trend::description)
-                .collect(java.util.stream.Collectors.joining(" | "));
-    }
-
     private static boolean isOperatorFacingAction(String actionType) {
         return switch (actionType) {
             case "runtime_skill_created", "runtime_skill_persisted", "skill_refinement",
@@ -2642,272 +2635,4 @@ public final class AceClawDaemon {
         node.put("reviewSummary", review.summary());
     }
 
-    private void runLearningMaintenancePipeline(
-            String trigger,
-            AutoMemoryStore memoryStore,
-            Path archiveDir,
-            DailyJournal journal,
-            HistoricalIndexRebuilder historicalIndexRebuilder,
-            CrossSessionPatternMiner crossSessionPatternMiner,
-            TrendDetector trendDetector,
-            LearningMaintenanceCandidateBridge maintenanceCandidateBridge,
-            CandidateStore candidateStore,
-            ValidationGateEngine validationGateEngine,
-            AutoReleaseController autoReleaseController,
-            java.util.concurrent.locks.ReentrantLock draftPipelineLock,
-            String workspaceHash,
-            Path workingDir
-    ) {
-        var maintenanceSummary = new LearningMaintenanceRunBuilder(trigger, workspaceHash, workingDir);
-        try {
-            var result = MemoryConsolidator.consolidate(memoryStore, workingDir, archiveDir);
-            maintenanceSummary.consolidation(result);
-            if (result.hasChanges() && journal != null) {
-                journal.append("Memory consolidated (" + trigger + "): "
-                        + result.deduped() + " deduped, "
-                        + result.merged() + " merged, "
-                        + result.pruned() + " pruned");
-            }
-        } catch (Exception e) {
-            log.warn("Memory consolidation failed (trigger={}): {}", trigger, e.getMessage());
-        }
-
-        // Correction → Rule auto-promotion: detect repeated corrections and promote to ACECLAW.md rules
-        try {
-            var aceClawMdPath = workingDir.resolve(".aceclaw").resolve("ACECLAW.md");
-            var existingFingerprints = CorrectionRulePromoter.loadExistingFingerprints(aceClawMdPath);
-            var allEntries = memoryStore.all();
-            var promotionResult = CorrectionRulePromoter.detectRepeatedCorrections(
-                    allEntries, existingFingerprints);
-            if (promotionResult.hasPromotions()) {
-                int written = CorrectionRulePromoter.appendRules(aceClawMdPath, promotionResult.rules());
-                if (journal != null) {
-                    journal.append("Correction rule promotion (" + trigger + "): "
-                            + written + " rules promoted from "
-                            + promotionResult.scannedCorrections() + " corrections");
-                }
-                log.info("Auto-promoted {} correction rules to ACECLAW.md (trigger={})",
-                        written, trigger);
-            }
-        } catch (Exception e) {
-            log.warn("Correction rule promotion failed (trigger={}): {}", trigger, e.getMessage());
-        }
-
-        if (historicalIndexRebuilder != null) {
-            try {
-                var rebuild = historicalIndexRebuilder.rebuildWorkspaceIfStale(workspaceHash);
-                if (rebuild.rebuilt() && journal != null) {
-                    journal.append("Historical index rebuilt (" + trigger + "): "
-                            + rebuild.rebuiltSessions() + " sessions re-indexed");
-                }
-            } catch (Exception e) {
-                log.warn("Historical index rebuild failed (trigger={}): {}", trigger, e.getMessage());
-            }
-        }
-
-        CrossSessionPatternMiner.MiningResult miningResult = null;
-        if (crossSessionPatternMiner != null && historicalLogIndex != null) {
-            try {
-                miningResult = crossSessionPatternMiner.mine(
-                        historicalLogIndex, memoryStore, workspaceHash, workingDir);
-                maintenanceSummary.mining(miningResult);
-                if ((!miningResult.frequentErrorChains().isEmpty()
-                        || !miningResult.stableWorkflows().isEmpty()
-                        || !miningResult.convergingStrategies().isEmpty()
-                        || !miningResult.degradationSignals().isEmpty())
-                        && journal != null) {
-                    journal.append("Cross-session miner (" + trigger + "): "
-                            + miningResult.frequentErrorChains().size() + " error chains, "
-                            + miningResult.stableWorkflows().size() + " stable workflows, "
-                            + miningResult.convergingStrategies().size() + " converging strategies, "
-                            + miningResult.degradationSignals().size() + " degradation signals");
-                }
-            } catch (Exception e) {
-                log.warn("Cross-session pattern mining failed (trigger={}): {}", trigger, e.getMessage());
-            }
-        }
-
-        List<TrendDetector.Trend> trends = List.of();
-        if (trendDetector != null && historicalLogIndex != null) {
-            try {
-                trends = trendDetector.detect(
-                        historicalLogIndex, memoryStore, workspaceHash, workingDir);
-                maintenanceSummary.trends(trends);
-                if (!trends.isEmpty() && journal != null) {
-                    journal.append("Trend detector (" + trigger + "): " + trends.size()
-                            + " significant trends. " + summarizeTrends(trends));
-                }
-            } catch (Exception e) {
-                log.warn("Trend detection failed (trigger={}): {}", trigger, e.getMessage());
-            }
-        }
-
-        if (maintenanceCandidateBridge != null && candidateStore != null
-                && (miningResult != null || !trends.isEmpty())) {
-            try {
-                var bridgeResult = maintenanceCandidateBridge.bridge(
-                        trigger,
-                        miningResult != null ? miningResult
-                                : new CrossSessionPatternMiner.MiningResult(List.of(), List.of(), List.of(), List.of()),
-                        trends);
-                maintenanceSummary.bridge(bridgeResult);
-                if (bridgeResult.upserts() > 0 && journal != null) {
-                    journal.append("Maintenance candidate bridge (" + trigger + "): "
-                            + bridgeResult.upserts() + " observations, "
-                            + bridgeResult.transitions() + " transitions, "
-                            + bridgeResult.promoted() + " promoted");
-                }
-                for (var candidate : bridgeResult.observedCandidates()) {
-                    learningExplanationRecorder.recordCandidateObservation(
-                            workingDir,
-                            "",
-                            "maintenance-" + trigger,
-                            candidate,
-                            candidate.content(),
-                            List.of(new LearningExplanation.EvidenceRef(
-                                    "maintenance-trigger",
-                                    trigger,
-                                    candidate.toolTag())));
-                }
-                for (var transition : bridgeResult.stateTransitions()) {
-                    learningExplanationRecorder.recordCandidateTransition(
-                            workingDir,
-                            "",
-                            "maintenance-" + trigger,
-                            transition);
-                }
-                if (bridgeResult.promoted() > 0) {
-                    triggerMaintenanceDraftLifecycle(
-                            "maintenance-" + trigger,
-                            workingDir,
-                            candidateStore,
-                            validationGateEngine,
-                            autoReleaseController,
-                            draftPipelineLock);
-                }
-            } catch (Exception e) {
-                log.warn("Maintenance candidate bridge failed (trigger={}): {}", trigger, e.getMessage());
-            }
-        }
-        try {
-            learningMaintenanceRunStore.append(workingDir, maintenanceSummary.build());
-        } catch (Exception e) {
-            log.debug("Failed to persist maintenance summary (trigger={}): {}", trigger, e.getMessage());
-        }
-    }
-
-    private void triggerMaintenanceDraftLifecycle(
-            String trigger,
-            Path workingDir,
-            CandidateStore candidateStore,
-            ValidationGateEngine validationGateEngine,
-            AutoReleaseController autoReleaseController,
-            java.util.concurrent.locks.ReentrantLock draftPipelineLock
-    ) {
-        if (candidateStore == null || draftPipelineLock == null) {
-            return;
-        }
-        draftPipelineLock.lock();
-        try {
-            try {
-                var generator = new SkillDraftGenerator();
-                var summary = generator.generateFromPromoted(candidateStore, workingDir);
-                skillDraftEventPublisher.publishCreated(summary, workingDir, trigger);
-                if (validationGateEngine != null && summary.createdDrafts() > 0) {
-                    var validation = validationGateEngine.validateAll(workingDir, trigger);
-                    skillDraftEventPublisher.publishValidationChanged(validation, workingDir, trigger);
-                    if (autoReleaseController != null) {
-                        var release = autoReleaseController.evaluateAll(workingDir, candidateStore, trigger);
-                        skillDraftEventPublisher.publishReleaseChanged(release, workingDir, trigger);
-                    }
-                }
-            } catch (Exception e) {
-                log.warn("Maintenance draft lifecycle failed (trigger={}): {}", trigger, e.getMessage());
-            }
-        } finally {
-            draftPipelineLock.unlock();
-        }
-    }
-
-    private static final class LearningMaintenanceRunBuilder {
-        private final String trigger;
-        private final String workspaceHash;
-        private final Path workingDir;
-        private int deduped;
-        private int merged;
-        private int pruned;
-        private int errorChains;
-        private int stableWorkflows;
-        private int convergingStrategies;
-        private int degradationSignals;
-        private int trends;
-        private int candidateObservations;
-        private int candidateTransitions;
-        private int candidatePromoted;
-
-        private LearningMaintenanceRunBuilder(String trigger, String workspaceHash, Path workingDir) {
-            this.trigger = trigger;
-            this.workspaceHash = workspaceHash;
-            this.workingDir = workingDir;
-        }
-
-        void consolidation(dev.aceclaw.memory.MemoryConsolidator.ConsolidationResult result) {
-            if (result == null) {
-                return;
-            }
-            deduped = result.deduped();
-            merged = result.merged();
-            pruned = result.pruned();
-        }
-
-        void mining(CrossSessionPatternMiner.MiningResult result) {
-            if (result == null) {
-                return;
-            }
-            errorChains = result.frequentErrorChains().size();
-            stableWorkflows = result.stableWorkflows().size();
-            convergingStrategies = result.convergingStrategies().size();
-            degradationSignals = result.degradationSignals().size();
-        }
-
-        void trends(List<TrendDetector.Trend> trendList) {
-            trends = trendList != null ? trendList.size() : 0;
-        }
-
-        void bridge(LearningMaintenanceCandidateBridge.BridgeResult bridgeResult) {
-            if (bridgeResult == null) {
-                return;
-            }
-            candidateObservations = bridgeResult.upserts();
-            candidateTransitions = bridgeResult.transitions();
-            candidatePromoted = bridgeResult.promoted();
-        }
-
-        LearningMaintenanceRun build() {
-            return new LearningMaintenanceRun(
-                    Instant.now(),
-                    trigger,
-                    workspaceHash,
-                    workingDir != null ? workingDir.toString() : "",
-                    deduped,
-                    merged,
-                    pruned,
-                    errorChains,
-                    stableWorkflows,
-                    convergingStrategies,
-                    degradationSignals,
-                    trends,
-                    candidateObservations,
-                    candidateTransitions,
-                    candidatePromoted,
-                    "maintenance "
-                            + trigger
-                            + ": deduped=" + deduped
-                            + ", merged=" + merged
-                            + ", pruned=" + pruned
-                            + ", mining=" + (errorChains + stableWorkflows + convergingStrategies + degradationSignals)
-                            + ", trends=" + trends
-                            + ", bridge=" + candidateObservations + "/" + candidateTransitions + "/" + candidatePromoted);
-        }
-    }
 }
