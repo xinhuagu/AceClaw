@@ -414,8 +414,14 @@ final class CancelAwareStreamContext implements StreamContext {
                                 } else {
                                     log.warn("Cancel monitor: permission.response missing requestId, dropping message");
                                 }
-                            } else if ("resume.response".equals(method)) {
-                                log.debug("Cancel monitor: routing resume.response to fallback");
+                            } else if ("resume.response".equals(method)
+                                    || "resume.choice_response".equals(method)) {
+                                // resume.choice_response added for #501 — explicit /continue
+                                // surfaces a numbered choice when both plan + turn checkpoints
+                                // resume. Without this branch the monitor silently dropped the
+                                // client's pick and offerResumeChoicesAndWaitForResponse hung
+                                // for the full 30s timeout under the per-session turnLock.
+                                log.debug("Cancel monitor: routing {} to fallback", method);
                                 unmatchedResponses.offer(message);
                             } else {
                                 log.debug("Cancel monitor: ignoring '{}'", method);

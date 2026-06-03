@@ -269,6 +269,319 @@ class ResumeRouterTest {
         assertFalse(prompt.contains("nextStep:\n"));
     }
 
+    // -- Turn-checkpoint priority tests (#501) ---------------------------------
+
+    static class InMemoryTurnStore implements TurnCheckpointStore {
+        private final java.util.Map<String, TurnCheckpoint> store = new java.util.LinkedHashMap<>();
+
+        @Override
+        public void save(TurnCheckpoint checkpoint) {
+            store.put(checkpoint.turnId(), checkpoint);
+        }
+
+        @Override
+        public Optional<TurnCheckpoint> load(String turnId) {
+            return Optional.ofNullable(store.get(turnId));
+        }
+
+        @Override
+        public List<TurnCheckpoint> findResumable(String workspaceHash) {
+            return store.values().stream()
+                    .filter(c -> workspaceHash.equals(c.workspaceHash()))
+                    .filter(c -> isResumable(c.status()))
+                    .toList();
+        }
+
+        @Override
+        public List<TurnCheckpoint> findBySession(String sessionId) {
+            return store.values().stream()
+                    .filter(c -> sessionId.equals(c.sessionId()))
+                    .filter(c -> isResumable(c.status()))
+                    .toList();
+        }
+
+        @Override public void markResumed(String turnId) { updateStatus(turnId, PlanCheckpoint.CheckpointStatus.RESUMED); }
+        @Override public void markCompleted(String turnId) { updateStatus(turnId, PlanCheckpoint.CheckpointStatus.COMPLETED); }
+        @Override public void markFailed(String turnId) { updateStatus(turnId, PlanCheckpoint.CheckpointStatus.FAILED); }
+        @Override public void markInterrupted(String turnId) { updateStatus(turnId, PlanCheckpoint.CheckpointStatus.INTERRUPTED); }
+        @Override public void delete(String turnId) { store.remove(turnId); }
+        @Override public int cleanup(int maxAgeDays) { return 0; }
+
+        private void updateStatus(String turnId, PlanCheckpoint.CheckpointStatus status) {
+            var cp = store.get(turnId);
+            if (cp != null) store.put(turnId, cp.withStatus(status));
+        }
+
+        private boolean isResumable(PlanCheckpoint.CheckpointStatus status) {
+            return status == PlanCheckpoint.CheckpointStatus.ACTIVE
+                    || status == PlanCheckpoint.CheckpointStatus.INTERRUPTED;
+        }
+    }
+
+    private static TurnCheckpoint turnCp(String turnId, String sessionId, String wsHash,
+                                          int completedIterations,
+                                          PlanCheckpoint.CheckpointStatus status,
+                                          Instant updatedAt) {
+        return new TurnCheckpoint(
+                turnId, sessionId, wsHash, "fix it",
+                List.of(), completedIterations, "tool-use-" + completedIterations,
+                List.of(), status, Instant.now(), updatedAt);
+    }
+
+    @Test
+    void route_planBeatsTurnInSameSession() {
+        var planStore = new InMemoryCheckpointStore();
+        var turnStore = new InMemoryTurnStore();
+        var wsHash = ResumeRouter.hashWorkspace(Path.of("/project"));
+
+        planStore.save(checkpoint("plan-1", "session-A", wsHash, 1,
+                PlanCheckpoint.CheckpointStatus.ACTIVE, Instant.parse("2026-01-01T00:00:00Z")));
+        // Newer turn checkpoint — but plan still wins because plan tier > turn tier.
+        turnStore.save(turnCp("turn-1", "session-A", wsHash, 2,
+                PlanCheckpoint.CheckpointStatus.ACTIVE, Instant.parse("2026-06-01T00:00:00Z")));
+
+        var router = new ResumeRouter(planStore, turnStore);
+        var decision = router.route("session-A", Path.of("/project"));
+
+        assertTrue(decision.hasCheckpoint());
+        assertEquals("session", decision.route());
+        assertInstanceOf(Resumable.OfPlan.class, decision.resumable());
+        assertEquals("plan-1", decision.checkpoint().planId());
+    }
+
+    @Test
+    void route_turnSessionBeatsTurnWorkspace() {
+        var planStore = new InMemoryCheckpointStore();
+        var turnStore = new InMemoryTurnStore();
+        var wsHash = ResumeRouter.hashWorkspace(Path.of("/project"));
+
+        // Older turn in same session — but session tier beats workspace tier.
+        turnStore.save(turnCp("turn-session", "session-A", wsHash, 1,
+                PlanCheckpoint.CheckpointStatus.ACTIVE, Instant.parse("2026-01-01T00:00:00Z")));
+        turnStore.save(turnCp("turn-workspace", "session-OLD", wsHash, 3,
+                PlanCheckpoint.CheckpointStatus.ACTIVE, Instant.parse("2026-06-01T00:00:00Z")));
+
+        var router = new ResumeRouter(planStore, turnStore);
+        var decision = router.route("session-A", Path.of("/project"));
+
+        assertTrue(decision.hasCheckpoint());
+        assertEquals("turn_session", decision.route());
+        assertInstanceOf(Resumable.OfTurn.class, decision.resumable());
+    }
+
+    @Test
+    void route_turnWorkspaceMatch() {
+        var planStore = new InMemoryCheckpointStore();
+        var turnStore = new InMemoryTurnStore();
+        var wsHash = ResumeRouter.hashWorkspace(Path.of("/project"));
+
+        turnStore.save(turnCp("turn-1", "session-OLD", wsHash, 2,
+                PlanCheckpoint.CheckpointStatus.ACTIVE, Instant.now()));
+
+        var router = new ResumeRouter(planStore, turnStore);
+        var decision = router.route("session-NEW", Path.of("/project"));
+
+        assertTrue(decision.hasCheckpoint());
+        assertEquals("turn_workspace", decision.route());
+    }
+
+    @Test
+    void route_turnInterruptedStatusIsResumable() {
+        var planStore = new InMemoryCheckpointStore();
+        var turnStore = new InMemoryTurnStore();
+        var wsHash = ResumeRouter.hashWorkspace(Path.of("/project"));
+
+        turnStore.save(turnCp("turn-1", "session-A", wsHash, 2,
+                PlanCheckpoint.CheckpointStatus.INTERRUPTED, Instant.now()));
+
+        var router = new ResumeRouter(planStore, turnStore);
+        var decision = router.route("session-A", Path.of("/project"));
+
+        assertTrue(decision.hasCheckpoint());
+        assertEquals("turn_session", decision.route());
+    }
+
+    @Test
+    void route_turnCompletedStatusIgnored() {
+        var planStore = new InMemoryCheckpointStore();
+        var turnStore = new InMemoryTurnStore();
+        var wsHash = ResumeRouter.hashWorkspace(Path.of("/project"));
+
+        turnStore.save(turnCp("turn-1", "session-A", wsHash, 2,
+                PlanCheckpoint.CheckpointStatus.COMPLETED, Instant.now()));
+        turnStore.save(turnCp("turn-2", "session-A", wsHash, 2,
+                PlanCheckpoint.CheckpointStatus.RESUMED, Instant.now()));
+        turnStore.save(turnCp("turn-3", "session-A", wsHash, 2,
+                PlanCheckpoint.CheckpointStatus.FAILED, Instant.now()));
+
+        var router = new ResumeRouter(planStore, turnStore);
+        assertFalse(router.route("session-A", Path.of("/project")).hasCheckpoint());
+    }
+
+    @Test
+    void route_turnStoreNull_skipsTurnTier() {
+        // Backward compat: existing callers can construct with plan-only and
+        // the router must not NPE on turn lookup.
+        var planStore = new InMemoryCheckpointStore();
+        var router = new ResumeRouter(planStore); // delegating constructor, turn=null
+
+        var decision = router.route("session-A", Path.of("/project"));
+        assertFalse(decision.hasCheckpoint());
+    }
+
+    @Test
+    void findAllResumable_returnsBoth_whenPlanAndTurnExist() {
+        var planStore = new InMemoryCheckpointStore();
+        var turnStore = new InMemoryTurnStore();
+        var wsHash = ResumeRouter.hashWorkspace(Path.of("/project"));
+
+        planStore.save(checkpoint("plan-1", "session-A", wsHash, 1,
+                PlanCheckpoint.CheckpointStatus.ACTIVE, Instant.now()));
+        turnStore.save(turnCp("turn-1", "session-A", wsHash, 2,
+                PlanCheckpoint.CheckpointStatus.ACTIVE, Instant.now()));
+
+        var router = new ResumeRouter(planStore, turnStore);
+        var all = router.findAllResumable("session-A", Path.of("/project"));
+
+        assertEquals(2, all.size());
+        // Plan first (priority order)
+        assertInstanceOf(Resumable.OfPlan.class, all.get(0));
+        assertInstanceOf(Resumable.OfTurn.class, all.get(1));
+    }
+
+    @Test
+    void findAllResumable_singleEntry_whenOnlyOneTypeExists() {
+        var planStore = new InMemoryCheckpointStore();
+        var turnStore = new InMemoryTurnStore();
+        var wsHash = ResumeRouter.hashWorkspace(Path.of("/project"));
+        turnStore.save(turnCp("turn-1", "session-A", wsHash, 2,
+                PlanCheckpoint.CheckpointStatus.ACTIVE, Instant.now()));
+
+        var router = new ResumeRouter(planStore, turnStore);
+        var all = router.findAllResumable("session-A", Path.of("/project"));
+
+        assertEquals(1, all.size());
+        assertInstanceOf(Resumable.OfTurn.class, all.get(0));
+    }
+
+    @Test
+    void findAllResumable_empty_whenNothingResumable() {
+        var router = new ResumeRouter(new InMemoryCheckpointStore(), new InMemoryTurnStore());
+        assertTrue(router.findAllResumable("session-A", Path.of("/project")).isEmpty());
+    }
+
+    @Test
+    void buildTurnResumePrompt_includesAllSections() {
+        var cp = new TurnCheckpoint(
+                "turn-1", "session-A", "ws-hash",
+                "Refactor the auth module to use the new permission API",
+                List.of("{\"role\":\"user\",\"content\":\"go\"}"),
+                3, "tool-use-abc",
+                List.of("auth/Permissions.java", "auth/PermissionTest.java"),
+                PlanCheckpoint.CheckpointStatus.ACTIVE,
+                Instant.now(), Instant.now());
+
+        var prompt = ResumeRouter.buildTurnResumePrompt(cp);
+
+        assertTrue(prompt.contains("[TURN_RESUME_CONTEXT]"));
+        assertTrue(prompt.contains("[/TURN_RESUME_CONTEXT]"));
+        assertTrue(prompt.contains("originalPrompt: Refactor the auth module"));
+        assertTrue(prompt.contains("turnId: turn-1"));
+        assertTrue(prompt.contains("completedIterations: 3"));
+        assertTrue(prompt.contains("3 iteration(s) already executed"));
+        assertTrue(prompt.contains("lastToolUseId: tool-use-abc"));
+        assertTrue(prompt.contains("artifacts:"));
+        assertTrue(prompt.contains("auth/Permissions.java"));
+        assertTrue(prompt.contains("Continue from iteration 4"));
+        assertTrue(prompt.contains("Do not repeat"));
+    }
+
+    @Test
+    void buildTurnResumePrompt_zeroIterations() {
+        var cp = new TurnCheckpoint(
+                "turn-1", "session-A", "ws-hash", "Do X",
+                List.of(), 0, null, List.of(),
+                PlanCheckpoint.CheckpointStatus.ACTIVE,
+                Instant.now(), Instant.now());
+
+        var prompt = ResumeRouter.buildTurnResumePrompt(cp);
+        assertTrue(prompt.contains("completedIterations: 0"));
+        assertTrue(prompt.contains("no completed iterations recorded"));
+        assertTrue(prompt.contains("Continue from iteration 1"));
+    }
+
+    @Test
+    void summarizeIterations_extractsToolUseAndResults() {
+        // Snapshot in the ConversationSnapshot.serialize shape: each message is
+        // one JSON object {"role":"...","blocks":[ ... ]} per line.
+        var snapshot = List.of(
+                "{\"role\":\"user\",\"blocks\":[{\"type\":\"text\",\"text\":\"go\"}]}",
+                "{\"role\":\"assistant\",\"blocks\":["
+                        + "{\"type\":\"text\",\"text\":\"reading\"},"
+                        + "{\"type\":\"tool_use\",\"id\":\"tu-1\",\"name\":\"read_file\",\"input\":\"{\\\"path\\\":\\\"a.java\\\"}\"}]}",
+                "{\"role\":\"user\",\"blocks\":["
+                        + "{\"type\":\"tool_result\",\"tool_use_id\":\"tu-1\",\"content\":\"file contents 42\",\"is_error\":false}]}",
+                "{\"role\":\"assistant\",\"blocks\":["
+                        + "{\"type\":\"tool_use\",\"id\":\"tu-2\",\"name\":\"bash\",\"input\":\"{\\\"cmd\\\":\\\"ls\\\"}\"}]}",
+                "{\"role\":\"user\",\"blocks\":["
+                        + "{\"type\":\"tool_result\",\"tool_use_id\":\"tu-2\",\"content\":\"permission denied\",\"is_error\":true}]}"
+        );
+
+        var lines = ResumeRouter.summarizeIterations(snapshot);
+
+        assertThat(lines).hasSize(2);
+        assertThat(lines.get(0)).contains("iter 1");
+        assertThat(lines.get(0)).contains("read_file");
+        assertThat(lines.get(0)).contains("ok:");
+        assertThat(lines.get(0)).contains("file contents 42");
+        assertThat(lines.get(1)).contains("iter 2");
+        assertThat(lines.get(1)).contains("bash");
+        assertThat(lines.get(1)).contains("FAILED:");
+        assertThat(lines.get(1)).contains("permission denied");
+    }
+
+    @Test
+    void summarizeIterations_emptyForEmptyOrLegacySnapshot() {
+        assertThat(ResumeRouter.summarizeIterations(null)).isEmpty();
+        assertThat(ResumeRouter.summarizeIterations(List.of())).isEmpty();
+        // Legacy plan-checkpoint shape — no tool_use blocks
+        assertThat(ResumeRouter.summarizeIterations(List.of(
+                "{\"role\":\"user\",\"content\":\"hi\"}"
+        ))).isEmpty();
+    }
+
+    @Test
+    void summarizeIterations_handlesToolUseWithoutResult() {
+        // A tool_use that crashed mid-execution and never got a result.
+        var snapshot = List.of(
+                "{\"role\":\"assistant\",\"blocks\":["
+                        + "{\"type\":\"tool_use\",\"id\":\"tu-1\",\"name\":\"bash\",\"input\":\"{}\"}]}"
+        );
+        var lines = ResumeRouter.summarizeIterations(snapshot);
+        assertThat(lines).hasSize(1);
+        assertThat(lines.get(0)).contains("no result recorded");
+    }
+
+    @Test
+    void buildTurnResumePrompt_respectsHardSizeCap() {
+        var bigPrompt = "Q: " + "x".repeat(20_000);
+        var cp = new TurnCheckpoint(
+                "turn-1", "session-A", "ws-hash", bigPrompt,
+                List.of(), 5, "tool-use-abc",
+                List.of("a.txt", "b.txt", "c.txt"),
+                PlanCheckpoint.CheckpointStatus.ACTIVE,
+                Instant.now(), Instant.now());
+
+        var prompt = ResumeRouter.buildTurnResumePrompt(cp, 800);
+
+        assertThat(prompt.length()).isLessThanOrEqualTo(800);
+        // Must still include the framing + the action line so the LLM has a
+        // chance to do the right thing — content sections get truncated, not
+        // the structural ones.
+        assertThat(prompt).contains("[TURN_RESUME_CONTEXT]");
+        assertThat(prompt).contains("Continue from iteration 6");
+    }
+
     @Test
     void buildResumePromptBudgetsSectionsIndependently() {
         var plan = samplePlan(4);

@@ -50,6 +50,7 @@ import dev.aceclaw.core.planner.SequentialPlanExecutor;
 import dev.aceclaw.core.planner.StepResult;
 import dev.aceclaw.core.planner.StepStatus;
 import dev.aceclaw.core.planner.TaskPlan;
+import dev.aceclaw.core.planner.TurnCheckpoint;
 import dev.aceclaw.memory.AutoMemoryStore;
 import dev.aceclaw.memory.CandidatePromptAssembler;
 import dev.aceclaw.memory.CandidateStore;
@@ -511,6 +512,19 @@ public final class StreamingAgentHandler {
             ts.put("turnNumber", turnNumber);
             ts.put("timestamp", Instant.now().toString());
             emitBrowserOnly(sessionId, "stream.turn_started", ts);
+
+            // Explicit /continue command: "继续", "continue", "resume", "/resume"
+            // (case-insensitive, trim). Skips the resume.offer round-trip and
+            // routes directly to either a plan or turn checkpoint (issue #501).
+            if (isExplicitContinue(prompt) && planCheckpointStore != null) {
+                var explicitResult = handleExplicitContinue(
+                        sessionId, session, prompt, cancelContext, eventHandler,
+                        permissionAwareLoop, cancellationToken, metricsCollector,
+                        watchdog, requestToolNames, conversationHistory);
+                finalStopReason = extractStopReason(explicitResult, finalStopReason);
+                sendBudgetExhaustedNotificationIfNeeded(watchdog, cancelContext, sessionId, cancellationToken);
+                return explicitResult;
+            }
 
             // Check for resumable plan checkpoint before planning or execution
             if (planCheckpointStore != null) {
@@ -1758,6 +1772,7 @@ public final class StreamingAgentHandler {
     private int maxPlanStepWallTimeSec = 1800;
     private int maxPlanTotalWallTimeSec = 3600;
     private PlanCheckpointStore planCheckpointStore;
+    private dev.aceclaw.core.planner.TurnCheckpointStore turnCheckpointStore;
     private dev.aceclaw.core.agent.TurnCheckpointSink turnCheckpointSink;
     private SkillMemoryFeedback skillMemoryFeedback;
     private SkillRefinementEngine skillRefinementEngine;
@@ -2028,6 +2043,16 @@ public final class StreamingAgentHandler {
      */
     public void setTurnCheckpointSink(dev.aceclaw.core.agent.TurnCheckpointSink turnCheckpointSink) {
         this.turnCheckpointSink = turnCheckpointSink;
+    }
+
+    /**
+     * Sets the turn checkpoint store for explicit-continue routing (issue #501).
+     * The store is read-side — {@link ResumeRouter} queries it to find
+     * resumable turns. Writes go through the {@link #setTurnCheckpointSink
+     * TurnCheckpointSink} configured separately.
+     */
+    public void setTurnCheckpointStore(dev.aceclaw.core.planner.TurnCheckpointStore turnCheckpointStore) {
+        this.turnCheckpointStore = turnCheckpointStore;
     }
 
     /**
@@ -2757,6 +2782,324 @@ public final class StreamingAgentHandler {
         }
         planCheckpointStore.markFailed(cp.planId());
         return null; // proceed with normal flow
+    }
+
+    // -- Explicit /continue command (issue #501) -------------------------------
+
+    private static final Set<String> EXPLICIT_CONTINUE_KEYWORDS = Set.of(
+            "继续", "continue", "resume", "/resume", "/continue");
+
+    /**
+     * Returns true if the prompt is a recognized explicit-continue command —
+     * one of "继续", "continue", "resume", "/resume", "/continue" after
+     * trimming and lowercasing. The Chinese token is matched as-is (no case).
+     */
+    static boolean isExplicitContinue(String prompt) {
+        if (prompt == null) return false;
+        String trimmed = prompt.strip();
+        if (trimmed.isEmpty()) return false;
+        return EXPLICIT_CONTINUE_KEYWORDS.contains(trimmed.toLowerCase(Locale.ROOT));
+    }
+
+    /**
+     * Handles an explicit /continue command. Routes deterministically (no
+     * resume.offer round-trip) to the highest-priority resumable. When both a
+     * plan and turn checkpoint coexist, surfaces a numbered choice via
+     * {@code resume.choices} and awaits {@code resume.choice_response}.
+     *
+     * @return a result ObjectNode — either the resumed plan/turn result, or a
+     *         friendly "nothing to resume" message that consumes no LLM tokens.
+     */
+    private Object handleExplicitContinue(
+            String sessionId, AgentSession session, String prompt,
+            CancelAwareStreamContext cancelContext, StreamEventHandler eventHandler,
+            StreamingAgentLoop permissionAwareLoop, CancellationToken cancellationToken,
+            ToolMetricsCollector metricsCollector, WatchdogTimer watchdog,
+            Set<String> requestToolNames, List<Message> conversationHistory) throws Exception {
+
+        var resumeRouter = new ResumeRouter(planCheckpointStore, turnCheckpointStore);
+        var resumables = resumeRouter.findAllResumable(sessionId, session.projectPath());
+
+        if (resumables.isEmpty()) {
+            return buildNothingToResumeResult(sessionId, session, prompt);
+        }
+
+        Resumable chosen;
+        if (resumables.size() == 1) {
+            chosen = resumables.getFirst();
+        } else {
+            // Multiple resumables — surface the choice. Default to the highest
+            // priority (plan) on timeout or malformed response so explicit
+            // continue always makes forward progress.
+            chosen = offerResumeChoicesAndWaitForResponse(cancelContext, resumables);
+            if (chosen == null) {
+                chosen = resumables.getFirst();
+            }
+        }
+
+        // Mark any UNCHOSEN siblings as RESUMED so the implicit-detection path
+        // (resume.offer) doesn't immediately re-surface them on the next prompt.
+        // The user already implicitly declined them by picking the chosen one
+        // (review finding #6).
+        for (var other : resumables) {
+            if (other == chosen) continue;
+            try {
+                switch (other) {
+                    case Resumable.OfPlan p -> planCheckpointStore.markResumed(
+                            p.checkpoint().planId());
+                    case Resumable.OfTurn t -> {
+                        if (turnCheckpointStore != null) {
+                            turnCheckpointStore.markResumed(t.checkpoint().turnId());
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("Failed to mark unchosen resumable as RESUMED: {}", e.getMessage());
+            }
+        }
+
+        return switch (chosen) {
+            case Resumable.OfPlan p -> resumePlanFromExplicitContinue(
+                    p.checkpoint(), sessionId, session, cancelContext, eventHandler,
+                    permissionAwareLoop, cancellationToken, metricsCollector, watchdog,
+                    requestToolNames);
+            case Resumable.OfTurn t -> executeResumedTurn(
+                    t.checkpoint(), sessionId, session, cancelContext, eventHandler,
+                    permissionAwareLoop, cancellationToken, metricsCollector, watchdog,
+                    requestToolNames, conversationHistory);
+        };
+    }
+
+    /**
+     * Builds the "nothing to resume" no-op result so we never charge the user
+     * an LLM call for a literal "继续" with no resumable state. Also records
+     * the user's prompt + the synthetic assistant reply in session history
+     * (review finding #3) so the dashboard turn counter and journal stay
+     * consistent with what the user actually typed.
+     */
+    private Object buildNothingToResumeResult(String sessionId, AgentSession session, String prompt) {
+        String reply = "Nothing to resume — last turn completed or was never recorded.";
+        if (session != null && prompt != null) {
+            session.addMessage(new AgentSession.ConversationMessage.User(prompt));
+            session.addMessage(new AgentSession.ConversationMessage.Assistant(reply));
+        }
+        var result = objectMapper.createObjectNode();
+        result.put("sessionId", sessionId);
+        result.put("response", reply);
+        result.put("stopReason", StopReason.END_TURN.name());
+        result.put("resumeAttempted", true);
+        result.put("resumeFound", false);
+        var usageNode = objectMapper.createObjectNode();
+        usageNode.put("inputTokens", 0);
+        usageNode.put("outputTokens", 0);
+        usageNode.put("totalTokens", 0);
+        usageNode.put("llmRequests", 0);
+        result.set("usage", usageNode);
+        return result;
+    }
+
+    /**
+     * Sends a {@code resume.choices} notification listing every resumable and
+     * waits for the client's {@code resume.choice_response}. Returns the
+     * chosen Resumable, or null on timeout / parse failure (caller falls back
+     * to the highest-priority choice).
+     */
+    private Resumable offerResumeChoicesAndWaitForResponse(
+            StreamContext context, List<Resumable> resumables) {
+        try {
+            var params = objectMapper.createObjectNode();
+            var arr = objectMapper.createArrayNode();
+            for (int i = 0; i < resumables.size(); i++) {
+                var item = objectMapper.createObjectNode();
+                item.put("index", i);
+                switch (resumables.get(i)) {
+                    case Resumable.OfPlan p -> {
+                        var cp = p.checkpoint();
+                        item.put("kind", "plan");
+                        item.put("planId", cp.planId());
+                        item.put("originalGoal", truncate(cp.originalGoal(), 200));
+                        item.put("completedSteps", cp.lastCompletedStepIndex() + 1);
+                        item.put("totalSteps", cp.plan().steps().size());
+                        item.put("lastUpdated", cp.updatedAt().toString());
+                    }
+                    case Resumable.OfTurn t -> {
+                        var cp = t.checkpoint();
+                        item.put("kind", "turn");
+                        item.put("turnId", cp.turnId());
+                        item.put("originalPrompt", truncate(cp.originalPrompt(), 200));
+                        item.put("completedIterations", cp.completedIterations());
+                        item.put("lastUpdated", cp.updatedAt().toString());
+                    }
+                }
+                arr.add(item);
+            }
+            params.set("choices", arr);
+            context.sendNotification("resume.choices", params);
+        } catch (IOException e) {
+            log.warn("Failed to send resume.choices: {}", e.getMessage());
+            return null;
+        }
+
+        try {
+            var response = context.readMessage(30_000);
+            if (response != null && response.has("method")
+                    && "resume.choice_response".equals(response.get("method").asText())) {
+                var respParams = response.get("params");
+                if (respParams != null && respParams.has("index")) {
+                    int idx = respParams.get("index").asInt(-1);
+                    if (idx >= 0 && idx < resumables.size()) {
+                        return resumables.get(idx);
+                    }
+                }
+            }
+        } catch (IOException e) {
+            log.warn("Failed to read resume.choice_response: {}", e.getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * Resumes a plan from explicit /continue. Skips the resume.offer round-trip
+     * (the implicit detection path's role) and routes straight into
+     * {@link #executeResumedPlan}.
+     */
+    private Object resumePlanFromExplicitContinue(
+            PlanCheckpoint cp, String sessionId, AgentSession session,
+            CancelAwareStreamContext cancelContext, StreamEventHandler eventHandler,
+            StreamingAgentLoop permissionAwareLoop, CancellationToken cancellationToken,
+            ToolMetricsCollector metricsCollector, WatchdogTimer watchdog,
+            Set<String> requestToolNames) throws Exception {
+
+        log.info("Explicit continue → plan resume: planId={}, step {}/{}",
+                cp.planId(), cp.lastCompletedStepIndex() + 1, cp.plan().steps().size());
+
+        // resume.detected mirrors the implicit-path notification so dashboards
+        // can render the same UI for explicit + implicit resume paths. Route
+        // uses the underlying tier ("session"/"workspace") plus a separate
+        // `trigger` discriminator — keeps the wire format stable while letting
+        // observers tell explicit /continue apart from implicit auto-offer
+        // (review finding #4).
+        var resumeRouter = new ResumeRouter(planCheckpointStore, turnCheckpointStore);
+        var routeDecision = resumeRouter.route(sessionId, session.projectPath());
+        String routeLabel = routeDecision.checkpoint() != null
+                && cp.planId().equals(routeDecision.checkpoint().planId())
+                ? routeDecision.route() : "session";
+        try {
+            var p = objectMapper.createObjectNode();
+            p.put("planId", cp.planId());
+            p.put("completedSteps", cp.lastCompletedStepIndex() + 1);
+            p.put("totalSteps", cp.plan().steps().size());
+            p.put("route", routeLabel);
+            p.put("trigger", "explicit_continue");
+            p.put("originalGoal", truncate(cp.originalGoal(), 200));
+            cancelContext.sendNotification("resume.detected", p);
+        } catch (IOException e) {
+            log.warn("Failed to send resume.detected notification: {}", e.getMessage());
+        }
+
+        if (!cp.hasRemainingSteps()) {
+            log.info("Explicit continue: plan {} has no remaining steps", cp.planId());
+            // markCompleted, not markFailed — the plan finished cleanly; the
+            // /continue just had no work to do (review finding #29).
+            planCheckpointStore.markCompleted(cp.planId());
+            return buildNothingToResumeResult(sessionId, session, "continue");
+        }
+        return executeResumedPlan(cp, session, sessionId, cancelContext,
+                eventHandler, permissionAwareLoop, cancellationToken, metricsCollector,
+                watchdog, requestToolNames);
+    }
+
+    /**
+     * Resumes a single ReAct turn from a {@link TurnCheckpoint}. Replays the
+     * checkpoint's conversation snapshot as conversation history and injects
+     * the {@code [TURN_RESUME_CONTEXT]} block produced by
+     * {@link ResumeRouter#buildTurnResumePrompt} as the new user prompt.
+     */
+    private Object executeResumedTurn(
+            TurnCheckpoint cp, String sessionId, AgentSession session,
+            CancelAwareStreamContext cancelContext, StreamEventHandler eventHandler,
+            StreamingAgentLoop permissionAwareLoop, CancellationToken cancellationToken,
+            ToolMetricsCollector metricsCollector, WatchdogTimer watchdog,
+            Set<String> requestToolNames, List<Message> conversationHistory) throws Exception {
+
+        log.info("Explicit continue → turn resume: turnId={}, completedIterations={}",
+                cp.turnId(), cp.completedIterations());
+
+        // Mark old turn checkpoint as RESUMED so a subsequent /continue doesn't
+        // route back to it. Done before the new turn runs so a crash mid-resume
+        // doesn't loop us back into the same stale state.
+        if (turnCheckpointStore != null) {
+            try {
+                turnCheckpointStore.markResumed(cp.turnId());
+            } catch (Exception e) {
+                log.warn("Failed to mark turn checkpoint as RESUMED ({}): {}",
+                        cp.turnId(), e.getMessage());
+            }
+        }
+
+        // resume.detected: route uses underlying tier + trigger discriminator
+        // for parity with the plan path (review finding #4).
+        var routeRouter = new ResumeRouter(planCheckpointStore, turnCheckpointStore);
+        var routeDec = routeRouter.route(sessionId, session.projectPath());
+        String routeLabel;
+        if (routeDec.resumable() instanceof Resumable.OfTurn rt
+                && cp.turnId().equals(rt.checkpoint().turnId())) {
+            routeLabel = routeDec.route();
+        } else {
+            // chosen via resume.choices — fall back to a label that still
+            // disambiguates same-session vs cross-session.
+            routeLabel = sessionId.equals(cp.sessionId()) ? "turn_session" : "turn_workspace";
+        }
+        try {
+            var p = objectMapper.createObjectNode();
+            p.put("turnId", cp.turnId());
+            p.put("completedIterations", cp.completedIterations());
+            p.put("route", routeLabel);
+            p.put("trigger", "explicit_continue");
+            p.put("originalPrompt", truncate(cp.originalPrompt(), 200));
+            cancelContext.sendNotification("resume.detected", p);
+        } catch (IOException e) {
+            log.warn("Failed to send resume.detected (turn) notification: {}", e.getMessage());
+        }
+
+        // Do NOT deserialize the checkpoint's conversationSnapshot to replay
+        // — the snapshot is encoded by ConversationSnapshot.serialize as
+        // {role, blocks:[...]} which deserializeConversation (legacy
+        // plan-checkpoint shape) flattens to empty Text blocks, silently
+        // losing every tool_use / tool_result block. The
+        // [TURN_RESUME_CONTEXT] block built by ResumeRouter.buildTurnResumePrompt
+        // parses the snapshot for a per-iteration digest, which gives the
+        // LLM enough context without needing to round-trip the raw blocks
+        // (review finding #1, #25, #26).
+        var historyForTurn = new ArrayList<>(conversationHistory);
+        var resumePrompt = ResumeRouter.buildTurnResumePrompt(cp);
+
+        try {
+            var p = objectMapper.createObjectNode();
+            p.put("turnId", cp.turnId());
+            p.put("completedIterations", cp.completedIterations());
+            cancelContext.sendNotification("resume.injected", p);
+        } catch (IOException e) {
+            log.warn("Failed to send resume.injected (turn) notification: {}", e.getMessage());
+        }
+
+        var adaptive = runTurnWithAdaptiveContinuation(
+                permissionAwareLoop, resumePrompt, historyForTurn, eventHandler, cancellationToken);
+        sendCancelledNotificationIfNeeded(cancellationToken, cancelContext, sessionId);
+
+        // Append a synthetic marker for the session history instead of replaying
+        // cp.originalPrompt() — that would double-append the prompt when the
+        // session is the same one that produced the original turn (review
+        // finding #9). The marker mirrors the plan-resume path's behavior
+        // (executeResumedPlan adds "[Resumed plan: ...]").
+        String marker = "[Resumed turn: " + truncate(cp.originalPrompt(), 100) + "]";
+        var result = buildTurnResult(adaptive.turn(), session, sessionId,
+                marker, cancellationToken, metricsCollector, adaptive, requestToolNames);
+        if (result instanceof com.fasterxml.jackson.databind.node.ObjectNode obj) {
+            obj.put("resumed", true);
+            obj.put("resumedFromTurnId", cp.turnId());
+        }
+        return result;
     }
 
     /**

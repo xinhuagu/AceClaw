@@ -652,6 +652,7 @@ public final class AceClawDaemon {
         var turnCheckpointStore = new FileTurnCheckpointStore(
                 homeDir.resolve("checkpoints").resolve("turns"), objectMapper);
         turnCheckpointStore.cleanup(7); // sweep orphans + stale files on startup
+        agentHandler.setTurnCheckpointStore(turnCheckpointStore);
         agentHandler.setTurnCheckpointSink(new FileTurnCheckpointSink(turnCheckpointStore));
 
         agentHandler.setCompactor(compactor);
