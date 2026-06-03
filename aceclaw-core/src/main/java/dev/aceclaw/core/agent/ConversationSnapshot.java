@@ -22,8 +22,9 @@ final class ConversationSnapshot {
     private ConversationSnapshot() {}
 
     static List<String> serialize(List<Message> messages) {
-        var out = new ArrayList<String>(messages.size());
-        for (var msg : messages) {
+        var safe = messages != null ? messages : List.<Message>of();
+        var out = new ArrayList<String>(safe.size());
+        for (var msg : safe) {
             out.add(switch (msg) {
                 case Message.UserMessage u -> encodeMessage("user", u.content());
                 case Message.AssistantMessage a -> encodeMessage("assistant", a.content());

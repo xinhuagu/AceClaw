@@ -645,11 +645,14 @@ public final class AceClawDaemon {
         agentHandler.setPlanCheckpointStore(planCheckpointStore);
 
         // Turn checkpoint store: per-iteration checkpoints for non-plan ReAct turns (#500).
-        // Same atomic write pattern as plan checkpoints; sink debounces 500ms writes.
+        // Same atomic write pattern as plan checkpoints. Writes are unbatched —
+        // ReAct iterations are LLM-call-bound (1-3s) so the original 500ms debounce
+        // never fired in practice, and dropping it removed a trailing-flush race
+        // (PR #516 review).
         var turnCheckpointStore = new FileTurnCheckpointStore(
                 homeDir.resolve("checkpoints").resolve("turns"), objectMapper);
         turnCheckpointStore.cleanup(7); // sweep orphans + stale files on startup
-        agentHandler.setTurnCheckpointSink(new DebouncingTurnCheckpointSink(turnCheckpointStore));
+        agentHandler.setTurnCheckpointSink(new FileTurnCheckpointSink(turnCheckpointStore));
 
         agentHandler.setCompactor(compactor);
         agentHandler.setMemoryStore(memoryStore, workingDir);

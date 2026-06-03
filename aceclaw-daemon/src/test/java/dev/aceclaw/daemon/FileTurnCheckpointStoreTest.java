@@ -146,6 +146,19 @@ class FileTurnCheckpointStoreTest {
     }
 
     @Test
+    void markInterrupted_updatesStatus() {
+        store.save(sample("t1", "s1", "ws-a", 1));
+        store.markInterrupted("t1");
+
+        assertEquals(PlanCheckpoint.CheckpointStatus.INTERRUPTED,
+                store.load("t1").orElseThrow().status());
+        // INTERRUPTED stays resumable — findResumable picks it up
+        var resumable = store.findResumable("ws-a");
+        assertEquals(1, resumable.size());
+        assertEquals("t1", resumable.getFirst().turnId());
+    }
+
+    @Test
     void delete_removesFile() {
         store.save(sample("t1", "s1", "ws-a", 1));
         assertTrue(store.load("t1").isPresent());

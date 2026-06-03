@@ -166,6 +166,22 @@ public final class StreamingAgentLoop {
                         StreamEventHandler handler, CancellationToken cancellationToken,
                         RequestSource defaultSource)
             throws LlmException {
+        return runTurn(userPrompt, conversationHistory, handler, cancellationToken,
+                defaultSource, false);
+    }
+
+    /**
+     * Like {@link #runTurn(String, List, StreamEventHandler, CancellationToken, RequestSource)}
+     * but with an explicit {@code skipTurnCheckpoint} escape hatch. Callers that drive the
+     * loop on behalf of an outer execution context (e.g. {@code SequentialPlanExecutor},
+     * which already owns a {@code PlanCheckpoint} for the whole plan) pass {@code true}
+     * so per-step LLM calls don't leak a parallel turn checkpoint into the resume routing
+     * tier (issue #500 PR #516 review).
+     */
+    public Turn runTurn(String userPrompt, List<Message> conversationHistory,
+                        StreamEventHandler handler, CancellationToken cancellationToken,
+                        RequestSource defaultSource, boolean skipTurnCheckpoint)
+            throws LlmException {
         var eventHandler = handler != null ? handler : new StreamEventHandler() {};
         this.activeCancellationToken = cancellationToken;
         long turnStart = System.currentTimeMillis();
@@ -188,7 +204,8 @@ public final class StreamingAgentLoop {
         final TurnCheckpointSink turnSink = config.effectiveTurnCheckpointSink();
         final String workspaceHash = config.workspaceHash();
         final boolean checkpointEnabled =
-                workspaceHash != null && config.sessionId() != null
+                !skipTurnCheckpoint
+                        && workspaceHash != null && config.sessionId() != null
                         && config.turnCheckpointSink() != null;
         TurnCheckpoint currentCheckpoint = checkpointEnabled
                 ? new TurnCheckpoint(

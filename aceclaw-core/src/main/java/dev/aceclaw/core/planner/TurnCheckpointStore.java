@@ -47,6 +47,13 @@ public interface TurnCheckpointStore {
     void markFailed(String turnId);
 
     /**
+     * Marks a checkpoint as INTERRUPTED. Stays on disk; resumable (alongside ACTIVE).
+     * Called when a turn ends via cancellation/crash recovery so resume/audit code
+     * can distinguish "interrupted at iteration N" from "still in flight at N".
+     */
+    void markInterrupted(String turnId);
+
+    /**
      * Deletes the checkpoint file outright. Used when a turn ends with
      * {@code stopReason=END_TURN} (the issue acceptance criterion requires
      * no orphan file after a successful turn).

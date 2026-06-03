@@ -117,6 +117,11 @@ public final class FileTurnCheckpointStore implements TurnCheckpointStore {
     }
 
     @Override
+    public void markInterrupted(String turnId) {
+        updateStatus(turnId, CheckpointStatus.INTERRUPTED);
+    }
+
+    @Override
     public void delete(String turnId) {
         Objects.requireNonNull(turnId, "turnId");
         lock.lock();
