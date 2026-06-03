@@ -3,6 +3,8 @@ package dev.aceclaw.core.agent;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.llm.*;
+import dev.aceclaw.core.planner.PlanCheckpoint;
+import dev.aceclaw.core.planner.TurnCheckpoint;
 import dev.aceclaw.infra.event.AgentEvent;
 import dev.aceclaw.infra.event.ToolEvent;
 import org.slf4j.Logger;
@@ -179,6 +181,30 @@ public final class StreamingAgentLoop {
         allMessages.add(userMessage);
         newMessages.add(userMessage);
 
+        // Turn checkpoint scaffolding. Enabled only when both workspaceHash and
+        // sessionId are present — TurnCheckpoint requires both. Without them we
+        // silently skip checkpointing (e.g. sub-agent loops, unit tests).
+        final String turnId = java.util.UUID.randomUUID().toString();
+        final TurnCheckpointSink turnSink = config.effectiveTurnCheckpointSink();
+        final String workspaceHash = config.workspaceHash();
+        final boolean checkpointEnabled =
+                workspaceHash != null && config.sessionId() != null
+                        && config.turnCheckpointSink() != null;
+        TurnCheckpoint currentCheckpoint = checkpointEnabled
+                ? new TurnCheckpoint(
+                        turnId,
+                        config.sessionId(),
+                        workspaceHash,
+                        userPrompt,
+                        ConversationSnapshot.serialize(allMessages),
+                        0,
+                        null,
+                        List.of(),
+                        PlanCheckpoint.CheckpointStatus.ACTIVE,
+                        Instant.now(),
+                        Instant.now())
+                : null;
+
         int totalInputTokens = 0;
         int totalOutputTokens = 0;
         int totalCacheCreationTokens = 0;
@@ -244,6 +270,9 @@ public final class StreamingAgentLoop {
                 if (softBudgetStopped || hardBudgetStopped
                         || (cancellationToken != null && cancellationToken.isCancelled())) {
                     log.info("Cancellation detected before LLM call (iteration {})", iteration + 1);
+                    if (checkpointEnabled) {
+                        turnSink.onTurnEnded(turnId, PlanCheckpoint.CheckpointStatus.INTERRUPTED);
+                    }
                     var turn = buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
                             totalCacheCreationTokens, totalCacheReadTokens, compactionResult,
                             softBudgetStopped, llmRequestCount, attributionBuilder.build());
@@ -378,6 +407,9 @@ public final class StreamingAgentLoop {
                         totalCacheCreationTokens += accumulator.usage.cacheCreationInputTokens();
                         totalCacheReadTokens += accumulator.usage.cacheReadInputTokens();
                     }
+                    if (checkpointEnabled) {
+                        turnSink.onTurnEnded(turnId, PlanCheckpoint.CheckpointStatus.INTERRUPTED);
+                    }
                     var turn = buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
                             totalCacheCreationTokens, totalCacheReadTokens, compactionResult,
                             llmRequestCount, attributionBuilder.build());
@@ -423,6 +455,23 @@ public final class StreamingAgentLoop {
                     case END_TURN, MAX_TOKENS, STOP_SEQUENCE, ERROR -> {
                         log.debug("Streaming turn complete: stopReason={}, iterations={}",
                                 stopReason, iteration + 1);
+                        if (checkpointEnabled) {
+                            currentCheckpoint = currentCheckpoint.withIterationCompleted(
+                                    iteration + 1, null,
+                                    ConversationSnapshot.serialize(allMessages), List.of());
+                            // END_TURN -> delete file (no orphan). Other terminal stop
+                            // reasons -> keep on disk as COMPLETED (truncated normally)
+                            // or FAILED (ERROR), per the issue's compaction rule.
+                            if (stopReason == StopReason.END_TURN) {
+                                turnSink.onTurnCompleted(turnId);
+                            } else {
+                                turnSink.recordIteration(currentCheckpoint);
+                                turnSink.onTurnEnded(turnId,
+                                        stopReason == StopReason.ERROR
+                                                ? PlanCheckpoint.CheckpointStatus.FAILED
+                                                : PlanCheckpoint.CheckpointStatus.COMPLETED);
+                            }
+                        }
                         var totalUsage = new Usage(
                                 totalInputTokens, totalOutputTokens,
                                 totalCacheCreationTokens, totalCacheReadTokens);
@@ -457,9 +506,31 @@ public final class StreamingAgentLoop {
                         allMessages.add(toolResultMessage);
                         newMessages.add(toolResultMessage);
 
+                        // Record per-iteration checkpoint: assistant response + tool
+                        // results are now both in the conversation, so this is the
+                        // earliest point at which the iteration is "fully materialized"
+                        // per issue #500's spec.
+                        if (checkpointEnabled) {
+                            String lastToolUseId = toolUseBlocks.isEmpty()
+                                    ? null : toolUseBlocks.getLast().id();
+                            currentCheckpoint = currentCheckpoint.withIterationCompleted(
+                                    iteration + 1, lastToolUseId,
+                                    ConversationSnapshot.serialize(allMessages), List.of());
+                            try {
+                                turnSink.recordIteration(currentCheckpoint);
+                            } catch (Exception e) {
+                                log.warn("Failed to record turn checkpoint (iteration {}): {}",
+                                        iteration + 1, e.getMessage());
+                            }
+                        }
+
                         // Checkpoint 3: after tool execution
                         if (cancellationToken != null && cancellationToken.isCancelled()) {
                             log.info("Cancellation detected after tool execution (iteration {})", iteration + 1);
+                            if (checkpointEnabled) {
+                                turnSink.onTurnEnded(turnId,
+                                        PlanCheckpoint.CheckpointStatus.INTERRUPTED);
+                            }
                             var turn = buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
                                     totalCacheCreationTokens, totalCacheReadTokens, compactionResult,
                                     llmRequestCount, attributionBuilder.build());
@@ -472,6 +543,11 @@ public final class StreamingAgentLoop {
 
             // Exceeded max iterations
             log.warn("Streaming ReAct loop exceeded max iterations ({})", maxIterations);
+            if (checkpointEnabled) {
+                // Treat as a normal end-of-turn (not a crash): user can still inspect
+                // the run via the COMPLETED file, but it's not resumable.
+                turnSink.onTurnEnded(turnId, PlanCheckpoint.CheckpointStatus.COMPLETED);
+            }
             var totalUsage = new Usage(
                     totalInputTokens, totalOutputTokens,
                     totalCacheCreationTokens, totalCacheReadTokens);
@@ -480,6 +556,13 @@ public final class StreamingAgentLoop {
             publishTurnCompleted(turnNumber, turnStart);
             return turn;
         } catch (LlmException e) {
+            if (checkpointEnabled) {
+                try {
+                    turnSink.onTurnEnded(turnId, PlanCheckpoint.CheckpointStatus.FAILED);
+                } catch (Exception inner) {
+                    log.warn("Failed to flush turn checkpoint on LlmException: {}", inner.getMessage());
+                }
+            }
             publishEvent(new AgentEvent.TurnError(
                     config.sessionId(), turnNumber, e.getMessage(), Instant.now()));
             throw e;

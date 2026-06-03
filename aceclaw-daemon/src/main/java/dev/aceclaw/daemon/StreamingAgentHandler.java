@@ -450,6 +450,8 @@ public final class StreamingAgentHandler {
                 .doomLoopDetector(doomLoop)
                 .progressDetector(progress)
                 .retryConfig(retryConfig)
+                .workspaceHash(ResumeRouter.hashWorkspace(session.projectPath()))
+                .turnCheckpointSink(turnCheckpointSink)
                 .build();
         var permissionAwareLoop = new StreamingAgentLoop(
                 getLlmClient(), permissionAwareRegistry,
@@ -1756,6 +1758,7 @@ public final class StreamingAgentHandler {
     private int maxPlanStepWallTimeSec = 1800;
     private int maxPlanTotalWallTimeSec = 3600;
     private PlanCheckpointStore planCheckpointStore;
+    private dev.aceclaw.core.agent.TurnCheckpointSink turnCheckpointSink;
     private SkillMemoryFeedback skillMemoryFeedback;
     private SkillRefinementEngine skillRefinementEngine;
     private DynamicSkillGenerator dynamicSkillGenerator;
@@ -2017,6 +2020,14 @@ public final class StreamingAgentHandler {
      */
     public void setPlanCheckpointStore(PlanCheckpointStore planCheckpointStore) {
         this.planCheckpointStore = planCheckpointStore;
+    }
+
+    /**
+     * Sets the per-iteration turn checkpoint sink for crash-safe non-plan turn
+     * progress persistence (issue #500).
+     */
+    public void setTurnCheckpointSink(dev.aceclaw.core.agent.TurnCheckpointSink turnCheckpointSink) {
+        this.turnCheckpointSink = turnCheckpointSink;
     }
 
     /**

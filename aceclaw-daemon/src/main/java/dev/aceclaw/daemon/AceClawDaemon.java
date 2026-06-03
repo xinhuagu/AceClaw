@@ -644,6 +644,13 @@ public final class AceClawDaemon {
         planCheckpointStore.cleanup(7); // clean old checkpoints on startup
         agentHandler.setPlanCheckpointStore(planCheckpointStore);
 
+        // Turn checkpoint store: per-iteration checkpoints for non-plan ReAct turns (#500).
+        // Same atomic write pattern as plan checkpoints; sink debounces 500ms writes.
+        var turnCheckpointStore = new FileTurnCheckpointStore(
+                homeDir.resolve("checkpoints").resolve("turns"), objectMapper);
+        turnCheckpointStore.cleanup(7); // sweep orphans + stale files on startup
+        agentHandler.setTurnCheckpointSink(new DebouncingTurnCheckpointSink(turnCheckpointStore));
+
         agentHandler.setCompactor(compactor);
         agentHandler.setMemoryStore(memoryStore, workingDir);
         var antiPatternGate = config.antiPatternGate();
