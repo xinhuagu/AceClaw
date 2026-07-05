@@ -457,9 +457,18 @@ public final class StreamingAgentLoop {
                 if (stopReason == StopReason.END_TURN) {
                     var converted = tryConvertTextToToolUse(contentBlocks);
                     if (converted != null) {
+                        String convertedToolName = converted.stream()
+                                .filter(b -> b instanceof ContentBlock.ToolUse)
+                                .map(b -> ((ContentBlock.ToolUse) b).name())
+                                .findFirst().orElse("?");
                         contentBlocks = converted;
                         stopReason = StopReason.TOOL_USE;
-                        log.info("Converted text-based tool call to native ToolUse block");
+                        log.info("Recovered text-based tool call from END_TURN response: tool={}", convertedToolName);
+                    } else {
+                        // No native tool_use, no recoverable text tool call. If the model text
+                        // *looks* like it was attempting a tool call, surface it in the daemon log
+                        // so silent "END_TURN but wanted to call a tool" cases are diagnosable.
+                        logUnrecognizedToolCallAttempt(contentBlocks);
                     }
                 }
 
@@ -1179,6 +1188,35 @@ public final class StreamingAgentLoop {
         }
         result.add(toolUse);
         return List.copyOf(result);
+    }
+
+    /** Markers that suggest a model tried to call a tool via text instead of native tool_use. */
+    private static final List<String> TOOL_CALL_TEXT_MARKERS =
+            List.of("[tool:start]", "[tool_call", "<tool_call", "<function", "\"function\":", "\"tool_call");
+
+    /**
+     * When a turn ends as END_TURN with no tool call (native or recovered), checks whether the
+     * model's text output looks like an unrecognized tool-call attempt and logs it. This makes the
+     * otherwise-silent "model wanted a tool but we ended the turn" failure visible in the daemon log.
+     */
+    private void logUnrecognizedToolCallAttempt(List<ContentBlock> blocks) {
+        String fullText = blocks.stream()
+                .filter(b -> b instanceof ContentBlock.Text)
+                .map(b -> ((ContentBlock.Text) b).text())
+                .reduce("", (a, b) -> a + b)
+                .trim();
+        if (fullText.isEmpty()) return;
+
+        String lower = fullText.toLowerCase();
+        boolean looksLikeToolCall = TOOL_CALL_TEXT_MARKERS.stream().anyMatch(lower::contains)
+                || (fullText.charAt(0) == '{' && lower.contains("\"name\""));
+        if (!looksLikeToolCall) return;
+
+        int max = 300;
+        String snippet = fullText.length() > max ? fullText.substring(0, max) + "..." : fullText;
+        log.warn("Turn ended as END_TURN but model text looks like an unrecognized tool call "
+                + "(no native tool_use, unparseable by fallback). Provider={}. Snippet: {}",
+                llmClient.provider(), snippet);
     }
 
     /**
