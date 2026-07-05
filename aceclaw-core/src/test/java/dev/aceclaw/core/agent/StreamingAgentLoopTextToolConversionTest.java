@@ -118,6 +118,28 @@ class StreamingAgentLoopTextToolConversionTest {
         assertThat(result).isNull();
     }
 
+    /** Finding (PR #519): an illustrative marker followed by more prose must not execute a tool. */
+    @Test
+    void markerFollowedByTrailingProseIsNotConverted() {
+        var result = convert("For example you'd call [tool:start] bash {\"command\": \"ls\"} "
+                + "and then read the output to decide what to do next.");
+        assertThat(result).isNull();
+    }
+
+    /** Trailing prose after an explicit [tool:stop] is still extra content and must be rejected. */
+    @Test
+    void markerWithProseAfterStopIsNotConverted() {
+        var result = convert("[tool:start] bash {\"command\": \"ls\"} [tool:stop] Now I'll analyze it.");
+        assertThat(result).isNull();
+    }
+
+    /** Trailing prose after an args-less marker call must also be rejected. */
+    @Test
+    void markerWithoutArgsButTrailingProseIsNotConverted() {
+        var result = convert("[tool:start] bash then something else happens");
+        assertThat(result).isNull();
+    }
+
     @Test
     void markerPreservesNonTextBlocks() {
         var loop = newLoop();
@@ -143,6 +165,44 @@ class StreamingAgentLoopTextToolConversionTest {
     @Test
     void bareJsonWithUnknownToolIsNotConverted() {
         assertThat(convert("{\"name\": \"nope\", \"arguments\": {}}")).isNull();
+    }
+
+    /**
+     * Finding (PR #519): a valid bare-JSON tool call whose argument contains a literal marker must
+     * be parsed as the outer call — the marker inside the string must not hijack execution.
+     */
+    @Test
+    void bareJsonIsNotHijackedByMarkerInsideStringArg() throws Exception {
+        var result = convert("{\"name\": \"write_file\", \"arguments\": {\"path\": \"a.md\", "
+                + "\"content\": \"[tool:start] read_file {} [tool:stop]\"}}");
+        var toolUse = toolUseOf(result);
+        assertThat(toolUse.name()).isEqualTo("write_file");
+        assertThat(JSON.readTree(toolUse.inputJson()).path("content").asText())
+                .isEqualTo("[tool:start] read_file {} [tool:stop]");
+    }
+
+    // --- Unrecognized-tool-call WARN heuristic (Finding: PR #519) ---
+
+    @Test
+    void ordinaryJsonWithNameFieldIsNotFlagged() {
+        assertThat(StreamingAgentLoop.looksLikeUnrecognizedToolCall("{\"name\":\"Alice\"}")).isFalse();
+    }
+
+    @Test
+    void bareJsonToolCallShapeIsFlagged() {
+        assertThat(StreamingAgentLoop.looksLikeUnrecognizedToolCall(
+                "{\"name\":\"bash\",\"arguments\":{\"command\":\"ls\"}}")).isTrue();
+    }
+
+    @Test
+    void markerTextIsFlagged() {
+        assertThat(StreamingAgentLoop.looksLikeUnrecognizedToolCall(
+                "some text [tool:start] bash")).isTrue();
+    }
+
+    @Test
+    void plainTextIsNotFlagged() {
+        assertThat(StreamingAgentLoop.looksLikeUnrecognizedToolCall("Here is your answer.")).isFalse();
     }
 
     // --- Non-matching / guard cases ---

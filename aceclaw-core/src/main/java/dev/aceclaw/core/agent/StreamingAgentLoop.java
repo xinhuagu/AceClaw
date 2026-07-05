@@ -452,9 +452,20 @@ public final class StreamingAgentLoop {
                 // Build assistant message from accumulated content
                 var contentBlocks = accumulator.buildContentBlocks();
 
-                // Fallback: some local models return tool calls as plain text JSON
+                // Fallbacks for open-weight / OpenAI-compatible providers that mishandle tool calls:
+                // (1) a native tool_calls block streamed but finish_reason was reported as "stop", or
+                // (2) the tool call was emitted as plain text ([tool:start] marker or bare JSON).
                 var stopReason = accumulator.stopReason != null ? accumulator.stopReason : StopReason.ERROR;
-                if (stopReason == StopReason.END_TURN) {
+                if (stopReason == StopReason.END_TURN
+                        && contentBlocks.stream().anyMatch(b -> b instanceof ContentBlock.ToolUse)) {
+                    // Some OpenAI-compatible providers (e.g. Ollama) stream a complete tool_calls
+                    // block but set finish_reason="stop" instead of "tool_calls", so the turn arrives
+                    // here as END_TURN even though the model asked to call a tool. Execute it instead
+                    // of silently ending the turn (which drops the call with no permission prompt).
+                    stopReason = StopReason.TOOL_USE;
+                    log.info("Promoted END_TURN to TOOL_USE: response carries a native tool_use block "
+                            + "(provider reported finish_reason=stop alongside tool_calls)");
+                } else if (stopReason == StopReason.END_TURN) {
                     // Concatenate the assistant text once and reuse it for both the conversion
                     // attempt and the diagnostic below — END_TURN is the normal terminal state for
                     // native-tool-calling providers, so this runs on every ordinary answer.
@@ -1112,15 +1123,27 @@ public final class StreamingAgentLoop {
 
         if (fullText.isEmpty()) return null;
 
-        // Try [tool:start] marker format first (used by open-weight models via Ollama/local)
+        // Prefer the bare-JSON interpretation when the entire response is a JSON object. A literal
+        // "[tool:start]" can legitimately appear inside a string argument (e.g. a write_file content
+        // value); trying the marker format first would hijack such a call and run a different tool.
+        if (fullText.charAt(0) == '{') {
+            var bareToolUse = tryParseBareJsonFormat(fullText);
+            if (bareToolUse != null) {
+                return buildToolUseBlocks(blocks, bareToolUse);
+            }
+        }
+
+        // Marker format (open-weight models via Ollama/local): [tool:start] name {json} [tool:stop]
         var markerToolUse = tryParseToolMarkerFormat(fullText);
         if (markerToolUse != null) {
             return buildToolUseBlocks(blocks, markerToolUse);
         }
 
-        // Fall back to bare JSON object: {"name": "tool_name", "arguments": {...}}
-        if (fullText.charAt(0) != '{') return null;
+        return null;
+    }
 
+    /** Parses a bare JSON tool call: {@code {"name": "tool_name", "arguments": {...}}}. */
+    private ContentBlock.ToolUse tryParseBareJsonFormat(String fullText) {
         try {
             JsonNode node = JSON.readTree(fullText);
             if (!node.isObject()) return null;
@@ -1134,10 +1157,9 @@ public final class StreamingAgentLoop {
 
             String toolId = "text-tool-" + UUID.randomUUID().toString().substring(0, 8);
             String argsJson = JSON.writeValueAsString(arguments);
-            var toolUse = new ContentBlock.ToolUse(toolId, toolName, argsJson);
 
             log.debug("Parsed bare-JSON tool call: tool={}, args={}", toolName, argsJson);
-            return buildToolUseBlocks(blocks, toolUse);
+            return new ContentBlock.ToolUse(toolId, toolName, argsJson);
 
         } catch (Exception e) {
             return null;
@@ -1146,9 +1168,14 @@ public final class StreamingAgentLoop {
 
     /**
      * Parses {@code [tool:start] tool_name {...args...} [tool:stop]} from model text output.
-     * The marker may appear anywhere in the text (e.g., after reasoning prose). If no argument
-     * object follows the tool name an empty object is used; if an argument object is present but
-     * malformed, {@code null} is returned so the text is not fired as a tool call with empty args.
+     *
+     * <p>Reasoning prose may precede the marker, but the marker tool call must be the <em>final</em>
+     * meaningful content: only whitespace and an optional {@code [tool:stop]} may follow the argument
+     * object. This prevents illustrative examples ("you'd call [tool:start] bash {...} to list files")
+     * or mixed responses from silently triggering real tool execution.
+     *
+     * <p>If no argument object follows the tool name an empty object is used; if an argument object is
+     * present but malformed, {@code null} is returned so the text is not fired with empty args.
      */
     private ContentBlock.ToolUse tryParseToolMarkerFormat(String fullText) {
         int markerIdx = fullText.indexOf("[tool:start]");
@@ -1172,20 +1199,38 @@ public final class StreamingAgentLoop {
 
         // Parse JSON arguments after the tool name, if present. readTree(parser) consumes exactly
         // one complete JSON value and ignores any trailing text (the "[tool:stop]" marker or prose),
-        // so a literal "[tool:stop]" inside a string argument no longer truncates the object.
+        // so a literal "[tool:stop]" inside a string argument no longer truncates the object. The
+        // parser's char offset tells us where the object ended so we can inspect what follows.
         String afterName = afterMarker.substring(nameEnd).stripLeading();
         String argsJson = "{}";
+        String remainder = afterName;
         if (!afterName.isEmpty() && afterName.charAt(0) == '{') {
             try (var parser = JSON.getFactory().createParser(afterName)) {
                 JsonNode node = JSON.readTree(parser);
                 if (node == null || !node.isObject()) return null;
                 argsJson = JSON.writeValueAsString(node);
+                long consumed = parser.currentLocation().getCharOffset();
+                remainder = (consumed >= 0 && consumed <= afterName.length())
+                        ? afterName.substring((int) consumed)
+                        : "";
             } catch (Exception e) {
                 // Arguments were intended (text starts with '{') but are malformed. Don't fire a
                 // tool call with empty args — treat the whole thing as plain text instead.
                 log.debug("[tool:start] marker for {} has unparseable args, not treating as tool call", toolName);
                 return null;
             }
+        }
+
+        // The marker call must be the final meaningful content: only whitespace and an optional
+        // [tool:stop] may follow. Anything else means the marker was an example/mixed prose, not a
+        // real invocation, so we must not execute it.
+        String tail = remainder.stripLeading();
+        if (tail.startsWith("[tool:stop]")) {
+            tail = tail.substring("[tool:stop]".length());
+        }
+        if (!tail.isBlank()) {
+            log.debug("[tool:start] marker for {} is followed by extra content, not treating as tool call", toolName);
+            return null;
         }
 
         String toolId = "text-tool-" + UUID.randomUUID().toString().substring(0, 8);
@@ -1237,18 +1282,27 @@ public final class StreamingAgentLoop {
      * otherwise-silent "model wanted a tool but we ended the turn" failure visible in the daemon log.
      */
     private void logUnrecognizedToolCallAttempt(String fullText) {
-        if (fullText.isEmpty()) return;
-
-        boolean looksLikeToolCall =
-                TOOL_CALL_TEXT_MARKERS.stream().anyMatch(m -> containsIgnoreCase(fullText, m))
-                || (fullText.charAt(0) == '{' && containsIgnoreCase(fullText, "\"name\""));
-        if (!looksLikeToolCall) return;
+        if (!looksLikeUnrecognizedToolCall(fullText)) return;
 
         int max = 300;
         String snippet = fullText.length() > max ? fullText.substring(0, max) + "..." : fullText;
         log.warn("Turn ended as END_TURN but model text looks like an unrecognized tool call "
                 + "(no native tool_use, unparseable by fallback). Provider={}. Snippet: {}",
                 llmClient.provider(), snippet);
+    }
+
+    /**
+     * Heuristic for whether END_TURN text resembles an unrecognized tool-call attempt. For
+     * JSON-shaped text it requires both {@code "name"} and {@code "arguments"} — the bare-JSON
+     * tool-call shape — so ordinary JSON answers like {@code {"name":"Alice"}} are not flagged.
+     */
+    // package-private for unit testing (see StreamingAgentLoopTextToolConversionTest)
+    static boolean looksLikeUnrecognizedToolCall(String fullText) {
+        if (fullText == null || fullText.isEmpty()) return false;
+        return TOOL_CALL_TEXT_MARKERS.stream().anyMatch(m -> containsIgnoreCase(fullText, m))
+                || (fullText.charAt(0) == '{'
+                        && containsIgnoreCase(fullText, "\"name\"")
+                        && containsIgnoreCase(fullText, "\"arguments\""));
     }
 
     /**
