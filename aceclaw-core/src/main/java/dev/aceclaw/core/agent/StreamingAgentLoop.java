@@ -1075,8 +1075,13 @@ public final class StreamingAgentLoop {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     /**
-     * Detects text content that is actually a tool call JSON from models that
-     * don't support native tool calling.
+     * Detects text content that is actually a tool call from models that don't support native
+     * tool calling. Handles two formats:
+     *
+     * <ol>
+     *   <li>Marker format (open-weight models): {@code [tool:start] tool_name {"arg":"val"} [tool:stop]}</li>
+     *   <li>Bare JSON format: {@code {"name": "tool_name", "arguments": {...}}}</li>
+     * </ol>
      */
     private List<ContentBlock> tryConvertTextToToolUse(List<ContentBlock> blocks) {
         boolean hasToolUse = blocks.stream().anyMatch(b -> b instanceof ContentBlock.ToolUse);
@@ -1088,7 +1093,16 @@ public final class StreamingAgentLoop {
                 .reduce("", (a, b) -> a + b)
                 .trim();
 
-        if (fullText.isEmpty() || fullText.charAt(0) != '{') return null;
+        if (fullText.isEmpty()) return null;
+
+        // Try [tool:start] marker format first (used by open-weight models via Ollama/local)
+        var markerToolUse = tryParseToolMarkerFormat(fullText);
+        if (markerToolUse != null) {
+            return buildToolUseBlocks(blocks, markerToolUse);
+        }
+
+        // Fall back to bare JSON object: {"name": "tool_name", "arguments": {...}}
+        if (fullText.charAt(0) != '{') return null;
 
         try {
             JsonNode node = JSON.readTree(fullText);
@@ -1103,23 +1117,68 @@ public final class StreamingAgentLoop {
 
             String toolId = "text-tool-" + UUID.randomUUID().toString().substring(0, 8);
             String argsJson = JSON.writeValueAsString(arguments);
+            var toolUse = new ContentBlock.ToolUse(toolId, toolName, argsJson);
 
-            var result = new ArrayList<ContentBlock>();
-            for (var block : blocks) {
-                if (block instanceof ContentBlock.Text) {
-                    // Skip — replaced by ToolUse
-                } else {
-                    result.add(block);
-                }
-            }
-            result.add(new ContentBlock.ToolUse(toolId, toolName, argsJson));
-
-            log.debug("Parsed text-based tool call: tool={}, args={}", toolName, argsJson);
-            return List.copyOf(result);
+            log.debug("Parsed bare-JSON tool call: tool={}, args={}", toolName, argsJson);
+            return buildToolUseBlocks(blocks, toolUse);
 
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /**
+     * Parses {@code [tool:start] tool_name {...args...} [tool:stop]} from model text output.
+     * The marker may appear anywhere in the text (e.g., after reasoning prose).
+     * Arguments are optional; if absent or unparseable, an empty object is used.
+     */
+    private ContentBlock.ToolUse tryParseToolMarkerFormat(String fullText) {
+        int markerIdx = fullText.indexOf("[tool:start]");
+        if (markerIdx < 0) return null;
+
+        String afterMarker = fullText.substring(markerIdx + "[tool:start]".length()).stripLeading();
+
+        // Extract tool name (word characters: letters, digits, underscore)
+        int nameEnd = 0;
+        while (nameEnd < afterMarker.length()
+                && (Character.isLetterOrDigit(afterMarker.charAt(nameEnd)) || afterMarker.charAt(nameEnd) == '_')) {
+            nameEnd++;
+        }
+        if (nameEnd == 0) return null;
+        String toolName = afterMarker.substring(0, nameEnd);
+        if (toolRegistry.get(toolName).isEmpty()) return null;
+
+        // Try to parse JSON arguments after the tool name
+        String afterName = afterMarker.substring(nameEnd).stripLeading();
+        String argsJson = "{}";
+        if (!afterName.isEmpty() && afterName.charAt(0) == '{') {
+            int stopIdx = afterName.indexOf("[tool:stop]");
+            String candidate = stopIdx >= 0 ? afterName.substring(0, stopIdx).strip() : afterName.strip();
+            try {
+                JsonNode node = JSON.readTree(candidate);
+                if (node.isObject()) {
+                    argsJson = JSON.writeValueAsString(node);
+                }
+            } catch (Exception ignored) {
+                // Unparseable JSON — proceed with empty args
+            }
+        }
+
+        String toolId = "text-tool-" + UUID.randomUUID().toString().substring(0, 8);
+        log.debug("Parsed [tool:start] marker tool call: tool={}, args={}", toolName, argsJson);
+        return new ContentBlock.ToolUse(toolId, toolName, argsJson);
+    }
+
+    /** Replaces all Text blocks with {@code toolUse}, preserving non-Text blocks (e.g. Thinking). */
+    private List<ContentBlock> buildToolUseBlocks(List<ContentBlock> blocks, ContentBlock.ToolUse toolUse) {
+        var result = new ArrayList<ContentBlock>();
+        for (var block : blocks) {
+            if (!(block instanceof ContentBlock.Text)) {
+                result.add(block);
+            }
+        }
+        result.add(toolUse);
+        return List.copyOf(result);
     }
 
     /**
