@@ -27,6 +27,8 @@ class StreamingAgentLoopTextToolConversionTest {
         registry.register(new StubTool("bash"));
         registry.register(new StubTool("read_file"));
         registry.register(new StubTool("write_file"));
+        // MCP tools are named mcp__<server>__<tool>, and <tool> may contain '-' or '.'.
+        registry.register(new StubTool("mcp__context7__query-docs"));
         return new StreamingAgentLoop(new NoopLlmClient(), registry, "model", null);
     }
 
@@ -62,6 +64,24 @@ class StreamingAgentLoopTextToolConversionTest {
     void parsesMarkerFormatWithoutStopMarker() {
         var result = convert("[tool:start] read_file {\"path\": \"a.txt\"}");
         assertThat(toolUseOf(result).name()).isEqualTo("read_file");
+    }
+
+    /**
+     * Finding: the marker tool-name scan must not stop at '-' or '.' — MCP tool names
+     * (mcp__server__tool) frequently contain hyphens, and the bare-JSON path already accepts them.
+     */
+    @Test
+    void parsesMarkerFormatWithHyphenatedMcpToolName() throws Exception {
+        var result = convert("[tool:start] mcp__context7__query-docs {\"q\": \"streams\"} [tool:stop]");
+        var toolUse = toolUseOf(result);
+        assertThat(toolUse.name()).isEqualTo("mcp__context7__query-docs");
+        assertThat(JSON.readTree(toolUse.inputJson()).path("q").asText()).isEqualTo("streams");
+    }
+
+    @Test
+    void parsesMarkerFormatWithHyphenatedNameNoSpaceBeforeArgs() {
+        var result = convert("[tool:start] mcp__context7__query-docs{\"q\": \"x\"}");
+        assertThat(toolUseOf(result).name()).isEqualTo("mcp__context7__query-docs");
     }
 
     @Test

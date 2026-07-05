@@ -455,7 +455,11 @@ public final class StreamingAgentLoop {
                 // Fallback: some local models return tool calls as plain text JSON
                 var stopReason = accumulator.stopReason != null ? accumulator.stopReason : StopReason.ERROR;
                 if (stopReason == StopReason.END_TURN) {
-                    var converted = tryConvertTextToToolUse(contentBlocks);
+                    // Concatenate the assistant text once and reuse it for both the conversion
+                    // attempt and the diagnostic below — END_TURN is the normal terminal state for
+                    // native-tool-calling providers, so this runs on every ordinary answer.
+                    String endTurnText = concatText(contentBlocks);
+                    var converted = tryConvertTextToToolUse(contentBlocks, endTurnText);
                     if (converted != null) {
                         String convertedToolName = converted.stream()
                                 .filter(b -> b instanceof ContentBlock.ToolUse)
@@ -468,7 +472,7 @@ public final class StreamingAgentLoop {
                         // No native tool_use, no recoverable text tool call. If the model text
                         // *looks* like it was attempting a tool call, surface it in the daemon log
                         // so silent "END_TURN but wanted to call a tool" cases are diagnosable.
-                        logUnrecognizedToolCallAttempt(contentBlocks);
+                        logUnrecognizedToolCallAttempt(endTurnText);
                     }
                 }
 
@@ -1094,14 +1098,17 @@ public final class StreamingAgentLoop {
      */
     // package-private for unit testing (see StreamingAgentLoopTextToolConversionTest)
     List<ContentBlock> tryConvertTextToToolUse(List<ContentBlock> blocks) {
+        var safeBlocks = blocks != null ? blocks : List.<ContentBlock>of();
+        return tryConvertTextToToolUse(safeBlocks, concatText(safeBlocks));
+    }
+
+    /**
+     * Variant that reuses an already-concatenated {@code fullText} so callers on the hot END_TURN
+     * path don't concatenate the assistant text twice (once here, once in the diagnostic).
+     */
+    private List<ContentBlock> tryConvertTextToToolUse(List<ContentBlock> blocks, String fullText) {
         boolean hasToolUse = blocks.stream().anyMatch(b -> b instanceof ContentBlock.ToolUse);
         if (hasToolUse) return null;
-
-        String fullText = blocks.stream()
-                .filter(b -> b instanceof ContentBlock.Text)
-                .map(b -> ((ContentBlock.Text) b).text())
-                .reduce("", (a, b) -> a + b)
-                .trim();
 
         if (fullText.isEmpty()) return null;
 
@@ -1149,10 +1156,14 @@ public final class StreamingAgentLoop {
 
         String afterMarker = fullText.substring(markerIdx + "[tool:start]".length()).stripLeading();
 
-        // Extract tool name (word characters: letters, digits, underscore)
+        // Extract the tool name: everything up to the first whitespace, '{' (args), or '[' (a
+        // following marker). Do NOT restrict to [A-Za-z0-9_] — MCP tools are named
+        // mcp__<server>__<tool> where <tool> may contain '-' or '.' (e.g. mcp__context7__query-docs),
+        // which the bare-JSON path already accepts; a char-class scan would truncate them.
         int nameEnd = 0;
-        while (nameEnd < afterMarker.length()
-                && (Character.isLetterOrDigit(afterMarker.charAt(nameEnd)) || afterMarker.charAt(nameEnd) == '_')) {
+        while (nameEnd < afterMarker.length()) {
+            char c = afterMarker.charAt(nameEnd);
+            if (Character.isWhitespace(c) || c == '{' || c == '[') break;
             nameEnd++;
         }
         if (nameEnd == 0) return null;
@@ -1182,6 +1193,28 @@ public final class StreamingAgentLoop {
         return new ContentBlock.ToolUse(toolId, toolName, argsJson);
     }
 
+    /** Concatenates the text of all {@link ContentBlock.Text} blocks, trimmed. */
+    private static String concatText(List<ContentBlock> blocks) {
+        var sb = new StringBuilder();
+        for (var block : blocks) {
+            if (block instanceof ContentBlock.Text t) {
+                sb.append(t.text());
+            }
+        }
+        return sb.toString().trim();
+    }
+
+    /** Case-insensitive containment that does not allocate a lowercased copy of {@code haystack}. */
+    private static boolean containsIgnoreCase(String haystack, String needle) {
+        int n = needle.length();
+        if (n == 0) return true;
+        int limit = haystack.length() - n;
+        for (int i = 0; i <= limit; i++) {
+            if (haystack.regionMatches(true, i, needle, 0, n)) return true;
+        }
+        return false;
+    }
+
     /** Replaces all Text blocks with {@code toolUse}, preserving non-Text blocks (e.g. Thinking). */
     private List<ContentBlock> buildToolUseBlocks(List<ContentBlock> blocks, ContentBlock.ToolUse toolUse) {
         var result = new ArrayList<ContentBlock>();
@@ -1203,17 +1236,12 @@ public final class StreamingAgentLoop {
      * model's text output looks like an unrecognized tool-call attempt and logs it. This makes the
      * otherwise-silent "model wanted a tool but we ended the turn" failure visible in the daemon log.
      */
-    private void logUnrecognizedToolCallAttempt(List<ContentBlock> blocks) {
-        String fullText = blocks.stream()
-                .filter(b -> b instanceof ContentBlock.Text)
-                .map(b -> ((ContentBlock.Text) b).text())
-                .reduce("", (a, b) -> a + b)
-                .trim();
+    private void logUnrecognizedToolCallAttempt(String fullText) {
         if (fullText.isEmpty()) return;
 
-        String lower = fullText.toLowerCase();
-        boolean looksLikeToolCall = TOOL_CALL_TEXT_MARKERS.stream().anyMatch(lower::contains)
-                || (fullText.charAt(0) == '{' && lower.contains("\"name\""));
+        boolean looksLikeToolCall =
+                TOOL_CALL_TEXT_MARKERS.stream().anyMatch(m -> containsIgnoreCase(fullText, m))
+                || (fullText.charAt(0) == '{' && containsIgnoreCase(fullText, "\"name\""));
         if (!looksLikeToolCall) return;
 
         int max = 300;
