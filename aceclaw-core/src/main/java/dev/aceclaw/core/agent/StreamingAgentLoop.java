@@ -480,9 +480,21 @@ public final class StreamingAgentLoop {
                         stopReason = StopReason.TOOL_USE;
                         log.info("Recovered text-based tool call from END_TURN response: tool={}", convertedToolName);
                     } else {
-                        // No native tool_use, no recoverable text tool call. If the model text
-                        // *looks* like it was attempting a tool call, surface it in the daemon log
-                        // so silent "END_TURN but wanted to call a tool" cases are diagnosable.
+                        // Blind-spot safety net: dump the raw assistant text at TRACE so a model
+                        // using a tool-call format we don't recognize is still fully visible in the
+                        // daemon log (enable with ACECLAW_LOG_LEVEL=TRACE). Off by default to avoid
+                        // logging every ordinary answer's text.
+                        if (log.isTraceEnabled() && !endTurnText.isEmpty()) {
+                            int max = 4000;
+                            String raw = endTurnText.length() > max
+                                    ? endTurnText.substring(0, max) + "...(" + endTurnText.length() + " chars)"
+                                    : endTurnText;
+                            log.trace("END_TURN produced no tool call. Provider={}. Raw assistant text: {}",
+                                    llmClient.provider(), raw);
+                        }
+                        // If the model text *looks* like it was attempting a tool call in a known but
+                        // unparseable shape, surface it prominently (WARN) so silent "END_TURN but
+                        // wanted to call a tool" cases are diagnosable without raising the log level.
                         logUnrecognizedToolCallAttempt(endTurnText);
                     }
                 }
