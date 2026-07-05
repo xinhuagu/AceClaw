@@ -1092,7 +1092,8 @@ public final class StreamingAgentLoop {
      *   <li>Bare JSON format: {@code {"name": "tool_name", "arguments": {...}}}</li>
      * </ol>
      */
-    private List<ContentBlock> tryConvertTextToToolUse(List<ContentBlock> blocks) {
+    // package-private for unit testing (see StreamingAgentLoopTextToolConversionTest)
+    List<ContentBlock> tryConvertTextToToolUse(List<ContentBlock> blocks) {
         boolean hasToolUse = blocks.stream().anyMatch(b -> b instanceof ContentBlock.ToolUse);
         if (hasToolUse) return null;
 
@@ -1138,8 +1139,9 @@ public final class StreamingAgentLoop {
 
     /**
      * Parses {@code [tool:start] tool_name {...args...} [tool:stop]} from model text output.
-     * The marker may appear anywhere in the text (e.g., after reasoning prose).
-     * Arguments are optional; if absent or unparseable, an empty object is used.
+     * The marker may appear anywhere in the text (e.g., after reasoning prose). If no argument
+     * object follows the tool name an empty object is used; if an argument object is present but
+     * malformed, {@code null} is returned so the text is not fired as a tool call with empty args.
      */
     private ContentBlock.ToolUse tryParseToolMarkerFormat(String fullText) {
         int markerIdx = fullText.indexOf("[tool:start]");
@@ -1157,19 +1159,21 @@ public final class StreamingAgentLoop {
         String toolName = afterMarker.substring(0, nameEnd);
         if (toolRegistry.get(toolName).isEmpty()) return null;
 
-        // Try to parse JSON arguments after the tool name
+        // Parse JSON arguments after the tool name, if present. readTree(parser) consumes exactly
+        // one complete JSON value and ignores any trailing text (the "[tool:stop]" marker or prose),
+        // so a literal "[tool:stop]" inside a string argument no longer truncates the object.
         String afterName = afterMarker.substring(nameEnd).stripLeading();
         String argsJson = "{}";
         if (!afterName.isEmpty() && afterName.charAt(0) == '{') {
-            int stopIdx = afterName.indexOf("[tool:stop]");
-            String candidate = stopIdx >= 0 ? afterName.substring(0, stopIdx).strip() : afterName.strip();
-            try {
-                JsonNode node = JSON.readTree(candidate);
-                if (node.isObject()) {
-                    argsJson = JSON.writeValueAsString(node);
-                }
-            } catch (Exception ignored) {
-                // Unparseable JSON — proceed with empty args
+            try (var parser = JSON.getFactory().createParser(afterName)) {
+                JsonNode node = JSON.readTree(parser);
+                if (node == null || !node.isObject()) return null;
+                argsJson = JSON.writeValueAsString(node);
+            } catch (Exception e) {
+                // Arguments were intended (text starts with '{') but are malformed. Don't fire a
+                // tool call with empty args — treat the whole thing as plain text instead.
+                log.debug("[tool:start] marker for {} has unparseable args, not treating as tool call", toolName);
+                return null;
             }
         }
 
