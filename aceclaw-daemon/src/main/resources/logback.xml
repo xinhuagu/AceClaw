@@ -19,8 +19,10 @@
         </encoder>
     </appender>
 
-    <!-- Key daemon events at INFO, detailed debug available -->
-    <logger name="dev.aceclaw" level="DEBUG"/>
+    <!-- Key daemon events at INFO, detailed debug available. Level is overridable via the
+         ACECLAW_LOG_LEVEL env var (e.g. ACECLAW_LOG_LEVEL=TRACE) for diagnostics such as dumping
+         the raw model output on END_TURN turns that produced no tool call. Defaults to DEBUG. -->
+    <logger name="dev.aceclaw" level="${ACECLAW_LOG_LEVEL:-DEBUG}"/>
 
     <root level="INFO">
         <appender-ref ref="STDOUT"/>

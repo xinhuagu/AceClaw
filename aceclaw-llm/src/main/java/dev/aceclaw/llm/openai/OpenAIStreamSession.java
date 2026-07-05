@@ -47,6 +47,12 @@ final class OpenAIStreamSession implements StreamSession {
     // Tool call accumulation: index -> state
     private final Map<Integer, ToolCallState> toolCallStates = new HashMap<>();
 
+    // The stop reason from the real finish_reason chunk, if one has been seen. A trailing
+    // usage-only chunk (some providers, e.g. Ollama) must not clobber this with END_TURN —
+    // otherwise a truncated response (finish_reason="length" -> MAX_TOKENS) is downgraded to
+    // END_TURN and its partial tool_use gets treated as a complete call.
+    private StopReason emittedStopReason;
+
     OpenAIStreamSession(HttpResponse<Stream<String>> response, OpenAIMapper mapper) {
         this.response = response;
         this.mapper = mapper;
@@ -149,17 +155,21 @@ final class OpenAIStreamSession implements StreamSession {
                 // Extract usage from top-level (OpenAI puts it at root when stream_options.include_usage=true)
                 Usage usage = mapper.parseUsage(root.path("usage"));
                 StopReason stopReason = StopReason.fromString(finishReason);
+                emittedStopReason = stopReason;
                 handler.onMessageDelta(new StreamEvent.MessageDelta(stopReason, usage));
             }
         }
 
-        // Some providers (Ollama, etc.) put usage in a separate final chunk with empty choices
+        // Some providers (Ollama, etc.) put usage in a separate final chunk with empty choices.
         if ((!choices.isArray() || choices.isEmpty()) && root.has("usage")) {
             Usage chunkUsage = mapper.parseUsage(root.path("usage"));
             if (chunkUsage.inputTokens() > 0 || chunkUsage.outputTokens() > 0) {
-                // Emit MessageDelta with usage so token counts reach the client
+                // Emit MessageDelta with usage so token counts reach the client. Preserve the real
+                // stop reason if a finish_reason chunk already set one (e.g. "length" -> MAX_TOKENS);
+                // only fall back to END_TURN when this trailing chunk is the sole terminator.
+                StopReason stopReason = emittedStopReason != null ? emittedStopReason : StopReason.END_TURN;
                 flushOpenBlocks(handler);
-                handler.onMessageDelta(new StreamEvent.MessageDelta(StopReason.END_TURN, chunkUsage));
+                handler.onMessageDelta(new StreamEvent.MessageDelta(stopReason, chunkUsage));
             }
         }
     }
