@@ -228,18 +228,7 @@ class StreamingAgentLoopTextToolConversionTest {
 
     // --- Test doubles ---
 
-    private static final class StubTool implements Tool {
-        private final String name;
-
-        StubTool(String name) {
-            this.name = name;
-        }
-
-        @Override
-        public String name() {
-            return name;
-        }
-
+    private record StubTool(String name) implements Tool {
         @Override
         public String description() {
             return name + " stub";

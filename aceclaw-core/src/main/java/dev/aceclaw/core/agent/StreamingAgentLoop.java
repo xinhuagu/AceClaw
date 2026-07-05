@@ -1130,7 +1130,9 @@ public final class StreamingAgentLoop {
      * path don't concatenate the assistant text twice (once here, once in the diagnostic).
      */
     private List<ContentBlock> tryConvertTextToToolUse(List<ContentBlock> blocks, String fullText) {
-        boolean hasToolUse = blocks.stream().anyMatch(b -> b instanceof ContentBlock.ToolUse);
+        // Keep the null-guard local so future callers of this overload can't introduce an NPE path.
+        var safeBlocks = blocks != null ? blocks : List.<ContentBlock>of();
+        boolean hasToolUse = safeBlocks.stream().anyMatch(b -> b instanceof ContentBlock.ToolUse);
         if (hasToolUse) return null;
 
         if (fullText.isEmpty()) return null;
@@ -1141,14 +1143,14 @@ public final class StreamingAgentLoop {
         if (fullText.charAt(0) == '{') {
             var bareToolUse = tryParseBareJsonFormat(fullText);
             if (bareToolUse != null) {
-                return buildToolUseBlocks(blocks, bareToolUse);
+                return buildToolUseBlocks(safeBlocks, bareToolUse);
             }
         }
 
         // Marker format (open-weight models via Ollama/local): [tool:start] name {json} [tool:stop]
         var markerToolUse = tryParseToolMarkerFormat(fullText);
         if (markerToolUse != null) {
-            return buildToolUseBlocks(blocks, markerToolUse);
+            return buildToolUseBlocks(safeBlocks, markerToolUse);
         }
 
         return null;
@@ -1157,8 +1159,9 @@ public final class StreamingAgentLoop {
     /** Parses a bare JSON tool call: {@code {"name": "tool_name", "arguments": {...}}}. */
     private ContentBlock.ToolUse tryParseBareJsonFormat(String fullText) {
         try {
+            // readTree returns null for empty/whitespace-only input; guard before dereferencing.
             JsonNode node = JSON.readTree(fullText);
-            if (!node.isObject()) return null;
+            if (node == null || !node.isObject()) return null;
 
             String toolName = node.path("name").asText(null);
             JsonNode arguments = node.get("arguments");
