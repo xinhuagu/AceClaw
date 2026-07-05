@@ -212,6 +212,45 @@ class StreamingToolUseToolResultInvariantTest {
                 .containsExactlyInAnyOrder("tu-1", "tu-2");
     }
 
+    /**
+     * Ollama and some OpenAI-compatible providers stream a complete tool_calls block but report
+     * finish_reason="stop" (mapped to END_TURN) instead of "tool_calls". The loop must promote the
+     * turn to TOOL_USE and execute the tool, rather than silently ending with no permission prompt.
+     */
+    @Test
+    void streamingLoop_endTurnWithNativeToolUse_isPromotedAndExecuted() throws Exception {
+        var toolUseButEndTurn = new ArrayList<StreamEvent>();
+        toolUseButEndTurn.add(new StreamEvent.MessageStart("msg-1", "model"));
+        toolUseButEndTurn.add(new StreamEvent.ContentBlockStart(0,
+                new ContentBlock.ToolUse("tu-1", "web_search", "")));
+        toolUseButEndTurn.add(new StreamEvent.ToolUseDelta(0, "web_search", "{\"query\":\"weather\"}"));
+        toolUseButEndTurn.add(new StreamEvent.ContentBlockStop(0));
+        // Provider quirk: finish_reason="stop" -> END_TURN, even though a tool_calls block was sent.
+        toolUseButEndTurn.add(new StreamEvent.MessageDelta(StopReason.END_TURN, new Usage(10, 5, 0, 0)));
+        toolUseButEndTurn.add(new StreamEvent.StreamComplete());
+
+        var llm = new FakeStreamingLlmClient(List.of(
+                toolUseButEndTurn,
+                textStreamResponse("The weather is sunny.")));
+
+        var registry = new ToolRegistry();
+        registry.register(new StubTool("web_search", "search results"));
+
+        var loop = new StreamingAgentLoop(llm, registry, "model", null);
+        var turn = loop.runTurn("weather?", List.of(), new StreamEventHandler() {});
+
+        // The tool must have been executed: the tool_use is followed by a matching tool_result...
+        assertToolUseToolResultInvariant(turn.newMessages());
+        // ...and the loop continued to the follow-up text response instead of ending on the tool call.
+        var last = turn.newMessages().getLast();
+        assertThat(last).isInstanceOf(Message.AssistantMessage.class);
+        var text = ((Message.AssistantMessage) last).content().stream()
+                .filter(b -> b instanceof ContentBlock.Text)
+                .map(b -> ((ContentBlock.Text) b).text())
+                .findFirst().orElse("");
+        assertThat(text).contains("sunny");
+    }
+
     // ---- Invariant assertion (same logic as non-streaming test) ----
 
     private static void assertToolUseToolResultInvariant(List<Message> messages) {
