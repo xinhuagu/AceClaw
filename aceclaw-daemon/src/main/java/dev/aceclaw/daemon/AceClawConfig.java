@@ -61,18 +61,12 @@ public final class AceClawConfig {
     private static final int DEFAULT_MAX_TOKENS = 16384;
     private static final int DEFAULT_THINKING_BUDGET = 10240;
     private static final int DEFAULT_MAX_TURNS = AgentLoopConfig.DEFAULT_MAX_ITERATIONS;
-    private static final boolean DEFAULT_ADAPTIVE_CONTINUATION_ENABLED = true;
-    private static final int DEFAULT_ADAPTIVE_CONTINUATION_MAX_SEGMENTS = 3;
-    private static final int DEFAULT_ADAPTIVE_CONTINUATION_NO_PROGRESS_THRESHOLD = 2;
-    private static final int DEFAULT_ADAPTIVE_CONTINUATION_MAX_TOTAL_TOKENS = 0;
-    private static final int DEFAULT_ADAPTIVE_CONTINUATION_MAX_WALL_CLOCK_SECONDS = 0;
+    // AdaptiveContinuation defaults moved to AdaptiveContinuationSettings.defaults()
+    // (batch 2 of the AceClawConfig decomposition).
     private static final int DEFAULT_CONTEXT_WINDOW = 0;
     private static final String DEFAULT_LOG_LEVEL = "INFO";
-    private static final boolean DEFAULT_BOOT_ENABLED = true;
-    private static final int DEFAULT_BOOT_TIMEOUT_SECONDS = 120;
-    private static final boolean DEFAULT_SCHEDULER_ENABLED = true;
-    private static final int DEFAULT_SCHEDULER_TICK_SECONDS = 60;
-    private static final boolean DEFAULT_HEARTBEAT_ENABLED = true;
+    // boot/scheduler/heartbeat defaults moved to DaemonLifecycleSettings.defaults()
+    // (batch 5 of the AceClawConfig decomposition).
     private static final boolean DEFAULT_PLANNER_ENABLED = true;
     /**
      * Default complexity score for triggering the planner. Restored
@@ -97,43 +91,19 @@ public final class AceClawConfig {
      */
     private static final int DEFAULT_PLANNER_THRESHOLD = 5;
     private static final boolean DEFAULT_ADAPTIVE_REPLAN_ENABLED = true;
-    private static final boolean DEFAULT_CANDIDATE_INJECTION_ENABLED = true;
-    private static final boolean DEFAULT_CANDIDATE_PROMOTION_ENABLED = true;
-    private static final int DEFAULT_CANDIDATE_PROMOTION_MIN_EVIDENCE = 2;
-    private static final double DEFAULT_CANDIDATE_PROMOTION_MIN_SCORE = 0.75;
-    private static final double DEFAULT_CANDIDATE_PROMOTION_MAX_FAILURE_RATE = 0.2;
-    private static final int DEFAULT_CANDIDATE_INJECTION_MAX_COUNT = 10;
-    private static final int DEFAULT_CANDIDATE_INJECTION_MAX_TOKENS = 1200;
-    private static final int DEFAULT_ANTI_PATTERN_GATE_MIN_BLOCKED_BEFORE_ROLLBACK = 2;
-    private static final double DEFAULT_ANTI_PATTERN_GATE_MAX_FALSE_POSITIVE_RATE = 0.50;
-    private static final boolean DEFAULT_SKILL_DRAFT_VALIDATION_ENABLED = true;
-    private static final boolean DEFAULT_SKILL_DRAFT_VALIDATION_STRICT_MODE = false;
-    private static final boolean DEFAULT_SKILL_DRAFT_VALIDATION_REPLAY_REQUIRED = true;
-    private static final String DEFAULT_SKILL_DRAFT_VALIDATION_REPLAY_REPORT =
-            ".aceclaw/metrics/continuous-learning/replay-latest.json";
-    private static final double DEFAULT_SKILL_DRAFT_VALIDATION_MAX_TOKEN_ESTIMATION_ERROR_RATIO = 0.65;
-    private static final boolean DEFAULT_SKILL_AUTO_RELEASE_ENABLED = true;
-    private static final double DEFAULT_SKILL_AUTO_RELEASE_MIN_CANDIDATE_SCORE = 0.80;
-    private static final int DEFAULT_SKILL_AUTO_RELEASE_MIN_EVIDENCE = 3;
-    private static final int DEFAULT_SKILL_AUTO_RELEASE_CANARY_MIN_ATTEMPTS = 20;
-    private static final double DEFAULT_SKILL_AUTO_RELEASE_CANARY_MAX_FAILURE_RATE = 0.10;
-    private static final double DEFAULT_SKILL_AUTO_RELEASE_CANARY_MAX_TIMEOUT_RATE = 0.20;
-    private static final double DEFAULT_SKILL_AUTO_RELEASE_CANARY_MAX_PERMISSION_BLOCK_RATE = 0.20;
-    private static final int DEFAULT_SKILL_AUTO_RELEASE_CANARY_DWELL_HOURS = 24;
-    private static final double DEFAULT_SKILL_AUTO_RELEASE_ACTIVE_MAX_FAILURE_RATE = 0.20; // legacy alias
-    private static final double DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_FAILURE_RATE = 0.20;
-    private static final double DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_TIMEOUT_RATE = 0.20;
-    private static final double DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_PERMISSION_BLOCK_RATE = 0.20;
-    private static final int DEFAULT_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS = 168;
-    private static final int DEFAULT_MAX_AGENT_TURNS = 200;
-    private static final int DEFAULT_MAX_AGENT_WALL_TIME_SEC = 1800;
-    // 0 means "derive from soft limit (3x)" in StreamingAgentHandler
-    private static final int DEFAULT_MAX_AGENT_HARD_TURNS = 0;
-    private static final int DEFAULT_MAX_AGENT_HARD_WALL_TIME_SEC = 0;
-    private static final int DEFAULT_MAX_PLAN_STEP_WALL_TIME_SEC = 1800;
-    private static final int DEFAULT_MAX_PLAN_TOTAL_WALL_TIME_SEC = 3600;
-    private static final boolean DEFAULT_DEFERRED_ACTION_ENABLED = true;
-    private static final int DEFAULT_DEFERRED_ACTION_TICK_SECONDS = 5;
+    // Candidate / anti-pattern-gate defaults moved to their respective
+    // *Settings.defaults() factories (batch 3 of the AceClawConfig
+    // decomposition).
+    // SkillDraftValidation defaults moved to SkillDraftValidationSettings.defaults()
+    // (batch 2 of the AceClawConfig decomposition).
+    // Skill auto-release defaults live on SkillAutoReleaseSettings.defaults().
+    // 13 individual DEFAULT_SKILL_AUTO_RELEASE_* constants used to live here —
+    // grouped into the SkillAutoReleaseSettings record as part of the
+    // AceClawConfig decomposition (batch 1).
+    // Watchdog defaults moved to WatchdogSettings.defaults() (batch 4).
+    // The "0 = derive from soft limit (3x)" convention on hard turns /
+    // wall-time is preserved at the StreamingAgentHandler consumer.
+    // deferredAction defaults moved to DaemonLifecycleSettings.defaults() (batch 5).
     /**
      * WebSocket bridge for browser dashboard (issue #431). Enabled by default since #446
      * <em>but only when the bind host is loopback</em> — the daemon now serves the
@@ -177,21 +147,27 @@ public final class AceClawConfig {
     private int maxTokens;
     private int thinkingBudget;
     private int maxTurns;
-    private boolean adaptiveContinuationEnabled;
-    private int adaptiveContinuationMaxSegments;
-    private int adaptiveContinuationNoProgressThreshold;
-    private int adaptiveContinuationMaxTotalTokens;
-    private int adaptiveContinuationMaxWallClockSeconds;
+    /**
+     * Adaptive continuation config — was 5 individual scalar fields, now
+     * grouped under one {@link AdaptiveContinuationSettings} record
+     * (batch 2 of the AceClawConfig decomposition).
+     */
+    private final AdaptiveContinuationSettings.Builder adaptiveContinuationBuilder =
+            AdaptiveContinuationSettings.builder();
     private int contextWindowTokens;
     private String logLevel;
     private String braveSearchApiKey;
     private String permissionMode;
-    private boolean bootEnabled;
-    private int bootTimeoutSeconds;
-    private boolean schedulerEnabled;
-    private int schedulerTickSeconds;
-    private boolean heartbeatEnabled;
-    private String heartbeatActiveHours;
+    /**
+     * Whether the policy's structural sensitive-path denials are active.
+     * Default {@code false} so an upgrade past #480 doesn't break workflows
+     * that legitimately write {@code .env} templates, {@code .git/config}
+     * entries, etc. Set to {@code true} via {@code security.denySensitivePaths}
+     * in {@code ~/.aceclaw/config.json} to enable the hard-denial layer
+     * (overrides every mode and prior approval — see
+     * {@link dev.aceclaw.security.DefaultPermissionPolicy} for the rule set).
+     */
+    private boolean denySensitivePaths;
     private String defaultProfile;
     private Map<String, ConfigFileFormat> profiles;
     /**
@@ -207,41 +183,49 @@ public final class AceClawConfig {
     private boolean plannerEnabled;
     private int plannerThreshold;
     private boolean adaptiveReplanEnabled;
-    private boolean candidateInjectionEnabled;
-    private boolean candidatePromotionEnabled;
-    private int candidatePromotionMinEvidence;
-    private double candidatePromotionMinScore;
-    private double candidatePromotionMaxFailureRate;
-    private int candidateInjectionMaxCount;
-    private int candidateInjectionMaxTokens;
-    private int antiPatternGateMinBlockedBeforeRollback;
-    private double antiPatternGateMaxFalsePositiveRate;
-    private boolean skillDraftValidationEnabled;
-    private boolean skillDraftValidationStrictMode;
-    private boolean skillDraftValidationReplayRequired;
-    private String skillDraftValidationReplayReport;
-    private double skillDraftValidationMaxTokenEstimationErrorRatio;
-    private boolean skillAutoReleaseEnabled;
-    private double skillAutoReleaseMinCandidateScore;
-    private int skillAutoReleaseMinEvidence;
-    private int skillAutoReleaseCanaryMinAttempts;
-    private double skillAutoReleaseCanaryMaxFailureRate;
-    private double skillAutoReleaseCanaryMaxTimeoutRate;
-    private double skillAutoReleaseCanaryMaxPermissionBlockRate;
-    private double skillAutoReleaseActiveMaxFailureRate;
-    private double skillAutoReleaseRollbackMaxFailureRate;
-    private double skillAutoReleaseRollbackMaxTimeoutRate;
-    private double skillAutoReleaseRollbackMaxPermissionBlockRate;
-    private int skillAutoReleaseHealthLookbackHours;
-    private int skillAutoReleaseCanaryDwellHours;
-    private int maxAgentTurns;
-    private int maxAgentWallTimeSec;
-    private int maxAgentHardTurns;
-    private int maxAgentHardWallTimeSec;
-    private int maxPlanStepWallTimeSec;
-    private int maxPlanTotalWallTimeSec;
-    private boolean deferredActionEnabled;
-    private int deferredActionTickSeconds;
+    /**
+     * Candidate / anti-pattern-gate config — was 9 individual scalar fields,
+     * now grouped under three records (batch 3 of the AceClawConfig
+     * decomposition). Held as mutable builders during {@link #load} so the
+     * env-var + file-merge passes can update incrementally; the public
+     * getters call {@code build()} on demand.
+     */
+    private final CandidatePromotionSettings.Builder candidatePromotionBuilder =
+            CandidatePromotionSettings.builder();
+    private final CandidateInjectionSettings.Builder candidateInjectionBuilder =
+            CandidateInjectionSettings.builder();
+    private final AntiPatternGateSettings.Builder antiPatternGateBuilder =
+            AntiPatternGateSettings.builder();
+    /**
+     * Skill draft validation config — was 5 individual scalar fields, now
+     * grouped under one {@link SkillDraftValidationSettings} record
+     * (batch 2 of the AceClawConfig decomposition).
+     */
+    private final SkillDraftValidationSettings.Builder skillDraftValidationBuilder =
+            SkillDraftValidationSettings.builder();
+    /**
+     * Skill auto-release config — was 12 individual scalar fields, now
+     * grouped under one {@link SkillAutoReleaseSettings} record (batch 1 of
+     * the AceClawConfig decomposition). Held as a mutable builder during
+     * load() so env vars and file merges can update incrementally without
+     * re-allocating; {@link #skillAutoRelease()} freezes it on demand.
+     */
+    private final SkillAutoReleaseSettings.Builder skillAutoReleaseBuilder =
+            SkillAutoReleaseSettings.builder();
+    /**
+     * Watchdog config — was 6 individual scalar fields (4 agent budgets + 2
+     * plan budgets), now grouped under one {@link WatchdogSettings} record
+     * (batch 4 of the AceClawConfig decomposition).
+     */
+    private final WatchdogSettings.Builder watchdogBuilder = WatchdogSettings.builder();
+    /**
+     * Daemon lifecycle config — was 8 individual scalar fields (boot/scheduler/
+     * heartbeat/deferred-action gates + tick cadences), now grouped under one
+     * {@link DaemonLifecycleSettings} record (batch 5 of the AceClawConfig
+     * decomposition). Builder-based so file-merge overrides accumulate
+     * incrementally; the public {@link #lifecycle()} getter freezes it on demand.
+     */
+    private final DaemonLifecycleSettings.Builder lifecycleBuilder = DaemonLifecycleSettings.builder();
     private boolean webSocketEnabled;
     /**
      * Tracks whether any config file explicitly set {@code webSocket.enabled}.
@@ -265,10 +249,14 @@ public final class AceClawConfig {
     private Map<String, List<HookMatcherFormat>> hooks;
     private boolean context1m;
     private List<String> extraAnthropicBetas;
-    private int retryMaxRetries;
-    private long retryInitialBackoffMs;
-    private long retryMaxBackoffMs;
-    private double retryJitterFactor;
+    /**
+     * Retry config — was 4 individual scalar fields, now held in a single
+     * builder that produces the consumer-side {@link dev.aceclaw.core.agent.RetryConfig}
+     * record on demand (batch 6 of the AceClawConfig decomposition). No new
+     * "Settings" wrapper because {@code RetryConfig} already covers the
+     * shape — consumers calling {@link #retryConfig()} see no API change.
+     */
+    private final RetryConfigBuilder retryBuilder = new RetryConfigBuilder();
 
     /**
      * Returns a default-valued config without touching {@code ~/.aceclaw/config.json}
@@ -286,59 +274,21 @@ public final class AceClawConfig {
         this.maxTokens = DEFAULT_MAX_TOKENS;
         this.thinkingBudget = DEFAULT_THINKING_BUDGET;
         this.maxTurns = DEFAULT_MAX_TURNS;
-        this.adaptiveContinuationEnabled = DEFAULT_ADAPTIVE_CONTINUATION_ENABLED;
-        this.adaptiveContinuationMaxSegments = DEFAULT_ADAPTIVE_CONTINUATION_MAX_SEGMENTS;
-        this.adaptiveContinuationNoProgressThreshold = DEFAULT_ADAPTIVE_CONTINUATION_NO_PROGRESS_THRESHOLD;
-        this.adaptiveContinuationMaxTotalTokens = DEFAULT_ADAPTIVE_CONTINUATION_MAX_TOTAL_TOKENS;
-        this.adaptiveContinuationMaxWallClockSeconds = DEFAULT_ADAPTIVE_CONTINUATION_MAX_WALL_CLOCK_SECONDS;
+        // adaptiveContinuation defaults seeded by AdaptiveContinuationSettings.builder()
         this.contextWindowTokens = DEFAULT_CONTEXT_WINDOW;
         this.logLevel = DEFAULT_LOG_LEVEL;
         this.permissionMode = "normal";
-        this.bootEnabled = DEFAULT_BOOT_ENABLED;
-        this.bootTimeoutSeconds = DEFAULT_BOOT_TIMEOUT_SECONDS;
-        this.schedulerEnabled = DEFAULT_SCHEDULER_ENABLED;
-        this.schedulerTickSeconds = DEFAULT_SCHEDULER_TICK_SECONDS;
-        this.heartbeatEnabled = DEFAULT_HEARTBEAT_ENABLED;
+        this.denySensitivePaths = false;
+        // boot/scheduler/heartbeat defaults seeded by DaemonLifecycleSettings.builder() (batch 5)
         this.plannerEnabled = DEFAULT_PLANNER_ENABLED;
         this.plannerThreshold = DEFAULT_PLANNER_THRESHOLD;
         this.adaptiveReplanEnabled = DEFAULT_ADAPTIVE_REPLAN_ENABLED;
-        this.candidateInjectionEnabled = DEFAULT_CANDIDATE_INJECTION_ENABLED;
-        this.candidatePromotionEnabled = DEFAULT_CANDIDATE_PROMOTION_ENABLED;
-        this.candidatePromotionMinEvidence = DEFAULT_CANDIDATE_PROMOTION_MIN_EVIDENCE;
-        this.candidatePromotionMinScore = DEFAULT_CANDIDATE_PROMOTION_MIN_SCORE;
-        this.candidatePromotionMaxFailureRate = DEFAULT_CANDIDATE_PROMOTION_MAX_FAILURE_RATE;
-        this.candidateInjectionMaxCount = DEFAULT_CANDIDATE_INJECTION_MAX_COUNT;
-        this.candidateInjectionMaxTokens = DEFAULT_CANDIDATE_INJECTION_MAX_TOKENS;
-        this.antiPatternGateMinBlockedBeforeRollback = DEFAULT_ANTI_PATTERN_GATE_MIN_BLOCKED_BEFORE_ROLLBACK;
-        this.antiPatternGateMaxFalsePositiveRate = DEFAULT_ANTI_PATTERN_GATE_MAX_FALSE_POSITIVE_RATE;
-        this.skillDraftValidationEnabled = DEFAULT_SKILL_DRAFT_VALIDATION_ENABLED;
-        this.skillDraftValidationStrictMode = DEFAULT_SKILL_DRAFT_VALIDATION_STRICT_MODE;
-        this.skillDraftValidationReplayRequired = DEFAULT_SKILL_DRAFT_VALIDATION_REPLAY_REQUIRED;
-        this.skillDraftValidationReplayReport = DEFAULT_SKILL_DRAFT_VALIDATION_REPLAY_REPORT;
-        this.skillDraftValidationMaxTokenEstimationErrorRatio =
-                DEFAULT_SKILL_DRAFT_VALIDATION_MAX_TOKEN_ESTIMATION_ERROR_RATIO;
-        this.skillAutoReleaseEnabled = DEFAULT_SKILL_AUTO_RELEASE_ENABLED;
-        this.skillAutoReleaseMinCandidateScore = DEFAULT_SKILL_AUTO_RELEASE_MIN_CANDIDATE_SCORE;
-        this.skillAutoReleaseMinEvidence = DEFAULT_SKILL_AUTO_RELEASE_MIN_EVIDENCE;
-        this.skillAutoReleaseCanaryMinAttempts = DEFAULT_SKILL_AUTO_RELEASE_CANARY_MIN_ATTEMPTS;
-        this.skillAutoReleaseCanaryMaxFailureRate = DEFAULT_SKILL_AUTO_RELEASE_CANARY_MAX_FAILURE_RATE;
-        this.skillAutoReleaseCanaryMaxTimeoutRate = DEFAULT_SKILL_AUTO_RELEASE_CANARY_MAX_TIMEOUT_RATE;
-        this.skillAutoReleaseCanaryMaxPermissionBlockRate = DEFAULT_SKILL_AUTO_RELEASE_CANARY_MAX_PERMISSION_BLOCK_RATE;
-        this.skillAutoReleaseActiveMaxFailureRate = DEFAULT_SKILL_AUTO_RELEASE_ACTIVE_MAX_FAILURE_RATE;
-        this.skillAutoReleaseRollbackMaxFailureRate = DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_FAILURE_RATE;
-        this.skillAutoReleaseRollbackMaxTimeoutRate = DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_TIMEOUT_RATE;
-        this.skillAutoReleaseRollbackMaxPermissionBlockRate =
-                DEFAULT_SKILL_AUTO_RELEASE_ROLLBACK_MAX_PERMISSION_BLOCK_RATE;
-        this.skillAutoReleaseHealthLookbackHours = DEFAULT_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS;
-        this.skillAutoReleaseCanaryDwellHours = DEFAULT_SKILL_AUTO_RELEASE_CANARY_DWELL_HOURS;
-        this.maxAgentTurns = DEFAULT_MAX_AGENT_TURNS;
-        this.maxAgentWallTimeSec = DEFAULT_MAX_AGENT_WALL_TIME_SEC;
-        this.maxAgentHardTurns = DEFAULT_MAX_AGENT_HARD_TURNS;
-        this.maxAgentHardWallTimeSec = DEFAULT_MAX_AGENT_HARD_WALL_TIME_SEC;
-        this.maxPlanStepWallTimeSec = DEFAULT_MAX_PLAN_STEP_WALL_TIME_SEC;
-        this.maxPlanTotalWallTimeSec = DEFAULT_MAX_PLAN_TOTAL_WALL_TIME_SEC;
-        this.deferredActionEnabled = DEFAULT_DEFERRED_ACTION_ENABLED;
-        this.deferredActionTickSeconds = DEFAULT_DEFERRED_ACTION_TICK_SECONDS;
+        // Candidate / anti-pattern-gate defaults seeded by *Settings.builder()
+        // skillDraftValidation defaults seeded by SkillDraftValidationSettings.builder()
+        // skillAutoRelease defaults are seeded by SkillAutoReleaseSettings.builder()
+        // at field-initialization time. 14 individual setter calls removed here.
+        // Watchdog defaults seeded by WatchdogSettings.builder()
+        // deferredAction defaults seeded by DaemonLifecycleSettings.builder() (batch 5)
         this.webSocketEnabled = DEFAULT_WEBSOCKET_ENABLED;
         this.webSocketPort = DEFAULT_WEBSOCKET_PORT;
         this.webSocketHost = DEFAULT_WEBSOCKET_HOST;
@@ -347,10 +297,7 @@ public final class AceClawConfig {
         this.providerModels = new java.util.HashMap<>();
         this.context1m = DEFAULT_CONTEXT_1M;
         this.extraAnthropicBetas = List.of();
-        this.retryMaxRetries = (int) dev.aceclaw.core.agent.RetryConfig.DEFAULT.maxRetries();
-        this.retryInitialBackoffMs = dev.aceclaw.core.agent.RetryConfig.DEFAULT.initialBackoffMs();
-        this.retryMaxBackoffMs = dev.aceclaw.core.agent.RetryConfig.DEFAULT.maxBackoffMs();
-        this.retryJitterFactor = dev.aceclaw.core.agent.RetryConfig.DEFAULT.jitterFactor();
+        // retry defaults seeded by RetryConfigBuilder (batch 6)
     }
 
     /**
@@ -434,90 +381,30 @@ public final class AceClawConfig {
                 log.warn("Invalid ACECLAW_MAX_TURNS: {}", envMaxTurns);
             }
         }
-        var envMaxAgentTurns = System.getenv("ACECLAW_MAX_AGENT_TURNS");
-        if (envMaxAgentTurns != null && !envMaxAgentTurns.isBlank()) {
-            try {
-                config.maxAgentTurns = Math.max(0, Integer.parseInt(envMaxAgentTurns));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_MAX_AGENT_TURNS: {}", envMaxAgentTurns);
-            }
-        }
-        var envMaxAgentWallTime = System.getenv("ACECLAW_MAX_AGENT_WALL_TIME_SEC");
-        if (envMaxAgentWallTime != null && !envMaxAgentWallTime.isBlank()) {
-            try {
-                config.maxAgentWallTimeSec = Math.max(0, Integer.parseInt(envMaxAgentWallTime));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_MAX_AGENT_WALL_TIME_SEC: {}", envMaxAgentWallTime);
-            }
-        }
-        var envMaxAgentHardTurns = System.getenv("ACECLAW_MAX_AGENT_HARD_TURNS");
-        if (envMaxAgentHardTurns != null && !envMaxAgentHardTurns.isBlank()) {
-            try {
-                config.maxAgentHardTurns = Math.max(0, Integer.parseInt(envMaxAgentHardTurns));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_MAX_AGENT_HARD_TURNS: {}", envMaxAgentHardTurns);
-            }
-        }
-        var envMaxAgentHardWallTime = System.getenv("ACECLAW_MAX_AGENT_HARD_WALL_TIME_SEC");
-        if (envMaxAgentHardWallTime != null && !envMaxAgentHardWallTime.isBlank()) {
-            try {
-                config.maxAgentHardWallTimeSec = Math.max(0, Integer.parseInt(envMaxAgentHardWallTime));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_MAX_AGENT_HARD_WALL_TIME_SEC: {}", envMaxAgentHardWallTime);
-            }
-        }
-        var envMaxPlanStepWallTime = System.getenv("ACECLAW_MAX_PLAN_STEP_WALL_TIME_SEC");
-        if (envMaxPlanStepWallTime != null && !envMaxPlanStepWallTime.isBlank()) {
-            try {
-                config.maxPlanStepWallTimeSec = Math.max(0, Integer.parseInt(envMaxPlanStepWallTime));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_MAX_PLAN_STEP_WALL_TIME_SEC: {}", envMaxPlanStepWallTime);
-            }
-        }
-        var envMaxPlanTotalWallTime = System.getenv("ACECLAW_MAX_PLAN_TOTAL_WALL_TIME_SEC");
-        if (envMaxPlanTotalWallTime != null && !envMaxPlanTotalWallTime.isBlank()) {
-            try {
-                config.maxPlanTotalWallTimeSec = Math.max(0, Integer.parseInt(envMaxPlanTotalWallTime));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_MAX_PLAN_TOTAL_WALL_TIME_SEC: {}", envMaxPlanTotalWallTime);
-            }
-        }
-        var envAdaptiveContinuation = System.getenv("ACECLAW_ADAPTIVE_CONTINUATION");
-        if (envAdaptiveContinuation != null && !envAdaptiveContinuation.isBlank()) {
-            config.adaptiveContinuationEnabled = Boolean.parseBoolean(envAdaptiveContinuation);
-        }
-        var envAdaptiveSegments = System.getenv("ACECLAW_ADAPTIVE_CONTINUATION_MAX_SEGMENTS");
-        if (envAdaptiveSegments != null && !envAdaptiveSegments.isBlank()) {
-            try {
-                config.adaptiveContinuationMaxSegments = Math.max(1, Integer.parseInt(envAdaptiveSegments));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_ADAPTIVE_CONTINUATION_MAX_SEGMENTS: {}", envAdaptiveSegments);
-            }
-        }
-        var envAdaptiveNoProgress = System.getenv("ACECLAW_ADAPTIVE_CONTINUATION_NO_PROGRESS_THRESHOLD");
-        if (envAdaptiveNoProgress != null && !envAdaptiveNoProgress.isBlank()) {
-            try {
-                config.adaptiveContinuationNoProgressThreshold = Math.max(1, Integer.parseInt(envAdaptiveNoProgress));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_ADAPTIVE_CONTINUATION_NO_PROGRESS_THRESHOLD: {}", envAdaptiveNoProgress);
-            }
-        }
-        var envAdaptiveMaxTokens = System.getenv("ACECLAW_ADAPTIVE_CONTINUATION_MAX_TOTAL_TOKENS");
-        if (envAdaptiveMaxTokens != null && !envAdaptiveMaxTokens.isBlank()) {
-            try {
-                config.adaptiveContinuationMaxTotalTokens = Math.max(0, Integer.parseInt(envAdaptiveMaxTokens));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_ADAPTIVE_CONTINUATION_MAX_TOTAL_TOKENS: {}", envAdaptiveMaxTokens);
-            }
-        }
-        var envAdaptiveMaxWallClock = System.getenv("ACECLAW_ADAPTIVE_CONTINUATION_MAX_WALL_CLOCK_SECONDS");
-        if (envAdaptiveMaxWallClock != null && !envAdaptiveMaxWallClock.isBlank()) {
-            try {
-                config.adaptiveContinuationMaxWallClockSeconds = Math.max(0, Integer.parseInt(envAdaptiveMaxWallClock));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_ADAPTIVE_CONTINUATION_MAX_WALL_CLOCK_SECONDS: {}", envAdaptiveMaxWallClock);
-            }
-        }
+        // -- Watchdog env vars (batch 4) -------------------------------------
+        applyEnvInt("ACECLAW_MAX_AGENT_TURNS",
+                v -> config.watchdogBuilder.agentTurns(Math.max(0, v)));
+        applyEnvInt("ACECLAW_MAX_AGENT_WALL_TIME_SEC",
+                v -> config.watchdogBuilder.agentWallTimeSec(Math.max(0, v)));
+        applyEnvInt("ACECLAW_MAX_AGENT_HARD_TURNS",
+                v -> config.watchdogBuilder.agentHardTurns(Math.max(0, v)));
+        applyEnvInt("ACECLAW_MAX_AGENT_HARD_WALL_TIME_SEC",
+                v -> config.watchdogBuilder.agentHardWallTimeSec(Math.max(0, v)));
+        applyEnvInt("ACECLAW_MAX_PLAN_STEP_WALL_TIME_SEC",
+                v -> config.watchdogBuilder.planStepWallTimeSec(Math.max(0, v)));
+        applyEnvInt("ACECLAW_MAX_PLAN_TOTAL_WALL_TIME_SEC",
+                v -> config.watchdogBuilder.planTotalWallTimeSec(Math.max(0, v)));
+        // -- Adaptive continuation env vars (batch 2) ------------------------
+        applyEnvBoolean("ACECLAW_ADAPTIVE_CONTINUATION",
+                v -> config.adaptiveContinuationBuilder.enabled(v));
+        applyEnvInt("ACECLAW_ADAPTIVE_CONTINUATION_MAX_SEGMENTS",
+                v -> config.adaptiveContinuationBuilder.maxSegments(Math.max(1, v)));
+        applyEnvInt("ACECLAW_ADAPTIVE_CONTINUATION_NO_PROGRESS_THRESHOLD",
+                v -> config.adaptiveContinuationBuilder.noProgressThreshold(Math.max(1, v)));
+        applyEnvInt("ACECLAW_ADAPTIVE_CONTINUATION_MAX_TOTAL_TOKENS",
+                v -> config.adaptiveContinuationBuilder.maxTotalTokens(Math.max(0, v)));
+        applyEnvInt("ACECLAW_ADAPTIVE_CONTINUATION_MAX_WALL_CLOCK_SECONDS",
+                v -> config.adaptiveContinuationBuilder.maxWallClockSeconds(Math.max(0, v)));
         var envLogLevel = System.getenv("ACECLAW_LOG_LEVEL");
         if (envLogLevel != null && !envLogLevel.isBlank()) {
             config.logLevel = envLogLevel;
@@ -530,194 +417,67 @@ public final class AceClawConfig {
         if (envPermMode != null && !envPermMode.isBlank()) {
             config.permissionMode = envPermMode.toLowerCase();
         }
-        var envCandidateInjection = System.getenv("ACECLAW_CANDIDATE_INJECTION");
-        if (envCandidateInjection != null && !envCandidateInjection.isBlank()) {
-            config.candidateInjectionEnabled = Boolean.parseBoolean(envCandidateInjection);
-        }
-        var envCandidatePromotion = System.getenv("ACECLAW_CANDIDATE_PROMOTION");
-        if (envCandidatePromotion != null && !envCandidatePromotion.isBlank()) {
-            config.candidatePromotionEnabled = Boolean.parseBoolean(envCandidatePromotion);
-        }
-        var envCandidateInjectionMaxTokens = System.getenv("ACECLAW_CANDIDATE_INJECTION_MAX_TOKENS");
-        if (envCandidateInjectionMaxTokens != null && !envCandidateInjectionMaxTokens.isBlank()) {
-            try {
-                config.candidateInjectionMaxTokens = Math.max(0, Integer.parseInt(envCandidateInjectionMaxTokens));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_CANDIDATE_INJECTION_MAX_TOKENS: {}", envCandidateInjectionMaxTokens);
-            }
-        }
-        var envAntiPatternMinBlocked = System.getenv("ACECLAW_ANTI_PATTERN_GATE_MIN_BLOCKED_BEFORE_ROLLBACK");
-        if (envAntiPatternMinBlocked != null && !envAntiPatternMinBlocked.isBlank()) {
-            try {
-                config.antiPatternGateMinBlockedBeforeRollback = Math.max(1, Integer.parseInt(envAntiPatternMinBlocked));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_ANTI_PATTERN_GATE_MIN_BLOCKED_BEFORE_ROLLBACK: {}", envAntiPatternMinBlocked);
-            }
-        }
-        var envAntiPatternMaxFpRate = System.getenv("ACECLAW_ANTI_PATTERN_GATE_MAX_FALSE_POSITIVE_RATE");
-        if (envAntiPatternMaxFpRate != null && !envAntiPatternMaxFpRate.isBlank()) {
-            try {
-                config.antiPatternGateMaxFalsePositiveRate = clampRate(Double.parseDouble(envAntiPatternMaxFpRate));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_ANTI_PATTERN_GATE_MAX_FALSE_POSITIVE_RATE: {}", envAntiPatternMaxFpRate);
-            }
-        }
-        var envSkillDraftValidation = System.getenv("ACECLAW_SKILL_DRAFT_VALIDATION");
-        if (envSkillDraftValidation != null && !envSkillDraftValidation.isBlank()) {
-            config.skillDraftValidationEnabled = Boolean.parseBoolean(envSkillDraftValidation);
-        }
-        var envSkillDraftValidationStrict = System.getenv("ACECLAW_SKILL_DRAFT_VALIDATION_STRICT_MODE");
-        if (envSkillDraftValidationStrict != null && !envSkillDraftValidationStrict.isBlank()) {
-            config.skillDraftValidationStrictMode = Boolean.parseBoolean(envSkillDraftValidationStrict);
-        }
-        var envSkillDraftValidationReplayRequired =
-                System.getenv("ACECLAW_SKILL_DRAFT_VALIDATION_REPLAY_REQUIRED");
-        if (envSkillDraftValidationReplayRequired != null && !envSkillDraftValidationReplayRequired.isBlank()) {
-            config.skillDraftValidationReplayRequired = Boolean.parseBoolean(envSkillDraftValidationReplayRequired);
-        }
+        // -- Candidate + anti-pattern-gate env vars (batch 3) ----------------
+        applyEnvBoolean("ACECLAW_CANDIDATE_INJECTION",
+                v -> config.candidateInjectionBuilder.enabled(v));
+        applyEnvBoolean("ACECLAW_CANDIDATE_PROMOTION",
+                v -> config.candidatePromotionBuilder.enabled(v));
+        applyEnvInt("ACECLAW_CANDIDATE_INJECTION_MAX_TOKENS",
+                v -> config.candidateInjectionBuilder.maxTokens(Math.max(0, v)));
+        applyEnvInt("ACECLAW_ANTI_PATTERN_GATE_MIN_BLOCKED_BEFORE_ROLLBACK",
+                v -> config.antiPatternGateBuilder.minBlockedBeforeRollback(Math.max(1, v)));
+        applyEnvDouble("ACECLAW_ANTI_PATTERN_GATE_MAX_FALSE_POSITIVE_RATE",
+                v -> config.antiPatternGateBuilder.maxFalsePositiveRate(v));
+        // -- Skill draft validation env vars (batch 2) -----------------------
+        applyEnvBoolean("ACECLAW_SKILL_DRAFT_VALIDATION",
+                v -> config.skillDraftValidationBuilder.enabled(v));
+        applyEnvBoolean("ACECLAW_SKILL_DRAFT_VALIDATION_STRICT_MODE",
+                v -> config.skillDraftValidationBuilder.strictMode(v));
+        applyEnvBoolean("ACECLAW_SKILL_DRAFT_VALIDATION_REPLAY_REQUIRED",
+                v -> config.skillDraftValidationBuilder.replayRequired(v));
+        // ACECLAW_REPLAY_REPORT_PATH is a String — no parse step.
         var envReplayReportPath = System.getenv("ACECLAW_REPLAY_REPORT_PATH");
         if (envReplayReportPath != null && !envReplayReportPath.isBlank()) {
-            config.skillDraftValidationReplayReport = envReplayReportPath;
+            config.skillDraftValidationBuilder.replayReportPath(envReplayReportPath);
         }
-        var envSkillDraftValidationMaxTokenError =
-                System.getenv("ACECLAW_SKILL_DRAFT_VALIDATION_MAX_TOKEN_ESTIMATION_ERROR_RATIO");
-        if (envSkillDraftValidationMaxTokenError != null && !envSkillDraftValidationMaxTokenError.isBlank()) {
-            try {
-                config.skillDraftValidationMaxTokenEstimationErrorRatio =
-                        Double.parseDouble(envSkillDraftValidationMaxTokenError);
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_SKILL_DRAFT_VALIDATION_MAX_TOKEN_ESTIMATION_ERROR_RATIO: {}",
-                        envSkillDraftValidationMaxTokenError);
-            }
-        }
-        var envSkillAutoReleaseEnabled = System.getenv("ACECLAW_SKILL_AUTO_RELEASE");
-        if (envSkillAutoReleaseEnabled != null && !envSkillAutoReleaseEnabled.isBlank()) {
-            config.skillAutoReleaseEnabled = Boolean.parseBoolean(envSkillAutoReleaseEnabled);
-        }
-        var envSkillAutoReleaseMinScore = System.getenv("ACECLAW_SKILL_AUTO_RELEASE_MIN_SCORE");
-        if (envSkillAutoReleaseMinScore != null && !envSkillAutoReleaseMinScore.isBlank()) {
-            try {
-                config.skillAutoReleaseMinCandidateScore =
-                        clampRate(Double.parseDouble(envSkillAutoReleaseMinScore));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_MIN_SCORE: {}", envSkillAutoReleaseMinScore);
-            }
-        }
-        var envSkillAutoReleaseMinEvidence = System.getenv("ACECLAW_SKILL_AUTO_RELEASE_MIN_EVIDENCE");
-        if (envSkillAutoReleaseMinEvidence != null && !envSkillAutoReleaseMinEvidence.isBlank()) {
-            try {
-                config.skillAutoReleaseMinEvidence = Math.max(0, Integer.parseInt(envSkillAutoReleaseMinEvidence));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_MIN_EVIDENCE: {}", envSkillAutoReleaseMinEvidence);
-            }
-        }
-        var envSkillAutoReleaseCanaryMinAttempts =
-                System.getenv("ACECLAW_SKILL_AUTO_RELEASE_CANARY_MIN_ATTEMPTS");
-        if (envSkillAutoReleaseCanaryMinAttempts != null && !envSkillAutoReleaseCanaryMinAttempts.isBlank()) {
-            try {
-                config.skillAutoReleaseCanaryMinAttempts =
-                        Math.max(0, Integer.parseInt(envSkillAutoReleaseCanaryMinAttempts));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_CANARY_MIN_ATTEMPTS: {}",
-                        envSkillAutoReleaseCanaryMinAttempts);
-            }
-        }
-        var envSkillAutoReleaseCanaryMaxFailureRate =
-                System.getenv("ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_FAILURE_RATE");
-        if (envSkillAutoReleaseCanaryMaxFailureRate != null && !envSkillAutoReleaseCanaryMaxFailureRate.isBlank()) {
-            try {
-                config.skillAutoReleaseCanaryMaxFailureRate =
-                        clampRate(Double.parseDouble(envSkillAutoReleaseCanaryMaxFailureRate));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_FAILURE_RATE: {}",
-                        envSkillAutoReleaseCanaryMaxFailureRate);
-            }
-        }
-        var envSkillAutoReleaseCanaryMaxTimeoutRate =
-                System.getenv("ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_TIMEOUT_RATE");
-        if (envSkillAutoReleaseCanaryMaxTimeoutRate != null && !envSkillAutoReleaseCanaryMaxTimeoutRate.isBlank()) {
-            try {
-                config.skillAutoReleaseCanaryMaxTimeoutRate =
-                        clampRate(Double.parseDouble(envSkillAutoReleaseCanaryMaxTimeoutRate));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_TIMEOUT_RATE: {}",
-                        envSkillAutoReleaseCanaryMaxTimeoutRate);
-            }
-        }
-        var envSkillAutoReleaseCanaryMaxPermissionRate =
-                System.getenv("ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_PERMISSION_BLOCK_RATE");
-        if (envSkillAutoReleaseCanaryMaxPermissionRate != null
-                && !envSkillAutoReleaseCanaryMaxPermissionRate.isBlank()) {
-            try {
-                config.skillAutoReleaseCanaryMaxPermissionBlockRate =
-                        clampRate(Double.parseDouble(envSkillAutoReleaseCanaryMaxPermissionRate));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_PERMISSION_BLOCK_RATE: {}",
-                        envSkillAutoReleaseCanaryMaxPermissionRate);
-            }
-        }
-        var envSkillAutoReleaseActiveMaxFailureRate =
-                System.getenv("ACECLAW_SKILL_AUTO_RELEASE_ACTIVE_MAX_FAILURE_RATE");
-        if (envSkillAutoReleaseActiveMaxFailureRate != null && !envSkillAutoReleaseActiveMaxFailureRate.isBlank()) {
-            try {
-                config.skillAutoReleaseActiveMaxFailureRate =
-                        clampRate(Double.parseDouble(envSkillAutoReleaseActiveMaxFailureRate));
-                // Legacy env alias maps to rollback failure threshold.
-                config.skillAutoReleaseRollbackMaxFailureRate = config.skillAutoReleaseActiveMaxFailureRate;
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_ACTIVE_MAX_FAILURE_RATE: {}",
-                        envSkillAutoReleaseActiveMaxFailureRate);
-            }
-        }
-        var envSkillAutoReleaseRollbackMaxFailureRate =
-                System.getenv("ACECLAW_SKILL_AUTO_RELEASE_ROLLBACK_MAX_FAILURE_RATE");
-        if (envSkillAutoReleaseRollbackMaxFailureRate != null && !envSkillAutoReleaseRollbackMaxFailureRate.isBlank()) {
-            try {
-                config.skillAutoReleaseRollbackMaxFailureRate =
-                        clampRate(Double.parseDouble(envSkillAutoReleaseRollbackMaxFailureRate));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_ROLLBACK_MAX_FAILURE_RATE: {}",
-                        envSkillAutoReleaseRollbackMaxFailureRate);
-            }
-        }
-        var envSkillAutoReleaseRollbackMaxTimeoutRate =
-                System.getenv("ACECLAW_SKILL_AUTO_RELEASE_ROLLBACK_MAX_TIMEOUT_RATE");
-        if (envSkillAutoReleaseRollbackMaxTimeoutRate != null && !envSkillAutoReleaseRollbackMaxTimeoutRate.isBlank()) {
-            try {
-                config.skillAutoReleaseRollbackMaxTimeoutRate =
-                        clampRate(Double.parseDouble(envSkillAutoReleaseRollbackMaxTimeoutRate));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_ROLLBACK_MAX_TIMEOUT_RATE: {}",
-                        envSkillAutoReleaseRollbackMaxTimeoutRate);
-            }
-        }
-        var envSkillAutoReleaseRollbackMaxPermissionRate =
-                System.getenv("ACECLAW_SKILL_AUTO_RELEASE_ROLLBACK_MAX_PERMISSION_BLOCK_RATE");
-        if (envSkillAutoReleaseRollbackMaxPermissionRate != null
-                && !envSkillAutoReleaseRollbackMaxPermissionRate.isBlank()) {
-            try {
-                config.skillAutoReleaseRollbackMaxPermissionBlockRate =
-                        clampRate(Double.parseDouble(envSkillAutoReleaseRollbackMaxPermissionRate));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_ROLLBACK_MAX_PERMISSION_BLOCK_RATE: {}",
-                        envSkillAutoReleaseRollbackMaxPermissionRate);
-            }
-        }
-        var envSkillAutoReleaseLookbackHours = System.getenv("ACECLAW_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS");
-        if (envSkillAutoReleaseLookbackHours != null && !envSkillAutoReleaseLookbackHours.isBlank()) {
-            try {
-                config.skillAutoReleaseHealthLookbackHours =
-                        Math.max(1, Integer.parseInt(envSkillAutoReleaseLookbackHours));
-            } catch (NumberFormatException e) {
-                log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS: {}",
-                        envSkillAutoReleaseLookbackHours);
-            }
-        }
+        applyEnvDouble("ACECLAW_SKILL_DRAFT_VALIDATION_MAX_TOKEN_ESTIMATION_ERROR_RATIO",
+                v -> config.skillDraftValidationBuilder.maxTokenEstimationErrorRatio(v));
+        // -- Skill auto-release env vars -------------------------------------
+        // Was 12 nearly-identical try/catch blocks (130 LoC) updating 12
+        // individual scalar fields on `config`. Each one now folds into a
+        // single builder.xxx(parsed) call — the builder handles null/range
+        // validation centrally.
+        applyEnvBoolean("ACECLAW_SKILL_AUTO_RELEASE",
+                v -> config.skillAutoReleaseBuilder.enabled(v));
+        applyEnvDouble("ACECLAW_SKILL_AUTO_RELEASE_MIN_SCORE",
+                v -> config.skillAutoReleaseBuilder.minCandidateScore(v));
+        applyEnvInt("ACECLAW_SKILL_AUTO_RELEASE_MIN_EVIDENCE",
+                v -> config.skillAutoReleaseBuilder.minEvidenceCount(Math.max(1, v)));
+        applyEnvInt("ACECLAW_SKILL_AUTO_RELEASE_CANARY_MIN_ATTEMPTS",
+                v -> config.skillAutoReleaseBuilder.canaryMinAttempts(Math.max(0, v)));
+        applyEnvDouble("ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_FAILURE_RATE",
+                v -> config.skillAutoReleaseBuilder.canaryMaxFailureRate(v));
+        applyEnvDouble("ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_TIMEOUT_RATE",
+                v -> config.skillAutoReleaseBuilder.canaryMaxTimeoutRate(v));
+        applyEnvDouble("ACECLAW_SKILL_AUTO_RELEASE_CANARY_MAX_PERMISSION_BLOCK_RATE",
+                v -> config.skillAutoReleaseBuilder.canaryMaxPermissionRate(v));
+        // Legacy env alias: ACTIVE_MAX_FAILURE_RATE → rollbackFailure.
+        // Preserved for backward compat with pre-#467 docs.
+        applyEnvDouble("ACECLAW_SKILL_AUTO_RELEASE_ACTIVE_MAX_FAILURE_RATE",
+                v -> config.skillAutoReleaseBuilder.applyLegacyActiveMaxFailureRate(v));
+        applyEnvDouble("ACECLAW_SKILL_AUTO_RELEASE_ROLLBACK_MAX_FAILURE_RATE",
+                v -> config.skillAutoReleaseBuilder.rollbackMaxFailureRate(v));
+        applyEnvDouble("ACECLAW_SKILL_AUTO_RELEASE_ROLLBACK_MAX_TIMEOUT_RATE",
+                v -> config.skillAutoReleaseBuilder.rollbackMaxTimeoutRate(v));
+        applyEnvDouble("ACECLAW_SKILL_AUTO_RELEASE_ROLLBACK_MAX_PERMISSION_BLOCK_RATE",
+                v -> config.skillAutoReleaseBuilder.rollbackMaxPermissionRate(v));
+        applyEnvInt("ACECLAW_SKILL_AUTO_RELEASE_HEALTH_LOOKBACK_HOURS",
+                v -> config.skillAutoReleaseBuilder.healthLookbackHours(Math.max(1, v)));
         var envSkillAutoReleaseCanaryDwellHours = System.getenv("ACECLAW_SKILL_AUTO_RELEASE_CANARY_DWELL_HOURS");
         if (envSkillAutoReleaseCanaryDwellHours != null && !envSkillAutoReleaseCanaryDwellHours.isBlank()) {
             try {
-                config.skillAutoReleaseCanaryDwellHours =
-                        Math.max(0, Integer.parseInt(envSkillAutoReleaseCanaryDwellHours));
+                config.skillAutoReleaseBuilder.canaryDwellHours(
+                        Math.max(0, Integer.parseInt(envSkillAutoReleaseCanaryDwellHours)));
             } catch (NumberFormatException e) {
                 log.warn("Invalid ACECLAW_SKILL_AUTO_RELEASE_CANARY_DWELL_HOURS: {}",
                         envSkillAutoReleaseCanaryDwellHours);
@@ -766,9 +526,10 @@ public final class AceClawConfig {
             config.webSocketEnabled = false;
         }
 
+        var ac = config.adaptiveContinuation();
         log.info("Config loaded: provider={}, model={}, maxTokens={}, thinkingBudget={}, maxTurns={}, adaptiveContinuationEnabled={}, adaptiveMaxSegments={}, contextWindow={}, logLevel={}, baseUrl={}, apiKey={}, refreshToken={}",
                 config.provider, config.model, config.maxTokens, config.thinkingBudget, config.maxTurns,
-                config.adaptiveContinuationEnabled, config.adaptiveContinuationMaxSegments,
+                ac.enabled(), ac.maxSegments(),
                 config.contextWindowTokens, config.logLevel,
                 config.baseUrl != null ? config.baseUrl : "(default)",
                 config.apiKey != null ? "(set)" : "(not set)",
@@ -845,24 +606,13 @@ public final class AceClawConfig {
         return maxTurns;
     }
 
-    public boolean adaptiveContinuationEnabled() {
-        return adaptiveContinuationEnabled;
-    }
-
-    public int adaptiveContinuationMaxSegments() {
-        return adaptiveContinuationMaxSegments;
-    }
-
-    public int adaptiveContinuationNoProgressThreshold() {
-        return adaptiveContinuationNoProgressThreshold;
-    }
-
-    public int adaptiveContinuationMaxTotalTokens() {
-        return adaptiveContinuationMaxTotalTokens;
-    }
-
-    public int adaptiveContinuationMaxWallClockSeconds() {
-        return adaptiveContinuationMaxWallClockSeconds;
+    /**
+     * Returns the adaptive-continuation config — the feature gate plus the
+     * 4 budget scalars the agent loop reads. Replaces 5 individual getters
+     * as part of batch 2 of the AceClawConfig decomposition.
+     */
+    public AdaptiveContinuationSettings adaptiveContinuation() {
+        return adaptiveContinuationBuilder.build();
     }
 
     /**
@@ -972,6 +722,23 @@ public final class AceClawConfig {
     }
 
     /**
+     * Returns whether the policy's structural sensitive-path denials are
+     * enabled. Default {@code false} (opt-in).
+     *
+     * <p>Wired from {@code security.denySensitivePaths} in
+     * {@code ~/.aceclaw/config.json} or {@code {project}/.aceclaw/config.json}.
+     * When {@code true}, writes/deletes targeting {@code .env*}, {@code .ssh/*},
+     * {@code .git/config}, {@code credentials.json}, anything under
+     * {@code /etc/}, etc. are hard-denied regardless of permission mode or
+     * prior session approval. See
+     * {@link dev.aceclaw.security.DefaultPermissionPolicy} for the full rule
+     * set and rationale.
+     */
+    public boolean denySensitivePaths() {
+        return denySensitivePaths;
+    }
+
+    /**
      * Persists candidate injection settings to config.json.
      *
      * @param projectPath project root for project-scoped persistence (required when scope=project)
@@ -1020,51 +787,13 @@ public final class AceClawConfig {
     }
 
     /**
-     * Returns whether BOOT.md execution is enabled at daemon startup.
-     * Defaults to true.
+     * Returns the daemon lifecycle config — boot script, cron scheduler,
+     * heartbeat, and deferred-action scheduler gates + tick cadences (8
+     * scalars total). Batch 5 of the AceClawConfig decomposition; replaces
+     * 8 individual getters.
      */
-    public boolean bootEnabled() {
-        return bootEnabled;
-    }
-
-    /**
-     * Returns the maximum time in seconds for BOOT.md execution.
-     * Defaults to 120.
-     */
-    public int bootTimeoutSeconds() {
-        return bootTimeoutSeconds;
-    }
-
-    /**
-     * Returns whether the cron scheduler is enabled at daemon startup.
-     * Defaults to true.
-     */
-    public boolean schedulerEnabled() {
-        return schedulerEnabled;
-    }
-
-    /**
-     * Returns the cron scheduler tick interval in seconds.
-     * Defaults to 60.
-     */
-    public int schedulerTickSeconds() {
-        return schedulerTickSeconds;
-    }
-
-    /**
-     * Returns whether heartbeat tasks from HEARTBEAT.md are enabled.
-     * Defaults to true.
-     */
-    public boolean heartbeatEnabled() {
-        return heartbeatEnabled;
-    }
-
-    /**
-     * Returns the active hours window for heartbeat tasks in "HH:mm-HH:mm" format.
-     * Returns null if heartbeat tasks should always be active.
-     */
-    public String heartbeatActiveHours() {
-        return heartbeatActiveHours;
+    public DaemonLifecycleSettings lifecycle() {
+        return lifecycleBuilder.build();
     }
 
     /**
@@ -1093,174 +822,54 @@ public final class AceClawConfig {
     }
 
     /**
-     * Returns whether candidate injection into the system prompt is enabled.
-     * Defaults to true.
+     * Returns the candidate-promotion config — the feature gate plus the
+     * 3 promotion-threshold scalars (minEvidence, minScore, maxFailureRate)
+     * that feed the {@code CandidateStateMachine.Config} constructor.
+     * Batch 3 of the AceClawConfig decomposition.
      */
-    public boolean candidateInjectionEnabled() {
-        return candidateInjectionEnabled;
+    public CandidatePromotionSettings candidatePromotion() {
+        return candidatePromotionBuilder.build();
     }
 
     /**
-     * Returns whether automatic candidate state transitions (promotion/demotion) are enabled.
-     * Defaults to true.
+     * Returns the candidate-injection config — the feature gate plus the
+     * 2 per-prompt budget scalars (maxCount, maxTokens). Batch 3 of the
+     * AceClawConfig decomposition.
      */
-    public boolean candidatePromotionEnabled() {
-        return candidatePromotionEnabled;
+    public CandidateInjectionSettings candidateInjection() {
+        return candidateInjectionBuilder.build();
     }
 
     /**
-     * Returns the minimum evidence count for candidate promotion.
-     * Defaults to 3.
+     * Returns the anti-pattern-gate config — the 2 rollback-threshold
+     * scalars (minBlockedBeforeRollback, maxFalsePositiveRate). No
+     * {@code enabled} flag; the gate is always on. Batch 3 of the
+     * AceClawConfig decomposition.
      */
-    public int candidatePromotionMinEvidence() {
-        return candidatePromotionMinEvidence;
+    public AntiPatternGateSettings antiPatternGate() {
+        return antiPatternGateBuilder.build();
     }
 
     /**
-     * Returns the minimum score for candidate promotion.
-     * Defaults to 0.75.
+     * Returns the skill-draft-validation config — the feature gate plus the
+     * 4 scalars the {@code ValidationGateEngine} consumes. Replaces 5
+     * individual getters as part of batch 2 of the AceClawConfig
+     * decomposition.
      */
-    public double candidatePromotionMinScore() {
-        return candidatePromotionMinScore;
+    public SkillDraftValidationSettings skillDraftValidation() {
+        return skillDraftValidationBuilder.build();
     }
 
     /**
-     * Returns the maximum failure rate for candidate promotion.
-     * Defaults to 0.2.
+     * Returns the skill auto-release config — the feature gate plus the 11
+     * canary / rollback tuning scalars the {@code AutoReleaseController}
+     * consumes. Replaces 13 individual getters as the first pilot of the
+     * AceClawConfig decomposition: callers that needed all the values
+     * (single call site in {@code AceClawDaemon}) now receive one record
+     * argument instead of passing 11 scalars by hand.
      */
-    public double candidatePromotionMaxFailureRate() {
-        return candidatePromotionMaxFailureRate;
-    }
-
-    /**
-     * Returns the maximum number of candidates to inject into the system prompt.
-     * Defaults to 10.
-     */
-    public int candidateInjectionMaxCount() {
-        return candidateInjectionMaxCount;
-    }
-
-    /**
-     * Returns the maximum token budget for candidate injection.
-     * Defaults to 1200.
-     */
-    public int candidateInjectionMaxTokens() {
-        return candidateInjectionMaxTokens;
-    }
-
-    public int antiPatternGateMinBlockedBeforeRollback() {
-        return antiPatternGateMinBlockedBeforeRollback;
-    }
-
-    public double antiPatternGateMaxFalsePositiveRate() {
-        return antiPatternGateMaxFalsePositiveRate;
-    }
-
-    /**
-     * Returns whether autonomous skill draft validation is enabled.
-     */
-    public boolean skillDraftValidationEnabled() {
-        return skillDraftValidationEnabled;
-    }
-
-    /**
-     * Returns whether validation gate strict mode is enabled.
-     */
-    public boolean skillDraftValidationStrictMode() {
-        return skillDraftValidationStrictMode;
-    }
-
-    /**
-     * Returns whether replay checks are required for draft validation.
-     */
-    public boolean skillDraftValidationReplayRequired() {
-        return skillDraftValidationReplayRequired;
-    }
-
-    /**
-     * Returns replay report path for draft validation.
-     */
-    public String skillDraftValidationReplayReport() {
-        return skillDraftValidationReplayReport;
-    }
-
-    /**
-     * Returns max token-estimation error ratio accepted by draft validation replay gate.
-     */
-    public double skillDraftValidationMaxTokenEstimationErrorRatio() {
-        return skillDraftValidationMaxTokenEstimationErrorRatio;
-    }
-
-    public boolean skillAutoReleaseEnabled() {
-        return skillAutoReleaseEnabled;
-    }
-
-    public double skillAutoReleaseMinCandidateScore() {
-        return skillAutoReleaseMinCandidateScore;
-    }
-
-    public int skillAutoReleaseMinEvidence() {
-        return skillAutoReleaseMinEvidence;
-    }
-
-    public int skillAutoReleaseCanaryMinAttempts() {
-        return skillAutoReleaseCanaryMinAttempts;
-    }
-
-    public double skillAutoReleaseCanaryMaxFailureRate() {
-        return skillAutoReleaseCanaryMaxFailureRate;
-    }
-
-    public double skillAutoReleaseCanaryMaxTimeoutRate() {
-        return skillAutoReleaseCanaryMaxTimeoutRate;
-    }
-
-    public double skillAutoReleaseCanaryMaxPermissionBlockRate() {
-        return skillAutoReleaseCanaryMaxPermissionBlockRate;
-    }
-
-    public double skillAutoReleaseActiveMaxFailureRate() {
-        return skillAutoReleaseActiveMaxFailureRate;
-    }
-
-    public double skillAutoReleaseRollbackMaxFailureRate() {
-        return skillAutoReleaseRollbackMaxFailureRate;
-    }
-
-    public double skillAutoReleaseRollbackMaxTimeoutRate() {
-        return skillAutoReleaseRollbackMaxTimeoutRate;
-    }
-
-    public double skillAutoReleaseRollbackMaxPermissionBlockRate() {
-        return skillAutoReleaseRollbackMaxPermissionBlockRate;
-    }
-
-    public int skillAutoReleaseHealthLookbackHours() {
-        return skillAutoReleaseHealthLookbackHours;
-    }
-
-    /**
-     * Returns the minimum dwell time in hours at CANARY stage before promotion to ACTIVE.
-     * Defaults to 24.
-     */
-    public int skillAutoReleaseCanaryDwellHours() {
-        return skillAutoReleaseCanaryDwellHours;
-    }
-
-    /**
-     * Returns whether the deferred action scheduler is enabled.
-     * Defaults to true.
-     */
-    public boolean deferredActionEnabled() {
-        return deferredActionEnabled;
-    }
-
-    /**
-     * Returns the deferred action scheduler tick interval in seconds.
-     * Defaults to 5.
-     */
-    public int deferredActionTickSeconds() {
-        return deferredActionTickSeconds;
+    public SkillAutoReleaseSettings skillAutoRelease() {
+        return skillAutoReleaseBuilder.build();
     }
 
     /**
@@ -1308,54 +917,12 @@ public final class AceClawConfig {
     }
 
     /**
-     * Returns the maximum number of agent ReAct iterations per request.
-     * Enforced by the watchdog timer. 0 = disabled (uses existing maxTurns only).
-     * Defaults to 200.
+     * Returns the watchdog config — agent + plan turn/wall-time budgets
+     * (6 scalars, see {@link WatchdogSettings}). Replaces 6 individual
+     * getters as part of batch 4 of the AceClawConfig decomposition.
      */
-    public int maxAgentTurns() {
-        return maxAgentTurns;
-    }
-
-    /**
-     * Returns the maximum wall-clock time in seconds per agent request.
-     * Enforced by the watchdog timer. 0 = disabled.
-     * Defaults to 3600 (60 minutes).
-     */
-    public int maxAgentWallTimeSec() {
-        return maxAgentWallTimeSec;
-    }
-
-    /**
-     * Returns the hard ceiling for agent ReAct iterations per request.
-     * 0 = use 3x soft limit. Unconditional stop, absolute safety net.
-     */
-    public int maxAgentHardTurns() {
-        return maxAgentHardTurns;
-    }
-
-    /**
-     * Returns the hard ceiling for wall-clock time in seconds per agent request.
-     * 0 = use 3x soft limit. Unconditional stop, absolute safety net.
-     */
-    public int maxAgentHardWallTimeSec() {
-        return maxAgentHardWallTimeSec;
-    }
-
-    /**
-     * Returns the maximum wall-clock time in seconds per plan step.
-     * The watchdog timer is reset before each step. 0 = disabled.
-     * Defaults to 1800 (30 minutes).
-     */
-    public int maxPlanStepWallTimeSec() {
-        return maxPlanStepWallTimeSec;
-    }
-
-    /**
-     * Returns the maximum total wall-clock time in seconds for an entire plan execution.
-     * 0 = disabled. Defaults to 3600 (1 hour).
-     */
-    public int maxPlanTotalWallTimeSec() {
-        return maxPlanTotalWallTimeSec;
+    public WatchdogSettings watchdog() {
+        return watchdogBuilder.build();
     }
 
     /**
@@ -1419,8 +986,7 @@ public final class AceClawConfig {
      * Returns the retry configuration assembled from config fields.
      */
     public dev.aceclaw.core.agent.RetryConfig retryConfig() {
-        return new dev.aceclaw.core.agent.RetryConfig(
-                retryMaxRetries, retryInitialBackoffMs, retryMaxBackoffMs, retryJitterFactor);
+        return retryBuilder.build();
     }
 
     /**
@@ -1612,24 +1178,13 @@ public final class AceClawConfig {
         if (fileConfig.maxTurns > 0) {
             this.maxTurns = fileConfig.maxTurns;
         }
-        if (fileConfig.adaptiveContinuationEnabled != null) {
-            this.adaptiveContinuationEnabled = fileConfig.adaptiveContinuationEnabled;
-        }
-        if (fileConfig.adaptiveContinuationMaxSegments != null && fileConfig.adaptiveContinuationMaxSegments > 0) {
-            this.adaptiveContinuationMaxSegments = fileConfig.adaptiveContinuationMaxSegments;
-        }
-        if (fileConfig.adaptiveContinuationNoProgressThreshold != null
-                && fileConfig.adaptiveContinuationNoProgressThreshold > 0) {
-            this.adaptiveContinuationNoProgressThreshold = fileConfig.adaptiveContinuationNoProgressThreshold;
-        }
-        if (fileConfig.adaptiveContinuationMaxTotalTokens != null
-                && fileConfig.adaptiveContinuationMaxTotalTokens >= 0) {
-            this.adaptiveContinuationMaxTotalTokens = fileConfig.adaptiveContinuationMaxTotalTokens;
-        }
-        if (fileConfig.adaptiveContinuationMaxWallClockSeconds != null
-                && fileConfig.adaptiveContinuationMaxWallClockSeconds >= 0) {
-            this.adaptiveContinuationMaxWallClockSeconds = fileConfig.adaptiveContinuationMaxWallClockSeconds;
-        }
+        // -- Adaptive continuation file overrides (batch 2) -----------------
+        adaptiveContinuationBuilder
+                .enabled(fileConfig.adaptiveContinuationEnabled)
+                .maxSegments(fileConfig.adaptiveContinuationMaxSegments)
+                .noProgressThreshold(fileConfig.adaptiveContinuationNoProgressThreshold)
+                .maxTotalTokens(fileConfig.adaptiveContinuationMaxTotalTokens)
+                .maxWallClockSeconds(fileConfig.adaptiveContinuationMaxWallClockSeconds);
         if (fileConfig.contextWindowTokens > 0) {
             this.contextWindowTokens = fileConfig.contextWindowTokens;
         }
@@ -1639,29 +1194,24 @@ public final class AceClawConfig {
         if (fileConfig.braveSearchApiKey != null && !fileConfig.braveSearchApiKey.isBlank()) {
             this.braveSearchApiKey = fileConfig.braveSearchApiKey;
         }
+        if (fileConfig.security != null && fileConfig.security.denySensitivePaths != null) {
+            this.denySensitivePaths = fileConfig.security.denySensitivePaths;
+        }
         if (fileConfig.permissionMode != null && !fileConfig.permissionMode.isBlank()) {
             this.permissionMode = fileConfig.permissionMode.toLowerCase();
         }
-        if (fileConfig.bootEnabled != null) {
-            this.bootEnabled = fileConfig.bootEnabled;
-        }
-        if (fileConfig.bootTimeoutSeconds > 0) {
-            this.bootTimeoutSeconds = fileConfig.bootTimeoutSeconds;
-        }
-        if (fileConfig.schedulerEnabled != null) {
-            this.schedulerEnabled = fileConfig.schedulerEnabled;
-        }
-        if (fileConfig.schedulerTickSeconds > 0) {
-            this.schedulerTickSeconds = fileConfig.schedulerTickSeconds;
-        }
-        if (fileConfig.heartbeatEnabled != null) {
-            this.heartbeatEnabled = fileConfig.heartbeatEnabled;
-        }
-        if (fileConfig.heartbeatActiveHours != null) {
-            // Blank value explicitly clears inherited activeHours (= always active)
-            this.heartbeatActiveHours = fileConfig.heartbeatActiveHours.isBlank()
-                    ? null : fileConfig.heartbeatActiveHours;
-        }
+        // -- Daemon lifecycle file overrides (batch 5) -----------------------
+        // Was 6 individual nullable/positive blocks (boot + scheduler +
+        // heartbeat halves of the lifecycle cluster). Setter contracts mirror
+        // the prior gates: bools skip null, int ticks require > 0, activeHours
+        // accepts null + treats blank as "clear" (always active).
+        lifecycleBuilder
+                .bootEnabled(fileConfig.bootEnabled)
+                .bootTimeoutSeconds(fileConfig.bootTimeoutSeconds)
+                .schedulerEnabled(fileConfig.schedulerEnabled)
+                .schedulerTickSeconds(fileConfig.schedulerTickSeconds)
+                .heartbeatEnabled(fileConfig.heartbeatEnabled)
+                .heartbeatActiveHours(fileConfig.heartbeatActiveHours);
         if (fileConfig.plannerEnabled != null) {
             this.plannerEnabled = fileConfig.plannerEnabled;
         }
@@ -1671,134 +1221,68 @@ public final class AceClawConfig {
         if (fileConfig.adaptiveReplanEnabled != null) {
             this.adaptiveReplanEnabled = fileConfig.adaptiveReplanEnabled;
         }
-        if (fileConfig.candidateInjectionEnabled != null) {
-            this.candidateInjectionEnabled = fileConfig.candidateInjectionEnabled;
-        }
-        if (fileConfig.candidatePromotionEnabled != null) {
-            this.candidatePromotionEnabled = fileConfig.candidatePromotionEnabled;
-        }
-        if (fileConfig.candidatePromotionMinEvidence != null && fileConfig.candidatePromotionMinEvidence > 0) {
-            this.candidatePromotionMinEvidence = fileConfig.candidatePromotionMinEvidence;
-        }
-        if (fileConfig.candidatePromotionMinScore != null && fileConfig.candidatePromotionMinScore >= 0) {
-            this.candidatePromotionMinScore = fileConfig.candidatePromotionMinScore;
-        }
-        if (fileConfig.candidatePromotionMaxFailureRate != null && fileConfig.candidatePromotionMaxFailureRate >= 0) {
-            this.candidatePromotionMaxFailureRate = fileConfig.candidatePromotionMaxFailureRate;
-        }
-        if (fileConfig.candidateInjectionMaxCount != null && fileConfig.candidateInjectionMaxCount >= 0) {
-            this.candidateInjectionMaxCount = fileConfig.candidateInjectionMaxCount;
-        }
+        // -- Candidate file overrides (batch 3) ------------------------------
+        candidatePromotionBuilder
+                .enabled(fileConfig.candidatePromotionEnabled)
+                .minEvidence(fileConfig.candidatePromotionMinEvidence)
+                .minScore(fileConfig.candidatePromotionMinScore)
+                .maxFailureRate(fileConfig.candidatePromotionMaxFailureRate);
+        candidateInjectionBuilder
+                .enabled(fileConfig.candidateInjectionEnabled)
+                .maxCount(fileConfig.candidateInjectionMaxCount);
+        // Token budget priority: explicit maxTokens wins; otherwise fall back
+        // to the legacy maxChars (char-to-token approximation 4:1). Preserves
+        // the pre-decomp behaviour where setting maxTokens to a valid value
+        // takes precedence over a stale maxChars, but a config that ONLY has
+        // the older maxChars key still works.
         if (fileConfig.candidateInjectionMaxTokens != null && fileConfig.candidateInjectionMaxTokens >= 0) {
-            this.candidateInjectionMaxTokens = fileConfig.candidateInjectionMaxTokens;
+            candidateInjectionBuilder.maxTokens(fileConfig.candidateInjectionMaxTokens);
         } else if (fileConfig.candidateInjectionMaxChars != null && fileConfig.candidateInjectionMaxChars >= 0) {
-            // Backward compatibility: old char-based setting converts to approximate token budget.
-            this.candidateInjectionMaxTokens = Math.max(0, fileConfig.candidateInjectionMaxChars / 4);
+            candidateInjectionBuilder.maxTokens(Math.max(0, fileConfig.candidateInjectionMaxChars / 4));
         }
-        if (fileConfig.antiPatternGateMinBlockedBeforeRollback != null
-                && fileConfig.antiPatternGateMinBlockedBeforeRollback > 0) {
-            this.antiPatternGateMinBlockedBeforeRollback = fileConfig.antiPatternGateMinBlockedBeforeRollback;
-        }
-        if (fileConfig.antiPatternGateMaxFalsePositiveRate != null
-                && fileConfig.antiPatternGateMaxFalsePositiveRate >= 0) {
-            this.antiPatternGateMaxFalsePositiveRate = clampRate(fileConfig.antiPatternGateMaxFalsePositiveRate);
-        }
-        if (fileConfig.skillDraftValidationEnabled != null) {
-            this.skillDraftValidationEnabled = fileConfig.skillDraftValidationEnabled;
-        }
-        if (fileConfig.skillDraftValidationStrictMode != null) {
-            this.skillDraftValidationStrictMode = fileConfig.skillDraftValidationStrictMode;
-        }
-        if (fileConfig.skillDraftValidationReplayRequired != null) {
-            this.skillDraftValidationReplayRequired = fileConfig.skillDraftValidationReplayRequired;
-        }
-        if (fileConfig.skillDraftValidationReplayReport != null
-                && !fileConfig.skillDraftValidationReplayReport.isBlank()) {
-            this.skillDraftValidationReplayReport = fileConfig.skillDraftValidationReplayReport;
-        }
-        if (fileConfig.skillDraftValidationMaxTokenEstimationErrorRatio != null
-                && fileConfig.skillDraftValidationMaxTokenEstimationErrorRatio >= 0) {
-            this.skillDraftValidationMaxTokenEstimationErrorRatio =
-                    fileConfig.skillDraftValidationMaxTokenEstimationErrorRatio;
-        }
-        if (fileConfig.skillAutoReleaseEnabled != null) {
-            this.skillAutoReleaseEnabled = fileConfig.skillAutoReleaseEnabled;
-        }
-        if (fileConfig.skillAutoReleaseMinCandidateScore != null
-                && fileConfig.skillAutoReleaseMinCandidateScore >= 0) {
-            this.skillAutoReleaseMinCandidateScore = clampRate(fileConfig.skillAutoReleaseMinCandidateScore);
-        }
-        if (fileConfig.skillAutoReleaseMinEvidence != null && fileConfig.skillAutoReleaseMinEvidence > 0) {
-            this.skillAutoReleaseMinEvidence = fileConfig.skillAutoReleaseMinEvidence;
-        }
-        if (fileConfig.skillAutoReleaseCanaryMinAttempts != null
-                && fileConfig.skillAutoReleaseCanaryMinAttempts >= 0) {
-            this.skillAutoReleaseCanaryMinAttempts = fileConfig.skillAutoReleaseCanaryMinAttempts;
-        }
-        if (fileConfig.skillAutoReleaseCanaryMaxFailureRate != null
-                && fileConfig.skillAutoReleaseCanaryMaxFailureRate >= 0) {
-            this.skillAutoReleaseCanaryMaxFailureRate = clampRate(fileConfig.skillAutoReleaseCanaryMaxFailureRate);
-        }
-        if (fileConfig.skillAutoReleaseCanaryMaxTimeoutRate != null
-                && fileConfig.skillAutoReleaseCanaryMaxTimeoutRate >= 0) {
-            this.skillAutoReleaseCanaryMaxTimeoutRate = clampRate(fileConfig.skillAutoReleaseCanaryMaxTimeoutRate);
-        }
-        if (fileConfig.skillAutoReleaseCanaryMaxPermissionBlockRate != null
-                && fileConfig.skillAutoReleaseCanaryMaxPermissionBlockRate >= 0) {
-            this.skillAutoReleaseCanaryMaxPermissionBlockRate =
-                    clampRate(fileConfig.skillAutoReleaseCanaryMaxPermissionBlockRate);
-        }
-        if (fileConfig.skillAutoReleaseActiveMaxFailureRate != null
-                && fileConfig.skillAutoReleaseActiveMaxFailureRate >= 0) {
-            this.skillAutoReleaseActiveMaxFailureRate = clampRate(fileConfig.skillAutoReleaseActiveMaxFailureRate);
-            // Legacy config key maps to rollback failure threshold.
-            this.skillAutoReleaseRollbackMaxFailureRate = this.skillAutoReleaseActiveMaxFailureRate;
-        }
-        if (fileConfig.skillAutoReleaseRollbackMaxFailureRate != null
-                && fileConfig.skillAutoReleaseRollbackMaxFailureRate >= 0) {
-            this.skillAutoReleaseRollbackMaxFailureRate = clampRate(fileConfig.skillAutoReleaseRollbackMaxFailureRate);
-        }
-        if (fileConfig.skillAutoReleaseRollbackMaxTimeoutRate != null
-                && fileConfig.skillAutoReleaseRollbackMaxTimeoutRate >= 0) {
-            this.skillAutoReleaseRollbackMaxTimeoutRate = clampRate(fileConfig.skillAutoReleaseRollbackMaxTimeoutRate);
-        }
-        if (fileConfig.skillAutoReleaseRollbackMaxPermissionBlockRate != null
-                && fileConfig.skillAutoReleaseRollbackMaxPermissionBlockRate >= 0) {
-            this.skillAutoReleaseRollbackMaxPermissionBlockRate =
-                    clampRate(fileConfig.skillAutoReleaseRollbackMaxPermissionBlockRate);
-        }
-        if (fileConfig.skillAutoReleaseHealthLookbackHours != null
-                && fileConfig.skillAutoReleaseHealthLookbackHours > 0) {
-            this.skillAutoReleaseHealthLookbackHours = fileConfig.skillAutoReleaseHealthLookbackHours;
-        }
-        if (fileConfig.skillAutoReleaseCanaryDwellHours != null
-                && fileConfig.skillAutoReleaseCanaryDwellHours >= 0) {
-            this.skillAutoReleaseCanaryDwellHours = fileConfig.skillAutoReleaseCanaryDwellHours;
-        }
-        if (fileConfig.maxAgentTurns != null && fileConfig.maxAgentTurns >= 0) {
-            this.maxAgentTurns = fileConfig.maxAgentTurns;
-        }
-        if (fileConfig.maxAgentWallTimeSec != null && fileConfig.maxAgentWallTimeSec >= 0) {
-            this.maxAgentWallTimeSec = fileConfig.maxAgentWallTimeSec;
-        }
-        if (fileConfig.maxAgentHardTurns != null && fileConfig.maxAgentHardTurns >= 0) {
-            this.maxAgentHardTurns = fileConfig.maxAgentHardTurns;
-        }
-        if (fileConfig.maxAgentHardWallTimeSec != null && fileConfig.maxAgentHardWallTimeSec >= 0) {
-            this.maxAgentHardWallTimeSec = fileConfig.maxAgentHardWallTimeSec;
-        }
-        if (fileConfig.maxPlanStepWallTimeSec != null && fileConfig.maxPlanStepWallTimeSec >= 0) {
-            this.maxPlanStepWallTimeSec = fileConfig.maxPlanStepWallTimeSec;
-        }
-        if (fileConfig.maxPlanTotalWallTimeSec != null && fileConfig.maxPlanTotalWallTimeSec >= 0) {
-            this.maxPlanTotalWallTimeSec = fileConfig.maxPlanTotalWallTimeSec;
-        }
-        if (fileConfig.deferredActionEnabled != null) {
-            this.deferredActionEnabled = fileConfig.deferredActionEnabled;
-        }
-        if (fileConfig.deferredActionTickSeconds > 0) {
-            this.deferredActionTickSeconds = fileConfig.deferredActionTickSeconds;
-        }
+
+        // -- Anti-pattern gate file overrides (batch 3) ----------------------
+        antiPatternGateBuilder
+                .minBlockedBeforeRollback(fileConfig.antiPatternGateMinBlockedBeforeRollback)
+                .maxFalsePositiveRate(fileConfig.antiPatternGateMaxFalsePositiveRate);
+        // -- Skill draft validation file overrides (batch 2) -----------------
+        skillDraftValidationBuilder
+                .enabled(fileConfig.skillDraftValidationEnabled)
+                .strictMode(fileConfig.skillDraftValidationStrictMode)
+                .replayRequired(fileConfig.skillDraftValidationReplayRequired)
+                .replayReportPath(fileConfig.skillDraftValidationReplayReport)
+                .maxTokenEstimationErrorRatio(fileConfig.skillDraftValidationMaxTokenEstimationErrorRatio);
+        // -- Skill auto-release file overrides -------------------------------
+        // Was 13 individual nullable-then-set blocks (~55 LoC) updating 13
+        // scalar fields. Now folds into builder setters that each validate
+        // null + range centrally. The legacy `activeMaxFailureRate` key is
+        // handled by applyLegacyActiveMaxFailureRate (aliases onto
+        // rollbackMaxFailureRate, matching the previous behaviour).
+        skillAutoReleaseBuilder
+                .enabled(fileConfig.skillAutoReleaseEnabled)
+                .minCandidateScore(fileConfig.skillAutoReleaseMinCandidateScore)
+                .minEvidenceCount(fileConfig.skillAutoReleaseMinEvidence)
+                .canaryMinAttempts(fileConfig.skillAutoReleaseCanaryMinAttempts)
+                .canaryMaxFailureRate(fileConfig.skillAutoReleaseCanaryMaxFailureRate)
+                .canaryMaxTimeoutRate(fileConfig.skillAutoReleaseCanaryMaxTimeoutRate)
+                .canaryMaxPermissionRate(fileConfig.skillAutoReleaseCanaryMaxPermissionBlockRate)
+                .applyLegacyActiveMaxFailureRate(fileConfig.skillAutoReleaseActiveMaxFailureRate)
+                .rollbackMaxFailureRate(fileConfig.skillAutoReleaseRollbackMaxFailureRate)
+                .rollbackMaxTimeoutRate(fileConfig.skillAutoReleaseRollbackMaxTimeoutRate)
+                .rollbackMaxPermissionRate(fileConfig.skillAutoReleaseRollbackMaxPermissionBlockRate)
+                .healthLookbackHours(fileConfig.skillAutoReleaseHealthLookbackHours)
+                .canaryDwellHours(fileConfig.skillAutoReleaseCanaryDwellHours);
+        // -- Watchdog file overrides (batch 4) -------------------------------
+        watchdogBuilder
+                .agentTurns(fileConfig.maxAgentTurns)
+                .agentWallTimeSec(fileConfig.maxAgentWallTimeSec)
+                .agentHardTurns(fileConfig.maxAgentHardTurns)
+                .agentHardWallTimeSec(fileConfig.maxAgentHardWallTimeSec)
+                .planStepWallTimeSec(fileConfig.maxPlanStepWallTimeSec)
+                .planTotalWallTimeSec(fileConfig.maxPlanTotalWallTimeSec);
+        lifecycleBuilder
+                .deferredActionEnabled(fileConfig.deferredActionEnabled)
+                .deferredActionTickSeconds(fileConfig.deferredActionTickSeconds);
         if (fileConfig.webSocket != null) {
             if (fileConfig.webSocket.enabled != null) {
                 this.webSocketEnabled = fileConfig.webSocket.enabled;
@@ -1839,20 +1323,15 @@ public final class AceClawConfig {
                     .filter(b -> b != null && !b.isBlank())
                     .toList();
         }
+        // -- Retry file overrides (batch 6) ----------------------------------
+        // Was 13 lines of nested null-and-range-check ifs. Builder setters
+        // bake in the same gates (null skipped + out-of-range silently kept).
         if (fileConfig.retry != null) {
-            if (fileConfig.retry.maxRetries != null && fileConfig.retry.maxRetries >= 0) {
-                this.retryMaxRetries = fileConfig.retry.maxRetries;
-            }
-            if (fileConfig.retry.initialBackoffMs != null && fileConfig.retry.initialBackoffMs >= 0) {
-                this.retryInitialBackoffMs = fileConfig.retry.initialBackoffMs;
-            }
-            if (fileConfig.retry.maxBackoffMs != null && fileConfig.retry.maxBackoffMs >= 0) {
-                this.retryMaxBackoffMs = fileConfig.retry.maxBackoffMs;
-            }
-            if (fileConfig.retry.jitterFactor != null
-                    && fileConfig.retry.jitterFactor >= 0.0 && fileConfig.retry.jitterFactor <= 1.0) {
-                this.retryJitterFactor = fileConfig.retry.jitterFactor;
-            }
+            retryBuilder
+                    .maxRetries(fileConfig.retry.maxRetries)
+                    .initialBackoffMs(fileConfig.retry.initialBackoffMs)
+                    .maxBackoffMs(fileConfig.retry.maxBackoffMs)
+                    .jitterFactor(fileConfig.retry.jitterFactor);
         }
         if (fileConfig.subAgentAutoApproveTools != null && !fileConfig.subAgentAutoApproveTools.isEmpty()) {
             // Project config appends to global config (not replaces)
@@ -1942,6 +1421,22 @@ public final class AceClawConfig {
         public Boolean context1m;
         public List<String> extraAnthropicBetas;
         public RetryConfigFormat retry;
+        public SecurityConfigFormat security;
+    }
+
+    /**
+     * JSON structure for the security section.
+     * <pre>{
+     *   "denySensitivePaths": true
+     * }</pre>
+     *
+     * <p>Nested for forward compatibility — future security knobs (custom
+     * sensitive-path patterns per follow-up, sandbox toggles, etc.) live
+     * under the same {@code security} object rather than littering the top
+     * level.
+     */
+    public static class SecurityConfigFormat {
+        public Boolean denySensitivePaths;
     }
 
     /**
@@ -1987,5 +1482,41 @@ public final class AceClawConfig {
 
     private static double clampRate(double value) {
         return Math.min(1.0, Math.max(0.0, value));
+    }
+
+    // -- Env-var loading helpers --------------------------------------------
+    //
+    // Added during the AceClawConfig decomposition (batch 1, skillAutoRelease)
+    // to collapse the previously-inlined "var x = getenv; if (x != null && !
+    // blank) { try { parse → set } catch { warn }" pattern that appeared 50+
+    // times in load(). Each helper takes the env var name + a consumer of
+    // the parsed value; on parse failure the helper logs a warning and
+    // leaves the receiver field untouched. Keeps the call site to a single
+    // expression and centralizes the empty/blank + parse-error handling.
+
+    private static void applyEnvBoolean(String name, java.util.function.Consumer<Boolean> sink) {
+        var raw = System.getenv(name);
+        if (raw == null || raw.isBlank()) return;
+        sink.accept(Boolean.parseBoolean(raw));
+    }
+
+    private static void applyEnvInt(String name, java.util.function.IntConsumer sink) {
+        var raw = System.getenv(name);
+        if (raw == null || raw.isBlank()) return;
+        try {
+            sink.accept(Integer.parseInt(raw));
+        } catch (NumberFormatException e) {
+            log.warn("Invalid {}: {}", name, raw);
+        }
+    }
+
+    private static void applyEnvDouble(String name, java.util.function.DoubleConsumer sink) {
+        var raw = System.getenv(name);
+        if (raw == null || raw.isBlank()) return;
+        try {
+            sink.accept(Double.parseDouble(raw));
+        } catch (NumberFormatException e) {
+            log.warn("Invalid {}: {}", name, raw);
+        }
     }
 }

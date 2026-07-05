@@ -18,6 +18,8 @@ import dev.aceclaw.infra.event.EventBus;
  * @param doomLoopDetector   optional session-scoped doom loop detector (null = disabled)
  * @param progressDetector   optional session-scoped progress detector (null = disabled)
  * @param retryConfig        retry settings for transient API errors (null = use defaults)
+ * @param workspaceHash      SHA-256 of the canonical workspace path; required for turn checkpointing (null = no checkpointing)
+ * @param turnCheckpointSink sink for per-iteration turn checkpoints (null = NOOP, no checkpointing)
  */
 public record AgentLoopConfig(
         String sessionId,
@@ -29,14 +31,25 @@ public record AgentLoopConfig(
         WatchdogTimer watchdog,
         DoomLoopDetector doomLoopDetector,
         ProgressDetector progressDetector,
-        RetryConfig retryConfig
+        RetryConfig retryConfig,
+        String workspaceHash,
+        TurnCheckpointSink turnCheckpointSink
 ) {
 
     /** Default maximum ReAct iterations per turn when no override is provided. */
     public static final int DEFAULT_MAX_ITERATIONS = 25;
 
     /** Empty config with all integrations disabled. */
-    public static final AgentLoopConfig EMPTY = new AgentLoopConfig(null, null, null, null, null, null, null, null, null, null);
+    public static final AgentLoopConfig EMPTY = new AgentLoopConfig(
+            null, null, null, null, null, null, null, null, null, null, null, null);
+
+    /**
+     * Resolves the effective turn-checkpoint sink, falling back to a NOOP when null.
+     * Saves callers from null checks at the call site.
+     */
+    public TurnCheckpointSink effectiveTurnCheckpointSink() {
+        return turnCheckpointSink != null ? turnCheckpointSink : TurnCheckpointSink.NOOP;
+    }
 
     /**
      * Resolves the effective retry config, falling back to defaults when null.
@@ -70,6 +83,8 @@ public record AgentLoopConfig(
         private DoomLoopDetector doomLoopDetector;
         private ProgressDetector progressDetector;
         private RetryConfig retryConfig;
+        private String workspaceHash;
+        private TurnCheckpointSink turnCheckpointSink;
 
         private Builder() {}
 
@@ -123,10 +138,21 @@ public record AgentLoopConfig(
             return this;
         }
 
+        public Builder workspaceHash(String workspaceHash) {
+            this.workspaceHash = workspaceHash;
+            return this;
+        }
+
+        public Builder turnCheckpointSink(TurnCheckpointSink turnCheckpointSink) {
+            this.turnCheckpointSink = turnCheckpointSink;
+            return this;
+        }
+
         public AgentLoopConfig build() {
             return new AgentLoopConfig(
                     sessionId, eventBus, permissionChecker, memoryHandler, metricsCollector,
-                    maxIterations, watchdog, doomLoopDetector, progressDetector, retryConfig);
+                    maxIterations, watchdog, doomLoopDetector, progressDetector, retryConfig,
+                    workspaceHash, turnCheckpointSink);
         }
     }
 }

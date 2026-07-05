@@ -124,10 +124,21 @@ public final class PermissionManager {
      *       tools — no UX regression during migration.</li>
      * </ul>
      *
-     * <p>Pipeline is unchanged: session allowlist first, then policy.
-     * PolicyEngine (#465 Scope #2) will eventually consume the structured
-     * {@link Capability} directly; until then this method bridges by
-     * constructing a {@link PermissionRequest} on the fly.
+     * <h4>Pipeline (#480 PR 4 / #495)</h4>
+     *
+     * <ol>
+     *   <li><b>Structural denial</b> ({@link PermissionPolicy#evaluateStructural}):
+     *       cross-cutting refusals like "never write to {@code .env}" run
+     *       FIRST so they cannot be bypassed by a prior "always allow X"
+     *       approval. Audited and returned immediately when matched.</li>
+     *   <li><b>Session blanket approval</b>: if the originating tool has been
+     *       blanket-approved in this session (per-session, #456), auto-approve
+     *       and audit with the {@code session-blanket-approval} marker.</li>
+     *   <li><b>Policy evaluation</b> ({@link PermissionPolicy#evaluate}):
+     *       the structured {@link Capability} + {@link Provenance} +
+     *       description go to the policy directly — no flat-record bridge.
+     *       Result audited.</li>
+     * </ol>
      */
     public PermissionDecision check(
             Capability capability,
@@ -138,6 +149,19 @@ public final class PermissionManager {
         Objects.requireNonNull(provenance, "provenance");
         Objects.requireNonNull(allowlistKey, "allowlistKey");
         Objects.requireNonNull(description, "description");
+
+        // Structural denials (sensitive paths like .env, .ssh/, /etc/*) MUST
+        // fire BEFORE the session-blanket lookup. Otherwise a user who clicked
+        // "always allow write_file" earlier could route a FileWrite(.env) past
+        // the rule — defeating the "overrides all modes" invariant of the
+        // hard-denial layer (Codex P1 on #495).
+        var structural = policy.evaluateStructural(capability);
+        if (structural != null) {
+            log.debug("Permission denied (structural): key={}, reason={}",
+                    allowlistKey, structural.reason());
+            audit(allowlistKey, capability, provenance, structural, null);
+            return structural;
+        }
 
         String sessionIdOrNull = provenance.sessionId().map(s -> s.value()).orElse(null);
         if (sessionIdOrNull != null) {
@@ -151,10 +175,15 @@ public final class PermissionManager {
             }
         }
 
-        // PolicyEngine is still PermissionRequest-shaped today (#465 Scope
-        // #2 will change that). Build a request from the capability.
-        var request = new PermissionRequest(allowlistKey, description, capability.risk());
-        var decision = policy.evaluate(request);
+        // PolicyEngine now consumes the structured capability + provenance
+        // directly (#465 Scope #2 / #480 PR 4). The flat PermissionRequest
+        // bridge is gone — policies pattern-match on the sealed variant and
+        // can reach fields like FileWrite.path, HttpFetch.url, etc.
+        // `description` is the dispatcher's rich human-readable phrasing,
+        // forwarded so the policy can produce a user-facing prompt that
+        // matches the tool side rather than the variant's synthetic
+        // displayLabel.
+        var decision = policy.evaluate(capability, provenance, description);
         log.debug("Permission check: key={}, level={}, sessionId={}, decision={}",
                 allowlistKey, capability.risk(), sessionIdOrNull,
                 decision.getClass().getSimpleName());
@@ -229,6 +258,53 @@ public final class PermissionManager {
     }
 
     /**
+     * Runs only the structural / system-invariant denial layer of the policy
+     * — no session-blanket lookup, no mode-based decision. Used by the
+     * sub-agent permission path (which previously consulted only the
+     * session-approval boolean, bypassing the structural rules entirely —
+     * Codex P1 on #495). Returns {@code null} when no structural rule
+     * applies; the caller then routes through whatever approval logic is
+     * appropriate for its context.
+     *
+     * <p>When the structural layer denies, an audit entry is written so
+     * sub-agent attempts to write {@code .env} / {@code .ssh/} / etc. are
+     * observable in the same on-disk record as main-dispatcher denials.
+     * Without this entry, a successful structural denial on the sub-agent
+     * path would be invisible to forensics — the caller (the sub-agent
+     * permission checker) can't audit because it doesn't depend on
+     * {@code aceclaw-security}'s audit types.
+     *
+     * <p>No double-audit risk on the main dispatcher path: that path runs
+     * {@code policy.evaluateStructural} directly inside
+     * {@link #check(Capability, Provenance, String, String)} (which has its
+     * own audit hook) and does NOT route through this method.
+     *
+     * @param capability  the structured capability to test
+     * @param provenance  audit context recorded when a denial is written.
+     *                    {@code null} is allowed for callers that have no
+     *                    session in scope; uses
+     *                    {@link Provenance#daemonInternal()} as a stand-in.
+     * @param allowlistKey audit context — the originating tool name, so
+     *                     {@code grep toolName=...} on the on-disk log
+     *                     keeps working uniformly across denial sources.
+     */
+    public PermissionDecision.Denied checkStructural(
+            Capability capability,
+            Provenance provenance,
+            String allowlistKey) {
+        Objects.requireNonNull(capability, "capability");
+        var denial = policy.evaluateStructural(capability);
+        if (denial != null) {
+            var prov = provenance != null ? provenance : Provenance.daemonInternal();
+            String key = allowlistKey != null ? allowlistKey : capability.allowlistKey();
+            log.debug("Permission denied (structural, out-of-band): key={}, reason={}",
+                    key, denial.reason());
+            audit(key, capability, prov, denial, null);
+        }
+        return denial;
+    }
+
+    /**
      * Records a blanket session-level approval for a tool. After this
      * call, future requests for this tool from THIS session are
      * auto-approved (other sessions are unaffected — see #456).
@@ -276,27 +352,4 @@ public final class PermissionManager {
         return allow != null && allow.contains(toolName);
     }
 
-    /**
-     * Returns whether ANY session has blanket-approved the given tool.
-     *
-     * <p>Compatibility shim for the sub-agent permission checker: that
-     * checker is constructed once at daemon startup and doesn't have a
-     * session in scope at check time, so it can't ask the per-session
-     * variant. Until the sub-agent path threads sessionId through
-     * {@code ToolPermissionChecker} (separate refactor), this preserves
-     * the pre-#456 behaviour where a session-approved tool was reachable
-     * by sub-agents anywhere in the daemon.
-     *
-     * <p>This is permissive on purpose: a sub-agent in session B inherits
-     * approvals granted in session A. The right scoping is per-session,
-     * but losing the approval-flow entirely (always-deny) would regress
-     * usability. Tracked as a follow-up.
-     */
-    public boolean hasAnySessionApproval(String toolName) {
-        Objects.requireNonNull(toolName, "toolName");
-        for (var allow : sessionApprovals.values()) {
-            if (allow.contains(toolName)) return true;
-        }
-        return false;
-    }
 }

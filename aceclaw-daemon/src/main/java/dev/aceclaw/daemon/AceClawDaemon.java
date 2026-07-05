@@ -1,5 +1,6 @@
 package dev.aceclaw.daemon;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -20,6 +21,25 @@ import dev.aceclaw.infra.event.DeferEvent;
 import dev.aceclaw.infra.event.EventBus;
 import dev.aceclaw.infra.event.SchedulerEvent;
 import dev.aceclaw.infra.health.*;
+import dev.aceclaw.learning.ErrorDetector;
+import dev.aceclaw.learning.FailureSignalDetector;
+import dev.aceclaw.learning.LearningExplanation;
+import dev.aceclaw.learning.LearningExplanationRecorder;
+import dev.aceclaw.learning.LearningExplanationStore;
+import dev.aceclaw.learning.LearningSignalReview;
+import dev.aceclaw.learning.LearningSignalReviewStore;
+import dev.aceclaw.learning.maintenance.LearningMaintenanceCandidateBridge;
+import dev.aceclaw.learning.maintenance.LearningMaintenanceRecoveryStore;
+import dev.aceclaw.learning.maintenance.LearningMaintenanceRunStore;
+import dev.aceclaw.learning.maintenance.LearningMaintenanceScheduler;
+import dev.aceclaw.learning.skill.SkillDraftEvent;
+import dev.aceclaw.learning.skill.SkillDraftEventFeed;
+import dev.aceclaw.learning.skill.SkillDraftGenerator;
+import dev.aceclaw.learning.validation.AutoReleaseController;
+import dev.aceclaw.learning.validation.LearningValidation;
+import dev.aceclaw.learning.validation.LearningValidationRecorder;
+import dev.aceclaw.learning.validation.LearningValidationStore;
+import dev.aceclaw.learning.validation.ValidationGateEngine;
 import dev.aceclaw.llm.LlmClientFactory;
 import dev.aceclaw.memory.AutoMemoryStore;
 import dev.aceclaw.memory.CandidateStateMachine;
@@ -29,13 +49,14 @@ import dev.aceclaw.memory.DailyJournal;
 import dev.aceclaw.memory.HistoricalLogIndex;
 import dev.aceclaw.memory.HistoricalSessionSnapshot;
 import dev.aceclaw.memory.MarkdownMemoryStore;
-import dev.aceclaw.memory.CorrectionRulePromoter;
-import dev.aceclaw.memory.MemoryConsolidator;
 import dev.aceclaw.memory.StrategyRefiner;
 import dev.aceclaw.memory.TrendDetector;
 import dev.aceclaw.memory.WorkspacePaths;
+import dev.aceclaw.security.Capability;
+import dev.aceclaw.security.CapabilityAware;
 import dev.aceclaw.security.DefaultPermissionPolicy;
 import dev.aceclaw.security.PermissionManager;
+import dev.aceclaw.security.Provenance;
 import dev.aceclaw.security.audit.CapabilityAuditLog;
 import dev.aceclaw.mcp.McpClientManager;
 import dev.aceclaw.mcp.McpServerConfig;
@@ -49,7 +70,6 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -87,6 +107,7 @@ public final class AceClawDaemon {
     private final HistoricalLogIndex historicalLogIndex;
     private final LearningExplanationStore learningExplanationStore;
     private final LearningExplanationRecorder learningExplanationRecorder;
+    private final dev.aceclaw.daemon.skill.SkillDraftEventPublisher skillDraftEventPublisher;
     private final LearningValidationStore learningValidationStore;
     private final LearningValidationRecorder learningValidationRecorder;
     private final LearningSignalReviewStore learningSignalReviewStore;
@@ -188,6 +209,8 @@ public final class AceClawDaemon {
         this.learningExplanationRecorder = new LearningExplanationRecorder(learningExplanationStore);
         this.learningValidationStore = new LearningValidationStore();
         this.learningValidationRecorder = new LearningValidationRecorder(learningValidationStore);
+        this.skillDraftEventPublisher = new dev.aceclaw.daemon.skill.SkillDraftEventPublisher(
+                objectMapper, learningExplanationRecorder, learningValidationRecorder, skillDraftEventFeed);
         this.learningSignalReviewStore = new LearningSignalReviewStore();
         this.learningMaintenanceRunStore = new LearningMaintenanceRunStore();
         this.learningMaintenanceRecoveryStore = new LearningMaintenanceRecoveryStore();
@@ -383,8 +406,12 @@ public final class AceClawDaemon {
         //    every other persisted thing (pid, sock, transcripts,
         //    checkpoints, ...).
         var permissionManager = new PermissionManager(
-                new DefaultPermissionPolicy(config.permissionMode()),
+                new DefaultPermissionPolicy(config.permissionMode(), config.denySensitivePaths()),
                 buildCapabilityAuditLog(homeDir.resolve("audit")));
+        if (config.denySensitivePaths()) {
+            log.info("Security: structural sensitive-path denials enabled "
+                    + "(.env*, .ssh/, .aws/, .git/config, /etc/*, etc. are hard-denied).");
+        }
 
         // 4. Sub-agent infrastructure (task delegation) and skills
         var agentTypeRegistry = AgentTypeRegistry.load(workingDir);
@@ -406,6 +433,29 @@ public final class AceClawDaemon {
             readOnlyTools = java.util.Set.copyOf(readOnlyTools);
             log.info("Sub-agent auto-approve tools extended with: {}", extraTools);
         }
+        // Structural-denial probe: routes the sub-agent's intended tool call
+        // through the policy's evaluateStructural before any allow-list
+        // shortcut, so a prior "always allow write_file" approval cannot
+        // route a sub-agent past the .env / .ssh / /etc/ hard-denial layer
+        // (Codex P1 on #495).
+        //
+        // Audit attribution: the denial is recorded via
+        // permissionManager.checkStructural which writes a v2 audit entry
+        // tagged with the originating session's Provenance and the tool
+        // name as the allowlistKey. Without that audit, a sub-agent's
+        // attempt to write .env would be invisible to forensics — the
+        // dispatcher main path's audit hook is bypassed here.
+        var subAgentToolRegistry = toolRegistry;
+        var subAgentMapper = objectMapper;
+        SubAgentStructuralCheck structuralCheck = (toolName, inputJson, sessionId) -> {
+            var toolOpt = subAgentToolRegistry.get(toolName);
+            if (toolOpt.isEmpty()) return null;
+            if (!(toolOpt.get() instanceof CapabilityAware aware)) return null;
+            return subAgentStructuralProbe(
+                    toolName, inputJson, sessionId,
+                    aware, subAgentMapper, permissionManager);
+        };
+
         // Sub-agent allow-list lookup is now per-session (#457): the
         // checker receives the calling agent's sessionId on every check
         // and looks up the allow-list keyed on that session. This closes
@@ -413,7 +463,7 @@ public final class AceClawDaemon {
         // approval the user granted in session A — a regression of #456
         // confined to the sub-agent path until threading was done.
         var subAgentPermChecker = new SubAgentPermissionChecker(
-                readOnlyTools, permissionManager::hasSessionApproval);
+                readOnlyTools, permissionManager::hasSessionApproval, structuralCheck);
 
         // Project rules for sub-agent system prompts
         String projectRules = SystemPromptLoader.extractProjectRules(workingDir);
@@ -571,20 +621,22 @@ public final class AceClawDaemon {
                 skillRegistry::formatDescriptions);
         agentHandler.setMcpInitFuture(mcpInitFuture);
         agentHandler.setRetryConfig(config.retryConfig());
+        var adaptiveContinuation = config.adaptiveContinuation();
         agentHandler.setAdaptiveContinuationConfig(
-                config.adaptiveContinuationEnabled(),
-                config.adaptiveContinuationMaxSegments(),
-                config.adaptiveContinuationNoProgressThreshold(),
-                config.adaptiveContinuationMaxTotalTokens(),
-                config.adaptiveContinuationMaxWallClockSeconds());
+                adaptiveContinuation.enabled(),
+                adaptiveContinuation.maxSegments(),
+                adaptiveContinuation.noProgressThreshold(),
+                adaptiveContinuation.maxTotalTokens(),
+                adaptiveContinuation.maxWallClockSeconds());
         agentHandler.setPlannerConfig(config.plannerEnabled(), config.plannerThreshold());
         agentHandler.setAdaptiveReplanEnabled(config.adaptiveReplanEnabled());
+        var watchdog = config.watchdog();
         agentHandler.setWatchdogConfig(
-                config.maxAgentTurns(), config.maxAgentWallTimeSec(),
-                config.maxAgentHardTurns(), config.maxAgentHardWallTimeSec());
+                watchdog.agentTurns(), watchdog.agentWallTimeSec(),
+                watchdog.agentHardTurns(), watchdog.agentHardWallTimeSec());
         agentHandler.setPlanBudgetConfig(
-                config.maxPlanStepWallTimeSec(),
-                config.maxPlanTotalWallTimeSec());
+                watchdog.planStepWallTimeSec(),
+                watchdog.planTotalWallTimeSec());
 
         // Plan checkpoint store for crash-safe plan progress persistence and resume
         var planCheckpointStore = new FilePlanCheckpointStore(
@@ -592,12 +644,23 @@ public final class AceClawDaemon {
         planCheckpointStore.cleanup(7); // clean old checkpoints on startup
         agentHandler.setPlanCheckpointStore(planCheckpointStore);
 
+        // Turn checkpoint store: per-iteration checkpoints for non-plan ReAct turns (#500).
+        // Same atomic write pattern as plan checkpoints. Writes are unbatched —
+        // ReAct iterations are LLM-call-bound (1-3s) so the original 500ms debounce
+        // never fired in practice, and dropping it removed a trailing-flush race
+        // (PR #516 review).
+        var turnCheckpointStore = new FileTurnCheckpointStore(
+                homeDir.resolve("checkpoints").resolve("turns"), objectMapper);
+        turnCheckpointStore.cleanup(7); // sweep orphans + stale files on startup
+        agentHandler.setTurnCheckpointSink(new FileTurnCheckpointSink(turnCheckpointStore));
+
         agentHandler.setCompactor(compactor);
         agentHandler.setMemoryStore(memoryStore, workingDir);
+        var antiPatternGate = config.antiPatternGate();
         agentHandler.setAntiPatternGateFeedbackStore(new AntiPatternGateFeedbackStore(
                 workingDir,
-                config.antiPatternGateMinBlockedBeforeRollback(),
-                config.antiPatternGateMaxFalsePositiveRate()));
+                antiPatternGate.minBlockedBeforeRollback(),
+                antiPatternGate.maxFalsePositiveRate()));
         if (journal != null) {
             agentHandler.setDailyJournal(journal);
         }
@@ -626,22 +689,25 @@ public final class AceClawDaemon {
             var patternDetector = new PatternDetector(memoryStore);
             var failureSignalDetector = new FailureSignalDetector();
             var strategyRefiner = new StrategyRefiner(memoryStore);
-            if (config.skillDraftValidationEnabled()) {
+            var skillDraftValidation = config.skillDraftValidation();
+            if (skillDraftValidation.enabled()) {
                 validationGateEngine = new ValidationGateEngine(
-                        config.skillDraftValidationStrictMode(),
-                        config.skillDraftValidationReplayRequired(),
-                        Path.of(config.skillDraftValidationReplayReport()),
-                        config.skillDraftValidationMaxTokenEstimationErrorRatio());
+                        skillDraftValidation.strictMode(),
+                        skillDraftValidation.replayRequired(),
+                        Path.of(skillDraftValidation.replayReportPath()),
+                        skillDraftValidation.maxTokenEstimationErrorRatio());
             }
 
             // Candidate store for learning pipeline (promotion/demotion state machine)
+            var candidatePromotion = config.candidatePromotion();
+            var candidateInjection = config.candidateInjection();
             CandidateStore cs = null;
-            if (config.candidatePromotionEnabled() || config.candidateInjectionEnabled()) {
+            if (candidatePromotion.enabled() || candidateInjection.enabled()) {
                 try {
                     var smConfig = new CandidateStateMachine.Config(
-                            config.candidatePromotionMinEvidence(),
-                            config.candidatePromotionMinScore(),
-                            config.candidatePromotionMaxFailureRate(),
+                            candidatePromotion.minEvidence(),
+                            candidatePromotion.minScore(),
+                            candidatePromotion.maxFailureRate(),
                             3, java.util.Set.of());
                     cs = new CandidateStore(homeDir, smConfig);
                     cs.load();
@@ -654,28 +720,17 @@ public final class AceClawDaemon {
 
             final var validationGateForAuto = validationGateEngine;
             final var candidateStoreForAuto = cs;
-            if (validationGateForAuto != null && cs != null && config.skillAutoReleaseEnabled()) {
+            var skillAutoRelease = config.skillAutoRelease();
+            if (validationGateForAuto != null && cs != null && skillAutoRelease.enabled()) {
                 autoReleaseController = new AutoReleaseController(
-                        new AutoReleaseController.Config(
-                                config.skillAutoReleaseMinCandidateScore(),
-                                config.skillAutoReleaseMinEvidence(),
-                                config.skillAutoReleaseCanaryMinAttempts(),
-                                config.skillAutoReleaseCanaryMaxFailureRate(),
-                                config.skillAutoReleaseCanaryMaxTimeoutRate(),
-                                config.skillAutoReleaseCanaryMaxPermissionBlockRate(),
-                                config.skillAutoReleaseRollbackMaxFailureRate(),
-                                config.skillAutoReleaseRollbackMaxTimeoutRate(),
-                                config.skillAutoReleaseRollbackMaxPermissionBlockRate(),
-                                Duration.ofHours(Math.max(1, config.skillAutoReleaseHealthLookbackHours())),
-                                config.skillAutoReleaseCanaryDwellHours()
-                        ),
+                        skillAutoRelease.tuning(),
                         validationGateForAuto
                 );
             }
             final var autoReleaseForAuto = autoReleaseController;
             var selfImprovementEngine = new SelfImprovementEngine(
                     errorDetector, patternDetector, failureSignalDetector, memoryStore, strategyRefiner, cs,
-                    config.candidatePromotionEnabled(),
+                    candidatePromotion.enabled(),
                     (validationGateForAuto != null || candidateStoreForAuto != null) ? projectPath -> {
                         draftPipelineLock.lock();
                         try {
@@ -683,19 +738,24 @@ public final class AceClawDaemon {
                             if (candidateStoreForAuto != null) {
                                 var generator = new SkillDraftGenerator();
                                 var summary = generator.generateFromPromoted(candidateStoreForAuto, projectPath);
-                                publishSkillDraftCreatedEvents(summary, projectPath, "auto-promotion");
+                                skillDraftEventPublisher.publishCreated(summary, projectPath, "auto-promotion");
                                 if (summary.createdDrafts() > 0) {
                                     log.info("Auto skill draft generation: {} created, {} skipped",
                                             summary.createdDrafts(), summary.skippedDrafts());
                                 }
                             }
-                            // Validate drafts and evaluate for auto-release
+                            // Validate drafts and evaluate for auto-release.
+                            // Use projectPath (the candidate's own workspace) for the publish calls,
+                            // not the daemon-startup workingDir. They can differ when a candidate
+                            // promotion fires for a workspace other than the one the daemon was
+                            // launched in; attributing audit/feed records to workingDir there
+                            // would write them under the wrong workspace.
                             if (validationGateForAuto != null) {
                                 var validation = validationGateForAuto.validateAll(projectPath, "auto-promotion");
-                                publishSkillDraftValidationEvents(validation, workingDir, "auto-promotion");
+                                skillDraftEventPublisher.publishValidationChanged(validation, projectPath, "auto-promotion");
                                 if (autoReleaseForAuto != null && candidateStoreForAuto != null) {
                                     var release = autoReleaseForAuto.evaluateAll(projectPath, candidateStoreForAuto, "auto-promotion");
-                                    publishSkillDraftReleaseEvents(release, workingDir, "auto-promotion");
+                                    skillDraftEventPublisher.publishReleaseChanged(release, projectPath, "auto-promotion");
                                 }
                             }
                         } catch (Exception e) {
@@ -709,11 +769,11 @@ public final class AceClawDaemon {
             candidateStoreRef = cs;
 
             // Pass candidate store to agent handler for prompt injection
-            if (cs != null && config.candidateInjectionEnabled()) {
+            if (cs != null && candidateInjection.enabled()) {
                 agentHandler.setCandidateStore(cs);
                 agentHandler.setCandidateInjectionEnabled(true);
                 agentHandler.setCandidateInjectionConfig(
-                        config.candidateInjectionMaxCount(), config.candidateInjectionMaxTokens());
+                        candidateInjection.maxCount(), candidateInjection.maxTokens());
             } else {
                 agentHandler.setCandidateInjectionEnabled(false);
             }
@@ -743,17 +803,17 @@ public final class AceClawDaemon {
                     try {
                         var generator = new SkillDraftGenerator();
                         var summary = generator.generateFromPromoted(catchupCs, workingDir);
-                        publishSkillDraftCreatedEvents(summary, workingDir, "startup-catchup");
+                        skillDraftEventPublisher.publishCreated(summary, workingDir, "startup-catchup");
                         if (summary.createdDrafts() > 0) {
                             log.info("Draft catch-up: {} new drafts generated for existing promoted candidates",
                                     summary.createdDrafts());
                         }
                         if (catchupValidation != null && summary.createdDrafts() > 0) {
                             var validation = catchupValidation.validateAll(workingDir, "startup-catchup");
-                            publishSkillDraftValidationEvents(validation, workingDir, "startup-catchup");
+                            skillDraftEventPublisher.publishValidationChanged(validation, workingDir, "startup-catchup");
                             if (catchupAutoRelease != null) {
                                 var release = catchupAutoRelease.evaluateAll(workingDir, catchupCs, "startup-catchup");
-                                publishSkillDraftReleaseEvents(release, workingDir, "startup-catchup");
+                                skillDraftEventPublisher.publishReleaseChanged(release, workingDir, "startup-catchup");
                             }
                         }
                     } catch (Exception e) {
@@ -776,15 +836,16 @@ public final class AceClawDaemon {
         agentHandler.setDynamicSkillGenerator(dynamicSkillGenerator);
 
         // Wire deferred action scheduler (no turn lock dependency — uses isolated context)
-        if (config.deferredActionEnabled()) {
+        var lifecycle = config.lifecycle();
+        if (lifecycle.deferredActionEnabled()) {
             this.deferredActionScheduler = new DeferredActionScheduler(
                     deferredActionStore, sessionManager,
                     llmClient, toolRegistry, model, systemPrompt,
                     config.maxTokens(), config.thinkingBudget(),
-                    eventBus, config.deferredActionTickSeconds());
+                    eventBus, lifecycle.deferredActionTickSeconds());
             deferCheckTool.setScheduler(deferredActionScheduler);
             log.info("Deferred action scheduler wired (tick every {}s)",
-                    config.deferredActionTickSeconds());
+                    lifecycle.deferredActionTickSeconds());
         }
 
         agentHandler.register(router);
@@ -802,23 +863,15 @@ public final class AceClawDaemon {
                 : null;
         final var crossSessionPatternMiner = historicalLogIndex != null ? new CrossSessionPatternMiner() : null;
         final var trendDetector = historicalLogIndex != null ? new TrendDetector() : null;
-        final var maintenanceCandidateBridge = config.candidatePromotionEnabled() && candidateStoreRef != null
+        final var maintenanceCandidateBridge = config.candidatePromotion().enabled() && candidateStoreRef != null
                 ? new LearningMaintenanceCandidateBridge(candidateStoreRef)
                 : null;
         final var maintenanceCandidateStore = candidateStoreRef;
         final var maintenanceValidationGate = validationGateEngine;
         final var maintenanceAutoRelease = autoReleaseController;
         if (memoryStore != null) {
-            learningMaintenanceScheduler = new LearningMaintenanceScheduler(
-                    LearningMaintenanceScheduler.Config.defaults(Duration.ofSeconds(config.schedulerTickSeconds())),
-                    java.time.Clock.systemUTC(),
-                    sessionManager::sessionCount,
-                    scopes -> scopes.stream()
-                            .mapToLong(scope -> memoryStore.largestBackingFileBytes(scope.workingDir()))
-                            .max()
-                            .orElse(0L),
-                    (trigger, scope) -> runLearningMaintenancePipeline(
-                            trigger,
+            var maintenanceRunner = new dev.aceclaw.daemon.scheduler.MaintenancePipelineRunner(
+                    new dev.aceclaw.daemon.scheduler.MaintenancePipelineRunner.Deps(
                             memoryStore,
                             archiveDir,
                             extractionJournal,
@@ -830,8 +883,19 @@ public final class AceClawDaemon {
                             maintenanceValidationGate,
                             maintenanceAutoRelease,
                             draftPipelineLock,
-                            scope.workspaceHash(),
-                            scope.workingDir()),
+                            learningExplanationRecorder,
+                            learningMaintenanceRunStore,
+                            historicalLogIndex,
+                            skillDraftEventPublisher));
+            learningMaintenanceScheduler = new LearningMaintenanceScheduler(
+                    LearningMaintenanceScheduler.Config.defaults(Duration.ofSeconds(lifecycle.schedulerTickSeconds())),
+                    java.time.Clock.systemUTC(),
+                    sessionManager::sessionCount,
+                    scopes -> scopes.stream()
+                            .mapToLong(scope -> memoryStore.largestBackingFileBytes(scope.workingDir()))
+                            .max()
+                            .orElse(0L),
+                    (trigger, scope) -> maintenanceRunner.run(trigger, scope.workspaceHash(), scope.workingDir()),
                     learningMaintenanceRecoveryStore
             );
         }
@@ -1048,7 +1112,8 @@ public final class AceClawDaemon {
             Integer maxTokens = params != null && params.has("maxTokens")
                     ? Math.max(0, params.get("maxTokens").asInt()) : null;
             if (maxTokens != null) {
-                agentHandlerRef.setCandidateInjectionConfig(config.candidateInjectionMaxCount(), maxTokens);
+                agentHandlerRef.setCandidateInjectionConfig(
+                        config.candidateInjection().maxCount(), maxTokens);
             }
             boolean persist = params != null && params.has("persist") && params.get("persist").asBoolean(false);
             String scope = params != null && params.has("scope") ? params.get("scope").asText() : "project";
@@ -1160,7 +1225,7 @@ public final class AceClawDaemon {
             try {
                 var generator = new SkillDraftGenerator();
                 var summary = generator.generateFromPromoted(candidateStoreForRpc, workingDir);
-                publishSkillDraftCreatedEvents(summary, workingDir, "draft-generated");
+                skillDraftEventPublisher.publishCreated(summary, workingDir, "draft-generated");
                 var result = objectMapper.createObjectNode();
                 result.put("processedPromotedCandidates", summary.processedPromotedCandidates());
                 result.put("createdDrafts", summary.createdDrafts());
@@ -1171,12 +1236,12 @@ public final class AceClawDaemon {
                 result.put("auditFile", workingDir.relativize(summary.auditFile()).toString().replace('\\', '/'));
                 if (validationGateForRpc != null) {
                     var validation = validationGateForRpc.validateAll(workingDir, "draft-generated");
-                    publishSkillDraftValidationEvents(validation, workingDir, "draft-generated");
-                    result.set("validation", toValidationJson(validation, workingDir));
+                    skillDraftEventPublisher.publishValidationChanged(validation, workingDir, "draft-generated");
+                    result.set("validation", skillDraftEventPublisher.toValidationJson(validation, workingDir));
                     if (autoReleaseForRpc != null && candidateStoreForRpc != null) {
                         var release = autoReleaseForRpc.evaluateAll(workingDir, candidateStoreForRpc, "draft-generated");
-                        publishSkillDraftReleaseEvents(release, workingDir, "draft-generated");
-                        result.set("release", toReleaseJson(release));
+                        skillDraftEventPublisher.publishReleaseChanged(release, workingDir, "draft-generated");
+                        result.set("release", skillDraftEventPublisher.toReleaseJson(release));
                     }
                 }
                 return result;
@@ -1195,12 +1260,12 @@ public final class AceClawDaemon {
                 if (params != null && params.has("draftPath")) {
                     Path draftPath = workingDir.resolve(params.get("draftPath").asText()).normalize();
                     var summary = validationGateForRpc.validateSingleDraft(workingDir, draftPath, trigger);
-                    publishSkillDraftValidationEvents(summary, workingDir, trigger);
-                    return toValidationJson(summary, workingDir);
+                    skillDraftEventPublisher.publishValidationChanged(summary, workingDir, trigger);
+                    return skillDraftEventPublisher.toValidationJson(summary, workingDir);
                 }
                 var summary = validationGateForRpc.validateAll(workingDir, trigger);
-                publishSkillDraftValidationEvents(summary, workingDir, trigger);
-                return toValidationJson(summary, workingDir);
+                skillDraftEventPublisher.publishValidationChanged(summary, workingDir, trigger);
+                return skillDraftEventPublisher.toValidationJson(summary, workingDir);
             } finally {
                 draftPipelineLock.unlock();
             }
@@ -1214,8 +1279,8 @@ public final class AceClawDaemon {
                 String trigger = params != null && params.has("trigger")
                         ? params.get("trigger").asText() : "manual";
                 var summary = autoReleaseForRpc.evaluateAll(workingDir, candidateStoreForRpc, trigger);
-                publishSkillDraftReleaseEvents(summary, workingDir, trigger);
-                return toReleaseJson(summary);
+                skillDraftEventPublisher.publishReleaseChanged(summary, workingDir, trigger);
+                return skillDraftEventPublisher.toReleaseJson(summary);
             } finally {
                 draftPipelineLock.unlock();
             }
@@ -1231,8 +1296,8 @@ public final class AceClawDaemon {
             String reason = params.has("reason") ? params.get("reason").asText() : "manual pause";
             String trigger = params.has("trigger") ? params.get("trigger").asText() : "manual";
             var summary = autoReleaseForRpc.pause(workingDir, skillName, reason, trigger);
-            publishSkillDraftReleaseEvents(summary, workingDir, trigger);
-            return toReleaseJson(summary);
+            skillDraftEventPublisher.publishReleaseChanged(summary, workingDir, trigger);
+            return skillDraftEventPublisher.toReleaseJson(summary);
         });
         router.register("skill.release.forceRollback", params -> {
             if (autoReleaseForRpc == null) {
@@ -1245,8 +1310,8 @@ public final class AceClawDaemon {
             String reason = params.has("reason") ? params.get("reason").asText() : "manual force rollback";
             String trigger = params.has("trigger") ? params.get("trigger").asText() : "manual";
             var summary = autoReleaseForRpc.forceRollback(workingDir, skillName, reason, trigger);
-            publishSkillDraftReleaseEvents(summary, workingDir, trigger);
-            return toReleaseJson(summary);
+            skillDraftEventPublisher.publishReleaseChanged(summary, workingDir, trigger);
+            return skillDraftEventPublisher.toReleaseJson(summary);
         });
         router.register("skill.release.forcePromote", params -> {
             if (autoReleaseForRpc == null) {
@@ -1267,8 +1332,8 @@ public final class AceClawDaemon {
             String reason = params.has("reason") ? params.get("reason").asText() : "manual force promote";
             String trigger = params.has("trigger") ? params.get("trigger").asText() : "manual";
             var summary = autoReleaseForRpc.forcePromote(workingDir, skillName, stage, reason, trigger);
-            publishSkillDraftReleaseEvents(summary, workingDir, trigger);
-            return toReleaseJson(summary);
+            skillDraftEventPublisher.publishReleaseChanged(summary, workingDir, trigger);
+            return skillDraftEventPublisher.toReleaseJson(summary);
         });
 
         // Session skill packer (extract successful workflow from session into skill draft)
@@ -1806,6 +1871,62 @@ public final class AceClawDaemon {
     }
 
     /**
+     * Sub-agent structural-denial probe — extracted from the lambda in
+     * {@link #wireAgentHandler} so the exception-handling contract can be
+     * exercised in isolation.
+     *
+     * <p>Returns the denial reason when the policy structurally rejects the
+     * call, or {@code null} when the request should fall through to the
+     * standard sub-agent allow-list logic. The choice between fallthrough
+     * and fail-closed depends on the failure mode (CodeRabbit major on
+     * #495):
+     *
+     * <ul>
+     *   <li>{@link JsonProcessingException} from {@code readTree} is
+     *       expected input — LLMs occasionally emit malformed JSON. Return
+     *       {@code null} so the downstream gate denies on the standard
+     *       "not in allow-list" path rather than on a parse error.</li>
+     *   <li>Any other {@link RuntimeException} from
+     *       {@link CapabilityAware#toCapability} is a bug in inference
+     *       code, not expected input. The PR's invariant — "hard-denial
+     *       overrides every approval" — would be broken if we silently
+     *       returned {@code null}: a prior session-blanket approval for
+     *       {@code write_file} would then route a sub-agent past the
+     *       structural layer the bug just disabled. Log + deny so the
+     *       failure is observable in forensics and the bypass cannot
+     *       occur.</li>
+     * </ul>
+     *
+     * <p>Package-private for testing.
+     */
+    static String subAgentStructuralProbe(
+            String toolName,
+            String inputJson,
+            String sessionId,
+            CapabilityAware aware,
+            ObjectMapper mapper,
+            PermissionManager permissionManager) {
+        Capability cap;
+        try {
+            var argsNode = (inputJson == null || inputJson.isBlank())
+                    ? mapper.createObjectNode()
+                    : mapper.readTree(inputJson);
+            cap = aware.toCapability(argsNode);
+        } catch (JsonProcessingException malformed) {
+            return null;
+        } catch (RuntimeException unexpected) {
+            log.warn("Structural capability probe failed for tool '{}': {}",
+                    toolName, unexpected.toString(), unexpected);
+            return "Blocked: structural policy evaluation failed for '"
+                    + toolName + "' (see daemon log).";
+        }
+        if (cap == null) return null;
+        var provenance = Provenance.fromNullableSessionId(sessionId);
+        var denial = permissionManager.checkStructural(cap, provenance, toolName);
+        return denial == null ? null : denial.reason();
+    }
+
+    /**
      * Builds the capability audit log for {@link #wireAgentHandler}, or
      * returns {@code null} if setup fails. Best-effort by design: a
      * read-only {@code $HOME} or a permission error on the audit
@@ -2020,212 +2141,6 @@ public final class AceClawDaemon {
         return oneShotHint ? "one-shot" : "scheduled";
     }
 
-    private com.fasterxml.jackson.databind.node.ObjectNode toValidationJson(
-            ValidationGateEngine.ValidationSummary summary, Path workingDir) {
-        var node = objectMapper.createObjectNode();
-        node.put("totalDrafts", summary.totalDrafts());
-        node.put("passCount", summary.passCount());
-        node.put("holdCount", summary.holdCount());
-        node.put("blockCount", summary.blockCount());
-        node.put("auditFile", workingDir.relativize(summary.auditFile()).toString().replace('\\', '/'));
-        var decisions = objectMapper.createArrayNode();
-        for (var decision : summary.decisions()) {
-            var dn = objectMapper.createObjectNode();
-            dn.put("draftPath", decision.draftPath());
-            dn.put("verdict", decision.verdict().name().toLowerCase());
-            dn.put("evaluatedAt", decision.evaluatedAt().toString());
-            dn.put("trigger", decision.trigger());
-            var reasons = objectMapper.createArrayNode();
-            for (var reason : decision.reasons()) {
-                var rn = objectMapper.createObjectNode();
-                rn.put("gate", reason.gate());
-                rn.put("code", reason.code());
-                rn.put("outcome", reason.outcome().name().toLowerCase());
-                rn.put("message", reason.message());
-                reasons.add(rn);
-            }
-            dn.set("reasons", reasons);
-            decisions.add(dn);
-        }
-        node.set("decisions", decisions);
-        return node;
-    }
-
-    private com.fasterxml.jackson.databind.node.ObjectNode toReleaseJson(
-            AutoReleaseController.EvaluationSummary summary) {
-        var node = objectMapper.createObjectNode();
-        var releases = objectMapper.createArrayNode();
-        for (var release : summary.releases()) {
-            var rn = objectMapper.createObjectNode();
-            rn.put("skillName", release.skillName());
-            rn.put("draftPath", release.draftPath());
-            rn.put("candidateId", release.candidateId());
-            rn.put("stage", release.stage().name().toLowerCase());
-            rn.put("paused", release.paused());
-            rn.put("updatedAt", release.updatedAt().toString());
-            rn.put("lastReasonCode", release.lastReasonCode());
-            rn.put("lastReason", release.lastReason());
-            releases.add(rn);
-        }
-        var events = objectMapper.createArrayNode();
-        for (var event : summary.events()) {
-            var en = objectMapper.createObjectNode();
-            en.put("timestamp", event.timestamp().toString());
-            en.put("trigger", event.trigger());
-            en.put("skillName", event.skillName());
-            en.put("fromStage", event.fromStage() == null ? "none" : event.fromStage().name().toLowerCase());
-            en.put("toStage", event.toStage().name().toLowerCase());
-            en.put("reasonCode", event.reasonCode());
-            en.put("reason", event.reason());
-            events.add(en);
-        }
-        node.put("totalReleases", summary.releases().size());
-        node.put("eventsCount", summary.events().size());
-        node.set("releases", releases);
-        node.set("events", events);
-        return node;
-    }
-
-    private void publishSkillDraftCreatedEvents(
-            SkillDraftGenerator.GenerationSummary summary,
-            Path workingDir,
-            String trigger
-    ) {
-        if (summary == null || summary.draftPaths().isEmpty()) {
-            return;
-        }
-        for (String draftPath : summary.draftPaths()) {
-            Path draftFile = workingDir.resolve(draftPath).normalize();
-            String skillName = draftFile.getParent() != null ? draftFile.getParent().getFileName().toString() : "";
-            String candidateId = "";
-            try {
-                candidateId = parseDraftFrontmatter(draftFile).getOrDefault("source-candidate-id", "");
-            } catch (Exception ignored) {
-            }
-            learningExplanationRecorder.recordSkillDraft(
-                    workingDir,
-                    trigger,
-                    skillName,
-                    draftPath.replace('\\', '/'),
-                    candidateId);
-            skillDraftEventFeed.append(new SkillDraftEvent(
-                    Instant.now(),
-                    "draft_created",
-                    trigger,
-                    skillName,
-                    draftPath.replace('\\', '/'),
-                    candidateId,
-                    "",
-                    "",
-                    false,
-                    List.of()
-            ));
-        }
-    }
-
-    private void publishSkillDraftValidationEvents(
-            ValidationGateEngine.ValidationSummary summary,
-            Path projectRoot,
-            String trigger
-    ) {
-        if (summary == null || summary.changedDecisions().isEmpty()) {
-            return;
-        }
-        for (var decision : summary.changedDecisions()) {
-            learningValidationRecorder.recordDraftValidation(projectRoot, trigger, decision);
-            String skillName = skillNameFromDraftPath(decision.draftPath());
-            var reasons = decision.reasons().stream()
-                    .map(reason -> reason.code() + ": " + reason.message())
-                    .toList();
-            skillDraftEventFeed.append(new SkillDraftEvent(
-                    decision.evaluatedAt(),
-                    "validation_changed",
-                    trigger,
-                    skillName,
-                    decision.draftPath(),
-                    "",
-                    decision.verdict().name().toLowerCase(),
-                    "",
-                    false,
-                    reasons
-            ));
-        }
-    }
-
-    private void publishSkillDraftReleaseEvents(
-            AutoReleaseController.EvaluationSummary summary,
-            Path projectRoot,
-            String trigger
-    ) {
-        if (summary == null || summary.events().isEmpty()) {
-            return;
-        }
-        for (var event : summary.events()) {
-            learningValidationRecorder.recordReleaseValidation(projectRoot, trigger, event);
-            var release = summary.releases().stream()
-                    .filter(candidate -> candidate.skillName().equals(event.skillName()))
-                    .findFirst()
-                    .orElse(null);
-            skillDraftEventFeed.append(new SkillDraftEvent(
-                    event.timestamp(),
-                    "release_changed",
-                    trigger,
-                    event.skillName(),
-                    release == null ? "" : release.draftPath(),
-                    release == null ? "" : release.candidateId(),
-                    "",
-                    event.toStage().name().toLowerCase(),
-                    release != null && release.paused(),
-                    List.of(event.reasonCode() + ": " + event.reason())
-            ));
-        }
-    }
-
-    private static String skillNameFromDraftPath(String draftPath) {
-        Path p = Path.of(draftPath.replace('\\', '/'));
-        if (p.getNameCount() < 2) {
-            return "";
-        }
-        return p.getName(p.getNameCount() - 2).toString();
-    }
-
-    private static Map<String, String> parseDraftFrontmatter(Path draftFile) throws IOException {
-        String raw = Files.readString(draftFile);
-        String[] lines = raw.split("\n");
-        int first = -1;
-        int second = -1;
-        for (int i = 0; i < lines.length; i++) {
-            if ("---".equals(lines[i].trim())) {
-                if (first < 0) {
-                    first = i;
-                } else {
-                    second = i;
-                    break;
-                }
-            }
-        }
-        var map = new LinkedHashMap<String, String>();
-        if (first < 0 || second <= first) {
-            return map;
-        }
-        for (int i = first + 1; i < second; i++) {
-            String line = lines[i];
-            int idx = line.indexOf(':');
-            if (idx <= 0) continue;
-            String key = line.substring(0, idx).trim().toLowerCase(Locale.ROOT);
-            String value = line.substring(idx + 1).trim();
-            map.put(key, stripQuotes(value));
-        }
-        return map;
-    }
-
-    private static String stripQuotes(String value) {
-        if (value == null || value.length() < 2) return value == null ? "" : value;
-        if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) {
-            return value.substring(1, value.length() - 1);
-        }
-        return value;
-    }
 
     /**
      * Creates a daemon with the default home directory (~/.aceclaw).
@@ -2335,7 +2250,8 @@ public final class AceClawDaemon {
         healthMonitor.start();
 
         // 3.5 Execute BOOT.md (best-effort, runs before accepting connections)
-        if (config.bootEnabled()) {
+        var lifecycle = config.lifecycle();
+        if (lifecycle.bootEnabled()) {
             try {
                 Path workingDir = Path.of(System.getProperty("user.dir"));
                 var bootResult = BootExecutor.execute(
@@ -2344,7 +2260,7 @@ public final class AceClawDaemon {
                         bootModel, bootSystemPrompt,
                         config.maxTokens(), config.thinkingBudget(),
                         config.maxTurns(),
-                        config.bootTimeoutSeconds());
+                        lifecycle.bootTimeoutSeconds());
                 if (bootResult.executed()) {
                     log.info("Boot completed: {}", bootResult.summary());
                 }
@@ -2424,13 +2340,13 @@ public final class AceClawDaemon {
         }
 
         // 5. Start cron scheduler (after listener is ready, jobs run in background)
-        if (config.schedulerEnabled()) {
+        if (lifecycle.schedulerEnabled()) {
             try {
                 cronScheduler = new CronScheduler(
                         cronJobStore, bootLlmClient, bootToolRegistry,
                         bootModel, bootSystemPrompt,
                         config.maxTokens(), config.thinkingBudget(),
-                        eventBus, config.schedulerTickSeconds());
+                        eventBus, lifecycle.schedulerTickSeconds());
                 // #459: dashboard sees a cron run as a session ("cron-{jobId}")
                 // with one turn per fire. The bridge ref is null when WS is
                 // disabled, in which case the scheduler falls back to the
@@ -2469,7 +2385,7 @@ public final class AceClawDaemon {
         }
 
         // 5.5. Start deferred action scheduler
-        if (config.deferredActionEnabled() && deferredActionScheduler != null) {
+        if (lifecycle.deferredActionEnabled() && deferredActionScheduler != null) {
             try {
                 deferredActionScheduler.start();
 
@@ -2481,17 +2397,17 @@ public final class AceClawDaemon {
             } catch (Exception e) {
                 log.error("Deferred action scheduler startup failed (daemon will continue): {}", e.getMessage(), e);
             }
-        } else if (!config.deferredActionEnabled()) {
+        } else if (!lifecycle.deferredActionEnabled()) {
             log.debug("Deferred action scheduler disabled via config");
         }
 
         // 6. Start heartbeat runner (after cron scheduler, syncs HEARTBEAT.md into cron jobs)
-        if (config.heartbeatEnabled() && cronScheduler != null) {
+        if (lifecycle.heartbeatEnabled() && cronScheduler != null) {
             try {
                 Path hbWorkingDir = Path.of(System.getProperty("user.dir"));
                 var heartbeatRunner = new HeartbeatRunner(
                         cronScheduler, homeDir, hbWorkingDir,
-                        config.heartbeatActiveHours(), config.schedulerTickSeconds());
+                        lifecycle.heartbeatActiveHours(), lifecycle.schedulerTickSeconds());
                 heartbeatRunner.start();
 
                 shutdownManager.register(new ShutdownManager.ShutdownParticipant() {
@@ -2502,7 +2418,7 @@ public final class AceClawDaemon {
             } catch (Exception e) {
                 log.error("Heartbeat runner startup failed (daemon will continue): {}", e.getMessage(), e);
             }
-        } else if (!config.heartbeatEnabled()) {
+        } else if (!lifecycle.heartbeatEnabled()) {
             log.debug("Heartbeat runner disabled via config");
         } else {
             log.debug("Heartbeat runner enabled but cron scheduler is disabled; skipping startup");
@@ -2705,13 +2621,6 @@ public final class AceClawDaemon {
         public DaemonException(String message, Throwable cause) { super(message, cause); }
     }
 
-    private static String summarizeTrends(List<TrendDetector.Trend> trends) {
-        return trends.stream()
-                .limit(3)
-                .map(TrendDetector.Trend::description)
-                .collect(java.util.stream.Collectors.joining(" | "));
-    }
-
     private static boolean isOperatorFacingAction(String actionType) {
         return switch (actionType) {
             case "runtime_skill_created", "runtime_skill_persisted", "skill_refinement",
@@ -2736,272 +2645,4 @@ public final class AceClawDaemon {
         node.put("reviewSummary", review.summary());
     }
 
-    private void runLearningMaintenancePipeline(
-            String trigger,
-            AutoMemoryStore memoryStore,
-            Path archiveDir,
-            DailyJournal journal,
-            HistoricalIndexRebuilder historicalIndexRebuilder,
-            CrossSessionPatternMiner crossSessionPatternMiner,
-            TrendDetector trendDetector,
-            LearningMaintenanceCandidateBridge maintenanceCandidateBridge,
-            CandidateStore candidateStore,
-            ValidationGateEngine validationGateEngine,
-            AutoReleaseController autoReleaseController,
-            java.util.concurrent.locks.ReentrantLock draftPipelineLock,
-            String workspaceHash,
-            Path workingDir
-    ) {
-        var maintenanceSummary = new LearningMaintenanceRunBuilder(trigger, workspaceHash, workingDir);
-        try {
-            var result = MemoryConsolidator.consolidate(memoryStore, workingDir, archiveDir);
-            maintenanceSummary.consolidation(result);
-            if (result.hasChanges() && journal != null) {
-                journal.append("Memory consolidated (" + trigger + "): "
-                        + result.deduped() + " deduped, "
-                        + result.merged() + " merged, "
-                        + result.pruned() + " pruned");
-            }
-        } catch (Exception e) {
-            log.warn("Memory consolidation failed (trigger={}): {}", trigger, e.getMessage());
-        }
-
-        // Correction → Rule auto-promotion: detect repeated corrections and promote to ACECLAW.md rules
-        try {
-            var aceClawMdPath = workingDir.resolve(".aceclaw").resolve("ACECLAW.md");
-            var existingFingerprints = CorrectionRulePromoter.loadExistingFingerprints(aceClawMdPath);
-            var allEntries = memoryStore.all();
-            var promotionResult = CorrectionRulePromoter.detectRepeatedCorrections(
-                    allEntries, existingFingerprints);
-            if (promotionResult.hasPromotions()) {
-                int written = CorrectionRulePromoter.appendRules(aceClawMdPath, promotionResult.rules());
-                if (journal != null) {
-                    journal.append("Correction rule promotion (" + trigger + "): "
-                            + written + " rules promoted from "
-                            + promotionResult.scannedCorrections() + " corrections");
-                }
-                log.info("Auto-promoted {} correction rules to ACECLAW.md (trigger={})",
-                        written, trigger);
-            }
-        } catch (Exception e) {
-            log.warn("Correction rule promotion failed (trigger={}): {}", trigger, e.getMessage());
-        }
-
-        if (historicalIndexRebuilder != null) {
-            try {
-                var rebuild = historicalIndexRebuilder.rebuildWorkspaceIfStale(workspaceHash);
-                if (rebuild.rebuilt() && journal != null) {
-                    journal.append("Historical index rebuilt (" + trigger + "): "
-                            + rebuild.rebuiltSessions() + " sessions re-indexed");
-                }
-            } catch (Exception e) {
-                log.warn("Historical index rebuild failed (trigger={}): {}", trigger, e.getMessage());
-            }
-        }
-
-        CrossSessionPatternMiner.MiningResult miningResult = null;
-        if (crossSessionPatternMiner != null && historicalLogIndex != null) {
-            try {
-                miningResult = crossSessionPatternMiner.mine(
-                        historicalLogIndex, memoryStore, workspaceHash, workingDir);
-                maintenanceSummary.mining(miningResult);
-                if ((!miningResult.frequentErrorChains().isEmpty()
-                        || !miningResult.stableWorkflows().isEmpty()
-                        || !miningResult.convergingStrategies().isEmpty()
-                        || !miningResult.degradationSignals().isEmpty())
-                        && journal != null) {
-                    journal.append("Cross-session miner (" + trigger + "): "
-                            + miningResult.frequentErrorChains().size() + " error chains, "
-                            + miningResult.stableWorkflows().size() + " stable workflows, "
-                            + miningResult.convergingStrategies().size() + " converging strategies, "
-                            + miningResult.degradationSignals().size() + " degradation signals");
-                }
-            } catch (Exception e) {
-                log.warn("Cross-session pattern mining failed (trigger={}): {}", trigger, e.getMessage());
-            }
-        }
-
-        List<TrendDetector.Trend> trends = List.of();
-        if (trendDetector != null && historicalLogIndex != null) {
-            try {
-                trends = trendDetector.detect(
-                        historicalLogIndex, memoryStore, workspaceHash, workingDir);
-                maintenanceSummary.trends(trends);
-                if (!trends.isEmpty() && journal != null) {
-                    journal.append("Trend detector (" + trigger + "): " + trends.size()
-                            + " significant trends. " + summarizeTrends(trends));
-                }
-            } catch (Exception e) {
-                log.warn("Trend detection failed (trigger={}): {}", trigger, e.getMessage());
-            }
-        }
-
-        if (maintenanceCandidateBridge != null && candidateStore != null
-                && (miningResult != null || !trends.isEmpty())) {
-            try {
-                var bridgeResult = maintenanceCandidateBridge.bridge(
-                        trigger,
-                        miningResult != null ? miningResult
-                                : new CrossSessionPatternMiner.MiningResult(List.of(), List.of(), List.of(), List.of()),
-                        trends);
-                maintenanceSummary.bridge(bridgeResult);
-                if (bridgeResult.upserts() > 0 && journal != null) {
-                    journal.append("Maintenance candidate bridge (" + trigger + "): "
-                            + bridgeResult.upserts() + " observations, "
-                            + bridgeResult.transitions() + " transitions, "
-                            + bridgeResult.promoted() + " promoted");
-                }
-                for (var candidate : bridgeResult.observedCandidates()) {
-                    learningExplanationRecorder.recordCandidateObservation(
-                            workingDir,
-                            "",
-                            "maintenance-" + trigger,
-                            candidate,
-                            candidate.content(),
-                            List.of(new LearningExplanation.EvidenceRef(
-                                    "maintenance-trigger",
-                                    trigger,
-                                    candidate.toolTag())));
-                }
-                for (var transition : bridgeResult.stateTransitions()) {
-                    learningExplanationRecorder.recordCandidateTransition(
-                            workingDir,
-                            "",
-                            "maintenance-" + trigger,
-                            transition);
-                }
-                if (bridgeResult.promoted() > 0) {
-                    triggerMaintenanceDraftLifecycle(
-                            "maintenance-" + trigger,
-                            workingDir,
-                            candidateStore,
-                            validationGateEngine,
-                            autoReleaseController,
-                            draftPipelineLock);
-                }
-            } catch (Exception e) {
-                log.warn("Maintenance candidate bridge failed (trigger={}): {}", trigger, e.getMessage());
-            }
-        }
-        try {
-            learningMaintenanceRunStore.append(workingDir, maintenanceSummary.build());
-        } catch (Exception e) {
-            log.debug("Failed to persist maintenance summary (trigger={}): {}", trigger, e.getMessage());
-        }
-    }
-
-    private void triggerMaintenanceDraftLifecycle(
-            String trigger,
-            Path workingDir,
-            CandidateStore candidateStore,
-            ValidationGateEngine validationGateEngine,
-            AutoReleaseController autoReleaseController,
-            java.util.concurrent.locks.ReentrantLock draftPipelineLock
-    ) {
-        if (candidateStore == null || draftPipelineLock == null) {
-            return;
-        }
-        draftPipelineLock.lock();
-        try {
-            try {
-                var generator = new SkillDraftGenerator();
-                var summary = generator.generateFromPromoted(candidateStore, workingDir);
-                publishSkillDraftCreatedEvents(summary, workingDir, trigger);
-                if (validationGateEngine != null && summary.createdDrafts() > 0) {
-                    var validation = validationGateEngine.validateAll(workingDir, trigger);
-                    publishSkillDraftValidationEvents(validation, workingDir, trigger);
-                    if (autoReleaseController != null) {
-                        var release = autoReleaseController.evaluateAll(workingDir, candidateStore, trigger);
-                        publishSkillDraftReleaseEvents(release, workingDir, trigger);
-                    }
-                }
-            } catch (Exception e) {
-                log.warn("Maintenance draft lifecycle failed (trigger={}): {}", trigger, e.getMessage());
-            }
-        } finally {
-            draftPipelineLock.unlock();
-        }
-    }
-
-    private static final class LearningMaintenanceRunBuilder {
-        private final String trigger;
-        private final String workspaceHash;
-        private final Path workingDir;
-        private int deduped;
-        private int merged;
-        private int pruned;
-        private int errorChains;
-        private int stableWorkflows;
-        private int convergingStrategies;
-        private int degradationSignals;
-        private int trends;
-        private int candidateObservations;
-        private int candidateTransitions;
-        private int candidatePromoted;
-
-        private LearningMaintenanceRunBuilder(String trigger, String workspaceHash, Path workingDir) {
-            this.trigger = trigger;
-            this.workspaceHash = workspaceHash;
-            this.workingDir = workingDir;
-        }
-
-        void consolidation(dev.aceclaw.memory.MemoryConsolidator.ConsolidationResult result) {
-            if (result == null) {
-                return;
-            }
-            deduped = result.deduped();
-            merged = result.merged();
-            pruned = result.pruned();
-        }
-
-        void mining(CrossSessionPatternMiner.MiningResult result) {
-            if (result == null) {
-                return;
-            }
-            errorChains = result.frequentErrorChains().size();
-            stableWorkflows = result.stableWorkflows().size();
-            convergingStrategies = result.convergingStrategies().size();
-            degradationSignals = result.degradationSignals().size();
-        }
-
-        void trends(List<TrendDetector.Trend> trendList) {
-            trends = trendList != null ? trendList.size() : 0;
-        }
-
-        void bridge(LearningMaintenanceCandidateBridge.BridgeResult bridgeResult) {
-            if (bridgeResult == null) {
-                return;
-            }
-            candidateObservations = bridgeResult.upserts();
-            candidateTransitions = bridgeResult.transitions();
-            candidatePromoted = bridgeResult.promoted();
-        }
-
-        LearningMaintenanceRun build() {
-            return new LearningMaintenanceRun(
-                    Instant.now(),
-                    trigger,
-                    workspaceHash,
-                    workingDir != null ? workingDir.toString() : "",
-                    deduped,
-                    merged,
-                    pruned,
-                    errorChains,
-                    stableWorkflows,
-                    convergingStrategies,
-                    degradationSignals,
-                    trends,
-                    candidateObservations,
-                    candidateTransitions,
-                    candidatePromoted,
-                    "maintenance "
-                            + trigger
-                            + ": deduped=" + deduped
-                            + ", merged=" + merged
-                            + ", pruned=" + pruned
-                            + ", mining=" + (errorChains + stableWorkflows + convergingStrategies + degradationSignals)
-                            + ", trends=" + trends
-                            + ", bridge=" + candidateObservations + "/" + candidateTransitions + "/" + candidatePromoted);
-        }
-    }
 }

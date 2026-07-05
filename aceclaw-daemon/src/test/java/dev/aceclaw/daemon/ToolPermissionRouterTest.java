@@ -10,6 +10,7 @@ import dev.aceclaw.security.PermissionLevel;
 import dev.aceclaw.security.PermissionManager;
 import dev.aceclaw.security.PermissionPolicy;
 import dev.aceclaw.security.PermissionRequest;
+import dev.aceclaw.security.Provenance;
 import dev.aceclaw.security.WriteMode;
 import org.junit.jupiter.api.Test;
 
@@ -36,14 +37,18 @@ final class ToolPermissionRouterTest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    /** Capturing policy: records the {@link PermissionRequest} so the test can pin what was sent. */
+    /** Capturing policy: records the structured triple so the test can pin what was sent. */
     private static final class CapturingPolicy implements PermissionPolicy {
-        final AtomicReference<PermissionRequest> last = new AtomicReference<>();
+        final AtomicReference<Capability> lastCapability = new AtomicReference<>();
+        final AtomicReference<String> lastDescription = new AtomicReference<>();
+        final AtomicReference<Provenance> lastProvenance = new AtomicReference<>();
         final AtomicInteger calls = new AtomicInteger();
 
         @Override
-        public PermissionDecision evaluate(PermissionRequest request) {
-            last.set(request);
+        public PermissionDecision evaluate(Capability capability, Provenance provenance, String description) {
+            lastCapability.set(capability);
+            lastDescription.set(description);
+            lastProvenance.set(provenance);
             calls.incrementAndGet();
             return new PermissionDecision.Approved();
         }
@@ -84,8 +89,9 @@ final class ToolPermissionRouterTest {
     void capabilityAwareToolTakesStructuredPath() {
         // The whole point of CapabilityAware: when the tool can produce a
         // structured Capability, the router uses it instead of the flat
-        // legacy PermissionRequest. Pin both: toCapability was called, AND
-        // the policy received a request derived from the capability.
+        // legacy PermissionRequest. Pin: toCapability was called, the policy
+        // received the structured FileWrite variant (not a LegacyToolUse
+        // bridge), and the rich description was forwarded.
         var policy = new CapturingPolicy();
         var pm = new PermissionManager(policy);
         var tool = new SpyCapabilityAwareTool();
@@ -97,22 +103,22 @@ final class ToolPermissionRouterTest {
         assertThat(tool.toCapabilityCalls.get())
                 .as("structured path must call toCapability")
                 .isEqualTo(1);
-        assertThat(policy.last.get().toolName())
-                .as("router passes the originating tool name as allowlist key")
-                .isEqualTo("spy_tool");
-        assertThat(policy.last.get().description())
+        assertThat(policy.lastCapability.get())
+                .as("policy receives the structured variant, not a LegacyToolUse bridge")
+                .isInstanceOf(Capability.FileWrite.class);
+        assertThat(policy.lastDescription.get())
                 .as("router passes the rich caller-supplied description, not displayLabel")
                 .isEqualTo("Write /tmp/x");
-        assertThat(policy.last.get().level())
-                .as("level comes from the capability variant, not the fallback level")
+        assertThat(policy.lastCapability.get().risk())
+                .as("risk is derived from the variant, not the fallback level")
                 .isEqualTo(PermissionLevel.WRITE);
     }
 
     @Test
     void plainToolTakesLegacyPath() {
-        // A non-CapabilityAware tool must not reach toCapability (there's
-        // nothing to call) and must produce the same legacy
-        // PermissionRequest the dispatcher built before #480.
+        // A non-CapabilityAware tool must produce the LegacyToolUse bridge
+        // variant the dispatcher built before #480: tool name + declared
+        // fallback level, no path/URL/etc.
         var policy = new CapturingPolicy();
         var pm = new PermissionManager(policy);
         var tool = new LegacyOnlyTool();
@@ -120,9 +126,13 @@ final class ToolPermissionRouterTest {
         ToolPermissionRouter.check(
                 tool, "{}", "sess-1", "describe me", PermissionLevel.EXECUTE, pm, MAPPER);
 
-        assertThat(policy.last.get().toolName()).isEqualTo("legacy_tool");
-        assertThat(policy.last.get().description()).isEqualTo("describe me");
-        assertThat(policy.last.get().level()).isEqualTo(PermissionLevel.EXECUTE);
+        assertThat(policy.lastCapability.get())
+                .as("legacy path produces the LegacyToolUse bridge variant")
+                .isInstanceOf(Capability.LegacyToolUse.class);
+        var legacy = (Capability.LegacyToolUse) policy.lastCapability.get();
+        assertThat(legacy.toolName()).isEqualTo("legacy_tool");
+        assertThat(legacy.declaredLevel()).isEqualTo(PermissionLevel.EXECUTE);
+        assertThat(policy.lastDescription.get()).isEqualTo("describe me");
     }
 
     @Test
@@ -142,7 +152,10 @@ final class ToolPermissionRouterTest {
 
         assertThat(decision).isInstanceOf(PermissionDecision.Approved.class);
         assertThat(tool.toCapabilityCalls.get()).isEqualTo(1);
-        assertThat(policy.last.get().level())
+        assertThat(policy.lastCapability.get())
+                .as("fallback lands on the LegacyToolUse bridge")
+                .isInstanceOf(Capability.LegacyToolUse.class);
+        assertThat(policy.lastCapability.get().risk())
                 .as("fallback uses the caller-supplied level, not a derived risk")
                 .isEqualTo(PermissionLevel.WRITE);
     }
@@ -176,7 +189,7 @@ final class ToolPermissionRouterTest {
         // bugs. Re-running the legacy path on them would mask real
         // failures and could change the decision behind the user's back.
         // Pin: a policy that throws bubbles up through the structured path.
-        PermissionPolicy crashingPolicy = req -> {
+        PermissionPolicy crashingPolicy = (cap, prov, desc) -> {
             throw new IllegalStateException("policy bug");
         };
         var pm = new PermissionManager(crashingPolicy);
@@ -207,10 +220,12 @@ final class ToolPermissionRouterTest {
         assertThat(tool.toCapabilityCalls.get())
                 .as("null input never reaches toCapability — readTree fails first, caught, legacy fallback")
                 .isZero();
-        assertThat(policy.last.get().toolName())
-                .as("legacy fallback was used")
-                .isEqualTo("spy_tool");
-        assertThat(policy.last.get().level())
+        assertThat(policy.lastCapability.get())
+                .as("legacy fallback lands on LegacyToolUse")
+                .isInstanceOf(Capability.LegacyToolUse.class);
+        var legacy = (Capability.LegacyToolUse) policy.lastCapability.get();
+        assertThat(legacy.toolName()).isEqualTo("spy_tool");
+        assertThat(legacy.declaredLevel())
                 .as("legacy fallback uses caller-supplied level")
                 .isEqualTo(PermissionLevel.WRITE);
     }
@@ -231,11 +246,17 @@ final class ToolPermissionRouterTest {
         ToolPermissionRouter.check(
                 new SpyCapabilityAwareTool(), "{}", (String) null, "no session",
                 PermissionLevel.WRITE, pm, MAPPER);
-        assertThat(policy.last.get().toolName()).isEqualTo("spy_tool");
+        assertThat(policy.lastCapability.get())
+                .as("structured path called for CapabilityAware tool")
+                .isInstanceOf(Capability.FileWrite.class);
 
         ToolPermissionRouter.check(
                 new LegacyOnlyTool(), "{}", (String) null, "no session",
                 PermissionLevel.READ, pm, MAPPER);
-        assertThat(policy.last.get().toolName()).isEqualTo("legacy_tool");
+        assertThat(policy.lastCapability.get())
+                .as("legacy path called for plain Tool")
+                .isInstanceOf(Capability.LegacyToolUse.class);
+        assertThat(((Capability.LegacyToolUse) policy.lastCapability.get()).toolName())
+                .isEqualTo("legacy_tool");
     }
 }

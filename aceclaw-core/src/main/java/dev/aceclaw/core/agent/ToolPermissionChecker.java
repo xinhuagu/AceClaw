@@ -12,11 +12,11 @@ package dev.aceclaw.core.agent;
  *
  * The 3-arg {@link #check(String, String, String)} entry point carries the
  * owning session id so a per-session allow-list cannot leak across sessions.
- * Pre-#457 the sub-agent path used a daemon-wide {@code hasAnySessionApproval}
- * lookup that returned true if <em>any</em> session had approved the tool —
- * meaning a sub-agent in workspace B would inherit a "remember" approval
- * granted in workspace A. The 3-arg form lets the daemon wire a per-session
- * predicate so that leak is closed.
+ * Pre-#457 the sub-agent path used a daemon-wide allow-list lookup that
+ * returned true if <em>any</em> session had approved the tool — meaning a
+ * sub-agent in workspace B would inherit a "remember" approval granted in
+ * workspace A. The 3-arg form lets the daemon wire a per-session predicate
+ * so that leak is closed.
  *
  * <p>The legacy 2-arg form is preserved as a deprecated default that
  * delegates with a {@code null} sessionId — implementations should override

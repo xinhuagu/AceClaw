@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.4.4] - 2026-06-03
+
+### Bug Fixes
+
+- Resolve pending permissions on agent.cancel
+- Send permission.cancelled BEFORE cancelling future
+- Skip permission.cancelled for already-resolved futures
+- Run structural denials before session-blanket lookup
+- Infer FileWrite/FileDelete at MCP boundary so structural rules fire
+- Match sensitive paths case-insensitively
+- Infer FileWrite/FileDelete for move/rename/copy operations
+- Deny moves that remove sensitive sources
+- Preserve DANGEROUS risk on moves; tighten verb regex + null guards
+- Match path field names case-insensitive and snake/camel-agnostic
+- Treat copies-from-sensitive-source as exfiltration
+- Route sub-agent dispatch through structural denials
+- Normalize method names so camelCase/kebab/PascalCase tools classify
+- Audit sub-agent structural denials; tighten review findings
+- Make /etc/ rule OS-independent for Windows CI
+- Close sub-agent structural-bypass holes per #495 review
+- Resolve symlinks before sensitive-path match
+- Write through locked FileChannel for Windows compatibility
+- Address Codex P2 + CodeRabbit review on #508
+- Address CodeRabbit review on #512
+- Attribute auto-promotion audit records to candidate's workspace
+
+### Documentation
+
+- Drop fragile line-number refs in cancel javadoc
+
+### Features
+
+- Migrate McpToolBridge to CapabilityAware
+- Gate structural sensitive-path denials behind opt-in toggle
+- TurnCheckpoint — per-iteration checkpoint for non-plan ReAct turns (#500) (#516)
 ## [0.4.3] - 2026-05-12
 
 ### Bug Fixes

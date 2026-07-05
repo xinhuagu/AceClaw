@@ -399,6 +399,7 @@ final class CapabilityTest {
             case Capability.FileRead r -> r.displayLabel();
             case Capability.FileWrite w -> w.displayLabel();
             case Capability.FileDelete d -> d.displayLabel();
+            case Capability.FileMove fm -> fm.displayLabel();
             case Capability.FileSearch fs -> fs.displayLabel();
             case Capability.BashExec b -> b.displayLabel();
             case Capability.OsScript o -> o.displayLabel();

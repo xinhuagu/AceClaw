@@ -6,6 +6,7 @@ dependencies {
     implementation(project(":aceclaw-llm"))
     implementation(project(":aceclaw-tools"))
     implementation(project(":aceclaw-memory"))
+    implementation(project(":aceclaw-learning"))
     implementation(project(":aceclaw-security"))
     implementation(project(":aceclaw-mcp"))
 

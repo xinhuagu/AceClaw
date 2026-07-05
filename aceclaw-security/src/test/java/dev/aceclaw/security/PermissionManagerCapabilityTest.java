@@ -18,19 +18,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 final class PermissionManagerCapabilityTest {
 
     /** Always-deny policy so any Approved result must come from the session blanket. */
-    private static final PermissionPolicy DENY = req ->
+    private static final PermissionPolicy DENY = (cap, prov, desc) ->
             new PermissionDecision.Denied("test policy denies");
 
     @Test
-    void structuredCheckUsesCapabilityRiskInPolicyRequest() {
-        // PolicyEngine doesn't yet consume Capability directly (#465 Scope
-        // #2 lands later); for now the manager builds a PermissionRequest
-        // from the capability so DefaultPermissionPolicy etc. keep working
-        // unchanged. Confirm the level passed in is the variant's derived
-        // risk, not something a caller could lie about.
-        var captured = new java.util.concurrent.atomic.AtomicReference<PermissionRequest>();
-        PermissionPolicy capturing = req -> {
-            captured.set(req);
+    void policyReceivesStructuredCapabilityNotFlatRequest() {
+        // PolicyEngine now consumes the structured capability directly
+        // (#465 Scope #2 / #480 PR 4). Confirm the policy sees the full
+        // variant — fields like path, write mode are reachable — not just
+        // a 4-tier risk level.
+        var captured = new java.util.concurrent.atomic.AtomicReference<Capability>();
+        PermissionPolicy capturing = (cap, prov, desc) -> {
+            captured.set(cap);
             return new PermissionDecision.Approved();
         };
         var pm = new PermissionManager(capturing);
@@ -38,10 +37,10 @@ final class PermissionManagerCapabilityTest {
 
         pm.check(fileWrite, Provenance.forSession(new SessionId("s")));
 
-        assertThat(captured.get().level()).isEqualTo(PermissionLevel.WRITE);
-        assertThat(captured.get().toolName())
-                .as("toolName uses the capability's allowlistKey, not a stringly-typed name")
-                .isEqualTo("FileWrite");
+        assertThat(captured.get()).isInstanceOf(Capability.FileWrite.class);
+        assertThat(((Capability.FileWrite) captured.get()).path()).isEqualTo(Path.of("/tmp/x"));
+        assertThat(((Capability.FileWrite) captured.get()).mode()).isEqualTo(WriteMode.OVERWRITE);
+        assertThat(captured.get().risk()).isEqualTo(PermissionLevel.WRITE);
     }
 
     @Test
@@ -92,10 +91,10 @@ final class PermissionManagerCapabilityTest {
         // buildToolDescription(...) and passes it through. Pin that the
         // policy sees that string rather than the synthetic displayLabel
         // — losing it would regress the user's permission prompt UX.
-        var captured = new java.util.concurrent.atomic.AtomicReference<PermissionRequest>();
-        PermissionPolicy capturing = req -> {
-            captured.set(req);
-            return new PermissionDecision.NeedsUserApproval(req.description());
+        var capturedDesc = new java.util.concurrent.atomic.AtomicReference<String>();
+        PermissionPolicy capturing = (cap, prov, desc) -> {
+            capturedDesc.set(desc);
+            return new PermissionDecision.NeedsUserApproval(desc);
         };
         var pm = new PermissionManager(capturing);
 
@@ -105,11 +104,8 @@ final class PermissionManagerCapabilityTest {
                 "write_file",
                 "Write /tmp/x (123 chars of new content)");
 
-        assertThat(captured.get().description())
+        assertThat(capturedDesc.get())
                 .isEqualTo("Write /tmp/x (123 chars of new content)");
-        assertThat(captured.get().toolName())
-                .as("4-arg form uses the caller's allowlist key, not the variant class name")
-                .isEqualTo("write_file");
     }
 
     @Test
@@ -131,6 +127,46 @@ final class PermissionManagerCapabilityTest {
         assertThat(decision)
                 .as("daemon-internal must skip the session allowlist and hit policy")
                 .isInstanceOf(PermissionDecision.Denied.class);
+    }
+
+    @Test
+    void structuralDenialFiresEvenWithSessionBlanketApproval() {
+        // Codex P1 regression on #495: a user-granted "always allow write_file"
+        // must NOT let the agent route a FileWrite(.env) past the structural
+        // hard-denial layer. The structural check runs in PermissionManager
+        // BEFORE the session-blanket lookup so the invariant
+        // "hard-denials override every mode and every prior approval" holds.
+        // Sensitive-path denials are opt-in on the policy (default off so an
+        // upgrade doesn't break workflows that legitimately write .env
+        // templates). Enable explicitly here -- the entire test is about
+        // pinning that opt-in's override semantics.
+        var pm = new PermissionManager(new DefaultPermissionPolicy(
+                DefaultPermissionPolicy.MODE_NORMAL, /* denySensitivePaths */ true));
+        pm.approveForSession("sess-A", "write_file");
+
+        // Sanity: a non-sensitive write still gets the blanket approval.
+        var safeDecision = pm.check(
+                new Capability.FileWrite(Path.of("/tmp/safe.txt"), WriteMode.OVERWRITE),
+                Provenance.forSession(new SessionId("sess-A")),
+                "write_file",
+                "write /tmp/safe.txt");
+        assertThat(safeDecision)
+                .as("non-sensitive write follows the blanket approval")
+                .isInstanceOf(PermissionDecision.Approved.class);
+
+        // The bug: same allowlist key, but the path is sensitive. Pre-fix this
+        // would have returned Approved via the blanket; post-fix the
+        // structural denial fires first and the write is refused.
+        var sensitiveDecision = pm.check(
+                new Capability.FileWrite(Path.of("/repo/.env"), WriteMode.OVERWRITE),
+                Provenance.forSession(new SessionId("sess-A")),
+                "write_file",
+                "write .env");
+        assertThat(sensitiveDecision)
+                .as("session blanket must not bypass structural denial")
+                .isInstanceOf(PermissionDecision.Denied.class);
+        assertThat(((PermissionDecision.Denied) sensitiveDecision).reason())
+                .contains("sensitive path");
     }
 
     @Test

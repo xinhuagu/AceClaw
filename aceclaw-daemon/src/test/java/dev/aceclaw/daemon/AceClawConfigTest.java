@@ -27,6 +27,54 @@ class AceClawConfigTest {
         assertThat(config.provider()).isEqualTo("openai-codex");
     }
 
+    // -- security.denySensitivePaths toggle --
+
+    @Test
+    void denySensitivePathsDefaultsOff(@TempDir Path tempDir) throws Exception {
+        // Empty config -- no security section -- the toggle must default to
+        // false so an upgrade past #480 doesn't break workflows that
+        // legitimately write .env templates, .git/config entries, etc.
+        var projectConfig = tempDir.resolve(".aceclaw").resolve("config.json");
+        Files.createDirectories(projectConfig.getParent());
+        Files.writeString(projectConfig, "{}");
+
+        var config = AceClawConfig.load(tempDir, null);
+
+        assertThat(config.denySensitivePaths())
+                .as("empty config must leave denySensitivePaths off (zero-config = no surprises on upgrade)")
+                .isFalse();
+    }
+
+    @Test
+    void denySensitivePathsEnabledViaProjectConfig(@TempDir Path tempDir) throws Exception {
+        // The opt-in path: a project config explicitly sets the toggle on.
+        // Verifies the JSON shape lives under `security.denySensitivePaths`
+        // (nested object so future security knobs cluster together rather
+        // than litter the top level).
+        var projectConfig = tempDir.resolve(".aceclaw").resolve("config.json");
+        Files.createDirectories(projectConfig.getParent());
+        Files.writeString(projectConfig,
+                "{\"security\":{\"denySensitivePaths\":true}}");
+
+        var config = AceClawConfig.load(tempDir, null);
+
+        assertThat(config.denySensitivePaths()).isTrue();
+    }
+
+    @Test
+    void denySensitivePathsExplicitFalseStaysOff(@TempDir Path tempDir) throws Exception {
+        // Defensive: explicit false in the file behaves like absent. Pins
+        // that there's no weird truthy-coercion in the JSON merge path.
+        var projectConfig = tempDir.resolve(".aceclaw").resolve("config.json");
+        Files.createDirectories(projectConfig.getParent());
+        Files.writeString(projectConfig,
+                "{\"security\":{\"denySensitivePaths\":false}}");
+
+        var config = AceClawConfig.load(tempDir, null);
+
+        assertThat(config.denySensitivePaths()).isFalse();
+    }
+
     // -- WebSocket loopback gating (#446) --
 
     @Test
@@ -239,11 +287,98 @@ class AceClawConfigTest {
 
         var config = AceClawConfig.load(tempDir, null);
 
-        assertThat(config.maxPlanStepWallTimeSec())
+        var watchdog = config.watchdog();
+        assertThat(watchdog.planStepWallTimeSec())
                 .as("per-step plan budget default")
                 .isEqualTo(1800);
-        assertThat(config.maxPlanTotalWallTimeSec())
+        assertThat(watchdog.planTotalWallTimeSec())
                 .as("total plan budget default")
                 .isEqualTo(3600);
+    }
+
+    // -- Retry config (batch 6) -----------------------------------------------
+
+    @Test
+    void retryDefaultsMatchRetryConfigDEFAULT(@TempDir Path tempDir) throws Exception {
+        var projectConfig = tempDir.resolve(".aceclaw").resolve("config.json");
+        Files.createDirectories(projectConfig.getParent());
+        Files.writeString(projectConfig, "{}");
+
+        var config = AceClawConfig.load(tempDir, null);
+
+        assertThat(config.retryConfig())
+                .as("empty config must yield RetryConfig.DEFAULT verbatim")
+                .isEqualTo(dev.aceclaw.core.agent.RetryConfig.DEFAULT);
+    }
+
+    @Test
+    void retryFileOverrideAppliesAllFourFields(@TempDir Path tempDir) throws Exception {
+        var projectConfig = tempDir.resolve(".aceclaw").resolve("config.json");
+        Files.createDirectories(projectConfig.getParent());
+        Files.writeString(projectConfig, """
+                {
+                  "retry": {
+                    "maxRetries": 7,
+                    "initialBackoffMs": 250,
+                    "maxBackoffMs": 30000,
+                    "jitterFactor": 0.5
+                  }
+                }
+                """);
+
+        var config = AceClawConfig.load(tempDir, null);
+
+        var retry = config.retryConfig();
+        assertThat(retry.maxRetries()).isEqualTo(7);
+        assertThat(retry.initialBackoffMs()).isEqualTo(250L);
+        assertThat(retry.maxBackoffMs()).isEqualTo(30_000L);
+        assertThat(retry.jitterFactor()).isEqualTo(0.5);
+    }
+
+    @Test
+    void retryInvalidValuesSilentlyKeepDefaults(@TempDir Path tempDir) throws Exception {
+        // Pre-decomp contract preserved: out-of-range values are silently
+        // skipped (not thrown/clamped). A typo in config.json must not crash
+        // daemon startup; valid sibling fields still apply.
+        var projectConfig = tempDir.resolve(".aceclaw").resolve("config.json");
+        Files.createDirectories(projectConfig.getParent());
+        Files.writeString(projectConfig, """
+                {
+                  "retry": {
+                    "maxRetries": -1,
+                    "initialBackoffMs": -100,
+                    "maxBackoffMs": -1,
+                    "jitterFactor": 1.5
+                  }
+                }
+                """);
+
+        var config = AceClawConfig.load(tempDir, null);
+
+        assertThat(config.retryConfig())
+                .as("all-invalid retry block must leave RetryConfig.DEFAULT unmodified")
+                .isEqualTo(dev.aceclaw.core.agent.RetryConfig.DEFAULT);
+    }
+
+    @Test
+    void retryPartialOverrideKeepsUnsetFieldsAtDefault(@TempDir Path tempDir) throws Exception {
+        var projectConfig = tempDir.resolve(".aceclaw").resolve("config.json");
+        Files.createDirectories(projectConfig.getParent());
+        Files.writeString(projectConfig, """
+                {
+                  "retry": {
+                    "jitterFactor": 0.0
+                  }
+                }
+                """);
+
+        var config = AceClawConfig.load(tempDir, null);
+
+        var retry = config.retryConfig();
+        var def = dev.aceclaw.core.agent.RetryConfig.DEFAULT;
+        assertThat(retry.maxRetries()).isEqualTo(def.maxRetries());
+        assertThat(retry.initialBackoffMs()).isEqualTo(def.initialBackoffMs());
+        assertThat(retry.maxBackoffMs()).isEqualTo(def.maxBackoffMs());
+        assertThat(retry.jitterFactor()).isEqualTo(0.0);
     }
 }

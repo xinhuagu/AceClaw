@@ -3,6 +3,8 @@ package dev.aceclaw.core.agent;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.llm.*;
+import dev.aceclaw.core.planner.PlanCheckpoint;
+import dev.aceclaw.core.planner.TurnCheckpoint;
 import dev.aceclaw.infra.event.AgentEvent;
 import dev.aceclaw.infra.event.ToolEvent;
 import org.slf4j.Logger;
@@ -164,6 +166,22 @@ public final class StreamingAgentLoop {
                         StreamEventHandler handler, CancellationToken cancellationToken,
                         RequestSource defaultSource)
             throws LlmException {
+        return runTurn(userPrompt, conversationHistory, handler, cancellationToken,
+                defaultSource, false);
+    }
+
+    /**
+     * Like {@link #runTurn(String, List, StreamEventHandler, CancellationToken, RequestSource)}
+     * but with an explicit {@code skipTurnCheckpoint} escape hatch. Callers that drive the
+     * loop on behalf of an outer execution context (e.g. {@code SequentialPlanExecutor},
+     * which already owns a {@code PlanCheckpoint} for the whole plan) pass {@code true}
+     * so per-step LLM calls don't leak a parallel turn checkpoint into the resume routing
+     * tier (issue #500 PR #516 review).
+     */
+    public Turn runTurn(String userPrompt, List<Message> conversationHistory,
+                        StreamEventHandler handler, CancellationToken cancellationToken,
+                        RequestSource defaultSource, boolean skipTurnCheckpoint)
+            throws LlmException {
         var eventHandler = handler != null ? handler : new StreamEventHandler() {};
         this.activeCancellationToken = cancellationToken;
         long turnStart = System.currentTimeMillis();
@@ -178,6 +196,31 @@ public final class StreamingAgentLoop {
         var userMessage = Message.user(userPrompt);
         allMessages.add(userMessage);
         newMessages.add(userMessage);
+
+        // Turn checkpoint scaffolding. Enabled only when both workspaceHash and
+        // sessionId are present — TurnCheckpoint requires both. Without them we
+        // silently skip checkpointing (e.g. sub-agent loops, unit tests).
+        final String turnId = java.util.UUID.randomUUID().toString();
+        final TurnCheckpointSink turnSink = config.effectiveTurnCheckpointSink();
+        final String workspaceHash = config.workspaceHash();
+        final boolean checkpointEnabled =
+                !skipTurnCheckpoint
+                        && workspaceHash != null && config.sessionId() != null
+                        && config.turnCheckpointSink() != null;
+        TurnCheckpoint currentCheckpoint = checkpointEnabled
+                ? new TurnCheckpoint(
+                        turnId,
+                        config.sessionId(),
+                        workspaceHash,
+                        userPrompt,
+                        ConversationSnapshot.serialize(allMessages),
+                        0,
+                        null,
+                        List.of(),
+                        PlanCheckpoint.CheckpointStatus.ACTIVE,
+                        Instant.now(),
+                        Instant.now())
+                : null;
 
         int totalInputTokens = 0;
         int totalOutputTokens = 0;
@@ -244,6 +287,9 @@ public final class StreamingAgentLoop {
                 if (softBudgetStopped || hardBudgetStopped
                         || (cancellationToken != null && cancellationToken.isCancelled())) {
                     log.info("Cancellation detected before LLM call (iteration {})", iteration + 1);
+                    if (checkpointEnabled) {
+                        turnSink.onTurnEnded(turnId, PlanCheckpoint.CheckpointStatus.INTERRUPTED);
+                    }
                     var turn = buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
                             totalCacheCreationTokens, totalCacheReadTokens, compactionResult,
                             softBudgetStopped, llmRequestCount, attributionBuilder.build());
@@ -378,6 +424,9 @@ public final class StreamingAgentLoop {
                         totalCacheCreationTokens += accumulator.usage.cacheCreationInputTokens();
                         totalCacheReadTokens += accumulator.usage.cacheReadInputTokens();
                     }
+                    if (checkpointEnabled) {
+                        turnSink.onTurnEnded(turnId, PlanCheckpoint.CheckpointStatus.INTERRUPTED);
+                    }
                     var turn = buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
                             totalCacheCreationTokens, totalCacheReadTokens, compactionResult,
                             llmRequestCount, attributionBuilder.build());
@@ -403,14 +452,50 @@ public final class StreamingAgentLoop {
                 // Build assistant message from accumulated content
                 var contentBlocks = accumulator.buildContentBlocks();
 
-                // Fallback: some local models return tool calls as plain text JSON
+                // Fallbacks for open-weight / OpenAI-compatible providers that mishandle tool calls:
+                // (1) a native tool_calls block streamed but finish_reason was reported as "stop", or
+                // (2) the tool call was emitted as plain text ([tool:start] marker or bare JSON).
                 var stopReason = accumulator.stopReason != null ? accumulator.stopReason : StopReason.ERROR;
-                if (stopReason == StopReason.END_TURN) {
-                    var converted = tryConvertTextToToolUse(contentBlocks);
+                if (stopReason == StopReason.END_TURN
+                        && contentBlocks.stream().anyMatch(b -> b instanceof ContentBlock.ToolUse)) {
+                    // Some OpenAI-compatible providers (e.g. Ollama) stream a complete tool_calls
+                    // block but set finish_reason="stop" instead of "tool_calls", so the turn arrives
+                    // here as END_TURN even though the model asked to call a tool. Execute it instead
+                    // of silently ending the turn (which drops the call with no permission prompt).
+                    stopReason = StopReason.TOOL_USE;
+                    log.info("Promoted END_TURN to TOOL_USE: response carries a native tool_use block "
+                            + "(provider reported finish_reason=stop alongside tool_calls)");
+                } else if (stopReason == StopReason.END_TURN) {
+                    // Concatenate the assistant text once and reuse it for both the conversion
+                    // attempt and the diagnostic below — END_TURN is the normal terminal state for
+                    // native-tool-calling providers, so this runs on every ordinary answer.
+                    String endTurnText = concatText(contentBlocks);
+                    var converted = tryConvertTextToToolUse(contentBlocks, endTurnText);
                     if (converted != null) {
+                        String convertedToolName = converted.stream()
+                                .filter(b -> b instanceof ContentBlock.ToolUse)
+                                .map(b -> ((ContentBlock.ToolUse) b).name())
+                                .findFirst().orElse("?");
                         contentBlocks = converted;
                         stopReason = StopReason.TOOL_USE;
-                        log.info("Converted text-based tool call to native ToolUse block");
+                        log.info("Recovered text-based tool call from END_TURN response: tool={}", convertedToolName);
+                    } else {
+                        // Blind-spot safety net: dump the raw assistant text at TRACE so a model
+                        // using a tool-call format we don't recognize is still fully visible in the
+                        // daemon log (enable with ACECLAW_LOG_LEVEL=TRACE). Off by default to avoid
+                        // logging every ordinary answer's text.
+                        if (log.isTraceEnabled() && !endTurnText.isEmpty()) {
+                            int max = 4000;
+                            String raw = endTurnText.length() > max
+                                    ? endTurnText.substring(0, max) + "...(" + endTurnText.length() + " chars)"
+                                    : endTurnText;
+                            log.trace("END_TURN produced no tool call. Provider={}. Raw assistant text: {}",
+                                    llmClient.provider(), raw);
+                        }
+                        // If the model text *looks* like it was attempting a tool call in a known but
+                        // unparseable shape, surface it prominently (WARN) so silent "END_TURN but
+                        // wanted to call a tool" cases are diagnosable without raising the log level.
+                        logUnrecognizedToolCallAttempt(endTurnText);
                     }
                 }
 
@@ -423,6 +508,23 @@ public final class StreamingAgentLoop {
                     case END_TURN, MAX_TOKENS, STOP_SEQUENCE, ERROR -> {
                         log.debug("Streaming turn complete: stopReason={}, iterations={}",
                                 stopReason, iteration + 1);
+                        if (checkpointEnabled) {
+                            currentCheckpoint = currentCheckpoint.withIterationCompleted(
+                                    iteration + 1, null,
+                                    ConversationSnapshot.serialize(allMessages), List.of());
+                            // END_TURN -> delete file (no orphan). Other terminal stop
+                            // reasons -> keep on disk as COMPLETED (truncated normally)
+                            // or FAILED (ERROR), per the issue's compaction rule.
+                            if (stopReason == StopReason.END_TURN) {
+                                turnSink.onTurnCompleted(turnId);
+                            } else {
+                                turnSink.recordIteration(currentCheckpoint);
+                                turnSink.onTurnEnded(turnId,
+                                        stopReason == StopReason.ERROR
+                                                ? PlanCheckpoint.CheckpointStatus.FAILED
+                                                : PlanCheckpoint.CheckpointStatus.COMPLETED);
+                            }
+                        }
                         var totalUsage = new Usage(
                                 totalInputTokens, totalOutputTokens,
                                 totalCacheCreationTokens, totalCacheReadTokens);
@@ -457,9 +559,31 @@ public final class StreamingAgentLoop {
                         allMessages.add(toolResultMessage);
                         newMessages.add(toolResultMessage);
 
+                        // Record per-iteration checkpoint: assistant response + tool
+                        // results are now both in the conversation, so this is the
+                        // earliest point at which the iteration is "fully materialized"
+                        // per issue #500's spec.
+                        if (checkpointEnabled) {
+                            String lastToolUseId = toolUseBlocks.isEmpty()
+                                    ? null : toolUseBlocks.getLast().id();
+                            currentCheckpoint = currentCheckpoint.withIterationCompleted(
+                                    iteration + 1, lastToolUseId,
+                                    ConversationSnapshot.serialize(allMessages), List.of());
+                            try {
+                                turnSink.recordIteration(currentCheckpoint);
+                            } catch (Exception e) {
+                                log.warn("Failed to record turn checkpoint (iteration {}): {}",
+                                        iteration + 1, e.getMessage());
+                            }
+                        }
+
                         // Checkpoint 3: after tool execution
                         if (cancellationToken != null && cancellationToken.isCancelled()) {
                             log.info("Cancellation detected after tool execution (iteration {})", iteration + 1);
+                            if (checkpointEnabled) {
+                                turnSink.onTurnEnded(turnId,
+                                        PlanCheckpoint.CheckpointStatus.INTERRUPTED);
+                            }
                             var turn = buildCancelledTurn(newMessages, totalInputTokens, totalOutputTokens,
                                     totalCacheCreationTokens, totalCacheReadTokens, compactionResult,
                                     llmRequestCount, attributionBuilder.build());
@@ -472,6 +596,11 @@ public final class StreamingAgentLoop {
 
             // Exceeded max iterations
             log.warn("Streaming ReAct loop exceeded max iterations ({})", maxIterations);
+            if (checkpointEnabled) {
+                // Treat as a normal end-of-turn (not a crash): user can still inspect
+                // the run via the COMPLETED file, but it's not resumable.
+                turnSink.onTurnEnded(turnId, PlanCheckpoint.CheckpointStatus.COMPLETED);
+            }
             var totalUsage = new Usage(
                     totalInputTokens, totalOutputTokens,
                     totalCacheCreationTokens, totalCacheReadTokens);
@@ -480,6 +609,13 @@ public final class StreamingAgentLoop {
             publishTurnCompleted(turnNumber, turnStart);
             return turn;
         } catch (LlmException e) {
+            if (checkpointEnabled) {
+                try {
+                    turnSink.onTurnEnded(turnId, PlanCheckpoint.CheckpointStatus.FAILED);
+                } catch (Exception inner) {
+                    log.warn("Failed to flush turn checkpoint on LlmException: {}", inner.getMessage());
+                }
+            }
             publishEvent(new AgentEvent.TurnError(
                     config.sessionId(), turnNumber, e.getMessage(), Instant.now()));
             throw e;
@@ -975,24 +1111,57 @@ public final class StreamingAgentLoop {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     /**
-     * Detects text content that is actually a tool call JSON from models that
-     * don't support native tool calling.
+     * Detects text content that is actually a tool call from models that don't support native
+     * tool calling. Handles two formats:
+     *
+     * <ol>
+     *   <li>Marker format (open-weight models): {@code [tool:start] tool_name {"arg":"val"} [tool:stop]}</li>
+     *   <li>Bare JSON format: {@code {"name": "tool_name", "arguments": {...}}}</li>
+     * </ol>
      */
-    private List<ContentBlock> tryConvertTextToToolUse(List<ContentBlock> blocks) {
-        boolean hasToolUse = blocks.stream().anyMatch(b -> b instanceof ContentBlock.ToolUse);
+    // package-private for unit testing (see StreamingAgentLoopTextToolConversionTest)
+    List<ContentBlock> tryConvertTextToToolUse(List<ContentBlock> blocks) {
+        var safeBlocks = blocks != null ? blocks : List.<ContentBlock>of();
+        return tryConvertTextToToolUse(safeBlocks, concatText(safeBlocks));
+    }
+
+    /**
+     * Variant that reuses an already-concatenated {@code fullText} so callers on the hot END_TURN
+     * path don't concatenate the assistant text twice (once here, once in the diagnostic).
+     */
+    private List<ContentBlock> tryConvertTextToToolUse(List<ContentBlock> blocks, String fullText) {
+        // Keep the null-guard local so future callers of this overload can't introduce an NPE path.
+        var safeBlocks = blocks != null ? blocks : List.<ContentBlock>of();
+        boolean hasToolUse = safeBlocks.stream().anyMatch(b -> b instanceof ContentBlock.ToolUse);
         if (hasToolUse) return null;
 
-        String fullText = blocks.stream()
-                .filter(b -> b instanceof ContentBlock.Text)
-                .map(b -> ((ContentBlock.Text) b).text())
-                .reduce("", (a, b) -> a + b)
-                .trim();
+        if (fullText.isEmpty()) return null;
 
-        if (fullText.isEmpty() || fullText.charAt(0) != '{') return null;
+        // Prefer the bare-JSON interpretation when the entire response is a JSON object. A literal
+        // "[tool:start]" can legitimately appear inside a string argument (e.g. a write_file content
+        // value); trying the marker format first would hijack such a call and run a different tool.
+        if (fullText.charAt(0) == '{') {
+            var bareToolUse = tryParseBareJsonFormat(fullText);
+            if (bareToolUse != null) {
+                return buildToolUseBlocks(safeBlocks, bareToolUse);
+            }
+        }
 
+        // Marker format (open-weight models via Ollama/local): [tool:start] name {json} [tool:stop]
+        var markerToolUse = tryParseToolMarkerFormat(fullText);
+        if (markerToolUse != null) {
+            return buildToolUseBlocks(safeBlocks, markerToolUse);
+        }
+
+        return null;
+    }
+
+    /** Parses a bare JSON tool call: {@code {"name": "tool_name", "arguments": {...}}}. */
+    private ContentBlock.ToolUse tryParseBareJsonFormat(String fullText) {
         try {
+            // readTree returns null for empty/whitespace-only input; guard before dereferencing.
             JsonNode node = JSON.readTree(fullText);
-            if (!node.isObject()) return null;
+            if (node == null || !node.isObject()) return null;
 
             String toolName = node.path("name").asText(null);
             JsonNode arguments = node.get("arguments");
@@ -1004,22 +1173,151 @@ public final class StreamingAgentLoop {
             String toolId = "text-tool-" + UUID.randomUUID().toString().substring(0, 8);
             String argsJson = JSON.writeValueAsString(arguments);
 
-            var result = new ArrayList<ContentBlock>();
-            for (var block : blocks) {
-                if (block instanceof ContentBlock.Text) {
-                    // Skip — replaced by ToolUse
-                } else {
-                    result.add(block);
-                }
-            }
-            result.add(new ContentBlock.ToolUse(toolId, toolName, argsJson));
-
-            log.debug("Parsed text-based tool call: tool={}, args={}", toolName, argsJson);
-            return List.copyOf(result);
+            log.debug("Parsed bare-JSON tool call: tool={}, args={}", toolName, argsJson);
+            return new ContentBlock.ToolUse(toolId, toolName, argsJson);
 
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /**
+     * Parses {@code [tool:start] tool_name {...args...} [tool:stop]} from model text output.
+     *
+     * <p>Reasoning prose may precede the marker, but the marker tool call must be the <em>final</em>
+     * meaningful content: only whitespace and an optional {@code [tool:stop]} may follow the argument
+     * object. This prevents illustrative examples ("you'd call [tool:start] bash {...} to list files")
+     * or mixed responses from silently triggering real tool execution.
+     *
+     * <p>If no argument object follows the tool name an empty object is used; if an argument object is
+     * present but malformed, {@code null} is returned so the text is not fired with empty args.
+     */
+    private ContentBlock.ToolUse tryParseToolMarkerFormat(String fullText) {
+        int markerIdx = fullText.indexOf("[tool:start]");
+        if (markerIdx < 0) return null;
+
+        String afterMarker = fullText.substring(markerIdx + "[tool:start]".length()).stripLeading();
+
+        // Extract the tool name: everything up to the first whitespace, '{' (args), or '[' (a
+        // following marker). Do NOT restrict to [A-Za-z0-9_] — MCP tools are named
+        // mcp__<server>__<tool> where <tool> may contain '-' or '.' (e.g. mcp__context7__query-docs),
+        // which the bare-JSON path already accepts; a char-class scan would truncate them.
+        int nameEnd = 0;
+        while (nameEnd < afterMarker.length()) {
+            char c = afterMarker.charAt(nameEnd);
+            if (Character.isWhitespace(c) || c == '{' || c == '[') break;
+            nameEnd++;
+        }
+        if (nameEnd == 0) return null;
+        String toolName = afterMarker.substring(0, nameEnd);
+        if (toolRegistry.get(toolName).isEmpty()) return null;
+
+        // Parse JSON arguments after the tool name, if present. readTree(parser) consumes exactly
+        // one complete JSON value and ignores any trailing text (the "[tool:stop]" marker or prose),
+        // so a literal "[tool:stop]" inside a string argument no longer truncates the object. The
+        // parser's char offset tells us where the object ended so we can inspect what follows.
+        String afterName = afterMarker.substring(nameEnd).stripLeading();
+        String argsJson = "{}";
+        String remainder = afterName;
+        if (!afterName.isEmpty() && afterName.charAt(0) == '{') {
+            try (var parser = JSON.getFactory().createParser(afterName)) {
+                JsonNode node = JSON.readTree(parser);
+                if (node == null || !node.isObject()) return null;
+                argsJson = JSON.writeValueAsString(node);
+                long consumed = parser.currentLocation().getCharOffset();
+                remainder = (consumed >= 0 && consumed <= afterName.length())
+                        ? afterName.substring((int) consumed)
+                        : "";
+            } catch (Exception e) {
+                // Arguments were intended (text starts with '{') but are malformed. Don't fire a
+                // tool call with empty args — treat the whole thing as plain text instead.
+                log.debug("[tool:start] marker for {} has unparseable args, not treating as tool call", toolName);
+                return null;
+            }
+        }
+
+        // The marker call must be the final meaningful content: only whitespace and an optional
+        // [tool:stop] may follow. Anything else means the marker was an example/mixed prose, not a
+        // real invocation, so we must not execute it.
+        String tail = remainder.stripLeading();
+        if (tail.startsWith("[tool:stop]")) {
+            tail = tail.substring("[tool:stop]".length());
+        }
+        if (!tail.isBlank()) {
+            log.debug("[tool:start] marker for {} is followed by extra content, not treating as tool call", toolName);
+            return null;
+        }
+
+        String toolId = "text-tool-" + UUID.randomUUID().toString().substring(0, 8);
+        log.debug("Parsed [tool:start] marker tool call: tool={}, args={}", toolName, argsJson);
+        return new ContentBlock.ToolUse(toolId, toolName, argsJson);
+    }
+
+    /** Concatenates the text of all {@link ContentBlock.Text} blocks, trimmed. */
+    private static String concatText(List<ContentBlock> blocks) {
+        var sb = new StringBuilder();
+        for (var block : blocks) {
+            if (block instanceof ContentBlock.Text t) {
+                sb.append(t.text());
+            }
+        }
+        return sb.toString().trim();
+    }
+
+    /** Case-insensitive containment that does not allocate a lowercased copy of {@code haystack}. */
+    private static boolean containsIgnoreCase(String haystack, String needle) {
+        int n = needle.length();
+        if (n == 0) return true;
+        int limit = haystack.length() - n;
+        for (int i = 0; i <= limit; i++) {
+            if (haystack.regionMatches(true, i, needle, 0, n)) return true;
+        }
+        return false;
+    }
+
+    /** Replaces all Text blocks with {@code toolUse}, preserving non-Text blocks (e.g. Thinking). */
+    private List<ContentBlock> buildToolUseBlocks(List<ContentBlock> blocks, ContentBlock.ToolUse toolUse) {
+        var result = new ArrayList<ContentBlock>();
+        for (var block : blocks) {
+            if (!(block instanceof ContentBlock.Text)) {
+                result.add(block);
+            }
+        }
+        result.add(toolUse);
+        return List.copyOf(result);
+    }
+
+    /** Markers that suggest a model tried to call a tool via text instead of native tool_use. */
+    private static final List<String> TOOL_CALL_TEXT_MARKERS =
+            List.of("[tool:start]", "[tool_call", "<tool_call", "<function", "\"function\":", "\"tool_call");
+
+    /**
+     * When a turn ends as END_TURN with no tool call (native or recovered), checks whether the
+     * model's text output looks like an unrecognized tool-call attempt and logs it. This makes the
+     * otherwise-silent "model wanted a tool but we ended the turn" failure visible in the daemon log.
+     */
+    private void logUnrecognizedToolCallAttempt(String fullText) {
+        if (!looksLikeUnrecognizedToolCall(fullText)) return;
+
+        int max = 300;
+        String snippet = fullText.length() > max ? fullText.substring(0, max) + "..." : fullText;
+        log.warn("Turn ended as END_TURN but model text looks like an unrecognized tool call "
+                + "(no native tool_use, unparseable by fallback). Provider={}. Snippet: {}",
+                llmClient.provider(), snippet);
+    }
+
+    /**
+     * Heuristic for whether END_TURN text resembles an unrecognized tool-call attempt. For
+     * JSON-shaped text it requires both {@code "name"} and {@code "arguments"} — the bare-JSON
+     * tool-call shape — so ordinary JSON answers like {@code {"name":"Alice"}} are not flagged.
+     */
+    // package-private for unit testing (see StreamingAgentLoopTextToolConversionTest)
+    static boolean looksLikeUnrecognizedToolCall(String fullText) {
+        if (fullText == null || fullText.isEmpty()) return false;
+        return TOOL_CALL_TEXT_MARKERS.stream().anyMatch(m -> containsIgnoreCase(fullText, m))
+                || (fullText.charAt(0) == '{'
+                        && containsIgnoreCase(fullText, "\"name\"")
+                        && containsIgnoreCase(fullText, "\"arguments\""));
     }
 
     /**

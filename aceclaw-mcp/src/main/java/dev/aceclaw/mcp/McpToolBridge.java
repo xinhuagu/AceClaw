@@ -3,6 +3,8 @@ package dev.aceclaw.mcp;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aceclaw.core.agent.Tool;
+import dev.aceclaw.security.Capability;
+import dev.aceclaw.security.CapabilityAware;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
@@ -10,6 +12,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Adapts an MCP tool to the AceClaw {@link Tool} interface.
@@ -20,20 +23,22 @@ import java.util.Map;
  * <p>Tool execution delegates to the {@link McpSyncClient#callTool} method and converts the
  * {@link McpSchema.CallToolResult} back to a {@link Tool.ToolResult}.
  */
-public final class McpToolBridge implements Tool {
+public final class McpToolBridge implements Tool, CapabilityAware {
 
     private static final Logger log = LoggerFactory.getLogger(McpToolBridge.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final String qualifiedName;
+    private final String serverName;
     private final String mcpToolName;
     private final String description;
     private final JsonNode inputSchema;
     private final McpSyncClient client;
 
-    private McpToolBridge(String qualifiedName, String mcpToolName, String description,
+    private McpToolBridge(String qualifiedName, String serverName, String mcpToolName, String description,
                           JsonNode inputSchema, McpSyncClient client) {
         this.qualifiedName = qualifiedName;
+        this.serverName = serverName;
         this.mcpToolName = mcpToolName;
         this.description = description;
         this.inputSchema = inputSchema;
@@ -49,6 +54,9 @@ public final class McpToolBridge implements Tool {
      * @return a new tool bridge instance
      */
     public static McpToolBridge create(String serverName, McpSchema.Tool mcpTool, McpSyncClient client) {
+        Objects.requireNonNull(serverName, "serverName");
+        Objects.requireNonNull(mcpTool, "mcpTool");
+        Objects.requireNonNull(client, "client");
         var qualifiedName = "mcp__" + serverName + "__" + mcpTool.name();
 
         // Convert MCP input schema to Jackson JsonNode
@@ -62,7 +70,7 @@ public final class McpToolBridge implements Tool {
                     .put("type", "object");
         }
 
-        return new McpToolBridge(qualifiedName, mcpTool.name(),
+        return new McpToolBridge(qualifiedName, serverName, mcpTool.name(),
                 mcpTool.description(), inputSchema, client);
     }
 
@@ -107,6 +115,22 @@ public final class McpToolBridge implements Tool {
                 qualifiedName, isError, output.length());
 
         return new ToolResult(output, isError);
+    }
+
+    /**
+     * Produces the structured {@link Capability} for the governance pipeline.
+     * Delegates to {@link McpCapabilityInference} for the best-effort
+     * inference; returns the opaque {@link Capability.McpInvoke} when no
+     * pattern matches.
+     *
+     * <p>The args payload is intentionally not retained on the emitted
+     * variant — args can be huge and may carry secrets; policies decide on
+     * (server, method) or the resolved path alone.
+     */
+    @Override
+    public Capability toCapability(JsonNode args) {
+        var inferred = McpCapabilityInference.infer(mcpToolName, args);
+        return inferred != null ? inferred : new Capability.McpInvoke(serverName, mcpToolName);
     }
 
     /**

@@ -203,8 +203,11 @@ public final class SequentialPlanExecutor implements PlanExecutor {
             String stepPrompt = buildStepPrompt(step, i, plan, stepResults);
 
             try {
+                // skipTurnCheckpoint=true: the plan already owns a PlanCheckpoint
+                // covering the whole execution; a per-step turn checkpoint would
+                // duplicate resume state and confuse routing (PR #516 review).
                 var turn = agentLoop.runTurn(stepPrompt, allMessages, handler, cancellationToken,
-                        RequestSource.MAIN_TURN);
+                        RequestSource.MAIN_TURN, true);
                 allMessages.addAll(turn.newMessages());
                 generatedMessages.addAll(turn.newMessages());
 
@@ -268,7 +271,7 @@ public final class SequentialPlanExecutor implements PlanExecutor {
                         String fallbackPrompt = buildFallbackPrompt(step, e.getMessage());
                         var fallbackTurn = agentLoop.runTurn(
                                 fallbackPrompt, allMessages, handler, cancellationToken,
-                                RequestSource.FALLBACK);
+                                RequestSource.FALLBACK, true);
                         allMessages.addAll(fallbackTurn.newMessages());
                         generatedMessages.addAll(fallbackTurn.newMessages());
 
