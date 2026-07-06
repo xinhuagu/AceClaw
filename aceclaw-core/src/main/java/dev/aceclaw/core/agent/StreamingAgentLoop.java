@@ -1449,7 +1449,7 @@ public final class StreamingAgentLoop {
         @Override
         public void onError(StreamEvent.StreamError event) {
             this.error = event.error();
-            delegate.onError(event);
+            // Do not forward to delegate here — the retry loop will notify after exhausting retries
         }
 
         private void flushTextBlock() {
