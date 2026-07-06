@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.5] - 2026-07-06
+
+### Bug Fixes
+
+- Parse [tool:start] marker format from open-weight models via Ollama
+- Log tool-call parse outcome to daemon log for diagnosability
+- Robust arg parsing for [tool:start] marker tool calls
+- Support MCP tool names in [tool:start] parser; dedup END_TURN text work
+- Address PR review — guard marker tool-call recovery
+- Execute tool_use blocks arriving with END_TURN (Ollama finish_reason=stop)
+- Preserve MAX_TOKENS stop reason across trailing usage chunk (PR #519 review)
+
+### Features
+
+- TRACE dump of raw model output on tool-less END_TURN; make log level env-controllable
 ## [0.4.4] - 2026-06-03
 
 ### Bug Fixes
